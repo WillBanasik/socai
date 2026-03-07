@@ -1,0 +1,15 @@
+{
+  "clients": [
+    {
+      "name": "acme-corp",
+      "alias": "oakdale",
+      "root": true,
+      "workspace_id": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "name": "partner-inc",
+      "alias": "riverside",
+      "workspace_id": "00000000-0000-0000-0000-000000000001"
+    }
+  ]
+}

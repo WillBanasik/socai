@@ -1,0 +1,18 @@
+{
+  "provider": "anyrun",
+  "status": "ok",
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "verdict": "malicious",
+  "score": 95,
+  "tags": ["trojan", "info-stealer"],
+  "mitre": ["T1059.001", "T1071.001", "T1547.001"],
+  "network_iocs": [
+    {"type": "ipv4", "value": "198.51.100.50"},
+    {"type": "domain", "value": "c2.evil-domain.com"}
+  ],
+  "process_tree": [
+    {"pid": 1234, "name": "security_update.exe", "cmd": "security_update.exe"},
+    {"pid": 1235, "name": "powershell.exe", "cmd": "powershell.exe -enc base64data"}
+  ],
+  "report_url": "https://app.any.run/tasks/abc123"
+}

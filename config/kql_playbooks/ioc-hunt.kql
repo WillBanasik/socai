@@ -1,0 +1,149 @@
+// ---
+// name: IOC Hunt
+// description: >
+//   Fast IOC presence sweep across a Sentinel workspace. Stage 1 runs a single
+//   union query across all major tables (network, sign-in, firewall, alerts,
+//   threat intel) to determine whether any of the supplied IOCs have been seen.
+//   Stage 2 is a conditional context pivot that pulls surrounding activity from
+//   the table and time window where hits were found.
+// parameters:
+//   - name: iocs
+//     type: string
+//     description: Comma-separated IOC values formatted as KQL dynamic list content (IPs, domains, hashes)
+//   - name: lookback
+//     type: string
+//     description: KQL timespan for lookback window (default 30d)
+//   - name: hit_table
+//     type: string
+//     description: Table name from Stage 1 hit (used in Stage 2)
+//   - name: hit_time
+//     type: string
+//     description: ISO timestamp of a Stage 1 hit to pivot around (used in Stage 2)
+//   - name: hit_device
+//     type: string
+//     description: DeviceProduct or DeviceName from Stage 1 hit (used in Stage 2)
+// stages:
+//   - stage: 1
+//     name: IOC presence sweep
+//     description: Single union query across all major tables to detect any IOC presence
+//     run: always
+//   - stage: 2
+//     name: Context pivot
+//     description: Pull surrounding activity from the table and time window where Stage 1 found hits
+//     run: when Stage 1 returns hits
+// tables:
+//   - DeviceNetworkEvents
+//   - SigninLogs
+//   - CommonSecurityLog
+//   - SecurityAlert
+//   - AADSignInEventsBeta
+// ---
+
+
+// ============================================================================
+// STAGE 1 — IOC presence sweep
+// ============================================================================
+// Parameters: iocs (comma-separated values as KQL dynamic list content), lookback (default 30d)
+// Run: ALWAYS — single query replaces 4-5 sequential table searches.
+// Returns: one row per hit with source table, timestamp, and key context fields.
+
+let ioc_list = dynamic([{{iocs}}]);
+let lookback = {{lookback}};
+union
+(
+    DeviceNetworkEvents
+    | where TimeGenerated >= ago(lookback)
+    | where RemoteIP in (ioc_list) or RemoteUrl has_any (ioc_list)
+    | project
+        SourceTable = "DeviceNetworkEvents",
+        TimeGenerated,
+        Indicator = RemoteIP,
+        DeviceOrSource = DeviceName,
+        User = InitiatingProcessAccountName,
+        Detail = strcat(ActionType, " | ", InitiatingProcessFileName, " → ", RemoteIP, ":", RemotePort),
+        Extra = InitiatingProcessCommandLine
+),
+(
+    SigninLogs
+    | where TimeGenerated >= ago(lookback)
+    | where IPAddress in (ioc_list)
+    | project
+        SourceTable = "SigninLogs",
+        TimeGenerated,
+        Indicator = IPAddress,
+        DeviceOrSource = tostring(DeviceDetail.displayName),
+        User = UserPrincipalName,
+        Detail = strcat(ResultType, " | ", AppDisplayName, " | Risk:", RiskLevelDuringSignIn),
+        Extra = Location
+),
+(
+    CommonSecurityLog
+    | where TimeGenerated >= ago(lookback)
+    | where SourceIP in (ioc_list) or DestinationIP in (ioc_list)
+    | project
+        SourceTable = "CommonSecurityLog",
+        TimeGenerated,
+        Indicator = iff(SourceIP in (ioc_list), SourceIP, DestinationIP),
+        DeviceOrSource = strcat(DeviceVendor, "/", DeviceProduct),
+        User = SourceUserName,
+        Detail = strcat(Activity, " | ", DeviceAction, " | ", SourceIP, " → ", DestinationIP, ":", DestinationPort),
+        Extra = Message
+),
+(
+    SecurityAlert
+    | where TimeGenerated >= ago(lookback)
+    | where Entities has_any (ioc_list)
+    | project
+        SourceTable = "SecurityAlert",
+        TimeGenerated,
+        Indicator = extract(strcat("(", strcat_array(ioc_list, "|"), ")"), 0, Entities),
+        DeviceOrSource = ProductName,
+        User = "",
+        Detail = strcat(Severity, " | ", AlertName),
+        Extra = Description
+),
+(
+    AADSignInEventsBeta
+    | where TimeGenerated >= ago(lookback)
+    | where IPAddress in (ioc_list)
+    | project
+        SourceTable = "AADSignInEventsBeta",
+        TimeGenerated,
+        Indicator = IPAddress,
+        DeviceOrSource = "",
+        User = AccountUpn,
+        Detail = strcat("ErrorCode:", ErrorCode, " | ", Application),
+        Extra = ""
+)
+| sort by TimeGenerated desc
+| take 50
+
+
+// ============================================================================
+// STAGE 2 — Context pivot
+// ============================================================================
+// Parameters: hit_table, hit_time (ISO timestamp from Stage 1), hit_device (DeviceProduct or DeviceName)
+// Run: when Stage 1 returns hits. Pulls 1-hour window around the hit for context.
+// Purpose: understand what else happened on the same device/source around the time of the IOC hit.
+
+let pivot_time = datetime({{hit_time}});
+let window_start = pivot_time - 30m;
+let window_end = pivot_time + 30m;
+let device_filter = "{{hit_device}}";
+CommonSecurityLog
+| where TimeGenerated between (window_start .. window_end)
+| where DeviceProduct has device_filter or DeviceName has device_filter
+| project
+    TimeGenerated,
+    SourceIP,
+    SourceUserName,
+    DestinationIP,
+    DestinationPort,
+    Protocol,
+    Activity,
+    DeviceAction,
+    DeviceVendor,
+    DeviceProduct,
+    Message
+| sort by TimeGenerated asc
+| take 50

@@ -1,0 +1,31 @@
+# Core
+anthropic>=0.40.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+python-dotenv>=1.0.0
+
+# Optional – headless browser (recommended)
+playwright>=1.43.0
+
+# Optional – PE file analysis
+# pefile>=2023.2.7
+
+# Optional – YARA scanning
+# yara-python>=4.3.0
+
+# Optional – native EVTX parsing
+# python-evtx>=0.7.0
+
+# MCP server
+mcp>=1.1.0
+
+# Web API
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.0.0
+python-multipart>=0.0.9
+pydantic[email]>=2.0.0
+
+# Dev / testing
+pytest>=8.0.0

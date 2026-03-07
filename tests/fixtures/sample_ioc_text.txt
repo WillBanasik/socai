@@ -1,0 +1,18 @@
+Phishing email analysis – sample IOC text fixture
+
+The email originated from IP address 185.220.101.45 and referenced the domain
+malware-delivery.xyz as a staging server.
+
+A secondary C2 was observed at 91.199.212.52 communicating over HTTP on port 8080.
+The full URL observed in process telemetry was http://91.199.212.52:8080/gate.php
+
+File hashes observed:
+  MD5:    d41d8cd98f00b204e9800998ecf8427e
+  SHA1:   da39a3ee5e6b4b0d3255bfef95601890afd80709
+  SHA256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+Email sender: attacker@phishingops.ru
+
+CVE reference in lure document: CVE-2024-21413
+
+Legitimate-looking URL included in document: https://login.microsoftonline.com.phishingops.ru/auth

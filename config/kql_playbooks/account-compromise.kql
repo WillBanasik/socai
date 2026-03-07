@@ -1,0 +1,250 @@
+// ---
+// name: Account Compromise Investigation
+// description: >
+//   Multi-stage account compromise investigation. Stage 1 gathers the full
+//   sign-in history (interactive + non-interactive) with risk signals and a
+//   triage summary. Stage 1b is a conditional fallback via the Defender
+//   connector. Stage 2 checks for all post-compromise activity in a single
+//   union query: MFA changes, OAuth consent grants, and mailbox rules.
+// parameters:
+//   - name: upn
+//     type: string
+//     description: UserPrincipalName of the suspect account
+//   - name: ip
+//     type: string
+//     description: Suspicious IP address (optional; omit to investigate all sign-ins)
+//   - name: lookback
+//     type: string
+//     description: Time range to investigate (default 30d)
+//     default: 30d
+// stages:
+//   - stage: 1
+//     name: Sign-in analysis (detail + triage)
+//     description: >
+//       Full sign-in history across both interactive and non-interactive logs,
+//       with a combined triage summary by IP/location/app/result.
+//     run: always
+//   - stage: 1b
+//     name: Sign-in analysis (Defender fallback)
+//     description: >
+//       Fallback via AADSignInEventsBeta (M365 Defender connector). Use only
+//       when Stage 1 returns no rows — covers a different data pipeline.
+//     run: when Stage 1 returns no rows
+//   - stage: 2
+//     name: Post-compromise activity
+//     description: >
+//       Single union query across AuditLogs and OfficeActivity to detect MFA
+//       registration, password changes, OAuth consent grants, and mailbox rule
+//       manipulation.
+//     run: always (post-compromise persistence check)
+// tables:
+//   - SigninLogs
+//   - AADNonInteractiveUserSignInLogs
+//   - AADSignInEventsBeta
+//   - AuditLogs
+//   - OfficeActivity
+// ---
+
+
+// ============================================================================
+// STAGE 1a — Full sign-in history (interactive + non-interactive)
+// ============================================================================
+// Parameters: upn, ip (optional), lookback
+// Run: ALWAYS — starting point for every account compromise investigation.
+// Returns: sign-in events with auth method, risk signals, device detail, location.
+// The SignInType column distinguishes interactive from non-interactive — token
+// replay, OAuth app activity, and service principal abuse show in non-interactive.
+
+union
+(
+    SigninLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where UserPrincipalName =~ "{{upn}}"
+    // Uncomment to filter by suspicious IP:
+    // | where IPAddress == "{{ip}}"
+    | extend SignInType = "Interactive"
+    | project
+        SignInType,
+        TimeGenerated,
+        UserPrincipalName,
+        IPAddress,
+        Location,
+        ResultType,
+        ResultDescription,
+        AppDisplayName,
+        ClientAppUsed,
+        AuthenticationDetails = tostring(AuthenticationDetails),
+        DeviceDetail = tostring(DeviceDetail),
+        UserAgent,
+        ConditionalAccessStatus,
+        MfaDetail = tostring(MfaDetail),
+        RiskDetail,
+        RiskLevelDuringSignIn,
+        RiskLevelAggregated,
+        RiskEventTypes_V2,
+        RiskState,
+        UniqueTokenIdentifier,
+        SessionId,
+        IsInteractive
+),
+(
+    AADNonInteractiveUserSignInLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where UserPrincipalName =~ "{{upn}}"
+    // Uncomment to filter by suspicious IP:
+    // | where IPAddress == "{{ip}}"
+    | extend SignInType = "NonInteractive"
+    | project
+        SignInType,
+        TimeGenerated,
+        UserPrincipalName,
+        IPAddress,
+        Location,
+        ResultType,
+        ResultDescription,
+        AppDisplayName,
+        ClientAppUsed,
+        AuthenticationDetails = tostring(AuthenticationDetails),
+        DeviceDetail = tostring(DeviceDetail),
+        UserAgent,
+        ConditionalAccessStatus,
+        MfaDetail = tostring(MfaDetail),
+        RiskDetail,
+        RiskLevelDuringSignIn,
+        RiskLevelAggregated,
+        RiskEventTypes_V2,
+        RiskState,
+        UniqueTokenIdentifier,
+        SessionId,
+        IsInteractive
+)
+| sort by TimeGenerated desc
+
+
+// ============================================================================
+// STAGE 1b — Triage summary (interactive + non-interactive)
+// ============================================================================
+// Parameters: upn, lookback
+// Run: ALWAYS — quick triage overview for the analyst.
+// Returns: aggregate counts by IP, location, app, sign-in type, and result.
+// Single query replaces the previous 3 separate summarize calls.
+
+union
+(
+    SigninLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where UserPrincipalName =~ "{{upn}}"
+    | extend SignInType = "Interactive"
+),
+(
+    AADNonInteractiveUserSignInLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where UserPrincipalName =~ "{{upn}}"
+    | extend SignInType = "NonInteractive"
+)
+| summarize
+    SignInCount = count(),
+    SuccessCount = countif(ResultType == 0),
+    FailCount = countif(ResultType != 0),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated),
+    Apps = make_set(AppDisplayName, 10),
+    ResultCodes = make_set(ResultType, 10),
+    SignInTypes = make_set(SignInType)
+    by IPAddress, Location
+| sort by SignInCount desc
+
+
+// ============================================================================
+// STAGE 1c — Sign-in analysis (Defender fallback: AADSignInEventsBeta)
+// ============================================================================
+// Run: ONLY when Stage 1a returns no rows (different data pipeline via M365
+// Defender connector). AADSignInEventsBeta covers both interactive and
+// non-interactive in a single table.
+
+AADSignInEventsBeta
+| where Timestamp > ago({{lookback}})
+| where AccountUpn =~ "{{upn}}"
+| project
+    Timestamp,
+    AccountUpn,
+    IPAddress,
+    Country,
+    City,
+    ErrorCode,
+    Application,
+    DeviceName,
+    AadDeviceId,
+    SessionId,
+    RiskLevelDuringSignIn,
+    RiskLevelAggregated
+| sort by Timestamp desc
+
+
+// ============================================================================
+// STAGE 2 — Post-compromise activity
+// ============================================================================
+// Parameters: upn, lookback
+// Run: ALWAYS for compromised accounts.
+// Single union query covering:
+//   - MFA method registrations and password resets (AuditLogs)
+//   - OAuth application consent grants (AuditLogs)
+//   - Mailbox rule creation and modification (OfficeActivity)
+// Replaces the previous 3 separate stage queries.
+
+union
+(
+    AuditLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where TargetResources has "{{upn}}" or InitiatedBy has "{{upn}}"
+    | where OperationName in (
+        // MFA and credential changes
+        "User registered security info",
+        "User registered all required security info",
+        "User started security info registration",
+        "User deleted security info",
+        "Admin registered security info",
+        "Reset password (by admin)",
+        "Reset password (self-service)",
+        "Change password (self-service)",
+        "User performed a self-service password reset",
+        // OAuth consent grants
+        "Consent to application"
+    )
+    | project
+        SourceTable = "AuditLogs",
+        TimeGenerated,
+        Activity = OperationName,
+        InitiatedBy = tostring(InitiatedBy),
+        TargetResources = tostring(TargetResources),
+        Result,
+        Detail = coalesce(ResultReason, ""),
+        Extra = tostring(AdditionalDetails),
+        ClientIP = "",
+        CorrelationId
+),
+(
+    OfficeActivity
+    | where TimeGenerated > ago({{lookback}})
+    | where UserId =~ "{{upn}}"
+    | where Operation in (
+        "New-InboxRule",
+        "Set-InboxRule",
+        "Enable-InboxRule",
+        "New-TransportRule",
+        "Set-TransportRule",
+        "UpdateInboxRules"
+    )
+    | project
+        SourceTable = "OfficeActivity",
+        TimeGenerated,
+        Activity = Operation,
+        InitiatedBy = UserId,
+        TargetResources = "",
+        Result = ResultStatus,
+        Detail = tostring(Parameters),
+        Extra = "",
+        ClientIP,
+        CorrelationId = ""
+)
+| sort by TimeGenerated desc

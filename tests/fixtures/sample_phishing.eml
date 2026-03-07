@@ -1,0 +1,61 @@
+Return-Path: <bounce@evil-domain.com>
+Received: from mail.evil-domain.com (mail.evil-domain.com [198.51.100.23])
+    by mx.example.com (Postfix) with ESMTP id ABC123
+    for <victim@example.com>; Mon, 3 Mar 2026 10:30:00 +0000
+Received: from localhost (localhost [127.0.0.1])
+    by mail.evil-domain.com (Postfix) with ESMTP id DEF456;
+    Mon, 3 Mar 2026 10:29:55 +0000
+Authentication-Results: mx.example.com;
+    spf=fail (sender IP is 198.51.100.23) smtp.mailfrom=evil-domain.com;
+    dkim=fail (signature verification failed);
+    dmarc=fail (p=reject)
+From: "Microsoft Support" <security@micros0ft-support.com>
+Reply-To: <helpdesk@totallylegit-support.net>
+To: <victim@example.com>
+Subject: Urgent: Your account has been compromised - Verify Now
+Date: Mon, 3 Mar 2026 10:30:00 +0000
+Message-ID: <abc123@evil-domain.com>
+X-Mailer: PhishKit/2.0
+MIME-Version: 1.0
+Content-Type: multipart/mixed;
+    boundary="----=_NextPart_001"
+
+------=_NextPart_001
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: 7bit
+
+<html>
+<head><title>Microsoft Account Security Alert</title></head>
+<body>
+<p>Dear Customer,</p>
+<p>We have detected unusual sign in activity on your Microsoft account.
+Please verify your identity immediately by clicking the link below:</p>
+<p><a href="https://micros0ft-verify.evil-domain.com/login?id=abc123">
+Verify Your Account Now</a></p>
+<p>If you do not verify within 24 hours, your account will be suspended.</p>
+<p>Microsoft Support Team</p>
+<p><a href="https://evil-domain.com/track?ref=phish001">Unsubscribe</a></p>
+</body>
+</html>
+
+------=_NextPart_001
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: 7bit
+
+Dear Customer,
+
+We have detected unusual sign in activity on your Microsoft account.
+Please verify your identity: https://micros0ft-verify.evil-domain.com/login?id=abc123
+
+Microsoft Support Team
+
+------=_NextPart_001
+Content-Type: application/octet-stream;
+    name="security_update.exe"
+Content-Disposition: attachment;
+    filename="security_update.exe"
+Content-Transfer-Encoding: base64
+
+TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+
+------=_NextPart_001--

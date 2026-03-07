@@ -1,0 +1,84 @@
+{
+  "events": [
+    {
+      "timestamp": "2026-03-01T02:30:00Z",
+      "EventID": "4624",
+      "user": "jsmith",
+      "source_ip": "198.51.100.10",
+      "action": "logon",
+      "detail": "Successful login"
+    },
+    {
+      "timestamp": "2026-03-01T02:35:00Z",
+      "EventID": "4624",
+      "user": "jsmith",
+      "source_ip": "203.0.113.50",
+      "action": "logon",
+      "detail": "Successful login from different IP"
+    },
+    {
+      "timestamp": "2026-03-01T08:00:00Z",
+      "EventID": "4625",
+      "user": "admin",
+      "source_ip": "198.51.100.99",
+      "action": "failed logon",
+      "detail": "Failed login attempt 1"
+    },
+    {
+      "timestamp": "2026-03-01T08:00:10Z",
+      "EventID": "4625",
+      "user": "admin",
+      "source_ip": "198.51.100.99",
+      "action": "failed logon",
+      "detail": "Failed login attempt 2"
+    },
+    {
+      "timestamp": "2026-03-01T08:00:20Z",
+      "EventID": "4625",
+      "user": "admin",
+      "source_ip": "198.51.100.99",
+      "action": "failed logon",
+      "detail": "Failed login attempt 3"
+    },
+    {
+      "timestamp": "2026-03-01T08:00:30Z",
+      "EventID": "4625",
+      "user": "admin",
+      "source_ip": "198.51.100.99",
+      "action": "failed logon",
+      "detail": "Failed login attempt 4"
+    },
+    {
+      "timestamp": "2026-03-01T08:00:40Z",
+      "EventID": "4625",
+      "user": "admin",
+      "source_ip": "198.51.100.99",
+      "action": "failed logon",
+      "detail": "Failed login attempt 5"
+    },
+    {
+      "timestamp": "2026-03-01T10:00:00Z",
+      "EventID": "4624",
+      "user": "lateral_user",
+      "source_ip": "10.0.0.1",
+      "action": "logon",
+      "detail": "Login from workstation 1"
+    },
+    {
+      "timestamp": "2026-03-01T10:05:00Z",
+      "EventID": "4624",
+      "user": "lateral_user",
+      "source_ip": "10.0.0.2",
+      "action": "logon",
+      "detail": "Login from workstation 2"
+    },
+    {
+      "timestamp": "2026-03-01T10:10:00Z",
+      "EventID": "4624",
+      "user": "lateral_user",
+      "source_ip": "10.0.0.3",
+      "action": "logon",
+      "detail": "Login from workstation 3"
+    }
+  ]
+}

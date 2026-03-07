@@ -1,0 +1,253 @@
+// ---
+// name: Phishing Investigation
+// description: >
+//   Multi-stage phishing campaign investigation. Stage 1 gathers full email
+//   evidence summarised by recipient UPN across multiple NetworkMessageIds.
+//   Stages 2-4 are conditional follow-ups based on Stage 1 results.
+// parameters:
+//   - name: target_ids
+//     type: string
+//     description: Comma-separated NetworkMessageIds (LLM formats into KQL dynamic list)
+//   - name: url
+//     type: string
+//     description: Malicious URL (used in stage 3; extracted from stage 1)
+//   - name: sha256
+//     type: string
+//     description: Attachment SHA256 hash (used in stage 4; extracted from stage 1)
+// stages:
+//   - stage: 1
+//     name: Core email evidence (per UPN)
+//     description: Full email chain summarised per recipient — headers, attachments, URLs, clicks
+//     run: always
+//   - stage: 2
+//     name: Post-delivery logon correlation
+//     description: Did any recipient log on to a device within 30 minutes of delivery?
+//     run: when Stage 1 shows DeliveryAction == "Delivered" and ThreatTypes present
+//   - stage: 3
+//     name: URL delivery scope and exposure time
+//     description: Scope of URL delivery across recipients and exposure time calculation. Exposure time = delivery to inbox until remediation (ZAP, admin purge, or manual removal). -1 means never remediated.
+//     run: when Stage 1 returns URLs
+//   - stage: 4
+//     name: Attachment endpoint execution
+//     description: Did the attachment land on a device and execute?
+//     run: when Stage 1 returns attachment hashes
+// definitions:
+//   - term: Exposure Time
+//     definition: The duration between an email being delivered to the recipient's inbox and the point at which it was remediated (e.g. ZAP auto-purge, manual admin pull, or user-reported removal). An ExposureMinutes value of -1 indicates the message was never remediated and remains exposed.
+// tables:
+//   - EmailEvents
+//   - EmailAttachmentInfo
+//   - EmailUrlInfo
+//   - UrlClickEvents
+//   - IdentityLogonEvents
+//   - EmailPostDeliveryEvents
+//   - DeviceFileEvents
+//   - DeviceProcessEvents
+// ---
+
+
+// ============================================================================
+// STAGE 1 — Core email evidence (per UPN)
+// ============================================================================
+// Parameters: target_ids (comma-separated NetworkMessageIds formatted as KQL dynamic list content)
+// Run: ALWAYS — this is the starting point for every phishing investigation.
+// Returns: one row per recipient UPN with aggregated evidence across all campaign messages.
+
+let targetIds = dynamic([{{target_ids}}]);
+let EmailCore = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | project
+        NetworkMessageId,
+        EmailTimestamp = Timestamp,
+        Subject,
+        SenderFromAddress,
+        SenderDisplayName,
+        SenderFromDomain,
+        SenderIP = SenderIPv4,
+        RecipientEmailAddress,
+        RecipientObjectId,
+        AuthenticationDetails,
+        DeliveryAction,
+        DeliveryLocation,
+        ThreatTypes,
+        ThreatNames,
+        InternetMessageId;
+let Attachments = EmailAttachmentInfo
+    | where NetworkMessageId in (targetIds)
+    | summarize AttachmentSHA256 = make_set(SHA256) by NetworkMessageId;
+let Urls = EmailUrlInfo
+    | where NetworkMessageId in (targetIds)
+    | summarize Urls = make_set(Url) by NetworkMessageId;
+let Clicks = UrlClickEvents
+    | where NetworkMessageId in (targetIds)
+    | summarize
+        ClickedUrls = make_set(Url),
+        ClickedThrough = make_set_if(Url, IsClickedThrough == true),
+        FirstClick = min(Timestamp),
+        LastClick = max(Timestamp)
+      by NetworkMessageId;
+EmailCore
+| join kind=leftouter Attachments on NetworkMessageId
+| join kind=leftouter Urls on NetworkMessageId
+| join kind=leftouter Clicks on NetworkMessageId
+| summarize
+    MessageCount = dcount(NetworkMessageId),
+    MessageIds = make_set(NetworkMessageId),
+    Subjects = make_set(Subject),
+    Senders = make_set(SenderFromAddress),
+    SenderDomains = make_set(SenderFromDomain),
+    SenderIPs = make_set(SenderIP),
+    DeliveryActions = make_set(DeliveryAction),
+    ThreatTypes = make_set(ThreatTypes),
+    AttachmentSHA256 = make_set(AttachmentSHA256),
+    Urls = make_set(Urls),
+    ClickedUrls = make_set(ClickedUrls),
+    ClickedThrough = make_set(ClickedThrough),
+    FirstEmailSeen = min(EmailTimestamp),
+    LastEmailSeen = max(EmailTimestamp),
+    FirstClick = min(FirstClick),
+    LastClick = max(LastClick)
+  by UPN = RecipientEmailAddress
+
+
+// ============================================================================
+// STAGE 2 — Post-delivery logon correlation
+// ============================================================================
+// Parameters: target_ids (comma-separated NetworkMessageIds)
+// Run: when Stage 1 shows DeliveryAction == "Delivered" AND ThreatTypes present.
+// Purpose: detect whether any recipient logged on to a device within 30 minutes
+//          of receiving the email — indicates potential compromise.
+
+let targetIds = dynamic([{{target_ids}}]);
+let Recipients = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | where DeliveryAction == "Delivered"
+    | project
+        TimeEmail = Timestamp,
+        UPN = RecipientEmailAddress,
+        AccountName = tostring(split(RecipientEmailAddress, "@")[0]),
+        NetworkMessageId,
+        Subject;
+Recipients
+| join kind=inner (
+    IdentityLogonEvents
+    | project LogonTime = Timestamp, AccountName, DeviceName, LogonType
+) on AccountName
+| where (LogonTime - TimeEmail) between (0min .. 30min)
+| project
+    UPN,
+    TimeEmail,
+    LogonTime,
+    TimeDelta = LogonTime - TimeEmail,
+    AccountName,
+    DeviceName,
+    LogonType,
+    Subject,
+    NetworkMessageId
+| sort by UPN asc, TimeEmail asc
+| take 50
+
+
+// ============================================================================
+// STAGE 3 — URL delivery scope and exposure time
+// ============================================================================
+// Parameters: url (malicious URL from Stage 1)
+// Run: when Stage 1 returns URLs.
+// Purpose: find all recipients who received this URL, check delivery status,
+//          and calculate exposure time (delivery to inbox → remediation).
+//          ExposureMinutes = ZAPTime - DeliveryTime. A value of -1 means
+//          the message was never remediated and remains in the mailbox.
+
+let URL = "{{url}}";
+EmailUrlInfo
+| where Url has URL
+| join kind=inner (
+    EmailEvents
+    | where DeliveryAction == "Delivered" and EmailDirection == "Inbound"
+) on NetworkMessageId
+| project
+    DeliveryTime = Timestamp,
+    NetworkMessageId,
+    Url,
+    SenderFromAddress,
+    SenderIPv4,
+    RecipientEmailAddress,
+    Subject,
+    DeliveryAction,
+    DeliveryLocation
+| join kind=leftouter (
+    EmailPostDeliveryEvents
+    | where ActionType has "ZAP"
+    | project NetworkMessageId, RecipientEmailAddress, ZAPTime = Timestamp, ZAPAction = ActionType
+) on NetworkMessageId, RecipientEmailAddress
+| extend ExposureMinutes = iff(isnotempty(ZAPTime), datetime_diff('minute', ZAPTime, DeliveryTime), -1)
+| project
+    DeliveryTime,
+    ZAPTime,
+    ExposureMinutes,
+    NetworkMessageId,
+    SenderFromAddress,
+    SenderIPv4,
+    RecipientEmailAddress,
+    Subject,
+    DeliveryAction,
+    DeliveryLocation,
+    ZAPAction
+| sort by DeliveryTime asc
+
+
+// ============================================================================
+// STAGE 4 — Attachment endpoint execution
+// ============================================================================
+// Parameters: target_ids (comma-separated NetworkMessageIds), sha256 (attachment hash from Stage 1)
+// Run: when Stage 1 returns attachment hashes.
+// Purpose: confirm whether the attachment was written to disk and/or executed
+//          on an endpoint. Scoped to 2 hours after earliest email delivery to avoid
+//          global joins across unrelated file events.
+
+let targetIds = dynamic([{{target_ids}}]);
+let AttachmentHash = "{{sha256}}";
+let DeliveryWindow = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | summarize EarliestDelivery = min(Timestamp)
+    | project EarliestDelivery;
+let FileWritten = DeviceFileEvents
+    | where SHA256 =~ AttachmentHash
+    | where Timestamp between (toscalar(DeliveryWindow) .. (toscalar(DeliveryWindow) + 2h))
+    | project
+        FileTimestamp = Timestamp,
+        DeviceName,
+        FileName,
+        FolderPath,
+        SHA256,
+        FileOriginUrl,
+        InitiatingProcessFileName,
+        ActionType;
+let FileExecuted = DeviceProcessEvents
+    | where SHA256 =~ AttachmentHash
+    | where Timestamp between (toscalar(DeliveryWindow) .. (toscalar(DeliveryWindow) + 2h))
+    | project
+        ExecTimestamp = Timestamp,
+        DeviceName,
+        FileName,
+        FolderPath,
+        SHA256,
+        ProcessCommandLine,
+        InitiatingProcessFileName,
+        InitiatingProcessCommandLine,
+        AccountName;
+FileWritten
+| join kind=leftouter FileExecuted on DeviceName, SHA256
+| project
+    FileTimestamp,
+    ExecTimestamp,
+    Executed = isnotempty(ExecTimestamp),
+    DeviceName,
+    FileName,
+    FolderPath,
+    SHA256,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    AccountName,
+    FileOriginUrl
+| sort by FileTimestamp asc

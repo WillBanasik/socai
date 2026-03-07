@@ -1,0 +1,312 @@
+// ---
+// name: Privilege Escalation Investigation
+// description: >
+//   Multi-stage privilege escalation and AD group change investigation.
+//   Stage 1 gathers the escalation event detail across Entra ID audit logs,
+//   on-prem AD security events, and related security alerts. Stage 2 checks
+//   the actor's sign-in legitimacy (location, risk, device, identity).
+//   Stage 3 is conditional — tracks what the target account did after gaining
+//   elevated privileges (admin portal access, cascading changes, mailbox abuse).
+// parameters:
+//   - name: actor_upn
+//     type: string
+//     description: UPN of the account that performed the escalation action
+//   - name: target_user
+//     type: string
+//     description: UPN of the account that was escalated (set to __NONE__ if investigating actor only)
+//   - name: target_group
+//     type: string
+//     description: Group name the target was added to (set to __NONE__ if not a group-add alert)
+//   - name: lookback
+//     type: string
+//     description: Time range to investigate (default 14d)
+//     default: 14d
+// stages:
+//   - stage: 1
+//     name: Escalation event detail
+//     description: >
+//       Union of AuditLogs (Entra ID role/group changes), SecurityEvent (on-prem
+//       AD group changes: 4728, 4732, 4756, 4727, 4731, 4755), and SecurityAlert
+//       (related alerts on actor or target within lookback). Returns normalised
+//       event detail: who did what, from where, to whom.
+//     run: always
+//   - stage: 2
+//     name: Actor legitimacy check
+//     description: >
+//       Sign-in activity for the actor (interactive + non-interactive) plus
+//       IdentityInfo summary. Checks whether the actor signed in from an unusual
+//       location/device before the change, and whether their role justifies
+//       privilege changes.
+//     run: always
+//   - stage: 3
+//     name: Post-escalation activity
+//     description: >
+//       What the target account did after gaining elevated privileges. Covers
+//       admin portal sign-ins, further audit changes (group adds, app registrations,
+//       OAuth consents, password resets), and Office activity (mailbox rules,
+//       eDiscovery, SharePoint admin). Run when escalation looks suspicious.
+//     run: when escalation looks suspicious or actor legitimacy is questionable
+// tables:
+//   - AuditLogs
+//   - SecurityEvent
+//   - SecurityAlert
+//   - SigninLogs
+//   - AADNonInteractiveUserSignInLogs
+//   - IdentityInfo
+//   - OfficeActivity
+// ---
+
+
+// ============================================================================
+// STAGE 1 — Escalation event detail
+// ============================================================================
+// Parameters: actor_upn, target_user, target_group, lookback
+// Run: ALWAYS — starting point for every privilege escalation investigation.
+// Returns: normalised escalation events from Entra ID, on-prem AD, and related alerts.
+
+union
+(
+    AuditLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where OperationName in (
+        "Add member to role",
+        "Add member to group",
+        "Add eligible member to role",
+        "Add eligible member (permanent)",
+        "Add member to role in PIM requested (permanent)",
+        "Add member to role outside of PIM",
+        "User activated eligible role",
+        "Remove member from role",
+        "Remove member from group"
+    )
+    | where InitiatedBy has "{{actor_upn}}"
+        or TargetResources has "{{target_user}}"
+        or TargetResources has "{{target_group}}"
+    | extend ActorUPN = tostring(parse_json(tostring(InitiatedBy.user)).userPrincipalName)
+    | extend ActorIP = tostring(parse_json(tostring(InitiatedBy.user)).ipAddress)
+    | extend TargetAccount = tostring(TargetResources[0].userPrincipalName)
+    | extend TargetGroup = tostring(TargetResources[0].displayName)
+    | project
+        SourceTable = "AuditLogs",
+        TimeGenerated,
+        Activity = OperationName,
+        ActorUPN,
+        ActorIP,
+        TargetAccount,
+        TargetGroup,
+        Result,
+        Detail = tostring(AdditionalDetails)
+),
+(
+    SecurityEvent
+    | where TimeGenerated > ago({{lookback}})
+    | where EventID in (4728, 4732, 4756, 4727, 4731, 4755)
+    // 4728 = member added to domain local group
+    // 4732 = member added to global security group
+    // 4756 = member added to universal security group
+    // 4727/4731/4755 = corresponding group deletions
+    | where SubjectUserName has "{{actor_upn}}"
+        or TargetUserName has "{{target_user}}"
+        or TargetUserName has "{{target_group}}"
+    // Uncomment to filter by device:
+    // | where Computer has "{{device_name}}"
+    | project
+        SourceTable = "SecurityEvent",
+        TimeGenerated,
+        Activity = strcat("EventID ", tostring(EventID), " - ", Activity),
+        ActorUPN = SubjectUserName,
+        ActorIP = IpAddress,
+        TargetAccount = MemberName,
+        TargetGroup = TargetUserName,
+        Result = tostring(EventID),
+        Detail = EventData
+),
+(
+    SecurityAlert
+    | where TimeGenerated > ago({{lookback}})
+    | where Entities has "{{actor_upn}}"
+        or Entities has "{{target_user}}"
+    | project
+        SourceTable = "SecurityAlert",
+        TimeGenerated,
+        Activity = AlertName,
+        ActorUPN = "",
+        ActorIP = "",
+        TargetAccount = "",
+        TargetGroup = "",
+        Result = AlertSeverity,
+        Detail = Description
+)
+| sort by TimeGenerated desc
+
+
+// ============================================================================
+// STAGE 2 — Actor legitimacy check
+// ============================================================================
+// Parameters: actor_upn, lookback
+// Run: ALWAYS — checks whether the actor's sign-in context is legitimate.
+// Returns: sign-in activity with risk signals + identity summary for the actor.
+
+union
+(
+    SigninLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where UserPrincipalName =~ "{{actor_upn}}"
+    | extend SignInType = "Interactive"
+    | project
+        SourceTable = "SigninLogs",
+        TimeGenerated,
+        SignInType,
+        IPAddress,
+        Location,
+        AppDisplayName,
+        RiskLevelDuringSignIn,
+        RiskLevelAggregated,
+        RiskDetail,
+        DeviceDetail = tostring(DeviceDetail),
+        UserAgent,
+        Department = "",
+        JobTitle = ""
+),
+(
+    AADNonInteractiveUserSignInLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where UserPrincipalName =~ "{{actor_upn}}"
+    | extend SignInType = "NonInteractive"
+    | project
+        SourceTable = "AADNonInteractive",
+        TimeGenerated,
+        SignInType,
+        IPAddress,
+        Location,
+        AppDisplayName,
+        RiskLevelDuringSignIn,
+        RiskLevelAggregated,
+        RiskDetail,
+        DeviceDetail = tostring(DeviceDetail),
+        UserAgent,
+        Department = "",
+        JobTitle = ""
+),
+(
+    IdentityInfo
+    | where AccountUPN =~ "{{actor_upn}}"
+    | summarize arg_max(TimeGenerated, *) by AccountUPN
+    | project
+        SourceTable = "IdentityInfo",
+        TimeGenerated,
+        SignInType = "Identity",
+        IPAddress = "",
+        Location = "",
+        AppDisplayName = "",
+        RiskLevelDuringSignIn = "",
+        RiskLevelAggregated = "",
+        RiskDetail = "",
+        DeviceDetail = "",
+        UserAgent = "",
+        Department,
+        JobTitle
+)
+| sort by TimeGenerated desc
+
+
+// ============================================================================
+// STAGE 3 — Post-escalation activity (target account)
+// ============================================================================
+// Parameters: target_user, lookback
+// Run: CONDITIONAL — when escalation looks suspicious or actor legitimacy is
+// questionable. Tracks what the target account did after gaining privileges.
+// Returns: admin portal sign-ins, cascading audit changes, Office activity.
+
+union
+(
+    SigninLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where UserPrincipalName =~ "{{target_user}}"
+    | where AppDisplayName in (
+        "Azure Portal",
+        "Microsoft Azure Management",
+        "Microsoft 365 admin center",
+        "Exchange Admin Center",
+        "Microsoft Entra admin center",
+        "Microsoft Graph",
+        "Microsoft Graph PowerShell",
+        "Azure Active Directory PowerShell",
+        "Microsoft Teams Admin Center",
+        "SharePoint Online Management Shell"
+    )
+    | project
+        SourceTable = "SigninLogs",
+        TimeGenerated,
+        Activity = strcat("Sign-in to ", AppDisplayName),
+        TargetAccount = UserPrincipalName,
+        IPAddress,
+        AppOrResource = AppDisplayName,
+        Detail = tostring(DeviceDetail)
+),
+(
+    AuditLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where InitiatedBy has "{{target_user}}"
+    | where OperationName in (
+        // Cascading privilege changes
+        "Add member to role",
+        "Add member to group",
+        "Add eligible member to role",
+        // App and OAuth abuse
+        "Add application",
+        "Add service principal",
+        "Add service principal credentials",
+        "Consent to application",
+        "Add app role assignment to service principal",
+        // Credential changes
+        "Reset password (by admin)",
+        "Update user",
+        "Add owner to application",
+        "Add owner to service principal",
+        // MFA manipulation
+        "User registered security info",
+        "User deleted security info",
+        "Admin registered security info"
+    )
+    | extend TargetAccount = tostring(parse_json(tostring(InitiatedBy.user)).userPrincipalName)
+    | project
+        SourceTable = "AuditLogs",
+        TimeGenerated,
+        Activity = OperationName,
+        TargetAccount,
+        IPAddress = tostring(parse_json(tostring(InitiatedBy.user)).ipAddress),
+        AppOrResource = tostring(TargetResources[0].displayName),
+        Detail = tostring(TargetResources)
+),
+(
+    OfficeActivity
+    | where TimeGenerated > ago({{lookback}})
+    | where UserId =~ "{{target_user}}"
+    | where Operation in (
+        // Mailbox rule manipulation
+        "New-InboxRule",
+        "Set-InboxRule",
+        "Enable-InboxRule",
+        "New-TransportRule",
+        "Set-TransportRule",
+        "UpdateInboxRules",
+        // eDiscovery / compliance search
+        "New-ComplianceSearch",
+        "Start-ComplianceSearch",
+        "New-ComplianceSearchAction",
+        // SharePoint admin actions
+        "SiteCollectionAdminAdded",
+        "SharingPolicyChanged",
+        "SiteCollectionCreated"
+    )
+    | project
+        SourceTable = "OfficeActivity",
+        TimeGenerated,
+        Activity = Operation,
+        TargetAccount = UserId,
+        IPAddress = ClientIP,
+        AppOrResource = OfficeWorkload,
+        Detail = tostring(Parameters)
+)
+| sort by TimeGenerated desc

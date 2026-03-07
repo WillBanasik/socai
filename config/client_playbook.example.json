@@ -1,0 +1,79 @@
+{
+  "client_name": "example_client",
+  "response": [
+    {
+      "priority": "none",
+      "alert_name": "none",
+      "action_to_be_taken": "Default response process notes for the analyst.",
+      "contact_process": "Describe how to reach the client (IM, phone, email, etc.)."
+    },
+    {
+      "priority": "p1",
+      "alert_name": "Ransomware Detected",
+      "action_to_be_taken": "Immediate host isolation + notify IR lead.",
+      "contact_process": "Phone call to CISO — see contacts."
+    }
+  ],
+  "crown_jewels": {
+    "hosts": [
+      "DC01.corp.example.com",
+      "SQL-PROD-01"
+    ],
+    "default_action": "Escalate to P1 immediately. Do not auto-isolate without client approval."
+  },
+  "contacts": [
+    {
+      "name": "Jane Smith",
+      "role": "CISO",
+      "phone": "+44 7700 900000",
+      "email": "jane.smith@example.com",
+      "hours": "24/7"
+    },
+    {
+      "name": "IT Ops Team",
+      "role": "Infrastructure",
+      "email": "it-ops@example.com",
+      "hours": "Business hours only"
+    }
+  ],
+  "escalation_matrix": [
+    {
+      "priority": "p1",
+      "process_blocked": "none",
+      "asset_type": "server/OT",
+      "actions": [
+        "Notify client over instant messaging.",
+        "Phonecall to client contacts (if no immediate response on IM).",
+        "Host isolation & remedial actions allowed."
+      ]
+    },
+    {
+      "priority": "p1",
+      "process_blocked": "none",
+      "asset_type": "workstation",
+      "actions": [
+        "Notify client over instant messaging.",
+        "Phonecall to client contacts (if no immediate response on IM).",
+        "Host isolation & remedial actions allowed."
+      ]
+    },
+    {
+      "priority": "p2",
+      "process_blocked": "false",
+      "asset_type": "workstation",
+      "actions": [
+        "Notify client over instant messaging.",
+        "Host isolation allowed with approval."
+      ]
+    },
+    {
+      "priority": "p3",
+      "process_blocked": "false",
+      "asset_type": "workstation",
+      "actions": [
+        "Notify client over instant messaging.",
+        "Phonecall not necessary."
+      ]
+    }
+  ]
+}

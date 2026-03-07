@@ -1,0 +1,34 @@
+{
+  "185.220.101.45": {
+    "type": "ipv4",
+    "verdict": "malicious",
+    "confidence": "HIGH",
+    "first_seen": "2026-02-15T10:00:00Z",
+    "last_seen": "2026-03-01T14:00:00Z",
+    "cases": ["C050", "C051", "C052"]
+  },
+  "evil-phish.example.com": {
+    "type": "domain",
+    "verdict": "malicious",
+    "confidence": "MEDIUM",
+    "first_seen": "2026-02-20T08:00:00Z",
+    "last_seen": "2026-03-01T14:00:00Z",
+    "cases": ["C050", "C051"]
+  },
+  "91.199.212.52": {
+    "type": "ipv4",
+    "verdict": "suspicious",
+    "confidence": "LOW",
+    "first_seen": "2026-02-28T12:00:00Z",
+    "last_seen": "2026-02-28T12:00:00Z",
+    "cases": ["C053"]
+  },
+  "clean-domain.example.com": {
+    "type": "domain",
+    "verdict": "clean",
+    "confidence": "HIGH",
+    "first_seen": "2026-01-01T00:00:00Z",
+    "last_seen": "2026-03-01T00:00:00Z",
+    "cases": ["C050"]
+  }
+}

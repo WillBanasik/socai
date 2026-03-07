@@ -1,0 +1,35 @@
+[
+  {
+    "timestamp": "2026-02-17T09:11:55Z",
+    "EventID": "4688",
+    "SubjectUserName": "jsmith",
+    "NewProcessName": "C:\\Users\\jsmith\\Downloads\\invoice_feb.exe",
+    "CommandLine": "C:\\Users\\jsmith\\Downloads\\invoice_feb.exe --silent",
+    "ParentProcessName": "C:\\Windows\\explorer.exe"
+  },
+  {
+    "timestamp": "2026-02-17T09:12:00Z",
+    "EventID": "4625",
+    "SubjectUserName": "jsmith",
+    "NewProcessName": "C:\\Windows\\System32\\cmd.exe",
+    "CommandLine": "cmd.exe /c powershell -enc JABjAGwAaQBlAG4AdA==",
+    "ParentProcessName": "C:\\Users\\jsmith\\Downloads\\invoice_feb.exe"
+  },
+  {
+    "timestamp": "2026-02-17T09:12:03Z",
+    "EventID": "4688",
+    "SubjectUserName": "jsmith",
+    "NewProcessName": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "CommandLine": "powershell -enc JABjAGwAaQBlAG4AdA==",
+    "ParentProcessName": "C:\\Windows\\System32\\cmd.exe"
+  },
+  {
+    "timestamp": "2026-02-17T09:18:00Z",
+    "EventID": "5156",
+    "SubjectUserName": "SYSTEM",
+    "src_ip": "10.0.1.55",
+    "dst_ip": "91.199.212.52",
+    "DestPort": "8080",
+    "Application": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+  }
+]

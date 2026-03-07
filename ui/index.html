@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>socai — Login</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .card { background: #1e293b; padding: 2rem; border-radius: 12px; width: 100%; max-width: 380px; box-shadow: 0 4px 24px rgba(0,0,0,.4); }
+  h1 { font-size: 1.5rem; margin-bottom: 1.5rem; text-align: center; }
+  h1 span { color: #38bdf8; }
+  label { display: block; font-size: 0.85rem; margin-bottom: 0.25rem; color: #94a3b8; }
+  input { width: 100%; padding: 0.6rem 0.75rem; border: 1px solid #334155; border-radius: 6px; background: #0f172a; color: #e2e8f0; font-size: 0.95rem; margin-bottom: 1rem; }
+  input:focus { outline: none; border-color: #38bdf8; }
+  button { width: 100%; padding: 0.7rem; border: none; border-radius: 6px; background: #2563eb; color: #fff; font-size: 1rem; cursor: pointer; }
+  button:hover { background: #1d4ed8; }
+  .error { color: #f87171; font-size: 0.85rem; margin-bottom: 1rem; display: none; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1><span>soc</span>ai</h1>
+  <div class="error" id="error"></div>
+  <form id="loginForm">
+    <label for="email">Email</label>
+    <input type="email" id="email" required autofocus>
+    <label for="password">Password</label>
+    <input type="password" id="password" required>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+<script src="/ui/app.js"></script>
+<script>
+  // If already logged in, go to chat
+  if (getToken()) window.location.href = '/ui/case.html';
+
+  document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const errEl = document.getElementById('error');
+    errEl.style.display = 'none';
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
+    try {
+      const resp = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        errEl.textContent = data.detail || 'Login failed';
+        errEl.style.display = 'block';
+        return;
+      }
+      const data = await resp.json();
+      setToken(data.access_token);
+      window.location.href = '/ui/case.html';
+    } catch (err) {
+      errEl.textContent = 'Connection error';
+      errEl.style.display = 'block';
+    }
+  });
+</script>
+</body>
+</html>
