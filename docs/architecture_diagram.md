@@ -6,7 +6,7 @@
 graph TB
     subgraph Entry["Entry Points"]
         CLI["socai.py<br/>CLI (34 commands)"]
-        WEB["FastAPI + case.html<br/>Web Chat UI"]
+        WEB["FastAPI + Svelte SPA<br/>Web Chat UI"]
         MCP["mcp_server.py<br/>Claude MCP"]
     end
 

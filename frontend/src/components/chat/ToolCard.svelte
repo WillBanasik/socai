@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ToolCall } from '../../lib/types';
+  import { getToolLabel } from '../../lib/utils/toolLabels';
   import { apiFetch } from '../../lib/api/client';
 
   let { tool }: { tool: ToolCall } = $props();
@@ -7,14 +8,26 @@
   let screenshotBlobs = $state<string[]>([]);
   let triedScreenshots = $state(false);
 
+  const label = $derived(getToolLabel(tool.name));
+
+  /** Extract a one-line summary from tool input for the header. */
+  function inputSummary(input: any): string {
+    if (!input) return '';
+    if (input.query) return input.query.length > 80 ? input.query.slice(0, 80) + '...' : input.query;
+    if (input.urls?.length) return input.urls.join(', ').slice(0, 80);
+    if (input.workspace) return `workspace: ${input.workspace}`;
+    if (input.case_id) return input.case_id;
+    if (input.title) return input.title.slice(0, 60);
+    if (input.file_path) return input.file_path.split('/').pop() || input.file_path;
+    return '';
+  }
+
   function extractCaseId(result: string | undefined): string {
     if (!result) return '';
-    // Try JSON parse first
     try {
       const data = JSON.parse(result);
       return data?.backing_case_id || data?.case_id || data?.result?.case_id || '';
     } catch {}
-    // Fallback: regex
     const m = result.match(/C\d{3,}/);
     return m ? m[0] : '';
   }
@@ -45,23 +58,25 @@
     screenshotBlobs = blobs;
   }
 
-  // Trigger screenshot loading when result becomes available
   $effect(() => {
     if (tool.result && tool.name === 'capture_urls' && !triedScreenshots) {
       loadScreenshots();
     }
   });
+
+  const summary = $derived(inputSummary(tool.input));
 </script>
 
-<div class="border border-tool/30 bg-tool-bg rounded-lg overflow-hidden text-sm my-2">
+<div class="border border-surface-600/50 bg-surface-800/50 rounded-lg overflow-hidden text-sm my-2">
   <button
-    class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-tool/10 transition-colors"
+    class="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-surface-700/50 transition-colors"
     onclick={() => expanded = !expanded}
   >
     <span class="w-1.5 h-1.5 rounded-full bg-tool flex-shrink-0"></span>
-    <span class="text-tool font-medium flex-1 truncate">{tool.name}</span>
+    <span class="text-tool font-medium flex-shrink-0">{label.agent}</span>
+    <span class="text-gray-400 truncate flex-1">{label.task}{summary ? ` — ${summary}` : ''}</span>
     <svg
-      class="w-4 h-4 text-gray-400 transition-transform {expanded ? 'rotate-180' : ''}"
+      class="w-3.5 h-3.5 text-gray-500 transition-transform flex-shrink-0 {expanded ? 'rotate-180' : ''}"
       fill="none" stroke="currentColor" viewBox="0 0 24 24"
     >
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
@@ -84,17 +99,21 @@
   {/if}
 
   {#if expanded}
-    <div class="px-3 pb-3 space-y-2 border-t border-tool/20">
+    <div class="px-3 pb-3 space-y-2 border-t border-surface-600/30">
+      <div class="mt-2 flex items-center gap-2">
+        <span class="text-[10px] font-semibold text-gray-500 uppercase">Tool</span>
+        <code class="text-[11px] text-gray-400">{tool.name}</code>
+      </div>
       {#if tool.input && Object.keys(tool.input).length > 0}
-        <div class="mt-2">
+        <div>
           <span class="text-[10px] font-semibold text-gray-500 uppercase">Input</span>
-          <pre class="mt-1 text-xs text-gray-300 bg-surface-800 rounded p-2 overflow-x-auto max-h-40 overflow-y-auto">{JSON.stringify(tool.input, null, 2)}</pre>
+          <pre class="mt-1 text-xs text-gray-400 bg-surface-900 rounded p-2 overflow-x-auto max-h-40 overflow-y-auto">{JSON.stringify(tool.input, null, 2)}</pre>
         </div>
       {/if}
       {#if tool.result}
         <div>
           <span class="text-[10px] font-semibold text-gray-500 uppercase">Result</span>
-          <pre class="mt-1 text-xs text-gray-300 bg-surface-800 rounded p-2 overflow-x-auto max-h-60 overflow-y-auto whitespace-pre-wrap">{tool.result}</pre>
+          <pre class="mt-1 text-xs text-gray-400 bg-surface-900 rounded p-2 overflow-x-auto max-h-60 overflow-y-auto whitespace-pre-wrap">{tool.result}</pre>
         </div>
       {/if}
     </div>

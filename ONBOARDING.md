@@ -136,9 +136,9 @@ application with SSE streaming for real-time chat.
 └────────────────────┬───────────────────────────────────────────────┘
                      │
 ┌────────────────────▼───────────────────────────────────────────────┐
-│  Web UI  api/chat.py + api/main.py + ui/case.html                   │
+│  Web UI  api/chat.py + api/main.py + Svelte SPA (frontend/src/)     │
 │  Full-screen LLM chat with SSE streaming, tool dispatch,            │
-│  session management, and activity feed.                             │
+│  session management, and activity feed. Built to ui-dist/.          │
 └────────────────────┬───────────────────────────────────────────────┘
                      │
 ┌────────────────────▼───────────────────────────────────────────────┐
@@ -303,11 +303,19 @@ steps.
 | `parse_input.py` | Input parsing utilities |
 | `timeline.py` | Timeline rendering for the web UI |
 
-### `ui/`
+### `frontend/src/` → `ui-dist/`
 
-| File | Purpose |
+| Path | Purpose |
 |------|---------|
-| `case.html` | Full-screen chat UI with SSE streaming, activity feed, session sidebar |
+| `frontend/src/App.svelte` | Root app with hash router |
+| `frontend/src/components/chat/` | Chat UI: ChatView, MessageList, ToolCard, ActivityFeed, WelcomeScreen |
+| `frontend/src/components/cases/` | Cases browse: CasesBrowse, CaseCard, CaseFilterBar, StatCards |
+| `frontend/src/components/detail/` | Case detail: CaseDetail, IOCPanel, VerdictPanel, FindingsPanel, KQLPanel |
+| `frontend/src/components/dashboard/` | Dashboard: DashboardView, CTIFeed, AttackHeatmap, Watchlist, IOCDecay |
+| `frontend/src/components/layout/` | AppShell, Sidebar, Topbar, StatusBar |
+| `frontend/src/lib/api/` | API client modules (auth, cases, chat, sessions, cti) |
+| `frontend/src/lib/stores/` | Svelte stores (auth, cases, chat, sessions, navigation, toasts) |
+| `ui/case.html` | Legacy raw HTML chat UI (still served at `/ui/`, superseded by Svelte SPA) |
 
 ### `tests/`
 

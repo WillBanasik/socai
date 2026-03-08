@@ -16,14 +16,14 @@ CLI (socai.py)
           ├── EnrichmentAgent        → extract_iocs + enrich
           └── ReportWriterAgent      → generate_report + index_case
 
-Web UI (api/main.py + api/chat.py + ui/*.html)
+Web UI (api/main.py + api/chat.py + Svelte SPA: frontend/src/ → ui-dist/)
     ├── Case-mode chat       → 37 tools via TOOL_DEFS (21 case-only + 16 shared)
     ├── Session-mode chat    → 45 tools via SESSION_TOOL_DEFS (29 session-only + 16 shared)
     ├── SSE streaming        → progressive token delivery
     ├── Session management   → CRUD + materialisation to cases
-    ├── Cases browse page    → filterable card grid (ui/cases.html)
-    ├── Case detail page     → read-only summary with investigation log & KQL queries (ui/case-detail.html)
-    ├── Dashboard            → Chart.js landscape visualisation (ui/dashboard.html)
+    ├── Cases browse page    → filterable card grid (CasesBrowse.svelte)
+    ├── Case detail page     → read-only summary with investigation log & KQL queries (CaseDetail.svelte)
+    ├── Dashboard            → CTI-focused threat intelligence (DashboardView.svelte)
     ├── CTI integration      → OpenCTI feed, trending, ATT&CK heatmap, watchlist, IOC decay (api/opencti.py)
     └── Case context switch  → load/save case context in sessions
 

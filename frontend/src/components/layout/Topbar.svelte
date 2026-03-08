@@ -4,20 +4,32 @@
   import { user, token } from '../../lib/stores/auth';
   import { sidebarCollapsed } from '../../lib/stores/layout';
   import { navigate } from '../../lib/router';
+  import { cleanupSessions } from '../../lib/api/sessions';
+  import { sessionList } from '../../lib/stores/sessions';
+  import { resetChat } from '../../lib/stores/chat';
 
   const contextLabel = $derived.by(() => {
-    if ($activeCaseId) return `Case ${$activeCaseId}`;
-    if ($activeSessionId) return `Session ${$activeSessionId.slice(0, 12)}...`;
+    if ($activeCaseId) return $activeCaseId;
+    if ($activeSessionId) return '';
     const names: Record<string, string> = {
       cases: 'Cases',
       dashboard: 'Threat Intelligence',
       investigate: 'New Investigation',
-      chat: 'Chat',
     };
-    return names[$route.name] || 'socai';
+    return names[$route.name] || '';
   });
 
-  function logout() {
+  const isCase = $derived(!!$activeCaseId);
+
+  async function logout() {
+    // Clean up all non-materialised sessions before logging out
+    try {
+      await cleanupSessions();
+    } catch {}
+    sessionList.set([]);
+    activeSessionId.set(null);
+    activeCaseId.set(null);
+    resetChat();
     token.set(null);
     user.set(null);
     navigate('/login');
@@ -35,7 +47,9 @@
     </svg>
   </button>
 
-  <span class="text-sm font-medium text-gray-200 truncate">{contextLabel}</span>
+  {#if contextLabel}
+    <span class="text-sm font-medium truncate {isCase ? 'text-accent-400' : 'text-gray-400'}">{contextLabel}</span>
+  {/if}
 
   <div class="flex-1"></div>
 

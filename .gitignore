@@ -22,6 +22,7 @@ config/users.json
 
 # Sessions
 sessions/
+browser_sessions/
 
 # Playwright
 .playwright/

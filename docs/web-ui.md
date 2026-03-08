@@ -1,6 +1,6 @@
 # Web UI — LLM Chat Interface
 
-The case investigation page (`ui/case.html`) is a **full-screen LLM chat interface**. Analysts type natural language and Chief (the LLM agent) interprets intent and dispatches tools via Claude's `tool_use` API.
+The web UI is a **Svelte 5 SPA** (`frontend/src/` → built to `ui-dist/`). Analysts type natural language and Chief (the LLM agent) interprets intent and dispatches tools via Claude's `tool_use` API.
 
 ## Backend: `api/chat.py`
 
@@ -66,11 +66,12 @@ Watchlist stored at `registry/cti_watchlist.json`.
 
 ### Session Management Endpoints
 
-- `POST /api/sessions` — create a new session
+- `POST /api/sessions` — create a new session (called lazily on first real message, not on login)
 - `GET /api/sessions` — list sessions (`?all=true` includes expired/materialised)
 - `PATCH /api/sessions/{id}` — rename a session
 - `DELETE /api/sessions/{id}` — delete a session
 - `DELETE /api/sessions` — delete all sessions for the authenticated user
+- `POST /api/sessions/cleanup` — delete all non-materialised sessions for the user (used on logout)
 
 ### Other Routes
 
@@ -78,94 +79,102 @@ Watchlist stored at `registry/cti_watchlist.json`.
 
 Action routes (`POST /api/cases/{id}/actions/{action}`) are **routed through Chief** — each action + parameters is translated into a natural language instruction by `_action_to_message()` and dispatched via `chat.chat()`. Exception: `action=auto` runs `ChiefAgent.run()` in a background thread via `JobManager`.
 
-## UI Pages
+## UI Pages (Svelte SPA)
 
-### Chat (`ui/case.html`)
+The frontend is a Svelte 5 SPA built with Vite and Tailwind CSS 4. Source lives in `frontend/src/`, built output in `ui-dist/`. Hash-based routing (`#/dashboard`, `#/cases`, `#/session/{id}`, `#/chat/{caseId}`, `#/case/{caseId}`).
 
-- Full-screen chat layout with collapsible left sidebar (case info, IOCs, verdicts, file upload)
-- User messages right-aligned (blue), assistant messages left-aligned (markdown-rendered)
-- Tool calls shown as collapsible green "action cards" inline between messages
-- **Streaming response**: tokens appear incrementally as they arrive via SSE
-- **Activity feed**: real-time tool execution indicators below the chat input — pulsing amber while running, green tick when complete
-- **Case context banner**: when `load_case_context` is used in session mode, a green banner shows the loaded case ID, title, and severity; dismissible via "Clear context"
-- Report overlay accessible from topbar link
-- Enter to send, Shift+Enter for newline, file drag-and-drop in sidebar
+### Chat (`ChatView.svelte`)
 
-### Cases Browse (`ui/cases.html`)
+- Full-screen chat layout with persistent left sidebar (sessions, recent cases)
+- User messages right-aligned, assistant messages left-aligned (markdown-rendered via `MarkdownBlock.svelte`)
+- Tool calls shown as `ToolCard.svelte` cards inline between messages (expandable for raw input/result)
+- **Streaming response**: tokens appear incrementally as they arrive via SSE (`StreamingText.svelte`)
+- **Activity feed**: `ActivityFeed.svelte` — same card style as ToolCard (agent name + task description + input summary), with status dot (amber pulsing = running, green = done, red = error). Transitions to ToolCard in the final message.
+- **Case context banner**: `MaterialiseBanner.svelte` — when `load_case_context` is used in session mode, a banner shows the loaded case ID, title, and severity
+- Enter to send, Shift+Enter for newline, file drag-and-drop (`FileUploadPill.svelte`)
+- **Welcome screen**: `WelcomeScreen.svelte` — minimal branding + hint to use `/help` and `/prompts`, shown before first message
+- **Slash commands**: client-side interception of `/help`, `/clear`, `/new`, `/context`, `/uploads`, `/status`, `/model`, `/prompts` — never sent to the API
+
+### Cases Browse (`CasesBrowse.svelte`)
 
 - Standalone read-only browse page for reviewing all past cases
 - **Case overview section** at the top (above filters):
-  - **Stat cards row**: total cases (with open/closed sub-text), open high/critical, malicious IOCs, active clusters
-  - **Charts row**: severity donut (Chart.js doughnut) + cases over time (Chart.js bar)
+  - **Stat cards row** (`StatCards.svelte`): total cases (with open/closed sub-text), open high/critical, malicious IOCs, active clusters
+  - **Charts row**: severity donut (`SeverityDonut.svelte`) + cases over time (`CasesTimeline.svelte`)
   - Data sourced from `GET /api/landscape`; falls back to computing basic stats from browse data if landscape fails
-- Responsive card grid with severity, status, and disposition badges
-- Filter bar: severity dropdown, status dropdown, disposition dropdown, free-text search (client-side filtering)
+- Responsive card grid (`CaseCard.svelte`) with severity, status, and disposition badges
+- Filter bar (`CaseFilterBar.svelte`): severity dropdown, status dropdown, disposition dropdown, free-text search (client-side filtering)
 - Each card shows: case ID, title, badges, relative timestamp, IOC count summary, link count, external refs
 - Click a card to open the case detail page
 
-### Case Detail (`ui/case-detail.html`)
+### Case Detail (`CaseDetail.svelte`)
 
 - Read-only summary view for a single case, linked from the cases browse page
 - **Case header**: case ID, title, severity/status/disposition badges, analyst, created date
-- **IOCs panel**: grouped by type (IPs, domains, URLs, hashes, etc.), showing up to 10 per type with expandable overflow
-- **Verdicts panel**: high priority (red), needs review (amber), clean (green) sections
-- **Findings panel**: typed findings with summary and detail text
-- **KQL Queries panel**: all queries from the investigation — tagged as "executed" (green, from `run_kql` tool calls with workspace) or "suggested" (blue, from ```kql code fences in assistant responses). Deduplicated.
-- **Investigation Log panel**: standardised chronological timeline of investigation activity. Raw analyst text input is excluded — replaced by deterministic "action" entries derived from tool names/inputs (e.g. "Enriched IOCs against threat intelligence providers", "Executed KQL query (workspace: PER)"). Assistant analysis text is kept as-is (already standardised LLM-generated language). Entries are typed as `action` (blue badge) or `analysis` (purple badge).
-- **Report panel**: markdown-rendered report excerpt (first 3000 chars, via marked.js)
-- "Open in Chat" button navigates to `case.html?case={id}` for interactive follow-up
+- **IOCs panel** (`IOCPanel.svelte`): grouped by type (IPs, domains, URLs, hashes, etc.), showing up to 10 per type with expandable overflow
+- **Verdicts panel** (`VerdictPanel.svelte`): high priority (red), needs review (amber), clean (green) sections
+- **Findings panel** (`FindingsPanel.svelte`): typed findings with summary and detail text
+- **KQL Queries panel** (`KQLPanel.svelte`): all queries from the investigation — tagged as "executed" (green, from `run_kql` tool calls with workspace) or "suggested" (blue, from ```kql code fences in assistant responses). Deduplicated.
+- **Investigation Log panel** (`InvestigationLog.svelte`): standardised chronological timeline of investigation activity. Raw analyst text input is excluded — replaced by deterministic "action" entries derived from tool names/inputs (e.g. "Enriched IOCs against threat intelligence providers", "Executed KQL query (workspace: PER)"). Assistant analysis text is kept as-is (already standardised LLM-generated language). Entries are typed as `action` (blue badge) or `analysis` (purple badge).
+- **Report panel** (`ReportPanel.svelte`): markdown-rendered report excerpt (first 3000 chars)
+- "Open in Chat" button navigates to `#/chat/{caseId}` for interactive follow-up
 
 ### Navigation
 
-Dashboard and Cases pages share a common nav bar with: **Dashboard**, **Cases**, **Chat** (primary button), user email, and **Logout**. The Chat button links to `case.html`, which restores the last active session/case via `localStorage` (see Session Persistence above). The `investigate.html` form page is accessible directly but not in the nav bar.
+All pages share the `AppShell.svelte` layout with a persistent `Sidebar.svelte` (left) and `Topbar.svelte` (top). The sidebar shows: **Dashboard**, **Cases**, **Investigate** nav links, a **Sessions** list with per-session delete buttons, and a **Recent Cases** list (sorted by creation time). `CommandPalette.svelte` provides Ctrl+K quick navigation.
 
-### Dashboard (`ui/dashboard.html`)
+### Dashboard (`DashboardView.svelte`)
 
 CTI-focused threat intelligence dashboard. Case-level summaries (stat cards, charts) now live on the cases page.
 
 - **Two-column layout** — Internal Intelligence (left) vs External Intelligence (right):
-  - **Internal Intelligence** (from `GET /api/landscape`):
+  - **Internal Intelligence** (`InternalIntel.svelte`, from `GET /api/landscape`):
     - **Case Clusters panel**: linked case groups from `link_analysis.clusters`
     - **High-Risk Cross-Case IOCs table**: IOCs from `ioc_intelligence.high_risk_cross_case`
   - **External Intelligence** (from `/api/cti/*` endpoints):
-    - **CTI Feed panel**: recent OpenCTI reports with linked threat actors (red tags), malware (amber), campaigns (blue), sectors (green). Filterable by time range and sector.
-    - **Trending Indicators panel**: top indicators by score with colour-coded badges (red >= 70, amber >= 40, green < 40)
-    - **MITRE ATT&CK Heatmap**: technique cells coloured by relationship count. Tactic-grouped columns when kill chain phases are populated; flat top-N grid otherwise.
-    - **Threat Actor Watchlist**: analysts can pin actors to watch. Shows recent reports from OpenCTI per actor. Add/remove via input field. Stored in `registry/cti_watchlist.json`.
-    - **IOC Decay panel**: summary stats (active/expired/revoked/not in CTI) for all open case IOCs checked against OpenCTI indicator validity. Per-IOC list with status dot indicators.
-- **IOC Cross-Reference panel** (full-width, below the split): shows IOCs that appear in both internal cases and OpenCTI. Sourced from `GET /api/cti/ioc-xref`. Table columns: IOC value, type, internal cases, OpenCTI score, OpenCTI verdict. Only shows matched IOCs (those with an `opencti_score` or `opencti_verdict`).
+    - **CTI Feed panel** (`CTIFeed.svelte`): recent OpenCTI reports with linked threat actors (red tags), malware (amber), campaigns (blue), sectors (green). Filterable by time range and sector.
+    - **Trending Indicators panel** (`TrendingIndicators.svelte`): top indicators by score with colour-coded badges (red >= 70, amber >= 40, green < 40)
+    - **MITRE ATT&CK Heatmap** (`AttackHeatmap.svelte`): technique cells coloured by relationship count. Tactic-grouped columns when kill chain phases are populated; flat top-N grid otherwise.
+    - **Threat Actor Watchlist** (`Watchlist.svelte`): analysts can pin actors to watch. Shows recent reports from OpenCTI per actor. Add/remove via input field. Stored in `registry/cti_watchlist.json`.
+    - **IOC Decay panel** (`IOCDecay.svelte`): summary stats (active/expired/revoked/not in CTI) for all open case IOCs checked against OpenCTI indicator validity. Per-IOC list with status dot indicators.
+- **IOC Cross-Reference panel** (`IOCXRef.svelte`, full-width, below the split): shows IOCs that appear in both internal cases and OpenCTI. Sourced from `GET /api/cti/ioc-xref`. Table columns: IOC value, type, internal cases, OpenCTI score, OpenCTI verdict. Only shows matched IOCs (those with an `opencti_score` or `opencti_verdict`).
 
-### Session Persistence
+### Investigate (`InvestigateView.svelte`)
 
-The chat page persists the active session/case context in `localStorage` so navigating away (to Dashboard, Cases, etc.) and back resumes where you left off. Key behaviours:
+Form-based investigation launcher with file drop zone (`FileDropZone.svelte`) and IOC preview (`IOCPreview.svelte`). Accessible from the sidebar nav.
 
-- **Context key**: `socai_active_context_{email}` — scoped per user to prevent cross-user leaks on shared workstations
-- **Saved on**: session creation (`ensureSession`), session resume, case switch, materialisation
-- **Cleared on**: explicit "new session" (`/new` command or "new" button)
-- **Restore flow** (on page load with no URL params):
-  1. Read saved context from `localStorage`
-  2. If `caseId` → try loading case history; if stale/404 → clear and fall through to welcome
-  3. If `sessionId` → fetch session metadata; if materialised → switch to case mode; if active → resume session; if 404 → clear and fall through
-  4. Fall-through → show welcome screen (no backend session created)
-- **Lazy session creation**: navigating to the chat page without a saved context shows the welcome screen without creating a backend session. A session is only created when the user sends their first message (`ensureSession()`). This prevents accumulation of empty sessions.
+### Session Lifecycle
 
-Shared helpers (`getActiveContext`, `setActiveContext`, `clearActiveContext`) are defined in `ui/app.js`.
+Sessions are lazily created — no session exists until the analyst sends their first real message (slash commands are handled client-side and don't create sessions). Key behaviours:
 
-### Session Sidebar
+- **No session on login** — the welcome screen shows immediately with no backend session
+- **Lazy creation** — `POST /api/sessions` is called in `ChatView.handleSend()` only when there is no active session or case
+- **Materialisation** — when the AI creates a case, the session status becomes `materialised` and the UI switches to case mode (`#/chat/{caseId}`). Materialised sessions are preserved permanently.
+- **Logout cleanup** — `Topbar.logout()` calls `POST /api/sessions/cleanup` which deletes all non-materialised sessions. Materialised sessions are preserved as they are linked to cases.
+- **Routing**: `#/session/{sessionId}` for sessions, `#/chat/{caseId}` for cases — bookmarkable, shareable
+- **Stores**: `activeSessionId` and `activeCaseId` in `lib/stores/navigation.ts`
+- **Session list**: `sessionList` store populated on mount via `listSessions()` API call
 
-A slide-out sidebar (hamburger menu in topbar) provides session management:
+### Session Sidebar (`Sidebar.svelte`)
 
-- **Session list** with search/filter
-- **Resume** — click to reopen a previous session
-- **Rename** — edit session title inline
-- **Delete** — remove individual sessions (action buttons always visible, brighten on hover)
-- **Clear all** — bulk-delete all sessions for the current user
-- Sessions are colour-coded by status: active, materialised, expired
+The persistent left sidebar provides session management:
 
-**Session naming:** Each session displays a smart title based on its state:
-- **Custom title** — if the analyst has renamed the session via the pencil icon
-- **Case ID + title** — e.g. "C042 — Suspicious phishing email" — if a backing case exists (case title resolved from `case_meta.json` via the `/api/sessions` endpoint)
-- ***new investigation*** — italicised placeholder for fresh sessions with no case yet
+- **Session list** with per-session delete (×) buttons — always visible, red on hover
+- **Resume** — click a session to navigate to `#/session/{id}`
+- **Delete** — remove individual sessions via × button (calls `DELETE /api/sessions/{id}`)
+- **Clear all** — bulk-delete all sessions for the current user (appears when > 1 session)
+- **`/new` command** — creates a fresh session (previous session stays in sidebar)
+
+**Session naming:** Each session displays its title based on state:
+- **"new investigation"** (italic) — default for sessions that haven't been titled yet
+- **Custom title** — if the session has been renamed or materialised (e.g. "C343 — phishing investigation")
+- **Relative timestamp** — e.g. "39m ago", "1h ago" via `relativeTime()` utility
+
+### Topbar (`Topbar.svelte`)
+
+- **Context label**: blank while in session mode, shows case ID (purple accent) when in case mode, shows page name for other views
+- **Sidebar toggle**: hamburger menu button (Ctrl+B)
+- **Logout**: cleans up non-materialised sessions before clearing auth token
 
 ## Available Tools
 

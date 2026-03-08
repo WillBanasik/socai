@@ -39,7 +39,7 @@ One incident may contain multiple investigations, run sequentially or in paralle
 | Landscape clusters | `tools/case_landscape.py` | Cross-case cluster view for dashboard |
 | Timeline reconstruction | `tools/timeline_reconstruct.py` | Per-case forensic timeline; extend to multi-case |
 | Case context switching | `api/chat.py` `load_case_context` / `save_to_case` | Work on any case from a session |
-| Dashboard clusters panel | `ui/dashboard.html` | Already renders linked case groups |
+| Dashboard clusters panel | `frontend/src/components/dashboard/` | Already renders linked case groups |
 
 ### Implementation plan (when SOAR/Zoho integration begins)
 

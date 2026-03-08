@@ -30,6 +30,10 @@ export async function deleteAllSessions(): Promise<void> {
   await apiFetch('/api/sessions', { method: 'DELETE' });
 }
 
+export async function cleanupSessions(): Promise<void> {
+  await apiFetch('/api/sessions/cleanup', { method: 'POST' });
+}
+
 export async function uploadToSession(sessionId: string, file: File): Promise<any> {
   const fd = new FormData();
   fd.append('file', file);

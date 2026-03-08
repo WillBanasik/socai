@@ -67,7 +67,7 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **CLI:** `socai.py` — entrypoint for all commands
 - **Agents** (`agents/`) — thin orchestration classes inheriting `BaseAgent`; call tool functions, never write files directly
 - **Tools** (`tools/`) — stateless functions; accept `case_id`, write via `write_artefact()`/`save_json()`, return manifest dicts
-- **Web UI:** `api/chat.py` + `api/main.py` + `ui/case.html` — streaming SSE chat with activity feed and session management (see `docs/web-ui.md`)
+- **Web UI:** `api/chat.py` + `api/main.py` + Svelte SPA (`frontend/src/` → `ui-dist/`) — streaming SSE chat with activity feed and session management (see `docs/web-ui.md`)
 - **Sessions** (`api/sessions.py`) — pre-case investigation conversations; materialise into full cases
 - **Batch** (`tools/batch.py`) — bulk LLM processing via Claude Messages Batch API
 - **Threat Articles** (`tools/threat_articles.py`) — ET/EV article discovery, clustering, and generation for monthly reporting; dedup via local index + Confluence

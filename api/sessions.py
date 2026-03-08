@@ -123,6 +123,19 @@ def delete_all_sessions(user_email: str) -> int:
     return count
 
 
+def cleanup_user_sessions(user_email: str) -> int:
+    """Delete all non-materialised sessions for a user (logout cleanup).
+    Materialised sessions are preserved as they are linked to cases.
+    Returns count deleted."""
+    all_sessions = list_sessions(user_email, include_all=True)
+    count = 0
+    for s in all_sessions:
+        if s.get("status") != "materialised":
+            if delete_session(s["session_id"]):
+                count += 1
+    return count
+
+
 def delete_session(session_id: str) -> bool:
     """Delete a session and all its artefacts. Returns True if deleted."""
     sdir = SESSIONS_DIR / session_id
@@ -325,6 +338,10 @@ def materialise(session_id: str, case_id: str, title: str, severity: str,
         meta["status"] = "materialised"
         meta["case_id"] = case_id
         meta["materialised_at"] = datetime.now(timezone.utc).isoformat()
+        # Auto-title with case ID + brief description
+        if not meta.get("title"):
+            short = (title[:60].rsplit(" ", 1)[0]) if len(title) > 60 else title
+            meta["title"] = f"{case_id} — {short}" if short else case_id
         _save_json(sdir / "session_meta.json", meta)
 
     # 9. Set disposition on case meta if provided
@@ -348,6 +365,39 @@ def materialise(session_id: str, case_id: str, title: str, severity: str,
 # ---------------------------------------------------------------------------
 # Cleanup — expire old sessions
 # ---------------------------------------------------------------------------
+
+def cleanup_empty(*, user_email: str | None = None) -> int:
+    """Delete active sessions with no chat history and no uploads.
+    If *user_email* is provided, only clean that user's sessions.
+    Returns count removed."""
+    if not SESSIONS_DIR.exists():
+        return 0
+    removed = 0
+    for sdir in SESSIONS_DIR.iterdir():
+        if not sdir.is_dir():
+            continue
+        meta_path = sdir / "session_meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = _load_json(meta_path)
+            if not meta or meta.get("status") != "active":
+                continue
+            if user_email and meta.get("user_email", "").lower() != user_email.lower():
+                continue
+            history = _load_json(sdir / "history.json") if (sdir / "history.json").exists() else []
+            if history:
+                continue
+            uploads_dir = sdir / "uploads"
+            has_uploads = uploads_dir.exists() and any(uploads_dir.iterdir())
+            if has_uploads:
+                continue
+            shutil.rmtree(str(sdir), ignore_errors=True)
+            removed += 1
+        except Exception:
+            continue
+    return removed
+
 
 def cleanup_expired() -> int:
     """Delete expired sessions. Returns count of sessions removed."""

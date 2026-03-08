@@ -54,15 +54,24 @@ job_manager: JobManager | None = None
 async def lifespan(app: FastAPI):
     global job_manager
     job_manager = JobManager(max_workers=2)
-    # Clean up expired sessions on startup
+    # Clean up expired and empty sessions on startup
     try:
-        removed = sessions.cleanup_expired()
-        if removed:
-            import logging
-            logging.getLogger("socai").info(f"Cleaned up {removed} expired session(s)")
+        import logging
+        _log = logging.getLogger("socai")
+        removed_expired = sessions.cleanup_expired()
+        removed_empty = sessions.cleanup_empty()
+        if removed_expired:
+            _log.info(f"Cleaned up {removed_expired} expired session(s)")
+        if removed_empty:
+            _log.info(f"Cleaned up {removed_empty} empty session(s)")
     except Exception:
         pass
     yield
+    # Clean up empty sessions on shutdown
+    try:
+        sessions.cleanup_empty()
+    except Exception:
+        pass
     job_manager.shutdown()
 
 
@@ -134,6 +143,11 @@ async def login(req: LoginRequest):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     permissions = _resolve_permissions(user)
     token = create_access_token(req.email, user["role"], permissions)
+    # Clean up empty sessions for this user on login
+    try:
+        sessions.cleanup_empty(user_email=req.email)
+    except Exception:
+        pass
     return TokenResponse(access_token=token)
 
 
@@ -746,6 +760,14 @@ async def delete_all_sessions(user: Annotated[dict, _inv_submit]):
     return {"deleted": count}
 
 
+@app.post("/api/sessions/cleanup")
+async def cleanup_user_sessions(user: Annotated[dict, _inv_submit]):
+    """Delete all non-materialised sessions (logout cleanup).
+    Materialised sessions are preserved as they are linked to cases."""
+    count = sessions.cleanup_user_sessions(user["sub"])
+    return {"deleted": count}
+
+
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str, user: Annotated[dict, _inv_submit]):
     """Delete a session and all its artefacts."""
@@ -923,7 +945,7 @@ async def browse_investigations(
             title=info.get("title", meta.get("title", "")),
             severity=case_severity,
             status=case_status,
-            created=info.get("created", meta.get("created", "")),
+            created=info.get("created", meta.get("created_at", "")),
             disposition=case_disposition,
             ioc_totals=ioc_totals,
             link_count=link_count,
@@ -1355,7 +1377,7 @@ async def list_investigations(user: Annotated[dict, _inv_read]):
             title=info.get("title", meta.get("title", "")),
             severity=info.get("severity", meta.get("severity", "")),
             status=meta.get("status", info.get("status", "")),
-            created=info.get("created", meta.get("created", "")),
+            created=info.get("created", meta.get("created_at", "")),
         ))
     return result
 

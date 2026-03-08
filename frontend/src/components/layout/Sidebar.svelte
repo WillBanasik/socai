@@ -3,7 +3,7 @@
   import { sessionList } from '../../lib/stores/sessions';
   import { activeSessionId, activeCaseId } from '../../lib/stores/navigation';
   import { allCases } from '../../lib/stores/cases';
-  import { createSession, listSessions, deleteSession, deleteAllSessions } from '../../lib/api/sessions';
+  import { listSessions, deleteSession, deleteAllSessions } from '../../lib/api/sessions';
   import { browseCases } from '../../lib/api/cases';
   import { addToast } from '../../lib/stores/toasts';
   import { resetChat } from '../../lib/stores/chat';
@@ -17,14 +17,11 @@
     { label: 'Investigate', hash: '#/investigate', icon: 'I' },
   ];
 
-  async function newSession() {
-    try {
-      const session = await createSession();
-      sessionList.update((s) => [session, ...s]);
-      navigate(`/session/${session.session_id}`);
-    } catch (e: any) {
-      addToast('error', `Failed to create session: ${e.message}`);
-    }
+  function newInvestigation() {
+    resetChat();
+    activeSessionId.set(null);
+    activeCaseId.set(null);
+    navigate('/');
   }
 
   async function killSession(e: MouseEvent, sessionId: string) {
@@ -69,13 +66,15 @@
 
   onMount(loadSidebar);
 
-  const recentCases = $derived($allCases.slice(0, 8));
+  const recentCases = $derived(
+    [...$allCases].sort((a, b) => (b.created || '').localeCompare(a.created || '')).slice(0, 8)
+  );
 </script>
 
 <nav class="h-full flex flex-col bg-surface-900 overflow-hidden">
   <!-- Brand -->
-  <div class="px-4 py-3 border-b border-surface-700">
-    <a href="#/" class="text-lg font-bold text-accent-400 tracking-tight">socai</a>
+  <div class="px-4 py-3 border-b border-surface-700 text-center">
+    <a href="#/" class="text-lg font-bold tracking-tight"><span class="text-accent-400">soc</span><span class="text-white italic">ai</span></a>
   </div>
 
   <!-- Navigation -->
@@ -100,10 +99,6 @@
           title="Delete all sessions"
         >Clear all</button>
       {/if}
-      <button
-        class="text-xs text-accent-400 hover:text-accent-300 px-1.5 py-0.5 rounded hover:bg-surface-700"
-        onclick={newSession}
-      >+ New</button>
     </div>
   </div>
   <div class="px-2 space-y-0.5 overflow-y-auto flex-shrink min-h-0 max-h-48">
@@ -111,15 +106,16 @@
       <div class="group flex items-center">
         <div class="flex-1 min-w-0">
           <SidebarItem
-            label={session.title || session.session_id.slice(0, 16)}
+            label={session.title || 'new investigation'}
+            italic={!session.title}
             sublabel={relativeTime(session.created)}
             href="#/session/{session.session_id}"
             active={$activeSessionId === session.session_id}
           />
         </div>
         <button
-          class="flex-shrink-0 opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400
-            px-1.5 py-1 text-xs transition-opacity"
+          class="flex-shrink-0 text-gray-600 hover:text-red-400
+            px-1.5 py-1 text-xs transition-colors"
           onclick={(e) => killSession(e, session.session_id)}
           title="Delete session"
         >&times;</button>

@@ -351,12 +351,12 @@
     font-size: 0.62rem; color: #484f58; margin-top: 1px;
   }
   .sidebar-item .si-actions {
-    display: flex; gap: 0.2rem; flex-shrink: 0; opacity: 0.4;
+    display: flex; gap: 0.2rem; flex-shrink: 0; opacity: 0.7;
     transition: opacity 0.15s;
   }
   .sidebar-item:hover .si-actions { opacity: 1; }
   .sidebar-item .si-actions button {
-    background: none; border: none; color: #484f58; cursor: pointer;
+    background: none; border: none; color: #8b949e; cursor: pointer;
     font-size: 0.7rem; padding: 0.1rem; font-family: inherit;
   }
   .sidebar-item .si-actions button:hover { color: #f85149; }
@@ -1457,8 +1457,8 @@
           '<div class="si-meta">' + created + ' &middot; ' + status + caseLabel + '</div>' +
         '</div>' +
         '<div class="si-actions">' +
-          '<button class="rename" title="Rename" data-sid="' + s.session_id + '">&#9998;</button>' +
-          '<button title="Delete" data-sid="' + s.session_id + '">&#10005;</button>' +
+          '<button class="rename" title="Rename" data-sid="' + s.session_id + '">rename</button>' +
+          '<button title="Delete" data-sid="' + s.session_id + '">&times;</button>' +
         '</div>';
 
       // Click body to resume
