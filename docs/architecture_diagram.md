@@ -5,7 +5,7 @@
 ```mermaid
 graph TB
     subgraph Entry["Entry Points"]
-        CLI["socai.py<br/>CLI (28 commands)"]
+        CLI["socai.py<br/>CLI (34 commands)"]
         WEB["FastAPI + case.html<br/>Web Chat UI"]
         MCP["mcp_server.py<br/>Claude MCP"]
     end
@@ -41,6 +41,7 @@ graph TB
             EZ["extract_zip"]
             PL["parse_logs"]
             AE["analyse_email"]
+            VR["velociraptor_ingest<br/>13 artefact normalisers"]
         end
         subgraph Analysis["Analysis"]
             SFA["static_file_analyse"]

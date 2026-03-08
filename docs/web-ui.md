@@ -4,8 +4,11 @@ The case investigation page (`ui/case.html`) is a **full-screen LLM chat interfa
 
 ## Backend: `api/chat.py`
 
-- `TOOL_DEFS` — 22 tool definitions for case-mode chat
-- `SESSION_TOOL_DEFS` — 31 tool definitions for session-mode chat (includes all case-mode tools plus session-specific tools: `load_case_context`, `save_to_case`, etc.)
+- `TOOL_DEFS` — 37 tool definitions for case-mode chat (21 case-only + 16 shared)
+- `SESSION_TOOL_DEFS` — 45 tool definitions for session-mode chat (29 session-only + 16 shared); composed dynamically from `_SESSION_ONLY_DEFS + [d for d in TOOL_DEFS if d["name"] in _SHARED_TOOL_NAMES]`
+- `_dispatch_shared(tool_name, tool_input, case_id, perms)` — handles 16 tools that run identically in both modes; returns `None` if the tool is not shared, causing fall-through to mode-specific dispatch
+- `_dispatch_tool()` / `_dispatch_session_tool()` — mode-specific dispatchers; both call `_dispatch_shared` first, then handle mode-specific tools
+- `_SHARED_BACKING_REQUIRED` — frozenset of shared tools that need `_session_ensure_backing_case()` in session mode (`start_browser_session`, `ingest_velociraptor`, `ingest_mde_package`, `memory_dump_guide`, `analyse_memory_dump`)
 - `build_system_prompt(case_id)` — loads case metadata + artefact summary, uses prompt caching (`cache_control: ephemeral`)
 - `chat(case_id, user_message, history)` — multi-turn tool loop (up to 10 rounds)
 - `chat_stream(case_id, user_message, history)` — streaming variant yielding SSE events
@@ -155,19 +158,28 @@ A slide-out sidebar (hamburger menu in topbar) provides session management:
 - **Session list** with search/filter
 - **Resume** — click to reopen a previous session
 - **Rename** — edit session title inline
-- **Delete** — remove individual sessions
+- **Delete** — remove individual sessions (action buttons always visible, brighten on hover)
 - **Clear all** — bulk-delete all sessions for the current user
 - Sessions are colour-coded by status: active, materialised, expired
 
+**Session naming:** Each session displays a smart title based on its state:
+- **Custom title** — if the analyst has renamed the session via the pencil icon
+- **Case ID + title** — e.g. "C042 — Suspicious phishing email" — if a backing case exists (case title resolved from `case_meta.json` via the `/api/sessions` endpoint)
+- ***new investigation*** — italicised placeholder for fresh sessions with no case yet
+
 ## Available Tools
 
-### Case-Mode (22 tools)
+### Shared Tools (16 — defined once in `TOOL_DEFS`, used by both modes)
 
-`capture_urls`, `triage_iocs`, `enrich_iocs`, `detect_phishing`, `correlate`, `analyse_email`, `generate_report`, `generate_fp_ticket`, `generate_queries`, `campaign_cluster`, `security_arch_review`, `reconstruct_timeline`, `analyse_pe_files`, `yara_scan`, `correlate_event_logs`, `contextualise_cves`, `generate_executive_summary`, `add_evidence`, `read_case_file`, `run_full_pipeline`, `generate_mdr_report`, `load_kql_playbook`
+`assess_landscape`, `link_cases`, `merge_cases`, `recall_cases`, `run_kql`, `load_kql_playbook`, `ingest_velociraptor`, `ingest_mde_package`, `memory_dump_guide`, `analyse_memory_dump`, `start_browser_session`, `stop_browser_session`, `list_browser_sessions`, `search_threat_articles`, `generate_threat_article`, `list_threat_articles`
 
-### Session-Mode (31 tools)
+### Case-Only Tools (21)
 
-All case-mode tools plus: `create_session`, `list_sessions`, `materialise_session`, `upload_file`, `set_disposition`, `get_session_context`, `rename_session`, `load_case_context`, `save_to_case`
+`capture_urls`, `triage_iocs`, `enrich_iocs`, `detect_phishing`, `correlate`, `analyse_email`, `generate_report`, `generate_mdr_report`, `generate_fp_ticket`, `generate_queries`, `campaign_cluster`, `security_arch_review`, `reconstruct_timeline`, `analyse_pe_files`, `yara_scan`, `correlate_event_logs`, `contextualise_cves`, `generate_executive_summary`, `add_evidence`, `read_case_file`, `run_full_pipeline`
+
+### Session-Only Tools (29)
+
+`analyse_telemetry`, `read_uploaded_file`, `extract_iocs`, `add_finding`, `materialise_case`, `generate_fp_comment`, `load_case_context`, `save_to_case`, plus session-specific variants of case tools (e.g. `capture_urls` saves IOCs to session context, `enrich_iocs` works from session context, `detect_phishing` records findings in session context)
 
 ### Case Context Switching (session-mode)
 

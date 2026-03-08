@@ -41,7 +41,7 @@ from api.schemas import (
     TokenResponse,
     UserInfo,
 )
-from config.settings import BASE_DIR, CASES_DIR, REGISTRY_FILE
+from config.settings import BASE_DIR, CASES_DIR, CORS_ORIGINS, REGISTRY_FILE
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -70,7 +70,7 @@ app = FastAPI(title="socai", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -696,7 +696,19 @@ async def create_session(user: Annotated[dict, _inv_submit]):
 @app.get("/api/sessions")
 async def list_sessions(user: Annotated[dict, _inv_read], all: bool = False):
     """List sessions for the current user. ?all=true includes materialised."""
-    return sessions.list_sessions(user["sub"], include_all=all)
+    result = sessions.list_sessions(user["sub"], include_all=all)
+    # Enrich with case title when a backing case exists
+    for s in result:
+        cid = s.get("case_id")
+        if cid:
+            meta_path = CASES_DIR / cid / "case_meta.json"
+            if meta_path.exists():
+                try:
+                    cm = json.loads(meta_path.read_text())
+                    s["case_title"] = cm.get("title", "")
+                except Exception:
+                    pass
+    return result
 
 
 @app.get("/api/sessions/{session_id}")

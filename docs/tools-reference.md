@@ -303,7 +303,10 @@ Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 
 **Helper:** `structured_call(model, system, messages, output_schema, max_tokens, thinking=None)` → `(parsed_dict | None, usage_dict)`
 
+**Schema compliance:** `_schema_for_model()` automatically adds `additionalProperties: false` to all object types in the generated JSON schema (required by the Anthropic API). This is applied recursively, covering nested objects, `$defs`, `anyOf`/`oneOf`/`allOf` combinators, and array items. Pydantic models in `tools/schemas.py` do not need to set this manually.
+
 **Pydantic models** in `tools/schemas.py`:
+- `ArticleSummary` — threat article generation
 - `BrandImpersonationResult` — phishing detection
 - `ExecutiveSummary` — executive summary sections
 - `TimelineAnalysis` — forensic timeline
@@ -334,6 +337,268 @@ Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 - `socai.py batch-submit --cases C001 C002 --tools mdr-report exec-summary` — prepare and submit
 - `socai.py batch-status --batch-id <id>` / `batch-status --list` — check progress
 - `socai.py batch-collect --batch-id <id>` — retrieve results and write artefacts
+
+## Threat Articles
+
+`tools/threat_articles.py` provides discovery and generation of 60-second-read threat intelligence articles for monthly SOC reporting, categorised as **ET** (Emerging Threat) or **EV** (Emerging Vulnerability).
+
+**Public functions:**
+- `fetch_candidates(days, max_candidates, category)` — fetches recent stories from configured RSS feeds, classifies as ET/EV, checks dedup index. Returns candidate dicts with `id`, `title`, `category`, `source_url`, `already_covered`.
+- `generate_articles(candidates, analyst, case_id)` — clusters candidates by topic, fetches full content, generates structured article summaries via `ArticleSummary` schema. Writes to `articles/YYYY-MM/ART-YYYYMMDD-NNNN/`.
+- `list_articles(month, category)` — lists previously produced articles from `registry/article_index.json`.
+
+**Configuration:**
+- `config/article_sources.json` — RSS feed list (extensible; `type` field supports future Confluence/API sources)
+- `config/article_prompts.py` — LLM system prompts and user templates
+- `config/settings.py` — `ARTICLES_DIR`, `ARTICLE_INDEX_FILE`, `SOCAI_MODEL_ARTICLES`
+
+**Article output format:** Markdown with title, category, date, analyst, sources, anonymised body (~150-180 words), recommendations section, and defanged IOC/CVE list.
+
+**Dedup:** Each topic gets a fingerprint (normalised title hash) stored in `registry/article_index.json`. Already-covered topics are flagged in candidate listings.
+
+**CLI subcommands:**
+- `socai.py articles` — interactive discovery workflow (fetch → select → generate)
+- `socai.py articles-generate --urls URL1 URL2` — direct URL mode (skip discovery)
+- `socai.py articles-list --month 2026-03` — list produced articles
+
+**Chat tools:** `search_threat_articles`, `generate_threat_article`, `list_threat_articles` — available in both case-mode and session-mode. Search results are cached to disk (`registry/.article_candidates_cache.json`) so that `generate_threat_article` can reference candidates by **1-based index** (e.g. `candidate_ids: ["1", "3", "5"]`) without re-fetching RSS feeds. The cache survives server reloads.
+
+**Future:** Confluence integration designed in (manifest includes `confluence_page_id`/`confluence_url` fields; source config supports `"type": "confluence"`).
+
+## Velociraptor Collection Ingest
+
+`tools/velociraptor_ingest.py` ingests Velociraptor offline collector exports and normalises VQL-specific field names into the schema that downstream tools already consume.
+
+### Input Modes
+
+| Mode | Input | Detection |
+|------|-------|-----------|
+| **A — Offline collector ZIP** | ZIP containing `collection_context.json`, `results/`, `uploads/` | Checks for `collection_context.json` or `results/` directory inside ZIP |
+| **B — Individual VQL file** | Single `.json`, `.csv`, or `.jsonl` file | Direct file path |
+| **C — Directory** | Directory of VQL result files | Also checks for nested `results/` and `uploads/` subdirectories |
+
+### Artefact Normalisers (13 + generic fallback)
+
+Each Velociraptor VQL artefact type has a dedicated normaliser that maps VQL-specific field names to the standard fields expected by `evtx_correlate`, `detect_anomalies`, `extract_iocs`, and `timeline_reconstruct`:
+
+| VQL Artefact | Normaliser | Key mapped fields | Downstream tool |
+|---|---|---|---|
+| `Windows.EventLogs.Evtx` | `_norm_evtx` | TimeCreated, EventID, SourceIP, TargetUserName, LogonType, ProcessName, CommandLine | `evtx_correlate`, `detect_anomalies` |
+| `Windows.System.Autoruns` | `_norm_autoruns` | TimeCreated, ProcessName, CommandLine, Category | `detect_anomalies` (first-seen) |
+| `Windows.Network.Netstat` | `_norm_netstat` | SourceIP, DestIP, SourcePort, DestPort, ProcessName, Status | `extract_iocs`, `detect_anomalies` |
+| `Windows.System.Pslist` / `Generic.System.Pstree` | `_norm_processes` | TimeCreated, ProcessName, CommandLine, Pid, Ppid, TargetUserName | `detect_anomalies`, `extract_iocs` |
+| `Windows.System.Services` | `_norm_services` | ServiceName, CommandLine, StartMode, State | `detect_anomalies` |
+| `Windows.System.TaskScheduler` | `_norm_tasks` | TaskName, CommandLine, TargetUserName | `detect_anomalies`, `evtx_correlate` |
+| `Windows.Forensics.Prefetch` | `_norm_prefetch` | TimeCreated, ProcessName, RunCount | `timeline_reconstruct` |
+| `Windows.Forensics.Shimcache` | `_norm_shimcache` | TimeCreated, ProcessName, Executed | `timeline_reconstruct` |
+| `Windows.Forensics.Amcache` | `_norm_amcache` | TimeCreated, ProcessName, SHA1 | `timeline_reconstruct` |
+| `Windows.Forensics.NTFS.MFT` | `_norm_mft` | TimeCreated, Modified, ProcessName (FullPath), Size | `timeline_reconstruct` |
+| `Windows.Forensics.USN` | `_norm_usn` | TimeCreated, ProcessName (FullPath), Reason | `timeline_reconstruct` |
+| `Windows.Sys.Users` | `_norm_users` | TargetUserName, Uid | Entity context |
+| Unknown artefacts | `_norm_generic` | Pass-through with `_source: velociraptor` tag | `extract_iocs` (regex) |
+
+Artefact name matching: exact match first, then prefix match (handles suffixes like `/Logs` or `/All`).
+
+### Nested EVTX Flattening
+
+VQL EVTX output often has nested `System` and `EventData` dicts. The `_flatten_event_data()` helper promotes nested fields to top level before normalisation, handling both `{"EventID": {"Value": 4625}}` and pre-flattened `{"EventID": 4625}` formats.
+
+### Output
+
+Writes to the standard `logs/` directory using the `parse_logs` schema so all downstream tools work without modification:
+
+- `cases/<ID>/logs/vr_<artefact_name>.parsed.json` — contains `rows_sample` (all rows), `entities`, `entity_totals`, `row_count`, `format`
+- `cases/<ID>/logs/vr_<artefact_name>.entities.json` — extracted entities (IPs, users, processes, commands, file paths, event IDs, timestamps)
+- `cases/<ID>/artefacts/velociraptor/ingest_manifest.json` — processing summary
+- `cases/<ID>/artefacts/velociraptor/collection_context.json` — copied from collector ZIP (if present)
+- `cases/<ID>/artefacts/velociraptor/host_info.json` — from `Generic.Client.Info` (if present)
+- `cases/<ID>/artefacts/velociraptor/uploads/` — raw files from collector `uploads/` directory (EVTX, MFT, prefetch, etc.)
+
+### CLI
+
+```bash
+# Full pipeline: ingest → enrich → EVTX correlation → anomalies → timeline → report
+python3 socai.py velociraptor /path/to/collection.zip --severity high
+
+# Ingest only (parse + normalise, no analysis)
+python3 socai.py velociraptor /path/to/results/ --case C001 --no-analyse
+
+# Single VQL file
+python3 socai.py velociraptor Windows.EventLogs.Evtx.json --case C001
+```
+
+### Chat Tool
+
+`ingest_velociraptor` is available in both case-mode and session-mode chat. Upload Velociraptor exports via the sidebar, then the tool auto-processes them and optionally chains enrichment, EVTX correlation, anomaly detection, and timeline reconstruction.
+
+## MDE Investigation Package Ingest
+
+`tools/mde_ingest.py` ingests Microsoft Defender for Endpoint investigation packages and normalises MDE-specific formats into the same schema consumed by downstream tools (EVTX correlation, anomaly detection, timeline, IOC extraction).
+
+### Input Modes
+
+| Mode | Input | Detection |
+|------|-------|-----------|
+| **A — Investigation package ZIP** | ZIP from MDE "Collect investigation package" | Checks for 3+ known MDE folder names (Autoruns, Processes, Network Connections, etc.) |
+| **B — Directory** | Extracted MDE package directory | Same folder name detection |
+
+### Artefact Normalisers (13 + generic fallback)
+
+Each MDE data type has a dedicated parser and normaliser:
+
+| MDE Source | Normaliser | Key mapped fields |
+|---|---|---|
+| Processes (CSV) | `_norm_processes` | TimeCreated, ProcessName, CommandLine, Pid, Ppid, TargetUserName |
+| Services (CSV) | `_norm_services` | ServiceName, CommandLine, StartMode, State |
+| Scheduled Tasks (CSV) | `_norm_tasks` | TaskName, CommandLine, TargetUserName |
+| Installed Programs (CSV) | `_norm_installed_programs` | DisplayName, Publisher, InstallDate |
+| Netstat (TXT) | `_norm_netstat` | SourceIP, DestIP, SourcePort, DestPort, ProcessName, Status |
+| ARP Cache (TXT) | `_norm_arp` | IP, MAC, InterfaceIndex |
+| DNS Cache (TXT) | `_norm_dns_cache` | RecordName, RecordType, Data |
+| Autoruns (registry TXT) | `_norm_autoruns` | Category, ProcessName, CommandLine |
+| Prefetch (listing) | `_norm_prefetch` | ProcessName, Size, TimeCreated |
+| SMB Sessions (TXT) | `_norm_smb_sessions` | TargetUserName, ClientIP, OpenFiles |
+| System Info (TXT) | `_norm_system_info` | Hostname, OS, Domain, Patches |
+| Users & Groups (TXT) | `_norm_users_groups` | TargetUserName, Groups |
+| Temp directories | `_norm_temp_dirs` | FileName, Size, TimeCreated |
+
+Text encoding handling: tries UTF-16, UTF-8-sig, UTF-8, Latin-1 via `_read_zip_text`.
+
+### Entity Extraction
+
+Extracts IPs, domains, MAC addresses, users, processes, commands, and file paths. Includes `domains` and `mac_addresses` fields in addition to the standard entity set.
+
+### Output
+
+- `cases/<ID>/artefacts/mde/ingest_manifest.json` — processing summary
+- `cases/<ID>/logs/mde_*.parsed.json` — normalised data (same schema as `parse_logs`)
+- `cases/<ID>/artefacts/mde/security_evtx/` — raw Security Event Log files
+- `cases/<ID>/artefacts/mde/prefetch/` — raw Prefetch files
+- `cases/<ID>/artefacts/mde/wd_support_logs/` — Windows Defender support logs
+
+### CLI
+
+```bash
+# Full pipeline: ingest → enrich → EVTX correlation → anomalies → timeline → report
+python3 socai.py mde-package /path/to/InvestigationPackage.zip --severity high
+
+# Ingest only (parse + normalise, no analysis)
+python3 socai.py mde-package /path/to/mde_export/ --case C001 --no-analyse
+```
+
+### Chat Tool
+
+`ingest_mde_package` is available in both case-mode and session-mode chat. Upload MDE investigation packages via the sidebar, then the tool auto-processes them and optionally chains the enrichment pipeline.
+
+## Process Memory Dump Guidance & Analysis
+
+`tools/memory_guidance.py` provides two modes for working with process memory dumps collected via MDE Live Response.
+
+### Guide Mode
+
+`generate_dump_guidance(case_id, *, process_name, pid, alert_title, alert_description, hostname)` generates step-by-step instructions for an analyst to collect a process memory dump using ProcDump via MDE Live Response.
+
+The guidance is contextual to the active alert — includes the specific process to target, the ProcDump command to run, what to look for, and how to handle the collected dump. Output: `artefacts/memory/dump_guidance.md` + `dump_guidance_manifest.json`.
+
+### Analyse Mode
+
+`analyse_memory_dump(dump_path, case_id)` performs read-only analysis of `.dmp`, `.dump`, `.raw`, or `.bin` files:
+
+- **String extraction**: ASCII + UTF-16LE patterns (min length 6)
+- **PE header detection**: scans for MZ headers with valid PE signatures
+- **Suspicious pattern matching**: 28 signatures covering injection APIs (`VirtualAllocEx`, `WriteProcessMemory`), credential theft (`sekurlsa`, `mimikatz`), shellcode indicators, AMSI/ETW bypass, PowerShell patterns
+- **DLL reference scanning**: flags suspicious DLLs (`clrjit.dll`, `amsi.dll`, `dbghelp.dll`, `samlib.dll`, etc.)
+- **Risk scoring**: returns level (low/medium/high/critical) with numeric score and reasons
+
+Output: `artefacts/memory/memory_analysis.json` + `memory_analysis_manifest.json` + normalised `logs/mde_memory_dump.parsed.json` for downstream pipeline.
+
+### CLI
+
+```bash
+# Generate dump guidance
+python3 socai.py memory-guide --case C001 --process lsass.exe --pid 672 \
+    --alert "Credential dumping detected" --hostname WORKSTATION01
+
+# Analyse a collected dump
+python3 socai.py memory-analyse /path/to/lsass.dmp --case C001
+```
+
+### Chat Tools
+
+`memory_dump_guide` and `analyse_memory_dump` are available in both case-mode and session-mode chat.
+
+## Disposable Browser Sessions
+
+`tools/browser_session.py` provides Docker-based disposable Chrome browser sessions with full CDP (Chrome DevTools Protocol) network monitoring. Designed as a fallback for when automated web capture fails due to Cloudflare challenges, CAPTCHAs, or JS-gated pages.
+
+### Architecture
+
+- **Container**: `selenium/standalone-chrome:latest` with `--network=host`
+- **noVNC**: analyst accesses the browser at `http://localhost:7900` (password: `secret`)
+- **Selenium**: WebDriver on port 4444
+- **CDP**: Chrome DevTools Protocol on port 9222
+
+One session at a time (fixed ports due to `--network=host`).
+
+### CDP Monitor
+
+`CDPMonitor` runs a background thread with an asyncio event loop connected to the page-level CDP WebSocket. Captures:
+
+- **Network.requestWillBeSent** — all outgoing HTTP requests (method, URL, headers, POST data)
+- **Network.responseReceived** — all responses (status, headers, MIME type, remote IP)
+- **DNS resolutions** — domain → IP mapping built from response `remoteIPAddress` fields; tracks first/last seen and request count per domain
+- **Redirects** — full redirect chain reconstruction
+- **Cookies** — extracted from `Set-Cookie` response headers
+- **Runtime.consoleAPICalled** — browser console output
+- **Security.enable** — TLS/certificate events
+
+Ready signalling via `threading.Event` ensures CDP monitoring is active before the initial page navigation.
+
+**Cross-process recovery:** The monitor periodically flushes all captured data to `browser_sessions/<session_id>_cdp.json` (every 50 events and on idle). If `stop_session` runs in a different process (e.g. web UI after a server reload), it recovers data from this flush file instead of losing it.
+
+### Session Lifecycle
+
+1. `start_session(url, case_id)` — starts Docker container, creates Chrome session, starts CDP monitor, navigates to URL
+2. Analyst browses manually via noVNC at `http://localhost:7900`
+3. `stop_session(session_id)` — captures final screenshot, collects all CDP data, destroys container, writes artefacts
+
+### Entity Extraction
+
+`_extract_session_entities()` extracts domains, IPs, URLs, cookies, and POST data fields from all captured traffic.
+
+### Output
+
+- `artefacts/browser_session/session_manifest.json` — session summary (includes `dns_resolutions` table)
+- `artefacts/browser_session/network_log.json` — all captured requests/responses
+- `artefacts/browser_session/dns_log.json` — DNS resolution table (domain → resolved IPs, first/last seen, request count)
+- `artefacts/browser_session/redirect_chains.json` — redirect chain reconstruction
+- `artefacts/browser_session/cookies.json` — observed cookies
+- `artefacts/browser_session/console_log.json` — browser console output
+- `artefacts/browser_session/screenshot_final.png` — final browser state
+- `logs/mde_browser_session.parsed.json` — normalised data for downstream pipeline (includes DNS resolution rows)
+
+### CLI
+
+```bash
+# Start a session (blocks until Ctrl+C, then collects artefacts)
+python3 socai.py browser-session "https://suspicious-site.com" --case C001
+
+# Stop a specific session
+python3 socai.py browser-stop <session-id>
+
+# List all sessions
+python3 socai.py browser-list
+```
+
+### Chat Tools
+
+`start_browser_session`, `stop_browser_session`, `list_browser_sessions` are available in both case-mode and session-mode chat.
+
+### Requirements
+
+- Docker must be installed and accessible (the current user must be in the `docker` group or have sudo)
+- Ports 4444, 7900, and 9222 must be available
+- `selenium` and `websocket-client` Python packages
 
 ## Analytical Guidelines
 

@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "name": "BleepingComputer",
+      "url": "https://www.bleepingcomputer.com/feed/",
+      "type": "rss",
+      "categories": ["ET", "EV"]
+    },
+    {
+      "name": "The Hacker News",
+      "url": "https://feeds.feedburner.com/TheHackersNews",
+      "type": "rss",
+      "categories": ["ET", "EV"]
+    },
+    {
+      "name": "Krebs on Security",
+      "url": "https://krebsonsecurity.com/feed/",
+      "type": "rss",
+      "categories": ["ET"]
+    },
+    {
+      "name": "CISA Advisories",
+      "url": "https://www.cisa.gov/cybersecurity-advisories/all.xml",
+      "type": "rss",
+      "categories": ["EV"]
+    },
+    {
+      "name": "Dark Reading",
+      "url": "https://www.darkreading.com/rss.xml",
+      "type": "rss",
+      "categories": ["ET", "EV"]
+    },
+    {
+      "name": "The Record",
+      "url": "https://therecord.media/feed",
+      "type": "rss",
+      "categories": ["ET"]
+    },
+    {
+      "name": "Mandiant Blog",
+      "url": "https://cloud.google.com/blog/topics/threat-intelligence/rss",
+      "type": "rss",
+      "categories": ["ET"]
+    },
+    {
+      "name": "Unit 42",
+      "url": "https://unit42.paloaltonetworks.com/feed/",
+      "type": "rss",
+      "categories": ["ET", "EV"]
+    },
+    {
+      "name": "Microsoft Security Blog",
+      "url": "https://www.microsoft.com/en-us/security/blog/feed/",
+      "type": "rss",
+      "categories": ["ET", "EV"]
+    },
+    {
+      "name": "SecurityWeek",
+      "url": "https://feeds.feedburner.com/securityweek",
+      "type": "rss",
+      "categories": ["ET", "EV"]
+    }
+  ]
+}

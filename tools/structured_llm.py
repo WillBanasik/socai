@@ -30,9 +30,35 @@ from config.settings import ANTHROPIC_KEY
 T = TypeVar("T", bound=BaseModel)
 
 
+def _enforce_additional_properties(schema: dict) -> dict:
+    """Recursively set ``additionalProperties: false`` on all object types.
+
+    The Anthropic API requires this on every object in the schema.
+    """
+    if schema.get("type") == "object":
+        schema.setdefault("additionalProperties", False)
+    # Handle $defs / definitions
+    for key in ("$defs", "definitions"):
+        if key in schema:
+            for defn in schema[key].values():
+                _enforce_additional_properties(defn)
+    # Recurse into properties
+    for prop in schema.get("properties", {}).values():
+        _enforce_additional_properties(prop)
+    # Recurse into array items
+    if "items" in schema:
+        _enforce_additional_properties(schema["items"])
+    # anyOf / oneOf / allOf
+    for combo_key in ("anyOf", "oneOf", "allOf"):
+        for sub in schema.get(combo_key, []):
+            _enforce_additional_properties(sub)
+    return schema
+
+
 def _schema_for_model(model_cls: Type[T]) -> dict:
     """Build the ``output_config`` JSON-schema dict from a Pydantic model."""
     raw = model_cls.model_json_schema()
+    _enforce_additional_properties(raw)
     return {
         "type": "json_schema",
         "name": model_cls.__name__,

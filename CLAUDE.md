@@ -29,6 +29,30 @@ python3 socai.py batch-submit --cases C001 C002 --tools mdr-report exec-summary
 python3 socai.py batch-status --batch-id <id>
 python3 socai.py batch-collect --batch-id <id>
 
+# Threat articles (ET/EV monthly reporting)
+python3 socai.py articles --days 7 --count 3 --analyst "J. Smith"
+python3 socai.py articles --category EV --pick 1,3,5
+python3 socai.py articles-generate --urls URL1 URL2 --title "..." --category ET
+python3 socai.py articles-list --month 2026-03
+
+# Velociraptor ingest (offline collector ZIP, VQL exports, or directory)
+python3 socai.py velociraptor /path/to/collection.zip --case C001
+python3 socai.py velociraptor /path/to/results/ --severity high
+python3 socai.py velociraptor /path/to/Windows.System.Autoruns.json --case C001 --no-analyse
+
+# MDE investigation package ingest (alternative to Velociraptor when MDE is available)
+python3 socai.py mde-package /path/to/InvestigationPackage.zip --case C001
+python3 socai.py mde-package /path/to/mde_export/ --severity high --no-analyse
+
+# Process memory dump guidance & analysis
+python3 socai.py memory-guide --case C001 --process lsass.exe --pid 672 --alert "Credential dumping detected"
+python3 socai.py memory-analyse /path/to/process.dmp --case C001
+
+# Disposable browser sessions (Docker-based, CDP-monitored)
+python3 socai.py browser-session "https://suspicious-site.com" --case C001
+python3 socai.py browser-stop <session-id>
+python3 socai.py browser-list
+
 # Other subcommands: mdr-report, triage, email-analyse, campaigns, sandbox,
 #   anomalies, errors, timeline, pe-analysis, yara, evtx, cve-context,
 #   exec-summary, queries, client-query, response-actions, weekly, list, close
@@ -46,7 +70,13 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **Web UI:** `api/chat.py` + `api/main.py` + `ui/case.html` — streaming SSE chat with activity feed and session management (see `docs/web-ui.md`)
 - **Sessions** (`api/sessions.py`) — pre-case investigation conversations; materialise into full cases
 - **Batch** (`tools/batch.py`) — bulk LLM processing via Claude Messages Batch API
-- **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, sessions in `sessions/`
+- **Threat Articles** (`tools/threat_articles.py`) — ET/EV article discovery, clustering, and generation for monthly reporting; dedup via local index + Confluence
+- **Velociraptor** (`tools/velociraptor_ingest.py`) — offline collector ZIP / VQL result ingest with artefact-aware normalisation (EVTX, autoruns, netstat, processes, services, tasks, prefetch, shimcache, amcache, MFT, USN)
+- **MDE Ingest** (`tools/mde_ingest.py`) — Microsoft Defender for Endpoint investigation package ingest with 13 normalisers; alternative to Velociraptor when MDE access is available
+- **Memory Guidance** (`tools/memory_guidance.py`) — process memory dump guidance (MDE Live Response instructions) and read-only `.dmp` analysis (strings, PE headers, suspicious patterns, risk scoring)
+- **Browser Session** (`tools/browser_session.py`) — disposable Docker-based Chrome sessions with CDP network monitoring via noVNC; fallback for Cloudflare/CAPTCHA-blocked phishing pages
+- **Confluence** (`tools/confluence_read.py`) — read-only Confluence Cloud client (scoped token, single space)
+- **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, sessions in `sessions/`, articles in `articles/`
 - **Pipeline:** `ChiefAgent.run()` orchestrates 16 steps with parallel execution (see `docs/pipeline.md`)
 
 ## Critical Conventions

@@ -43,7 +43,7 @@ See [model_tiering.md](model_tiering.md) for full details.
 | `SOCAI_MODEL_STANDARD` | `claude-sonnet-4-6` | Most analytical tasks |
 | `SOCAI_MODEL_FAST` | `claude-haiku-4-5-20251001` | Routing, simple generation, high-volume |
 
-Per-task model assignments: `SOCAI_MODEL_{TASK}` — see `config/settings.py` for full list.
+Per-task model assignments: `SOCAI_MODEL_{TASK}` — see `config/settings.py` for full list. Includes `SOCAI_MODEL_ARTICLES` (default `standard`) for threat article generation.
 
 Severity escalation for `{secarch, report, chat_response, evtx, fp_ticket}`: fast->standard, standard->heavy on high/critical. Note: `chat_response` defaults to `standard` (Sonnet), so escalation bumps it to `heavy` (Opus).
 
@@ -112,6 +112,42 @@ Config: `config/client_entities.json` (git-ignored) — unified `clients` list w
 ## Sentinel Workspace IDs
 
 Workspace IDs for `az monitor log-analytics query -w <ID>` are in `config/client_entities.json`. Table availability per workspace: `config/workspace_tables.json` (git-ignored, keyed by workspace name e.g. `example-client`). Discovery script: `scripts/discover_sentinel_schemas.py`. Workspace resolution in `scripts/run_kql.py` tries exact match, then uppercase, then lowercase.
+
+## Confluence (Read-Only)
+
+Read-only integration with Confluence Cloud for checking existing articles and (future) process documentation.
+
+| Env var | Purpose |
+|---------|---------|
+| `CONFLUENCE_URL` | Instance URL (e.g. `https://yourinstance.atlassian.net`) |
+| `CONFLUENCE_CLOUD_ID` | Numeric cloud ID (from `{url}/_edge/tenant_info`) |
+| `CONFLUENCE_EMAIL` | Account email for basic auth |
+| `CONFLUENCE_API_TOKEN` | Scoped API token (read-only, Confluence only) |
+| `CONFLUENCE_SPACE_KEY` | Space key to read from (e.g. `MDR1`) |
+
+**Token setup:** Create a scoped token at [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens) with "Create API token with scopes" → app: Confluence → scopes: `read:page:confluence`, `read:space:confluence`. Scoped tokens use the `api.atlassian.com/ex/confluence/{cloudId}` base URL.
+
+**Usage:** `tools/confluence_read.py` provides `list_pages()`, `get_page()`, `search_pages()`, `get_page_by_title()`. Used by `tools/threat_articles.py` for dedup against recently published articles in the MDR1 space.
+
+## Threat Article Sources
+
+`config/article_sources.json` — configurable list of RSS feeds for threat article discovery. Default: 10 feeds (BleepingComputer, The Hacker News, Krebs, CISA, Dark Reading, The Record, Mandiant, Unit 42, Microsoft Security, SecurityWeek). Add new sources with `"type": "rss"` and `"categories": ["ET", "EV"]`.
+
+## Browser Session (Docker)
+
+Disposable browser sessions require Docker installed and accessible.
+
+| Requirement | Detail |
+|-------------|--------|
+| Docker | Must be installed; current user in `docker` group or sudo |
+| Ports | 4444 (Selenium), 7900 (noVNC), 9222 (CDP) — must be free |
+| Image | `selenium/standalone-chrome:latest` (auto-pulled on first use) |
+| Python packages | `selenium`, `websocket-client` |
+| Network mode | `--network=host` (one session at a time) |
+
+noVNC access: `http://localhost:7900` (password: `secret`).
+
+Session state files are stored in `browser_sessions/<session_id>.json`.
 
 ## Secret Config Files
 

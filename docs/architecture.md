@@ -17,8 +17,8 @@ CLI (socai.py)
           └── ReportWriterAgent      → generate_report + index_case
 
 Web UI (api/main.py + api/chat.py + ui/*.html)
-    ├── Case-mode chat       → 22 tools via TOOL_DEFS
-    ├── Session-mode chat    → 31 tools via SESSION_TOOL_DEFS
+    ├── Case-mode chat       → 37 tools via TOOL_DEFS (21 case-only + 16 shared)
+    ├── Session-mode chat    → 45 tools via SESSION_TOOL_DEFS (29 session-only + 16 shared)
     ├── SSE streaming        → progressive token delivery
     ├── Session management   → CRUD + materialisation to cases
     ├── Cases browse page    → filterable card grid (ui/cases.html)
@@ -29,6 +29,36 @@ Web UI (api/main.py + api/chat.py + ui/*.html)
 
 Batch API (tools/batch.py)
     └── Bulk LLM processing  → submit / poll / collect pattern
+
+Threat Articles (tools/threat_articles.py)
+    ├── RSS feed discovery    → 10 configurable feeds (config/article_sources.json)
+    ├── ET/EV classification  → heuristic + LLM
+    ├── Dedup                 → local index + Confluence MDR1 space
+    ├── Topic clustering      → LLM groups related sources
+    └── Article generation    → structured output (ArticleSummary schema)
+
+Velociraptor Ingest (tools/velociraptor_ingest.py)
+    ├── Offline collector ZIP  → results/ (VQL JSONL) + uploads/ (raw EVTX, MFT, etc.)
+    ├── Individual VQL files   → JSONL, JSON array, or CSV
+    ├── Directory of exports   → also checks nested results/ and uploads/
+    └── 13 artefact normalisers → maps VQL fields to standard parse_logs schema
+
+MDE Ingest (tools/mde_ingest.py)
+    ├── Investigation package ZIP → processes, services, tasks, netstat, ARP, DNS cache, etc.
+    ├── Directory of MDE exports  → auto-detects MDE folder structure
+    └── 13 normalisers            → maps MDE-specific formats to standard parse_logs schema
+
+Memory Guidance (tools/memory_guidance.py)
+    ├── Guide mode    → MDE Live Response ProcDump instructions contextual to alert
+    └── Analyse mode  → .dmp file analysis (strings, PE headers, DLLs, risk scoring)
+
+Browser Session (tools/browser_session.py)
+    ├── Docker (selenium/standalone-chrome) → disposable Chrome via noVNC (:7900)
+    ├── CDP monitor (WebSocket)             → captures requests, responses, redirects, cookies, console
+    └── Session lifecycle                   → start → analyst browses → stop → artefact collection
+
+Confluence (tools/confluence_read.py)
+    └── Read-only client      → scoped API token, single space (MDR1)
 ```
 
 ## Data Flow
@@ -39,6 +69,10 @@ Input
   ZIP archive (+ password)
   Log files (CSV / JSON)
   .eml email files
+  Velociraptor exports (collector ZIP / VQL files / directory)
+  MDE investigation packages (ZIP or directory)
+  Process memory dumps (.dmp / .dump / .raw / .bin)
+  Browser session traffic (CDP-captured network data)
         │
         ▼
 cases/<CASE_ID>/
@@ -58,7 +92,9 @@ cases/<CASE_ID>/
 registry/case_index.json  ← case registry
 registry/audit.log        ← SHA-256 artefact audit trail
 registry/batches/         ← batch API metadata + results
+registry/article_index.json ← threat article dedup index
 reports/weekly/           ← weekly rollup Markdown
+articles/YYYY-MM/         ← threat article summaries (ET/EV)
 
 sessions/<SESSION_ID>/    ← pre-case investigation sessions
   session_meta.json       ← status, user, expiry, backing case
@@ -80,6 +116,7 @@ sessions/<SESSION_ID>/    ← pre-case investigation sessions
 | **Structured outputs** | `tools/structured_llm.py` wrapper with JSON schema validation |
 | **Compaction** | `api/chat.py` for long conversations (Opus models) |
 | **Batch API** | `tools/batch.py` for bulk report generation |
+| **Structured outputs** | `tools/threat_articles.py` article generation via `ArticleSummary` schema |
 
 ## Agent Responsibilities
 
@@ -108,7 +145,7 @@ Every tool wrapper:
 1. Create `tools/my_tool.py` following the pattern in `tools/extract_iocs.py`.
 2. Register it in `agents/chief.py` as a new pipeline step.
 3. Add a CLI sub-command in `socai.py` if needed.
-4. For chat tools: add to `TOOL_DEFS` and/or `SESSION_TOOL_DEFS` in `api/tool_schemas.py`, then add dispatch in `api/chat.py`.
+4. For chat tools: add schema to `TOOL_DEFS` in `api/tool_schemas.py` and handler to `_dispatch_shared()` in `api/chat.py` for shared tools (also add to `_SHARED_TOOL_NAMES`); or add to `_SESSION_ONLY_DEFS` / `_dispatch_session_tool()` for session-only tools.
 
 ### Adding a new enrichment provider
 See `tools/enrich.py` – implement a function and add it to the `PROVIDERS` and `_PROVIDER_NAMES` dicts. For IPv4 providers, also add to `PROVIDERS_IP_FAST` or `PROVIDERS_IP_DEEP`.

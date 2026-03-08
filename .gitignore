@@ -5,6 +5,7 @@
 cases/
 reports/
 registry/
+articles/
 
 # Python
 __pycache__/

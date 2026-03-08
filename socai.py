@@ -500,6 +500,110 @@ def cmd_domain(args: argparse.Namespace) -> None:
                     client=getattr(args, "client", "") or "")
 
 
+def cmd_articles(args: argparse.Namespace) -> None:
+    from tools.threat_articles import fetch_candidates, generate_articles
+
+    print("[articles] Fetching recent threat intelligence stories...")
+    candidates = fetch_candidates(
+        days=args.days,
+        max_candidates=args.max or 20,
+        category=args.category,
+    )
+
+    if not candidates:
+        print("[articles] No candidates found. Try increasing --days or checking your network.")
+        return
+
+    # Display candidates
+    print(f"\n{'#':<4} {'Cat':<4} {'Source':<25} {'Title'}")
+    print("-" * 90)
+    for i, c in enumerate(candidates, 1):
+        covered = " [already covered]" if c["already_covered"] else ""
+        print(f"{i:<4} {c['category']:<4} {c['source_name']:<25} {c['title'][:60]}{covered}")
+
+    # Interactive selection or pre-selected
+    if args.pick:
+        picks = [int(x.strip()) for x in args.pick.split(",")]
+    else:
+        print(f"\nSelect articles (comma-separated numbers, e.g. 1,3,5) [default: first {args.count}]:")
+        try:
+            raw = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return
+        if raw:
+            picks = [int(x.strip()) for x in raw.split(",")]
+        else:
+            # Auto-pick first N uncovered
+            uncovered = [i + 1 for i, c in enumerate(candidates) if not c["already_covered"]]
+            picks = uncovered[:args.count]
+
+    if not picks:
+        print("[articles] No articles selected.")
+        return
+
+    selected = [candidates[p - 1] for p in picks if 0 < p <= len(candidates)]
+    print(f"\n[articles] Generating {len(selected)} article(s)...")
+
+    results = generate_articles(
+        selected,
+        analyst=args.analyst,
+        case_id=getattr(args, "case", None),
+    )
+
+    for r in results:
+        print(f"  ✓ {r['category']} | {r['title']}")
+        print(f"    → {r['article_path']}")
+
+    print(f"\n[articles] Done — {len(results)} article(s) written.")
+    if args.json:
+        print(json.dumps(results, indent=2, default=str))
+
+
+def cmd_articles_list(args: argparse.Namespace) -> None:
+    from tools.threat_articles import list_articles
+
+    articles = list_articles(month=args.month, category=args.category)
+    if not articles:
+        print("No articles found.")
+        return
+
+    print(f"{'ID':<22} {'Cat':<4} {'Date':<12} {'Analyst':<15} {'Title'}")
+    print("-" * 90)
+    for a in articles:
+        print(f"{a.get('article_id', '?'):<22} {a.get('category', '?'):<4} "
+              f"{a.get('date', '?'):<12} {a.get('analyst', '?'):<15} "
+              f"{a.get('title', '?')[:40]}")
+
+
+def cmd_articles_generate(args: argparse.Namespace) -> None:
+    from tools.threat_articles import generate_articles
+
+    candidates = [{
+        "id": f"manual-{i}",
+        "title": args.title or f"Article from {url}",
+        "category": args.category or "ET",
+        "source_name": "manual",
+        "source_url": url,
+        "summary": "",
+        "already_covered": False,
+    } for i, url in enumerate(args.urls)]
+
+    print(f"[articles-generate] Generating article from {len(args.urls)} URL(s)...")
+    results = generate_articles(
+        candidates,
+        analyst=args.analyst,
+        case_id=getattr(args, "case", None),
+    )
+
+    for r in results:
+        print(f"  ✓ {r['category']} | {r['title']}")
+        print(f"    → {r['article_path']}")
+
+    if args.json:
+        print(json.dumps(results, indent=2, default=str))
+
+
 def cmd_batch_submit(args: argparse.Namespace) -> None:
     from tools.batch import (
         prepare_mdr_report_batch, prepare_executive_summary_batch,
@@ -577,6 +681,320 @@ def cmd_batch_collect(args: argparse.Namespace) -> None:
     print(f"Dispatched: {summary['dispatched']}, Errors: {summary['errors']}, Total: {summary['total']}")
     if args.json:
         print(json.dumps(summary, indent=2, default=str))
+
+
+def cmd_velociraptor(args: argparse.Namespace) -> None:
+    from tools.velociraptor_ingest import velociraptor_ingest
+
+    source = Path(args.target)
+    if not source.exists():
+        print(f"[error] Source not found: {args.target}")
+        sys.exit(1)
+
+    case_id = args.case or _next_case_id()
+
+    # Create case if it doesn't exist
+    from config.settings import CASES_DIR
+    if not (CASES_DIR / case_id).exists():
+        from tools.case_create import case_create
+        title = f"Velociraptor collection: {source.name}"
+        case_create(case_id, title=title, severity=args.severity,
+                    client=getattr(args, "client", "") or "")
+
+    result = velociraptor_ingest(args.target, case_id, password=args.password)
+
+    if result.get("status") != "ok":
+        print(f"[error] {result.get('reason', 'Ingest failed')}")
+        sys.exit(1)
+
+    manifest = result.get("manifest", {})
+    print(f"\nCase {case_id}: {manifest.get('total_vql_artefacts', 0)} artefact(s), "
+          f"{manifest.get('total_rows_ingested', 0)} row(s), "
+          f"{manifest.get('total_raw_files', 0)} raw file(s)")
+
+    if not args.no_analyse:
+        print("\n[velociraptor] Running analysis pipeline...")
+        from tools.extract_iocs import extract_iocs
+        from tools.enrich import enrich
+        from tools.score_verdicts import score_verdicts, update_ioc_index
+        from tools.correlate import correlate
+
+        extract_iocs(case_id)
+        enrich(case_id)
+        score_verdicts(case_id)
+        update_ioc_index(case_id)
+        correlate(case_id)
+
+        # EVTX correlation (if event log data present)
+        try:
+            from tools.evtx_correlate import evtx_correlate
+            evtx_result = evtx_correlate(case_id)
+            chains = evtx_result.get("chains", [])
+            if chains:
+                print(f"[velociraptor] EVTX: {len(chains)} attack chain(s) detected")
+        except Exception as exc:
+            from tools.common import log_error
+            log_error(case_id, "cmd_velociraptor.evtx", str(exc), severity="warning")
+
+        # Anomaly detection
+        try:
+            from tools.detect_anomalies import detect_anomalies
+            detect_anomalies(case_id)
+        except Exception as exc:
+            from tools.common import log_error
+            log_error(case_id, "cmd_velociraptor.anomalies", str(exc), severity="warning")
+
+        # Timeline
+        try:
+            from tools.timeline_reconstruct import timeline_reconstruct
+            timeline_reconstruct(case_id)
+        except Exception as exc:
+            from tools.common import log_error
+            log_error(case_id, "cmd_velociraptor.timeline", str(exc), severity="warning")
+
+        # Report
+        from tools.generate_report import generate_report
+        report_result = generate_report(case_id)
+        print(f"\nReport: {report_result['report_path']}")
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+
+
+def cmd_browser_session(args: argparse.Namespace) -> None:
+    from tools.browser_session import start_session, stop_session
+
+    case_id = args.case or _next_case_id()
+
+    from config.settings import CASES_DIR
+    if not (CASES_DIR / case_id).exists():
+        from tools.case_create import case_create
+        title = f"Browser session: {args.target}"
+        case_create(case_id, title=title, severity=args.severity,
+                    client=getattr(args, "client", "") or "")
+
+    result = start_session(args.target, case_id)
+
+    if result.get("status") != "ok":
+        print(f"[error] {result.get('reason', 'Session start failed')}")
+        sys.exit(1)
+
+    session_id = result["session_id"]
+
+    # Block until Ctrl+C
+    import signal as _signal
+    try:
+        print("Press Ctrl+C to stop the session and collect artefacts...")
+        _signal.pause()
+    except KeyboardInterrupt:
+        print("\n")
+
+    stop_result = stop_session(session_id)
+
+    if stop_result.get("status") != "ok":
+        print(f"[error] {stop_result.get('reason', 'Session stop failed')}")
+        sys.exit(1)
+
+    # Optionally run analysis pipeline
+    if not args.no_analyse:
+        print("\n[browser] Running analysis pipeline...")
+        from tools.extract_iocs import extract_iocs
+        from tools.enrich import enrich
+        from tools.score_verdicts import score_verdicts, update_ioc_index
+        from tools.correlate import correlate
+
+        extract_iocs(case_id)
+        enrich(case_id)
+        score_verdicts(case_id)
+        update_ioc_index(case_id)
+        correlate(case_id)
+
+        from tools.generate_report import generate_report
+        report_result = generate_report(case_id)
+        print(f"\nReport: {report_result['report_path']}")
+
+    if args.json:
+        print(json.dumps(stop_result, indent=2, default=str))
+
+
+def cmd_browser_stop(args: argparse.Namespace) -> None:
+    from tools.browser_session import stop_session
+    result = stop_session(args.session_id)
+    if result.get("status") != "ok":
+        print(f"[error] {result.get('reason', 'Stop failed')}")
+        sys.exit(1)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+
+
+def cmd_browser_list(args: argparse.Namespace) -> None:
+    from tools.browser_session import list_sessions
+    sessions = list_sessions()
+    if not sessions:
+        print("No browser sessions found.")
+        return
+    for s in sessions:
+        status = s.get("status", "unknown")
+        sid = s.get("session_id", "?")
+        url = s.get("start_url", "")
+        case = s.get("case_id", "")
+        started = s.get("started_at", "")
+        novnc = s.get("novnc_url", "")
+        line = f"  [{status.upper():10s}] {sid}  case={case}  {url}"
+        if status == "active" and novnc:
+            line += f"  → {novnc}"
+        if started:
+            line += f"  (started {started})"
+        print(line)
+
+
+def cmd_mde_package(args: argparse.Namespace) -> None:
+    from tools.mde_ingest import mde_ingest
+
+    source = Path(args.target)
+    if not source.exists():
+        print(f"[error] Source not found: {args.target}")
+        sys.exit(1)
+
+    case_id = args.case or _next_case_id()
+
+    # Create case if it doesn't exist
+    from config.settings import CASES_DIR
+    if not (CASES_DIR / case_id).exists():
+        from tools.case_create import case_create
+        title = f"MDE investigation package: {source.name}"
+        case_create(case_id, title=title, severity=args.severity,
+                    client=getattr(args, "client", "") or "")
+
+    result = mde_ingest(args.target, case_id, password=args.password)
+
+    if result.get("status") != "ok":
+        print(f"[error] {result.get('reason', 'Ingest failed')}")
+        sys.exit(1)
+
+    manifest = result.get("manifest", {})
+    print(f"\nCase {case_id}: {manifest.get('total_artefacts', 0)} artefact(s), "
+          f"{manifest.get('total_rows_ingested', 0)} row(s), "
+          f"{manifest.get('total_raw_files', 0)} raw file(s)")
+
+    if not args.no_analyse:
+        print("\n[mde] Running analysis pipeline...")
+        from tools.extract_iocs import extract_iocs
+        from tools.enrich import enrich
+        from tools.score_verdicts import score_verdicts, update_ioc_index
+        from tools.correlate import correlate
+
+        extract_iocs(case_id)
+        enrich(case_id)
+        score_verdicts(case_id)
+        update_ioc_index(case_id)
+        correlate(case_id)
+
+        # EVTX correlation (if security event log was extracted)
+        try:
+            from tools.evtx_correlate import evtx_correlate
+            evtx_result = evtx_correlate(case_id)
+            chains = evtx_result.get("chains", [])
+            if chains:
+                print(f"[mde] EVTX: {len(chains)} attack chain(s) detected")
+        except Exception as exc:
+            from tools.common import log_error
+            log_error(case_id, "cmd_mde_package.evtx", str(exc), severity="warning")
+
+        # Anomaly detection
+        try:
+            from tools.detect_anomalies import detect_anomalies
+            detect_anomalies(case_id)
+        except Exception as exc:
+            from tools.common import log_error
+            log_error(case_id, "cmd_mde_package.anomalies", str(exc), severity="warning")
+
+        # Timeline
+        try:
+            from tools.timeline_reconstruct import timeline_reconstruct
+            timeline_reconstruct(case_id)
+        except Exception as exc:
+            from tools.common import log_error
+            log_error(case_id, "cmd_mde_package.timeline", str(exc), severity="warning")
+
+        # Report
+        from tools.generate_report import generate_report
+        report_result = generate_report(case_id)
+        print(f"\nReport: {report_result['report_path']}")
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+
+
+def cmd_memory_guide(args: argparse.Namespace) -> None:
+    from tools.memory_guidance import generate_dump_guidance
+
+    case_id = args.case or _next_case_id()
+
+    from config.settings import CASES_DIR
+    if not (CASES_DIR / case_id).exists():
+        from tools.case_create import case_create
+        title = f"Memory dump guidance: {args.process or 'unknown process'}"
+        case_create(case_id, title=title, severity=args.severity,
+                    client=getattr(args, "client", "") or "")
+
+    result = generate_dump_guidance(
+        case_id,
+        process_name=args.process,
+        pid=args.pid,
+        alert_title=args.alert,
+        hostname=args.host,
+    )
+    print(f"\nGuidance: {result['guidance_path']}")
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+
+
+def cmd_memory_analyse(args: argparse.Namespace) -> None:
+    from tools.memory_guidance import analyse_memory_dump
+
+    source = Path(args.target)
+    if not source.exists():
+        print(f"[error] Dump file not found: {args.target}")
+        sys.exit(1)
+
+    case_id = args.case or _next_case_id()
+
+    from config.settings import CASES_DIR
+    if not (CASES_DIR / case_id).exists():
+        from tools.case_create import case_create
+        title = f"Memory dump analysis: {source.name}"
+        case_create(case_id, title=title, severity=args.severity,
+                    client=getattr(args, "client", "") or "")
+
+    result = analyse_memory_dump(args.target, case_id)
+
+    if result.get("status") != "ok":
+        print(f"[error] {result.get('reason', 'Analysis failed')}")
+        sys.exit(1)
+
+    risk = result.get("risk_indicators", {})
+    print(f"\nCase {case_id}: Risk={risk.get('level', 'unknown').upper()}")
+
+    # Run enrichment pipeline on extracted IOCs if not skipped
+    if not args.no_analyse:
+        print("\n[memory] Running enrichment pipeline...")
+        from tools.extract_iocs import extract_iocs
+        from tools.enrich import enrich
+        from tools.score_verdicts import score_verdicts, update_ioc_index
+
+        extract_iocs(case_id)
+        enrich(case_id)
+        score_verdicts(case_id)
+        update_ioc_index(case_id)
+
+        from tools.generate_report import generate_report
+        report_result = generate_report(case_id)
+        print(f"\nReport: {report_result['report_path']}")
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
 
 
 def cmd_file(args: argparse.Namespace) -> None:
@@ -836,6 +1254,87 @@ def build_parser() -> argparse.ArgumentParser:
     p_fp.add_argument("--live-query",  action="store_true", default=False, dest="live_query",
                       help="Enable read-only KQL queries against the alert workspace (requires az CLI auth)")
 
+    # velociraptor
+    p_vr = sub.add_parser(
+        "velociraptor",
+        help="Ingest Velociraptor collection results (offline collector ZIP, VQL exports, or directory).",
+    )
+    p_vr.add_argument("target", help="Path to collector ZIP, result directory, or individual VQL file")
+    p_vr.add_argument("--case", default=None, help="Case ID (auto-generated if omitted)")
+    p_vr.add_argument("--severity", default="medium",
+                       choices=["low", "medium", "high", "critical"])
+    p_vr.add_argument("--password", default=None, help="ZIP password")
+    p_vr.add_argument("--no-analyse", action="store_true", dest="no_analyse",
+                       help="Ingest only — skip enrichment, EVTX correlation, anomaly detection, and reporting")
+    p_vr.add_argument("--client", default="",
+                       help="Client name (loads playbook from config/clients/<name>.json)")
+
+    # browser-session
+    p_bs = sub.add_parser(
+        "browser-session",
+        help="Start a disposable Chrome browser session for manual phishing investigation.",
+    )
+    p_bs.add_argument("target", help="Starting URL to navigate to")
+    p_bs.add_argument("--case", default=None, help="Case ID (auto-generated if omitted)")
+    p_bs.add_argument("--severity", default="medium",
+                       choices=["low", "medium", "high", "critical"])
+    p_bs.add_argument("--no-analyse", action="store_true", dest="no_analyse",
+                       help="Skip enrichment pipeline after session ends")
+    p_bs.add_argument("--client", default="",
+                       help="Client name (loads playbook from config/clients/<name>.json)")
+
+    # browser-stop
+    p_bstop = sub.add_parser("browser-stop", help="Stop an active browser session and collect artefacts.")
+    p_bstop.add_argument("--session", required=True, dest="session_id",
+                          help="Session ID to stop")
+
+    # browser-list
+    sub.add_parser("browser-list", help="List all browser sessions (active and completed).")
+
+    # mde-package
+    p_mde = sub.add_parser(
+        "mde-package",
+        help="Ingest MDE investigation package ZIP (Defender for Endpoint triage collection).",
+    )
+    p_mde.add_argument("target", help="Path to MDE investigation package ZIP")
+    p_mde.add_argument("--case", default=None, help="Case ID (auto-generated if omitted)")
+    p_mde.add_argument("--severity", default="medium",
+                        choices=["low", "medium", "high", "critical"])
+    p_mde.add_argument("--password", default=None, help="ZIP password")
+    p_mde.add_argument("--no-analyse", action="store_true", dest="no_analyse",
+                        help="Ingest only — skip enrichment, correlation, and reporting")
+    p_mde.add_argument("--client", default="",
+                        help="Client name (loads playbook from config/clients/<name>.json)")
+
+    # memory-guide
+    p_mg = sub.add_parser(
+        "memory-guide",
+        help="Generate process memory dump collection guidance for an analyst.",
+    )
+    p_mg.add_argument("--case", default=None, help="Case ID (auto-generated if omitted)")
+    p_mg.add_argument("--severity", default="medium",
+                       choices=["low", "medium", "high", "critical"])
+    p_mg.add_argument("--process", default="", help="Target process name (e.g. svchost.exe)")
+    p_mg.add_argument("--pid", default="", help="Target PID")
+    p_mg.add_argument("--alert", default="", help="Alert title for context")
+    p_mg.add_argument("--host", default="", help="Target hostname")
+    p_mg.add_argument("--client", default="",
+                       help="Client name (loads playbook from config/clients/<name>.json)")
+
+    # memory-analyse
+    p_ma = sub.add_parser(
+        "memory-analyse",
+        help="Analyse a collected process memory dump (.dmp) file.",
+    )
+    p_ma.add_argument("target", help="Path to .dmp file")
+    p_ma.add_argument("--case", default=None, help="Case ID (auto-generated if omitted)")
+    p_ma.add_argument("--severity", default="medium",
+                       choices=["low", "medium", "high", "critical"])
+    p_ma.add_argument("--no-analyse", action="store_true", dest="no_analyse",
+                       help="Analysis only — skip enrichment pipeline")
+    p_ma.add_argument("--client", default="",
+                       help="Client name (loads playbook from config/clients/<name>.json)")
+
     # Quick-run: url
     p_url = sub.add_parser("url", help="Quick-run: capture + enrich + report for a single URL.")
     p_url.add_argument("target", help="URL to investigate (e.g. https://example.com)")
@@ -863,14 +1362,48 @@ def build_parser() -> argparse.ArgumentParser:
     p_file.add_argument("--client", default="",
                         help="Client name (loads playbook from config/clients/<name>.json)")
 
+    # articles (interactive discovery)
+    p_art = sub.add_parser(
+        "articles",
+        help="Discover and write threat intelligence articles (ET/EV) for monthly reporting.",
+    )
+    p_art.add_argument("--days", type=int, default=7, help="Lookback window in days (default 7)")
+    p_art.add_argument("--count", type=int, default=3, help="Number of articles to produce (default 3)")
+    p_art.add_argument("--max", type=int, default=20, help="Max candidates to show (default 20)")
+    p_art.add_argument("--category", choices=["ET", "EV"], default=None,
+                       help="Filter candidates by category")
+    p_art.add_argument("--analyst", default="unassigned", help="Analyst name for attribution")
+    p_art.add_argument("--case", default=None, help="Optional case ID to attach articles to")
+    p_art.add_argument("--pick", default=None,
+                       help="Pre-select articles by number (e.g. '1,3,5') for non-interactive use")
+
+    # articles-list
+    p_artl = sub.add_parser("articles-list", help="List produced threat articles.")
+    p_artl.add_argument("--month", default=None, help="Filter by month (YYYY-MM)")
+    p_artl.add_argument("--category", choices=["ET", "EV"], default=None,
+                        help="Filter by category")
+
+    # articles-generate (direct URL mode)
+    p_artg = sub.add_parser(
+        "articles-generate",
+        help="Generate a threat article from provided URLs (skip discovery).",
+    )
+    p_artg.add_argument("--urls", nargs="+", required=True, metavar="URL",
+                        help="URL(s) to summarise")
+    p_artg.add_argument("--title", default=None, help="Article title (auto-generated if omitted)")
+    p_artg.add_argument("--category", choices=["ET", "EV"], default="ET",
+                        help="Article category (default ET)")
+    p_artg.add_argument("--analyst", default="unassigned", help="Analyst name")
+    p_artg.add_argument("--case", default=None, help="Optional case ID to attach article to")
+
     # batch-submit
-    p_bs = sub.add_parser("batch-submit", help="Submit a batch of LLM requests for multiple cases/tools.")
-    p_bs.add_argument("--cases", nargs="+", required=True, metavar="CASE_ID",
-                      help="Case IDs to include in the batch")
-    p_bs.add_argument("--tools", nargs="+", required=True,
-                      choices=["mdr-report", "exec-summary", "secarch"],
-                      help="Tools to run for each case")
-    p_bs.add_argument("--label", default="", help="Optional label for the batch")
+    p_bsub = sub.add_parser("batch-submit", help="Submit a batch of LLM requests for multiple cases/tools.")
+    p_bsub.add_argument("--cases", nargs="+", required=True, metavar="CASE_ID",
+                         help="Case IDs to include in the batch")
+    p_bsub.add_argument("--tools", nargs="+", required=True,
+                         choices=["mdr-report", "exec-summary", "secarch"],
+                         help="Tools to run for each case")
+    p_bsub.add_argument("--label", default="", help="Optional label for the batch")
 
     # batch-status
     p_bst = sub.add_parser("batch-status", help="Check batch processing status.")
@@ -918,9 +1451,19 @@ def main() -> None:
         "evtx":           cmd_evtx,
         "cve-context":    cmd_cve_context,
         "exec-summary":   cmd_exec_summary,
+        "velociraptor":   cmd_velociraptor,
+        "browser-session": cmd_browser_session,
+        "browser-stop":   cmd_browser_stop,
+        "browser-list":   cmd_browser_list,
+        "mde-package":    cmd_mde_package,
+        "memory-guide":   cmd_memory_guide,
+        "memory-analyse": cmd_memory_analyse,
         "url":            cmd_url,
         "domain":         cmd_domain,
         "file":           cmd_file,
+        "articles":       cmd_articles,
+        "articles-list":  cmd_articles_list,
+        "articles-generate": cmd_articles_generate,
         "batch-submit":   cmd_batch_submit,
         "batch-status":   cmd_batch_status,
         "batch-collect":  cmd_batch_collect,

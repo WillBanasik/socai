@@ -35,6 +35,22 @@ MAX_HISTORY_MESSAGES = 20      # messages sent to API; full history still saved 
 MAX_TOOL_RESULT_CHARS = 3000   # truncate long tool results in API payload
 MAX_COMPACTION_MESSAGES = 200  # safety cap when compaction is active
 
+# Cache search_threat_articles results so generate_threat_article can reference them.
+# Persisted to disk so --reload doesn't wipe them.
+_CANDIDATE_CACHE_PATH = Path(__file__).resolve().parent.parent / "registry" / ".article_candidates_cache.json"
+
+
+def _save_candidate_cache(candidates: list[dict]) -> None:
+    _CANDIDATE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CANDIDATE_CACHE_PATH.write_text(json.dumps(candidates, default=str))
+
+
+def _load_candidate_cache() -> list[dict]:
+    try:
+        return json.loads(_CANDIDATE_CACHE_PATH.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
 
 def _trim_for_api(messages: list[dict], max_messages: int = MAX_HISTORY_MESSAGES) -> list[dict]:
     """Return a trimmed copy of *messages* suitable for the API.
@@ -350,10 +366,23 @@ def execute_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permiss
         return f"Error running {tool_name}: {exc}"
 
 
-def _dispatch_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permissions: list[str] | None = None) -> dict:
-    """Route tool call to the appropriate action function."""
-    perms = user_permissions or []
+# ---------------------------------------------------------------------------
+# Shared tool handlers — identical in case-mode and session-mode
+# ---------------------------------------------------------------------------
 
+# Tools that require a backing case when called from session mode
+_SHARED_BACKING_REQUIRED = frozenset({
+    "start_browser_session", "ingest_velociraptor", "ingest_mde_package",
+    "memory_dump_guide", "analyse_memory_dump",
+})
+
+
+def _dispatch_shared(tool_name: str, tool_input: dict, case_id: str | None, perms: list[str]) -> dict | None:
+    """Handle tools that run identically in case-mode and session-mode.
+
+    Returns a result dict if the tool was handled, or ``None`` to fall through
+    to mode-specific dispatch.
+    """
     if tool_name == "run_kql":
         if "sentinel:query" not in perms and "admin" not in perms:
             return {"_message": "Permission denied — Sentinel query execution requires admin privileges."}
@@ -367,7 +396,7 @@ def _dispatch_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permi
         )
         return {"_message": result.get("summary", "No data."), **result}
 
-    elif tool_name == "link_cases":
+    if tool_name == "link_cases":
         from tools.case_links import link_cases
         result = link_cases(
             tool_input.get("case_a", ""),
@@ -384,7 +413,7 @@ def _dispatch_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permi
             msg = result.get("reason", "Link failed.")
         return {"_message": msg, **result}
 
-    elif tool_name == "merge_cases":
+    if tool_name == "merge_cases":
         from tools.case_links import merge_cases
         result = merge_cases(
             tool_input.get("source_ids", []),
@@ -401,7 +430,7 @@ def _dispatch_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permi
             msg = result.get("reason", "Merge failed.")
         return {"_message": msg, **result}
 
-    elif tool_name == "recall_cases":
+    if tool_name == "recall_cases":
         from tools.recall import recall
         result = recall(
             iocs=tool_input.get("iocs", []),
@@ -410,7 +439,156 @@ def _dispatch_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permi
         )
         return {"_message": result.get("summary", "No results."), **result}
 
-    elif tool_name == "capture_urls":
+    if tool_name == "ingest_velociraptor":
+        run_analysis = tool_input.get("run_analysis", True)
+        return actions.ingest_velociraptor(case_id, run_analysis=run_analysis)
+
+    if tool_name == "ingest_mde_package":
+        run_analysis = tool_input.get("run_analysis", True)
+        return actions.ingest_mde_package(case_id, run_analysis=run_analysis)
+
+    if tool_name == "memory_dump_guide":
+        return actions.memory_dump_guide(
+            case_id,
+            process_name=tool_input.get("process_name", ""),
+            pid=tool_input.get("pid", ""),
+            alert_title=tool_input.get("alert_title", ""),
+            hostname=tool_input.get("hostname", ""),
+        )
+
+    if tool_name == "analyse_memory_dump":
+        run_analysis = tool_input.get("run_analysis", True)
+        return actions.analyse_memory_dump_action(case_id, run_analysis=run_analysis)
+
+    if tool_name == "start_browser_session":
+        from tools.browser_session import start_session
+        url = tool_input.get("url", "")
+        if not url:
+            return {"_message": "URL is required to start a browser session."}
+        result = start_session(url, case_id)
+        if result.get("status") != "ok":
+            return {"_message": f"Failed to start session: {result.get('reason', 'unknown error')}"}
+        return {
+            "session_id": result["session_id"],
+            "novnc_url": result["novnc_url"],
+            "_message": result["message"],
+        }
+
+    if tool_name == "stop_browser_session":
+        from tools.browser_session import stop_session
+        sid = tool_input.get("session_id", "")
+        if not sid:
+            return {"_message": "Session ID is required."}
+        result = stop_session(sid)
+        if result.get("status") != "ok":
+            return {"_message": f"Failed to stop session: {result.get('reason', 'unknown error')}"}
+        ns = result.get("network_summary", {})
+        lines = [
+            f"Session **{sid}** stopped.",
+            f"Duration: {result.get('duration_seconds', 0)}s",
+            f"Requests: {ns.get('total_requests', 0)}, "
+            f"Redirects: {ns.get('total_redirects', 0)}, "
+            f"Domains: {len(ns.get('unique_domains', []))}",
+        ]
+        return {"_message": "\n".join(lines), **result}
+
+    if tool_name == "list_browser_sessions":
+        from tools.browser_session import list_sessions
+        sessions = list_sessions()
+        if not sessions:
+            return {"_message": "No browser sessions found."}
+        lines = []
+        for s in sessions:
+            status = s.get("status", "unknown").upper()
+            sid = s.get("session_id", "?")
+            url = s.get("start_url", "")
+            novnc = s.get("novnc_url", "")
+            line = f"[{status}] {sid} — {url}"
+            if status == "ACTIVE" and novnc:
+                line += f" → {novnc}"
+            lines.append(line)
+        return {"_message": "\n".join(lines), "sessions": sessions}
+
+    if tool_name == "load_kql_playbook":
+        return _handle_kql_playbook(tool_input)
+
+    if tool_name == "search_threat_articles":
+        from tools.threat_articles import fetch_candidates
+        candidates = fetch_candidates(
+            days=tool_input.get("days", 7),
+            max_candidates=tool_input.get("count", 20),
+            category=tool_input.get("category"),
+        )
+        if not candidates:
+            return {"_message": "No candidates found. Try increasing the lookback window.", "candidates": []}
+        # Cache for generate_threat_article to reference by 1-based index
+        _save_candidate_cache(candidates)
+        lines = []
+        for i, c in enumerate(candidates):
+            covered = " *(already covered)*" if c["already_covered"] else ""
+            lines.append(f"{i+1}. **[{c['category']}]** {c['title']} — _{c['source_name']}_{covered}")
+        msg = f"Found **{len(candidates)}** candidate(s):\n\n" + "\n".join(lines)
+        msg += "\n\nWhich articles would you like me to write up? Refer to them by number."
+        return {"_message": msg, "candidates": candidates}
+
+    if tool_name == "generate_threat_article":
+        from tools.threat_articles import generate_articles
+        candidate_ids = tool_input.get("candidate_ids", [])
+        analyst = tool_input.get("analyst", "chat")
+        cached = _load_candidate_cache()
+        if not cached:
+            return {"_message": "No cached candidates. Run search_threat_articles first."}
+        # Resolve candidates: support 1-based indices ("1", "3") and fingerprint IDs
+        selected = []
+        for cid in candidate_ids:
+            # Try as 1-based index first
+            if cid.isdigit():
+                idx = int(cid) - 1
+                if 0 <= idx < len(cached):
+                    selected.append(cached[idx])
+                    continue
+            # Fall back to fingerprint match
+            for c in cached:
+                if c["id"] == cid:
+                    selected.append(c)
+                    break
+        if not selected:
+            return {"_message": "No matching candidates found. Check the numbers and try again."}
+        results = generate_articles(selected, analyst=analyst, case_id=case_id)
+        if not results:
+            return {"_message": "Article generation failed — check error log."}
+        lines = [f"Generated **{len(results)}** article(s):\n"]
+        for r in results:
+            lines.append(f"- **[{r['category']}]** {r['title']}\n  → `{r['article_path']}`")
+        return {"_message": "\n".join(lines), "articles": results}
+
+    if tool_name == "list_threat_articles":
+        from tools.threat_articles import list_articles
+        articles = list_articles(
+            month=tool_input.get("month"),
+            category=tool_input.get("category"),
+        )
+        if not articles:
+            return {"_message": "No articles found for the given filters."}
+        lines = [f"**{len(articles)}** article(s) found:\n"]
+        for a in articles:
+            lines.append(f"- **[{a.get('category', '?')}]** {a.get('title', '?')} "
+                         f"— {a.get('date', '?')} by {a.get('analyst', '?')}")
+        return {"_message": "\n".join(lines), "articles": articles}
+
+    return None  # Not a shared tool — fall through to mode-specific dispatch
+
+
+def _dispatch_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permissions: list[str] | None = None) -> dict:
+    """Route tool call to the appropriate case-mode action function."""
+    perms = user_permissions or []
+
+    # Delegate shared tools (identical in case-mode and session-mode)
+    result = _dispatch_shared(tool_name, tool_input, case_id, perms)
+    if result is not None:
+        return result
+
+    if tool_name == "capture_urls":
         urls = tool_input.get("urls", [])
         if not urls:
             return {"_message": "No URLs provided. Ask the analyst for URLs to capture."}
@@ -507,9 +685,6 @@ def _dispatch_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permi
             "analyst": meta.get("analyst", "chat"),
         }
         return actions.run_full_pipeline(case_id, kwargs)
-
-    elif tool_name == "load_kql_playbook":
-        return _handle_kql_playbook(tool_input)
 
     else:
         return {"_message": f"Unknown tool: {tool_name}"}
@@ -792,10 +967,11 @@ def _extract_text(content) -> str:
 # ---------------------------------------------------------------------------
 
 def _stream_one_turn(client, model, system, tools, messages, max_tokens):
-    """Stream a single API turn, yielding SSE event dicts.
+    """Stream a single API turn, yielding ``text_delta`` events.
 
-    Yields ``text_delta``, ``tool_start``, events. Returns the final
-    ``Message`` object via ``stream.get_final_message()``.
+    Tool calls are NOT yielded here — the caller emits ``tool_start``
+    after the stream completes with the full input from the final message.
+    Returns the final ``Message`` object via ``stream.get_final_message()``.
     """
     with client.messages.stream(
         model=model,
@@ -811,10 +987,6 @@ def _stream_one_turn(client, model, system, tools, messages, max_tokens):
                 delta = getattr(event, "delta", None)
                 if delta and getattr(delta, "type", "") == "text_delta":
                     yield {"type": "text_delta", "text": delta.text}
-            elif etype == "content_block_start":
-                block = getattr(event, "content_block", None)
-                if block and getattr(block, "type", "") == "tool_use":
-                    yield {"type": "tool_start", "name": block.name, "input": {}}
         final = stream.get_final_message()
     return final
 
@@ -897,7 +1069,7 @@ def chat_stream(case_id: str, user_message: str, *, model_override: str | None =
                     history.pop()  # remove fast model response
                     text_parts = []
                     gen = _stream_one_turn(client, _response_model, system_prompt, TOOL_DEFS,
-                                           _prepare_messages_for_api(history, _model), 4096)
+                                           _prepare_messages_for_api(history, _response_model), 4096)
                     try:
                         while True:
                             evt = next(gen)
@@ -1033,7 +1205,7 @@ def session_chat_stream(session_id: str, user_message: str, *, model_override: s
                 if _model == _routing_model and _routing_model != _response_model:
                     history.pop()
                     gen = _stream_one_turn(client, _response_model, system_prompt, SESSION_TOOL_DEFS,
-                                           _prepare_messages_for_api(history, _model), 4096)
+                                           _prepare_messages_for_api(history, _response_model), 4096)
                     try:
                         while True:
                             evt = next(gen)
@@ -1196,61 +1368,17 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
     """Route session tool calls."""
     perms = user_permissions or []
 
-    if tool_name == "run_kql":
-        if "sentinel:query" not in perms and "admin" not in perms:
-            return {"_message": "Permission denied — Sentinel query execution requires admin privileges."}
-        return _run_kql_tool(tool_input)
+    # Delegate shared tools (identical in case-mode and session-mode)
+    if tool_name in _SHARED_BACKING_REQUIRED:
+        _case_id = _session_ensure_backing_case(session_id)
+    else:
+        ctx = _session_load_context(session_id)
+        _case_id = ctx.get("backing_case_id")  # may be None
+    result = _dispatch_shared(tool_name, tool_input, _case_id, perms)
+    if result is not None:
+        return result
 
-    if tool_name == "assess_landscape":
-        from tools.case_landscape import assess_landscape
-        result = assess_landscape(
-            days=tool_input.get("days"),
-            client=tool_input.get("client"),
-        )
-        return {"_message": result.get("summary", "No data."), **result}
-
-    elif tool_name == "link_cases":
-        from tools.case_links import link_cases
-        result = link_cases(
-            tool_input.get("case_a", ""),
-            tool_input.get("case_b", ""),
-            tool_input.get("link_type", "related"),
-            canonical=tool_input.get("canonical"),
-            reason=tool_input.get("reason", ""),
-        )
-        if result.get("status") == "ok":
-            msg = f"Linked **{result['case_a']}** ↔ **{result['case_b']}** ({result['link_type']})"
-            if result.get("canonical"):
-                msg += f"\nCanonical case: **{result['canonical']}**"
-        else:
-            msg = result.get("reason", "Link failed.")
-        return {"_message": msg, **result}
-
-    elif tool_name == "merge_cases":
-        from tools.case_links import merge_cases
-        result = merge_cases(
-            tool_input.get("source_ids", []),
-            tool_input.get("target_id", ""),
-        )
-        if result.get("status") == "ok":
-            msg = (f"Merged **{', '.join(result['sources'])}** → **{result['target']}**\n"
-                   f"- Artefacts: {result['artefacts_merged']}\n"
-                   f"- IOC types: {', '.join(result['ioc_types_merged']) or 'none'}\n"
-                   f"- Findings: {result['findings_merged']}")
-        else:
-            msg = result.get("reason", "Merge failed.")
-        return {"_message": msg, **result}
-
-    elif tool_name == "recall_cases":
-        from tools.recall import recall
-        result = recall(
-            iocs=tool_input.get("iocs", []),
-            emails=tool_input.get("emails", []),
-            keywords=tool_input.get("keywords", []),
-        )
-        return {"_message": result.get("summary", "No results."), **result}
-
-    elif tool_name == "capture_urls":
+    if tool_name == "capture_urls":
         urls = tool_input.get("urls", [])
         if not urls:
             return {"_message": "No URLs provided."}
@@ -1685,11 +1813,19 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         if not case_dir.exists():
             return {"_message": f"Case {target_case} not found."}
 
-        from tools.common import load_json as _load_json
-        meta = _load_json(case_dir / "case_meta.json") or {}
-        iocs = _load_json(case_dir / "iocs" / "iocs.json") or {}
-        verdicts = _load_json(case_dir / "artefacts" / "enrichment" / "verdict_summary.json") or {}
-        session_ctx = _load_json(case_dir / "session_context.json") or {}
+        def _safe_load(p):
+            if not p.exists():
+                return {}
+            try:
+                from tools.common import load_json as _lj
+                return _lj(p) or {}
+            except Exception:
+                return {}
+
+        meta = _safe_load(case_dir / "case_meta.json")
+        iocs = _safe_load(case_dir / "iocs" / "iocs.json")
+        verdicts = _safe_load(case_dir / "artefacts" / "enrichment" / "verdict_summary.json")
+        session_ctx = _safe_load(case_dir / "session_context.json")
 
         # Store the loaded case in session context
         ctx = _session_load_context(session_id)
@@ -1781,9 +1917,6 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
             _save_json(meta_path, meta)
 
         return {"_message": f"Saved to **{target_case}**: {', '.join(saved) or 'nothing to save'}"}
-
-    elif tool_name == "load_kql_playbook":
-        return _handle_kql_playbook(tool_input)
 
     return {"_message": f"Unknown session tool: {tool_name}"}
 

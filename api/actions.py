@@ -606,3 +606,268 @@ def run_full_pipeline(case_id: str, kwargs: dict) -> dict:
         return result
 
     return _run_action(case_id, "full_pipeline", _do)
+
+
+def ingest_velociraptor(case_id: str, run_analysis: bool = True) -> dict:
+    """Ingest Velociraptor collection results from case uploads directory."""
+    def _do():
+        from tools.velociraptor_ingest import velociraptor_ingest
+
+        # Look for Velociraptor files in uploads/
+        uploads_dir = CASES_DIR / case_id / "uploads"
+        if not uploads_dir.exists():
+            return {"_message": "No uploads directory found — upload Velociraptor files first."}
+
+        # Find eligible files (ZIP or VQL exports)
+        vr_files = sorted(
+            f for f in uploads_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in (".zip", ".json", ".csv", ".jsonl")
+        )
+        if not vr_files:
+            return {"_message": "No Velociraptor-compatible files found in uploads (ZIP, JSON, CSV)."}
+
+        all_results = []
+        total_artefacts = 0
+        total_rows = 0
+        total_raw = 0
+
+        for vr_file in vr_files:
+            result = velociraptor_ingest(str(vr_file), case_id)
+            all_results.append(result)
+            m = result.get("manifest", {})
+            total_artefacts += m.get("total_vql_artefacts", 0)
+            total_rows += m.get("total_rows_ingested", 0)
+            total_raw += m.get("total_raw_files", 0)
+
+        lines = [
+            f"Ingested {len(vr_files)} file(s) — "
+            f"{total_artefacts} VQL artefact(s), "
+            f"{total_rows} row(s), "
+            f"{total_raw} raw file(s)."
+        ]
+
+        if run_analysis:
+            lines.append("\nRunning analysis pipeline...")
+            from tools.extract_iocs import extract_iocs
+            from tools.enrich import enrich
+            from tools.score_verdicts import score_verdicts, update_ioc_index
+            from tools.correlate import correlate
+
+            extract_iocs(case_id)
+            enrich_result = enrich(case_id)
+            score_verdicts(case_id)
+            update_ioc_index(case_id)
+            correlate(case_id)
+
+            try:
+                from tools.evtx_correlate import evtx_correlate
+                evtx_result = evtx_correlate(case_id)
+                chains = evtx_result.get("chains", [])
+                if chains:
+                    lines.append(f"EVTX: {len(chains)} attack chain(s) detected")
+            except Exception:
+                pass
+
+            try:
+                from tools.detect_anomalies import detect_anomalies
+                detect_anomalies(case_id)
+            except Exception:
+                pass
+
+            try:
+                from tools.timeline_reconstruct import timeline_reconstruct
+                timeline_reconstruct(case_id)
+            except Exception:
+                pass
+
+            lines.append("Analysis pipeline complete.")
+
+        return {
+            "files_processed": len(vr_files),
+            "total_artefacts": total_artefacts,
+            "total_rows": total_rows,
+            "total_raw_files": total_raw,
+            "_message": "\n".join(lines),
+        }
+
+    return _run_action(case_id, "ingest_velociraptor", _do)
+
+
+def ingest_mde_package(case_id: str, run_analysis: bool = True) -> dict:
+    """Ingest MDE investigation package from case uploads directory."""
+    def _do():
+        from tools.mde_ingest import mde_ingest
+
+        uploads_dir = CASES_DIR / case_id / "uploads"
+        if not uploads_dir.exists():
+            return {"_message": "No uploads directory found — upload an MDE investigation package ZIP first."}
+
+        zip_files = sorted(
+            f for f in uploads_dir.iterdir()
+            if f.is_file() and f.suffix.lower() == ".zip"
+        )
+        if not zip_files:
+            return {"_message": "No ZIP files found in uploads."}
+
+        all_results = []
+        total_artefacts = 0
+        total_rows = 0
+        total_raw = 0
+
+        for zf in zip_files:
+            result = mde_ingest(str(zf), case_id)
+            if result.get("status") != "ok":
+                continue
+            all_results.append(result)
+            m = result.get("manifest", {})
+            total_artefacts += m.get("total_artefacts", 0)
+            total_rows += m.get("total_rows_ingested", 0)
+            total_raw += m.get("total_raw_files", 0)
+
+        if not all_results:
+            return {"_message": "No valid MDE investigation packages found in uploads."}
+
+        lines = [
+            f"Ingested {len(all_results)} MDE package(s) — "
+            f"{total_artefacts} artefact(s), "
+            f"{total_rows} row(s), "
+            f"{total_raw} raw file(s)."
+        ]
+
+        if run_analysis:
+            lines.append("\nRunning analysis pipeline...")
+            from tools.extract_iocs import extract_iocs
+            from tools.enrich import enrich
+            from tools.score_verdicts import score_verdicts, update_ioc_index
+            from tools.correlate import correlate
+
+            extract_iocs(case_id)
+            enrich(case_id)
+            score_verdicts(case_id)
+            update_ioc_index(case_id)
+            correlate(case_id)
+
+            try:
+                from tools.evtx_correlate import evtx_correlate
+                evtx_result = evtx_correlate(case_id)
+                chains = evtx_result.get("chains", [])
+                if chains:
+                    lines.append(f"EVTX: {len(chains)} attack chain(s) detected")
+            except Exception:
+                pass
+
+            try:
+                from tools.detect_anomalies import detect_anomalies
+                detect_anomalies(case_id)
+            except Exception:
+                pass
+
+            try:
+                from tools.timeline_reconstruct import timeline_reconstruct
+                timeline_reconstruct(case_id)
+            except Exception:
+                pass
+
+            lines.append("Analysis pipeline complete.")
+
+        return {
+            "packages_processed": len(all_results),
+            "total_artefacts": total_artefacts,
+            "total_rows": total_rows,
+            "total_raw_files": total_raw,
+            "_message": "\n".join(lines),
+        }
+
+    return _run_action(case_id, "ingest_mde_package", _do)
+
+
+def memory_dump_guide(
+    case_id: str,
+    process_name: str = "",
+    pid: str = "",
+    alert_title: str = "",
+    hostname: str = "",
+) -> dict:
+    """Generate memory dump collection guidance."""
+    def _do():
+        from tools.memory_guidance import generate_dump_guidance
+
+        result = generate_dump_guidance(
+            case_id,
+            process_name=process_name,
+            pid=pid,
+            alert_title=alert_title,
+            hostname=hostname,
+        )
+
+        # Read the guidance file to return content
+        guidance_path = result.get("guidance_path", "")
+        try:
+            from pathlib import Path
+            content = Path(guidance_path).read_text()
+        except Exception:
+            content = ""
+
+        return {
+            "guidance_path": guidance_path,
+            "_message": content or "Guidance generated — see artefacts/memory/dump_guidance.md",
+        }
+
+    return _run_action(case_id, "memory_dump_guide", _do)
+
+
+def analyse_memory_dump_action(case_id: str, run_analysis: bool = True) -> dict:
+    """Analyse memory dump(s) from case uploads directory."""
+    def _do():
+        from tools.memory_guidance import analyse_memory_dump
+
+        uploads_dir = CASES_DIR / case_id / "uploads"
+        if not uploads_dir.exists():
+            return {"_message": "No uploads directory found — upload a .dmp file first."}
+
+        dump_files = sorted(
+            f for f in uploads_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in (".dmp", ".dump", ".raw", ".bin")
+        )
+        if not dump_files:
+            return {"_message": "No memory dump files found in uploads (.dmp, .dump, .raw, .bin)."}
+
+        all_results = []
+        for df in dump_files:
+            result = analyse_memory_dump(str(df), case_id)
+            if result.get("status") == "ok":
+                all_results.append(result)
+
+        if not all_results:
+            return {"_message": "No valid memory dumps could be analysed."}
+
+        lines = [f"Analysed {len(all_results)} dump file(s):"]
+        for r in all_results:
+            risk = r.get("risk_indicators", {})
+            lines.append(
+                f"  • {Path(r['source']).name}: "
+                f"{r.get('strings_extracted', 0)} strings, "
+                f"risk={risk.get('level', 'unknown').upper()}"
+            )
+            if risk.get("reasons"):
+                for reason in risk["reasons"]:
+                    lines.append(f"    — {reason}")
+
+        if run_analysis:
+            lines.append("\nRunning IOC enrichment...")
+            from tools.extract_iocs import extract_iocs
+            from tools.enrich import enrich
+            from tools.score_verdicts import score_verdicts, update_ioc_index
+
+            extract_iocs(case_id)
+            enrich(case_id)
+            score_verdicts(case_id)
+            update_ioc_index(case_id)
+            lines.append("Enrichment complete.")
+
+        return {
+            "dumps_analysed": len(all_results),
+            "_message": "\n".join(lines),
+        }
+
+    return _run_action(case_id, "analyse_memory_dump", _do)

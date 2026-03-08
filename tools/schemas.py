@@ -180,3 +180,16 @@ class EvtxAnalysis(BaseModel):
     )
     attacker_skill: AttackerSkill
     detection_rules: list[DetectionRule] = Field(description="Recommended detection rules.")
+
+
+# ---------------------------------------------------------------------------
+# threat_articles
+# ---------------------------------------------------------------------------
+
+class ArticleSummary(BaseModel):
+    title: str = Field(description="Article title.")
+    category: str = Field(description="ET (Emerging Threat) or EV (Emerging Vulnerability).", pattern="^(ET|EV)$")
+    body: str = Field(description="Summarised article in paragraph format, ~150-180 words, UK English, anonymised.")
+    recommendations: str = Field(description="Actionable recommendations as a bulleted list in markdown.")
+    cves: list[str] = Field(default_factory=list, description="CVE identifiers with CVSS scores if available.")
+    iocs: list[str] = Field(default_factory=list, description="Defanged IOCs: IPs, domains, hashes, URLs.")

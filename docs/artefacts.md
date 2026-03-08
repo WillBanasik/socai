@@ -47,6 +47,31 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/security_architecture/security_arch_manifest.json` | Security arch review metadata |
 | `cases/<ID>/artefacts/response_actions/response_actions.json` | Client-specific response plan (machine-readable) |
 | `cases/<ID>/artefacts/response_actions/response_actions.md` | Formatted response plan (human-readable) |
+| `cases/<ID>/artefacts/velociraptor/ingest_manifest.json` | Velociraptor ingest processing summary |
+| `cases/<ID>/artefacts/velociraptor/collection_context.json` | Copied from offline collector ZIP (if present) |
+| `cases/<ID>/artefacts/velociraptor/host_info.json` | Host metadata from `Generic.Client.Info` (if present) |
+| `cases/<ID>/artefacts/velociraptor/uploads/` | Raw files from collector `uploads/` dir (EVTX, MFT, prefetch, etc.) |
+| `cases/<ID>/logs/vr_*.parsed.json` | Normalised VQL artefact data (same schema as `parse_logs` output) |
+| `cases/<ID>/logs/vr_*.entities.json` | Extracted entities from Velociraptor artefacts |
+| `cases/<ID>/artefacts/mde/ingest_manifest.json` | MDE investigation package ingest processing summary |
+| `cases/<ID>/artefacts/mde/security_evtx/` | Raw Security Event Log files from MDE package |
+| `cases/<ID>/artefacts/mde/prefetch/` | Raw Prefetch files from MDE package |
+| `cases/<ID>/artefacts/mde/wd_support_logs/` | Windows Defender support logs from MDE package |
+| `cases/<ID>/logs/mde_*.parsed.json` | Normalised MDE artefact data (same schema as `parse_logs` output) |
+| `cases/<ID>/logs/mde_*.entities.json` | Extracted entities from MDE artefacts |
+| `cases/<ID>/artefacts/memory/dump_guidance.md` | MDE Live Response ProcDump instructions |
+| `cases/<ID>/artefacts/memory/dump_guidance_manifest.json` | Memory dump guidance metadata |
+| `cases/<ID>/artefacts/memory/memory_analysis.json` | Memory dump analysis results (strings, PE headers, patterns, risk) |
+| `cases/<ID>/artefacts/memory/memory_analysis_manifest.json` | Memory analysis metadata |
+| `cases/<ID>/logs/mde_memory_dump.parsed.json` | Normalised memory dump findings for downstream pipeline |
+| `cases/<ID>/artefacts/browser_session/session_manifest.json` | Browser session investigation summary (includes DNS resolution table) |
+| `cases/<ID>/artefacts/browser_session/network_log.json` | All CDP-captured HTTP requests and responses |
+| `cases/<ID>/artefacts/browser_session/dns_log.json` | DNS resolution table — domain → resolved IPs, first/last seen, request count |
+| `cases/<ID>/artefacts/browser_session/redirect_chains.json` | Redirect chain reconstruction from network log |
+| `cases/<ID>/artefacts/browser_session/cookies.json` | Cookies observed via Set-Cookie headers |
+| `cases/<ID>/artefacts/browser_session/console_log.json` | Browser console output captured via CDP |
+| `cases/<ID>/artefacts/browser_session/screenshot_final.png` | Final browser state screenshot |
+| `cases/<ID>/logs/mde_browser_session.parsed.json` | Normalised browser session data for downstream pipeline (includes DNS rows) |
 
 ## Session Files
 
@@ -56,6 +81,15 @@ All persistent state is on the filesystem. There is no database.
 | `sessions/<SID>/history.json` | Conversation history (Anthropic API format) |
 | `sessions/<SID>/context.json` | Accumulated IOCs, findings, telemetry summaries, disposition |
 | `sessions/<SID>/uploads/` | Analyst-uploaded files |
+
+## Threat Article Files
+
+| File | Purpose |
+|------|---------|
+| `articles/YYYY-MM/ART-YYYYMMDD-NNNN/article.md` | Generated article summary (markdown) |
+| `articles/YYYY-MM/ART-YYYYMMDD-NNNN/article_manifest.json` | Article metadata: title, category, analyst, sources, fingerprint, Confluence hooks |
+| `registry/article_index.json` | Master index of all produced articles (dedup + listing) |
+| `registry/.article_candidates_cache.json` | Transient cache of last `search_threat_articles` results for web UI |
 
 ## Batch Files
 

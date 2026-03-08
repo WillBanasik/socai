@@ -33,6 +33,7 @@ get_model("secarch", "high")
 | `cve` | fast | Haiku | Haiku | no |
 | `queries` | fast | Haiku | Haiku | no |
 | `chat_routing` | fast | Haiku | Haiku | no |
+| `articles` | standard | Sonnet | Sonnet | no |
 | ~~`planner`~~ | ~~fast~~ | — | — | — (removed; rule-based, no LLM) |
 | ~~`clarification`~~ | ~~fast~~ | — | — | — (removed; unused) |
 
@@ -68,6 +69,12 @@ get_model("secarch", "high")
 |------|------|----------------|
 | `tools/client_query.py` | `get_model("chat_response")` | Ad-hoc query, no case exists |
 | `tools/detect_phishing_page.py` | `get_model("report")` | Per-screenshot scan, no case context in scope |
+
+### No severity — standalone tools (1 file)
+
+| File | Call | Why no severity |
+|------|------|----------------|
+| `tools/threat_articles.py` | `get_model("articles")` | Standalone tool, no case context |
 
 ### Not using `get_model()` (agent layer, non-LLM tools)
 

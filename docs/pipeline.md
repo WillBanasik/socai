@@ -79,3 +79,10 @@ After enrichment, if verdict_summary has 0 malicious and 0 suspicious IOCs, the 
 - `url` — web capture + phishing detection + enrichment + report
 - `domain` — same as `url` (bare domain is prefixed with `https://`)
 - `file` — static analysis + enrichment + report. **ZIP detection:** if the file has a `.zip` extension, it auto-extracts and tries passwords `infected` then `password`; runs static analysis on each extracted file. Non-ZIP files go straight to static analysis.
+- `velociraptor` — Velociraptor collection ingest + enrichment + EVTX correlation + anomaly detection + timeline + report. Accepts offline collector ZIPs, VQL result directories, or individual VQL files. Auto-generates case ID if `--case` omitted. Use `--no-analyse` to skip the analysis pipeline (ingest only).
+- `mde-package` — MDE investigation package ingest + enrichment + EVTX correlation + anomaly detection + timeline + report. Accepts investigation package ZIPs or extracted directories. Same downstream pipeline as Velociraptor. Auto-generates case ID if `--case` omitted. Use `--no-analyse` for ingest only.
+- `memory-guide` — generates step-by-step MDE Live Response ProcDump instructions contextual to the active alert. Requires `--process` and `--alert`; optional `--pid`, `--hostname`.
+- `memory-analyse` — read-only analysis of process memory dump files. Extracts strings, PE headers, DLL references, suspicious API patterns. Produces risk score. Optionally chains enrichment pipeline with `--no-analyse` to skip.
+- `browser-session` — starts a disposable Docker-based Chrome session (noVNC on :7900) with CDP network monitoring. Analyst browses manually; socai captures all requests, responses, redirects, cookies, and console output. Ctrl+C stops the session and collects artefacts. Use `--no-analyse` to skip enrichment pipeline after session ends.
+- `browser-stop` — stops an active browser session by session ID and collects artefacts.
+- `browser-list` — lists all browser sessions (active and completed).

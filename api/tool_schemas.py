@@ -497,92 +497,233 @@ TOOL_DEFS = [
             },
         },
     },
+    {
+        "name": "ingest_velociraptor",
+        "description": (
+            "Ingest Velociraptor collection results — offline collector ZIPs, VQL result "
+            "files (JSONL/CSV), or exported artefact directories. Parses and normalises "
+            "VQL outputs (event logs, autoruns, netstat, processes, services, scheduled tasks, "
+            "prefetch, shimcache, amcache, MFT, USN journal) into the standard format that "
+            "feeds EVTX correlation, anomaly detection, IOC extraction, and timeline "
+            "reconstruction. Use when the analyst uploads Velociraptor exports."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_analysis": {
+                    "type": "boolean",
+                    "description": (
+                        "Run enrichment, EVTX correlation, anomaly detection, and timeline "
+                        "reconstruction after ingest (default true)"
+                    ),
+                    "default": True,
+                },
+            },
+        },
+    },
+    {
+        "name": "ingest_mde_package",
+        "description": (
+            "Ingest a Microsoft Defender for Endpoint (MDE) investigation package ZIP. "
+            "Parses triage artefacts (processes, services, scheduled tasks, autoruns, "
+            "network connections, ARP cache, DNS cache, prefetch, SMB sessions, security "
+            "event log, installed programs, users/groups, temp directories, system info) "
+            "into the standard format that feeds the analysis pipeline. Use when the "
+            "analyst provides an MDE investigation package instead of Velociraptor data."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_analysis": {
+                    "type": "boolean",
+                    "description": (
+                        "Run enrichment, EVTX correlation, anomaly detection, and timeline "
+                        "reconstruction after ingest (default true)"
+                    ),
+                    "default": True,
+                },
+            },
+        },
+    },
+    {
+        "name": "memory_dump_guide",
+        "description": (
+            "Generate step-by-step guidance for an analyst to collect a process memory "
+            "dump via MDE Live Response. Produces a markdown document with ProcDump "
+            "commands, Live Response steps, and evidence handling instructions. Use when "
+            "the analyst needs to capture a suspicious process's memory from an endpoint."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "process_name": {
+                    "type": "string",
+                    "description": "Target process name (e.g. svchost.exe)",
+                },
+                "pid": {
+                    "type": "string",
+                    "description": "Target process ID",
+                },
+                "alert_title": {
+                    "type": "string",
+                    "description": "Title of the triggering alert for context",
+                },
+                "hostname": {
+                    "type": "string",
+                    "description": "Target device hostname",
+                },
+            },
+        },
+    },
+    {
+        "name": "analyse_memory_dump",
+        "description": (
+            "Analyse a collected process memory dump (.dmp) file. Extracts strings, "
+            "IOCs (IPs, URLs, domains, hashes), DLL references, and suspicious patterns "
+            "(injection markers, shellcode, credential theft indicators, AMSI/ETW bypass). "
+            "Produces a structured analysis with risk assessment. Use after the analyst "
+            "has collected a process dump following the memory_dump_guide instructions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_analysis": {
+                    "type": "boolean",
+                    "description": "Run IOC enrichment after analysis (default true)",
+                    "default": True,
+                },
+            },
+        },
+    },
+    {
+        "name": "start_browser_session",
+        "description": (
+            "Start a disposable Chrome browser session for manual phishing investigation. "
+            "Spins up a Docker container with a live browser accessible via noVNC. "
+            "The analyst clicks through the page manually (bypassing Cloudflare, CAPTCHAs, etc.) "
+            "while socai captures all network traffic via Chrome DevTools Protocol — every "
+            "request, response, redirect, cookie, and console log. Use when automated web "
+            "capture fails due to bot protection or when manual interaction is needed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Starting URL to navigate to",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "stop_browser_session",
+        "description": (
+            "Stop an active browser session, collect all captured network data, "
+            "and tear down the Docker container. Writes network logs, redirect chains, "
+            "cookies, console output, and a final screenshot as case artefacts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID to stop",
+                },
+            },
+            "required": ["session_id"],
+        },
+    },
+    {
+        "name": "list_browser_sessions",
+        "description": "List all browser sessions (active and completed).",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "search_threat_articles",
+        "description": (
+            "Search recent cybersecurity news for emerging threats (ET) and "
+            "emerging vulnerabilities (EV). Returns a shortlist of candidate topics "
+            "for article writing. Use when the analyst asks about writing threat "
+            "articles, finding recent threats/vulnerabilities for monthly reporting, "
+            "or producing ET/EV summaries."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Lookback window in days (default 7)",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["ET", "EV"],
+                    "description": "Filter by category: ET (Emerging Threat) or EV (Emerging Vulnerability)",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Max candidates to return (default 20)",
+                },
+            },
+        },
+    },
+    {
+        "name": "generate_threat_article",
+        "description": (
+            "Generate 60-second-read threat intelligence article(s) from selected "
+            "candidates. Fetches full source content, produces UK English summary "
+            "with recommendations and extracted IOCs/CVEs. The analyst must first "
+            "use search_threat_articles to get candidates, then select which ones "
+            "to write up."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "candidate_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "1-based numbers of candidates from search_threat_articles results (e.g. [\"1\", \"3\", \"5\"])",
+                },
+                "analyst": {
+                    "type": "string",
+                    "description": "Analyst name for attribution",
+                },
+            },
+            "required": ["candidate_ids"],
+        },
+    },
+    {
+        "name": "list_threat_articles",
+        "description": (
+            "List previously produced threat articles. Use to check what has "
+            "already been written this month to avoid duplicates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "month": {
+                    "type": "string",
+                    "description": "Filter by month in YYYY-MM format (e.g. 2026-03)",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["ET", "EV"],
+                    "description": "Filter by category",
+                },
+            },
+        },
+    },
 ]
 
 
 # ---------------------------------------------------------------------------
-# Session-mode tool definitions
+# Session-only tool definitions (combined with shared defs below)
 # ---------------------------------------------------------------------------
 
-SESSION_TOOL_DEFS = [
-    {
-        "name": "assess_landscape",
-        "description": (
-            "Holistic cross-case intelligence assessment — case stats, high-risk IOCs, "
-            "link clusters, repeat targets, attack patterns, and recommendations."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "days": {"type": "integer", "description": "Last N days (omit for all time)"},
-                "client": {"type": "string", "description": "Filter to client/org name"},
-            },
-        },
-    },
-    {
-        "name": "link_cases",
-        "description": (
-            "Link two cases together. Use when cases share IOCs, targets, or campaigns."
-            "Link types: 'duplicate' (same investigation repeated), "
-            "'related' (same campaign/actor/IOC overlap), 'parent' (escalation chain)."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "case_a": {"type": "string", "description": "First case ID"},
-                "case_b": {"type": "string", "description": "Second case ID"},
-                "link_type": {"type": "string", "enum": ["duplicate", "related", "parent"], "default": "related"},
-                "canonical": {"type": "string", "description": "For duplicates, which case is canonical"},
-                "reason": {"type": "string", "description": "Reason for the link"},
-            },
-            "required": ["case_a", "case_b"],
-        },
-    },
-    {
-        "name": "merge_cases",
-        "description": (
-            "Merge artefacts, IOCs, and findings from source cases into a target case. "
-            "Source cases are marked as duplicates."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "source_ids": {"type": "array", "items": {"type": "string"}, "description": "Cases to merge FROM"},
-                "target_id": {"type": "string", "description": "Case to merge INTO"},
-            },
-            "required": ["source_ids", "target_id"],
-        },
-    },
-    {
-        "name": "recall_cases",
-        "description": (
-            "Search prior cases and cached intelligence for what is ALREADY KNOWN "
-            "about given IOCs, email addresses, or keywords. Returns prior case "
-            "summaries, verdicts, findings, cached enrichments, and identifies gaps. "
-            "MUST be called BEFORE running KQL queries or enrichment for any"
-            "investigation — check what we already know first."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "iocs": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "IOC values to search for (IPs, domains, URLs, hashes)",
-                },
-                "emails": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Email addresses to search for",
-                },
-                "keywords": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Free-text keywords to match against case titles",
-                },
-            },
-        },
-    },
+_SESSION_ONLY_DEFS = [
     {
         "name": "analyse_telemetry",
         "description": (
@@ -1052,83 +1193,18 @@ SESSION_TOOL_DEFS = [
             "required": ["case_id", "updates"],
         },
     },
-    {
-        "name": "run_kql",
-        "description": (
-            "Execute a read-only KQL query against a Microsoft Sentinel / Log Analytics workspace. "
-            "Admin-only. Use workspace name (example-client) or a full workspace GUID. "
-            "Returns up to 50 rows. Use for live evidence gathering during investigations. "
-            "KEY TABLES: SecurityIncident (Title field), SecurityAlert (AlertName field), "
-            "CommonSecurityLog, DeviceEvents, DeviceNetworkEvents, SigninLogs. "
-            "Use 'startswith' or 'contains' for partial name matches, never '==' for substrings. "
-            "Always include a TimeGenerated filter. If no results, try a different table or wider time range."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": (
-                        "The KQL query to execute. Must include a TimeGenerated filter. "
-                        "Example: SecurityAlert | where TimeGenerated >= ago(7d) "
-                        "| where AlertName startswith \"TI Map\" | sort by TimeGenerated desc | take 10"
-                    ),
-                },
-                "workspace": {
-                    "type": "string",
-                    "description": "Workspace name (e.g. example-client) or full workspace GUID",
-                },
-            },
-            "required": ["query", "workspace"],
-        },
-    },
-    {
-        "name": "load_kql_playbook",
-        "description": (
-            "Load a pre-built KQL investigation playbook. Playbooks contain expert-crafted, "
-            "multi-stage queries for common investigation scenarios (phishing, account compromise, etc.). "
-            "Each stage returns ready-to-run KQL with parameter placeholders.\n\n"
-            "WORKFLOW: Call with no playbook_id to list available playbooks. Then call with "
-            "a playbook_id to load it. Substitute the parameter values from the investigation "
-            "context and run each stage via run_kql.\n\n"
-            "Available playbooks:\n"
-            "- phishing: Multi-stage email investigation (core evidence, post-delivery logon, "
-            "URL scope + ZAP timing, attachment endpoint execution)\n"
-            "- account-compromise: Sign-in analysis (interactive + non-interactive union), post-compromise activity (MFA, OAuth, mailbox rules)\n"
-            "- ioc-hunt: IOC presence sweep across all major Sentinel tables in a single union query, "
-            "then conditional context pivot around hits\n"
-            "- malware-execution: Malware/script execution traceback — process ancestry + script content, "
-            "file delivery chain, initial access vector (USB, email, lateral movement)\n"
-            "- privilege-escalation: Privilege escalation / AD group change investigation — escalation event "
-            "detail (Entra ID + on-prem AD + alerts), actor legitimacy check (sign-ins + identity), "
-            "post-escalation activity (admin portal access, cascading changes, mailbox abuse)"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "playbook_id": {
-                    "type": "string",
-                    "description": (
-                        "Playbook to load (e.g. 'phishing', 'account-compromise', 'ioc-hunt', "
-                        "'malware-execution', 'privilege-escalation'). "
-                        "Omit to list all available playbooks."
-                    ),
-                },
-                "stage": {
-                    "type": "integer",
-                    "description": (
-                        "Specific stage number to load. Omit to get the full playbook "
-                        "overview with all stages and their run conditions."
-                    ),
-                },
-                "params": {
-                    "type": "object",
-                    "description": (
-                        "Parameter values to substitute into the query. "
-                        "E.g. {\"target_id\": \"abc-123-def\"} for phishing stage 1."
-                    ),
-                },
-            },
-        },
-    },
+]
+
+# Shared tools are defined once in TOOL_DEFS; re-use for session mode
+_SHARED_TOOL_NAMES = {
+    "assess_landscape", "link_cases", "merge_cases", "recall_cases",
+    "run_kql", "load_kql_playbook",
+    "ingest_velociraptor", "ingest_mde_package", "memory_dump_guide",
+    "analyse_memory_dump", "start_browser_session", "stop_browser_session",
+    "list_browser_sessions", "search_threat_articles", "generate_threat_article",
+    "list_threat_articles",
+}
+
+SESSION_TOOL_DEFS = _SESSION_ONLY_DEFS + [
+    d for d in TOOL_DEFS if d["name"] in _SHARED_TOOL_NAMES
 ]

@@ -351,9 +351,10 @@
     font-size: 0.62rem; color: #484f58; margin-top: 1px;
   }
   .sidebar-item .si-actions {
-    display: none; gap: 0.2rem; flex-shrink: 0;
+    display: flex; gap: 0.2rem; flex-shrink: 0; opacity: 0.4;
+    transition: opacity 0.15s;
   }
-  .sidebar-item:hover .si-actions { display: flex; }
+  .sidebar-item:hover .si-actions { opacity: 1; }
   .sidebar-item .si-actions button {
     background: none; border: none; color: #484f58; cursor: pointer;
     font-size: 0.7rem; padding: 0.1rem; font-family: inherit;
@@ -1435,16 +1436,24 @@
 
       const status = s.status || 'active';
       const dotClass = status === 'materialised' ? 'materialised' : status === 'active' ? 'active' : 'expired';
-      const title = s.title || s.session_id;
+      // Title priority: custom title > case ID > "new investigation" (italic)
+      let titleHtml;
+      if (s.title) {
+        titleHtml = s.title;
+      } else if (s.case_id) {
+        titleHtml = s.case_id + (s.case_title ? ' — ' + s.case_title : '');
+      } else {
+        titleHtml = '<em style="color:#8b949e;">new investigation</em>';
+      }
       const created = s.created ? new Date(s.created).toLocaleString(undefined, {
         month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
       }) : '';
-      const caseLabel = s.case_id ? ' &rarr; ' + s.case_id : '';
+      const caseLabel = s.case_id && s.title ? ' &rarr; ' + s.case_id : '';
 
       item.innerHTML =
         '<div class="si-dot ' + dotClass + '"></div>' +
         '<div class="si-body">' +
-          '<div class="si-title">' + title + '</div>' +
+          '<div class="si-title">' + titleHtml + '</div>' +
           '<div class="si-meta">' + created + ' &middot; ' + status + caseLabel + '</div>' +
         '</div>' +
         '<div class="si-actions">' +

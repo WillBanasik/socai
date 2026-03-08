@@ -122,3 +122,30 @@ SOCAI_COMPACTION_ENABLED = os.getenv("SOCAI_COMPACTION_ENABLED", "1") == "1"
 BATCH_POLL_INTERVAL = int(os.getenv("SOCAI_BATCH_POLL_INTERVAL", "30"))
 BATCH_TIMEOUT = int(os.getenv("SOCAI_BATCH_TIMEOUT", "3600"))
 BATCH_DIR = BASE_DIR / "registry" / "batches"
+
+# ---------------------------------------------------------------------------
+# Threat articles
+# ---------------------------------------------------------------------------
+ARTICLES_DIR       = BASE_DIR / "articles"
+ARTICLE_INDEX_FILE = BASE_DIR / "registry" / "article_index.json"
+SOCAI_MODEL_ARTICLES = os.getenv("SOCAI_MODEL_ARTICLES", "standard")
+
+# ---------------------------------------------------------------------------
+# Confluence (read-only, scoped token)
+# ---------------------------------------------------------------------------
+CONFLUENCE_URL       = os.getenv("CONFLUENCE_URL", "")
+CONFLUENCE_CLOUD_ID  = os.getenv("CONFLUENCE_CLOUD_ID", "")
+CONFLUENCE_EMAIL     = os.getenv("CONFLUENCE_EMAIL", "")
+CONFLUENCE_API_TOKEN = os.getenv("CONFLUENCE_API_TOKEN", "")
+CONFLUENCE_SPACE_KEY = os.getenv("CONFLUENCE_SPACE_KEY", "")
+
+# ---------------------------------------------------------------------------
+# CORS — allowed origins for web UI
+# ---------------------------------------------------------------------------
+# Comma-separated list of allowed origins. Defaults to localhost development.
+# Set SOCAI_CORS_ORIGINS in .env for production (e.g. "https://socai.internal.company.com").
+CORS_ORIGINS = [
+    o.strip() for o in
+    os.getenv("SOCAI_CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
+    if o.strip()
+]
