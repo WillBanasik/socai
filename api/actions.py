@@ -118,7 +118,7 @@ def capture_urls(case_id: str, urls: list[str]) -> dict:
             if result.get("redirect_chain"):
                 chain = result["redirect_chain"]
                 if len(chain) > 1:
-                    lines.append(f"\nRedirect chain: {' → '.join(chain[:5])}")
+                    lines.append(f"\nRedirect chain: {' → '.join(c.get('url', str(c)) if isinstance(c, dict) else str(c) for c in chain[:5])}")
 
         result = result if isinstance(result, dict) else {"captures": result}
         result["_message"] = "\n".join(lines)

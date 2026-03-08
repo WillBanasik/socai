@@ -32,9 +32,9 @@ get_model("secarch", "high")
 | `timeline` | fast | Haiku | Haiku | no |
 | `cve` | fast | Haiku | Haiku | no |
 | `queries` | fast | Haiku | Haiku | no |
-| `planner` | fast | Haiku | Haiku | no |
-| `clarification` | fast | Haiku | Haiku | no |
 | `chat_routing` | fast | Haiku | Haiku | no |
+| ~~`planner`~~ | ~~fast~~ | — | — | — (removed; rule-based, no LLM) |
+| ~~`clarification`~~ | ~~fast~~ | — | — | — (removed; unused) |
 
 ## Per-File Call Site Map
 
@@ -53,6 +53,14 @@ get_model("secarch", "high")
 | `tools/cve_contextualise.py` | `get_model("cve", severity)` | cve | `load_json(case_meta)` |
 | `tools/timeline_reconstruct.py` | `get_model("timeline", _severity)` | timeline | `_load_optional(case_meta)` |
 | `tools/executive_summary.py` | `get_model("exec_summary", severity)` | exec_summary | `meta.get("severity")` |
+
+### Batch API (3 files — severity loaded from case_meta.json)
+
+| File | Call | Task |
+|------|------|------|
+| `tools/batch.py` | `get_model("mdr_report", severity)` | mdr_report |
+| `tools/batch.py` | `get_model("exec_summary", severity)` | exec_summary |
+| `tools/batch.py` | `get_model("secarch", severity)` | secarch |
 
 ### No severity (2 files — always medium tier, escalation not triggered)
 

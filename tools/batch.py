@@ -248,12 +248,24 @@ def _dispatch_single(tool_name: str, case_id: str, text: str) -> None:
 # Batch preparation helpers (per-tool)
 # ---------------------------------------------------------------------------
 
+def _case_severity(case_id: str) -> str:
+    """Load severity from case_meta.json, defaulting to 'medium'."""
+    from tools.common import load_json
+    from config.settings import CASES_DIR
+    meta_path = CASES_DIR / case_id / "case_meta.json"
+    try:
+        return load_json(meta_path).get("severity", "medium")
+    except (FileNotFoundError, Exception):
+        return "medium"
+
+
 def prepare_mdr_report_batch(case_id: str) -> dict | None:
     """Prepare an MDR report batch request for *case_id*."""
     try:
         from tools.generate_mdr_report import _build_context, _SYSTEM_CACHED
         from tools.common import get_model
 
+        severity = _case_severity(case_id)
         context = _build_context(case_id)
         if not context.strip():
             return None
@@ -261,7 +273,7 @@ def prepare_mdr_report_batch(case_id: str) -> dict | None:
         return {
             "custom_id": f"mdr-report:{case_id}",
             "params": {
-                "model": get_model("mdr_report"),
+                "model": get_model("mdr_report", severity),
                 "system": _SYSTEM_CACHED,
                 "messages": [{"role": "user", "content": f"Write an MDR report.\n\n{context}"}],
                 "max_tokens": 8192,
@@ -280,12 +292,13 @@ def prepare_executive_summary_batch(case_id: str) -> dict | None:
         from tools.structured_llm import structured_call_params
         from tools.common import get_model
 
+        severity = _case_severity(case_id)
         context = _build_context(case_id)
         if not context.strip():
             return None
 
         return structured_call_params(
-            model=get_model("exec_summary"),
+            model=get_model("exec_summary", severity),
             system=_SYSTEM_CACHED,
             messages=[{
                 "role": "user",
@@ -306,6 +319,7 @@ def prepare_secarch_batch(case_id: str) -> dict | None:
         from tools.security_arch_review import _build_context, _SYSTEM_CACHED
         from tools.common import get_model
 
+        severity = _case_severity(case_id)
         context = _build_context(case_id)
         if not context.strip():
             return None
@@ -313,7 +327,7 @@ def prepare_secarch_batch(case_id: str) -> dict | None:
         return {
             "custom_id": f"secarch:{case_id}",
             "params": {
-                "model": get_model("secarch"),
+                "model": get_model("secarch", severity),
                 "system": _SYSTEM_CACHED,
                 "messages": [{"role": "user", "content": (
                     f"Please produce a Security Architecture Review for the "

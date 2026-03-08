@@ -41,6 +41,12 @@ sessions/
 # Stray case folders at root
 C[0-9]*
 
+# Node
+node_modules/
+
 # OS
 .DS_Store
 Thumbs.db
+
+# Binary artefacts
+*.pptx

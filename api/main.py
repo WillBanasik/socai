@@ -81,15 +81,43 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 _ui_dir = Path(__file__).resolve().parent.parent / "ui"
+_new_ui = Path(__file__).resolve().parent.parent / "ui-dist"
 
 
 @app.get("/", include_in_schema=False)
 async def root():
+    if _new_ui.exists() and (_new_ui / "index.html").exists():
+        return FileResponse(_new_ui / "index.html")
     return FileResponse(_ui_dir / "index.html")
 
 
 # Mount static after the root route so index.html is served at /
 app.mount("/ui", StaticFiles(directory=str(_ui_dir)), name="ui")
+
+# New Svelte UI static assets + SPA fallback
+if _new_ui.exists() and (_new_ui / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=str(_new_ui / "assets")), name="new-ui-assets")
+
+
+# ---------------------------------------------------------------------------
+# Case artefact serving
+# ---------------------------------------------------------------------------
+
+@app.get("/api/cases/{case_id}/artefacts/{path:path}", include_in_schema=False)
+async def serve_artefact(
+    case_id: str,
+    path: str,
+    user: Annotated[dict, Depends(get_current_user)],
+):
+    """Serve a file from a case's artefacts directory."""
+    safe_path = Path(path)
+    # Block path traversal
+    if ".." in safe_path.parts:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    full = CASES_DIR / case_id / "artefacts" / safe_path
+    if not full.exists() or not full.is_file():
+        raise HTTPException(status_code=404, detail="Artefact not found")
+    return FileResponse(full)
 
 
 # ---------------------------------------------------------------------------
@@ -1414,3 +1442,16 @@ async def ioc_index(user: Annotated[dict, Depends(require_permission("ioc_index:
     if data is None:
         return {}
     return data
+
+
+# ---------------------------------------------------------------------------
+# SPA fallback — serve ui-dist/index.html for all non-API, non-UI routes
+# Must be defined LAST so it doesn't shadow any API routes.
+# ---------------------------------------------------------------------------
+
+if _new_ui.exists() and (_new_ui / "index.html").exists():
+    @app.get("/{path:path}", include_in_schema=False)
+    async def spa_fallback(path: str):
+        if path.startswith("api/") or path.startswith("ui/"):
+            raise HTTPException(status_code=404)
+        return FileResponse(_new_ui / "index.html")

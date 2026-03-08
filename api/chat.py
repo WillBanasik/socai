@@ -335,8 +335,8 @@ def execute_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permiss
     try:
         result = _dispatch_tool(case_id, tool_name, tool_input, user_permissions=user_permissions or [])
         if isinstance(result, dict):
-            # Return the _message if available, plus key data
-            msg = result.get("message") or result.get("_message", "")
+            # Prefer _message (display-ready) over raw message
+            msg = result.get("_message") or result.get("message", "")
             if msg:
                 return msg
             # Fall back to JSON
@@ -414,7 +414,11 @@ def _dispatch_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permi
         urls = tool_input.get("urls", [])
         if not urls:
             return {"_message": "No URLs provided. Ask the analyst for URLs to capture."}
-        return actions.capture_urls(case_id, urls)
+        result = actions.capture_urls(case_id, urls)
+        if isinstance(result, dict):
+            msg = result.get("message", "Capture complete.")
+            result["_message"] = f"{msg}\nCase: {case_id}"
+        return result
 
     elif tool_name == "triage_iocs":
         urls = tool_input.get("urls")
@@ -1148,7 +1152,8 @@ def execute_session_tool(session_id: str, tool_name: str, tool_input: dict, *, u
     try:
         result = _dispatch_session_tool(session_id, tool_name, tool_input, user_permissions=user_permissions or [])
         if isinstance(result, dict):
-            msg = result.get("message") or result.get("_message", "")
+            # Prefer _message (display-ready) over raw message
+            msg = result.get("_message") or result.get("message", "")
             if msg:
                 return msg
             return json.dumps(result, indent=2, default=str)[:8000]
@@ -1259,8 +1264,16 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         # Save extracted URLs as IOCs in session context
         _session_add_iocs(session_id, {"urls": urls})
 
-        captured = result.get("captured", 0) if isinstance(result, dict) else 0
-        msg = f"Captured {captured} page(s) for case {case_id}."
+        # actions.capture_urls returns {"status", "action", "message", "result"}
+        # Count captures from the nested result or the URL list
+        if isinstance(result, dict) and result.get("status") == "ok":
+            captured = len(urls)
+            action_msg = result.get("message") or f"Captured {captured} page(s)."
+        else:
+            captured = 0
+            action_msg = result.get("error", "Capture failed.") if isinstance(result, dict) else "Capture failed."
+
+        msg = f"{action_msg}\nBacking case: {case_id}"
         if isinstance(result, dict):
             result["_message"] = msg
             result["backing_case_id"] = case_id
