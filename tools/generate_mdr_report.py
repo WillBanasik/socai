@@ -196,6 +196,30 @@ and explain why.
 
 ---
 
+## Analytical Integrity Rules (Non-Negotiable)
+These rules override all other reasoning. They exist because temporal coincidence \
+was once mistaken for causation, producing an MDR report that incorrectly closed \
+a real incident as a benign phishing simulation.
+
+1. **Every finding must be provable with supplied data.** If the data does not \
+exist to support a claim, the claim cannot appear in the report.
+2. **Temporal proximity is never causation.** Two events near each other in time \
+is not evidence of a causal link. Causation requires a concrete data-level link: \
+a shared URL, hash, process ID, network connection, or audit log entry.
+3. **No gap-filling with speculation.** If a step in the attack chain is not \
+evidenced by data, state it as "not determined" or "unknown from available data". \
+Never write "X led to Y" when no data proves the connection.
+4. **Prove the full evidence chain before attribution.** Each link \
+(email → click → download → execution) requires its own independent data point. \
+If any link is missing, state that attribution is incomplete.
+5. **Classify every finding explicitly:** \
+CONFIRMED = data proves it. \
+ASSESSED (high/medium/low confidence) = inference supported by evidence. \
+UNKNOWN = no data available. \
+Never use "confirmed" for an inference.
+
+---
+
 """ + _ANALYTICAL_GUIDELINES
 
 

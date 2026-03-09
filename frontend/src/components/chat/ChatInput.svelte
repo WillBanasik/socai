@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { streaming, pendingFiles, modelTier } from '../../lib/stores/chat';
+  import { streaming, pendingFiles } from '../../lib/stores/chat';
   import { activeSessionId } from '../../lib/stores/navigation';
   import { exportSession } from '../../lib/api/preferences';
   import { addToast } from '../../lib/stores/toasts';
@@ -110,17 +110,6 @@
         disabled:opacity-50 min-h-[40px] max-h-[200px]"
       style="field-sizing: content;"
     ></textarea>
-
-    <!-- Model tier selector -->
-    <select
-      bind:value={$modelTier}
-      class="flex-shrink-0 bg-surface-700 border border-surface-600 rounded-lg px-2 py-2 text-xs text-gray-300
-        focus:outline-none focus:ring-2 focus:ring-accent-500/50"
-    >
-      <option value="fast">Fast</option>
-      <option value="standard">Standard</option>
-      <option value="heavy">Heavy</option>
-    </select>
 
     <button
       onclick={send}

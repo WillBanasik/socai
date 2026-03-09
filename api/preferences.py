@@ -4,7 +4,6 @@ Storage: config/preferences/<email_hash>.json
 
 Preferences:
   - custom_instructions: str — injected into every system prompt
-  - default_model_tier: str — fast | standard | heavy
   - response_style: str — concise | detailed | formal
   - pinned_sessions: list[str] — session IDs pinned to top of sidebar
   - session_tags: dict[str, list[str]] — session_id → tags
@@ -21,13 +20,11 @@ PREFS_DIR = BASE_DIR / "config" / "preferences"
 
 _DEFAULTS = {
     "custom_instructions": "",
-    "default_model_tier": "standard",
     "response_style": "concise",
     "pinned_sessions": [],
     "session_tags": {},
 }
 
-_VALID_MODEL_TIERS = {"fast", "standard", "heavy"}
 _VALID_STYLES = {"concise", "detailed", "formal"}
 
 
@@ -58,11 +55,6 @@ def save_preferences(email: str, updates: dict) -> dict:
     if "custom_instructions" in updates:
         val = str(updates["custom_instructions"]).strip()[:2000]
         prefs["custom_instructions"] = val
-
-    if "default_model_tier" in updates:
-        val = str(updates["default_model_tier"]).strip().lower()
-        if val in _VALID_MODEL_TIERS:
-            prefs["default_model_tier"] = val
 
     if "response_style" in updates:
         val = str(updates["response_style"]).strip().lower()

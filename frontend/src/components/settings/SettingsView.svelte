@@ -7,7 +7,6 @@
   import KeyboardShortcuts from './KeyboardShortcuts.svelte';
 
   let customInstructions = $state('');
-  let defaultModelTier = $state('standard');
   let responseStyle = $state('concise');
   let saving = $state(false);
   let loaded = $state(false);
@@ -18,7 +17,6 @@
       const prefs = await getPreferences();
       userPreferences.set(prefs);
       customInstructions = prefs.custom_instructions || '';
-      defaultModelTier = prefs.default_model_tier || 'standard';
       responseStyle = prefs.response_style || 'concise';
       loaded = true;
     } catch {
@@ -31,7 +29,6 @@
     try {
       const prefs = await updatePreferences({
         custom_instructions: customInstructions,
-        default_model_tier: defaultModelTier,
         response_style: responseStyle,
       });
       userPreferences.set(prefs);
@@ -91,23 +88,6 @@
               </div>
             </label>
           {/each}
-        </div>
-      </section>
-
-      <!-- Default Model Tier -->
-      <section class="mb-8">
-        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Default Model Tier</h2>
-        <div class="bg-surface-800 border border-surface-600 rounded-xl p-4">
-          <select
-            bind:value={defaultModelTier}
-            class="w-full bg-surface-700 border border-surface-600 rounded-lg px-3 py-2 text-sm text-gray-200
-              focus:outline-none focus:ring-2 focus:ring-accent-500/50"
-          >
-            <option value="fast">Fast — quick responses, lower cost</option>
-            <option value="standard">Standard — balanced quality and speed</option>
-            <option value="heavy">Heavy — maximum quality, higher cost</option>
-          </select>
-          <p class="text-xs text-gray-500 mt-2">Applied to new sessions. Override per-message with the input selector.</p>
         </div>
       </section>
 

@@ -4,14 +4,12 @@ export interface StreamChatParams {
   caseId?: string;
   sessionId?: string;
   message: string;
-  modelTier?: string;
   files?: File[];
 }
 
 export async function streamChat(params: StreamChatParams): Promise<Response> {
   const fd = new FormData();
   fd.append('message', params.message);
-  if (params.modelTier) fd.append('model_tier', params.modelTier);
   if (params.files) {
     for (const f of params.files) fd.append('files', f);
   }

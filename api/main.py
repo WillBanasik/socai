@@ -435,7 +435,6 @@ async def run_action(
     platform: str = Form(""),
     tables: str = Form(""),
     close_case: bool = Form(False),
-    model_tier: str = Form(""),
 ):
     """Route an action through Chief (LLM chat) — Chief always decides how to
     handle and investigate. The action name and parameters are translated into
@@ -473,11 +472,8 @@ async def run_action(
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
     # Route through Chief via the chat engine
-    _tier = model_tier.strip().lower() if model_tier else ""
-    if _tier and _tier not in ("fast", "standard", "heavy"):
-        _tier = ""
     email = user.get("sub", "")
-    result = chat.chat(case_id, message, model_override=_tier or None, user_email=email)
+    result = chat.chat(case_id, message, user_email=email)
 
     return {
         "reply": result["reply"],
@@ -522,7 +518,6 @@ async def global_chat(
     user: Annotated[dict, _inv_submit],
     message: str = Form(""),
     case_id: str = Form(""),
-    model_tier: str = Form(""),
 ):
     """Main chat endpoint — auto-resolves or creates a case.
     This is the primary entry point for the UI."""
@@ -531,12 +526,9 @@ async def global_chat(
 
     resolved_id = _resolve_or_create_case(user, case_id.strip() or None)
 
-    _tier = model_tier.strip().lower() if model_tier else ""
-    if _tier and _tier not in ("fast", "standard", "heavy"):
-        _tier = ""
     email = user.get("sub", "")
     perms = user.get("permissions", [])
-    result = chat.chat(resolved_id, message.strip(), model_override=_tier or None, user_email=email, user_permissions=perms)
+    result = chat.chat(resolved_id, message.strip(), user_email=email, user_permissions=perms)
     return {
         "case_id": resolved_id,
         "reply": result["reply"],
@@ -549,7 +541,6 @@ async def case_chat(
     case_id: str,
     user: Annotated[dict, _inv_submit],
     message: str = Form(""),
-    model_tier: str = Form(""),
 ):
     """Send a message to the LLM chat for a specific case."""
     if not (CASES_DIR / case_id).exists():
@@ -559,12 +550,9 @@ async def case_chat(
     if not message.strip():
         raise HTTPException(status_code=400, detail="Message is empty")
 
-    _tier = model_tier.strip().lower() if model_tier else ""
-    if _tier and _tier not in ("fast", "standard", "heavy"):
-        _tier = ""
     email = user.get("sub", "")
     perms = user.get("permissions", [])
-    result = chat.chat(case_id, message.strip(), model_override=_tier or None, user_email=email, user_permissions=perms)
+    result = chat.chat(case_id, message.strip(), user_email=email, user_permissions=perms)
     return {
         "case_id": case_id,
         "reply": result["reply"],
@@ -587,7 +575,6 @@ async def global_chat_stream(
     user: Annotated[dict, _inv_submit],
     message: str = Form(""),
     case_id: str = Form(""),
-    model_tier: str = Form(""),
 ):
     """Streaming version of /api/chat — returns SSE events."""
     if not message.strip():
@@ -595,13 +582,10 @@ async def global_chat_stream(
 
     resolved_id = _resolve_or_create_case(user, case_id.strip() or None)
 
-    _tier = model_tier.strip().lower() if model_tier else ""
-    if _tier and _tier not in ("fast", "standard", "heavy"):
-        _tier = ""
     email = user.get("sub", "")
     perms = user.get("permissions", [])
 
-    gen = chat.chat_stream(resolved_id, message.strip(), model_override=_tier or None,
+    gen = chat.chat_stream(resolved_id, message.strip(),
                            user_email=email, user_permissions=perms)
     return StreamingResponse(_sse_generator(gen), media_type="text/event-stream",
                              headers={"X-Case-Id": resolved_id})
@@ -612,7 +596,6 @@ async def case_chat_stream(
     case_id: str,
     user: Annotated[dict, _inv_submit],
     message: str = Form(""),
-    model_tier: str = Form(""),
 ):
     """Streaming version of /api/cases/{case_id}/chat — returns SSE events."""
     if not (CASES_DIR / case_id).exists():
@@ -622,13 +605,10 @@ async def case_chat_stream(
     if not message.strip():
         raise HTTPException(status_code=400, detail="Message is empty")
 
-    _tier = model_tier.strip().lower() if model_tier else ""
-    if _tier and _tier not in ("fast", "standard", "heavy"):
-        _tier = ""
     email = user.get("sub", "")
     perms = user.get("permissions", [])
 
-    gen = chat.chat_stream(case_id, message.strip(), model_override=_tier or None,
+    gen = chat.chat_stream(case_id, message.strip(),
                            user_email=email, user_permissions=perms)
     return StreamingResponse(_sse_generator(gen), media_type="text/event-stream")
 
@@ -638,7 +618,6 @@ async def session_chat_stream_endpoint(
     session_id: str,
     user: Annotated[dict, _inv_submit],
     message: str = Form(""),
-    model_tier: str = Form(""),
 ):
     """Streaming version of /api/sessions/{session_id}/chat — returns SSE events."""
     meta = sessions.load_session(session_id)
@@ -651,12 +630,9 @@ async def session_chat_stream_endpoint(
     if not message.strip():
         raise HTTPException(status_code=400, detail="Message is empty")
 
-    _tier = model_tier.strip().lower() if model_tier else ""
-    if _tier and _tier not in ("fast", "standard", "heavy"):
-        _tier = ""
     perms = user.get("permissions", [])
 
-    gen = chat.session_chat_stream(session_id, message.strip(), model_override=_tier or None,
+    gen = chat.session_chat_stream(session_id, message.strip(),
                                     user_permissions=perms, user_email=user["sub"])
     return StreamingResponse(_sse_generator(gen), media_type="text/event-stream")
 
@@ -856,7 +832,6 @@ async def session_chat(
     session_id: str,
     user: Annotated[dict, _inv_submit],
     message: str = Form(""),
-    model_tier: str = Form(""),
 ):
     """Send a message in session-mode investigation chat."""
     meta = sessions.load_session(session_id)
@@ -869,14 +844,9 @@ async def session_chat(
     if not message.strip():
         raise HTTPException(status_code=400, detail="Message is empty")
 
-    _tier = model_tier.strip().lower() if model_tier else ""
-    if _tier and _tier not in ("fast", "standard", "heavy"):
-        _tier = ""
-
     perms = user.get("permissions", [])
     result = chat.session_chat(
         session_id, message.strip(),
-        model_override=_tier or None,
         user_permissions=perms,
     )
     return {

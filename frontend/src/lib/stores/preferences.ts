@@ -3,7 +3,6 @@ import type { UserPreferences } from '../types';
 
 const defaults: UserPreferences = {
   custom_instructions: '',
-  default_model_tier: 'standard',
   response_style: 'concise',
   pinned_sessions: [],
   session_tags: {},

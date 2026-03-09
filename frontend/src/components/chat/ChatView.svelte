@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { messages, streaming, streamText, activity, pendingFiles, modelTier, resetChat, lastUsage, sessionTokens } from '../../lib/stores/chat';
+  import { messages, streaming, streamText, activity, pendingFiles, resetChat, lastUsage, sessionTokens } from '../../lib/stores/chat';
   import { activeCaseId, activeSessionId } from '../../lib/stores/navigation';
   import { sessionList } from '../../lib/stores/sessions';
   import { contextPanelOpen } from '../../lib/stores/layout';
@@ -95,7 +95,6 @@
           '| `/uploads` | List uploaded files |\n' +
           '| `/status` | Show current session/case info |\n' +
           '| `/prompts` | Show example prompts by complexity |\n' +
-          '| `/model [fast\\|standard\\|heavy]` | Switch model tier |\n' +
           '| `/export` | Export session as Markdown |'
         );
         return true;
@@ -164,12 +163,10 @@
       case '/status': {
         const sid = get(activeSessionId);
         const cid = get(activeCaseId);
-        const tier = get(modelTier);
         const tokens = get(sessionTokens);
         let md = '**Status:**\n';
         md += sid ? `- Session: \`${sid}\`\n` : '- No active session\n';
         md += cid ? `- Case: \`${cid}\`\n` : '- No case (session mode)\n';
-        md += `- Model tier: ${tier}`;
         if (tokens.input + tokens.output > 0) {
           md += `\n- Tokens this session: ${tokens.input.toLocaleString()} in / ${tokens.output.toLocaleString()} out`;
         }
@@ -177,16 +174,6 @@
         return true;
       }
 
-      case '/model': {
-        const tier = (parts[1] || '').toLowerCase();
-        if (['fast', 'standard', 'heavy'].includes(tier)) {
-          modelTier.set(tier);
-          addLocalMessage(`Model tier set to **${tier}**.`);
-        } else {
-          addLocalMessage('Usage: `/model fast|standard|heavy`');
-        }
-        return true;
-      }
 
       case '/prompts':
         addLocalMessage(
@@ -327,7 +314,6 @@
 
   async function sendMessage(text: string, replaceFrom?: number) {
     const files = get(pendingFiles);
-    const tier = get(modelTier);
     const caseId = get(activeCaseId);
     let sessionId = get(activeSessionId);
 
@@ -371,7 +357,6 @@
         caseId: caseId || undefined,
         sessionId: sessionId || undefined,
         message: text,
-        modelTier: tier,
         files: files.length > 0 ? files : undefined,
       });
 

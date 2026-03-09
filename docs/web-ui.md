@@ -70,13 +70,13 @@ Watchlist stored at `registry/cti_watchlist.json`.
 
 ### Preferences Endpoints
 
-- `GET /api/preferences` — load per-user preferences (analyst name, custom instructions, response style, default model tier, pinned sessions, session tags)
+- `GET /api/preferences` — load per-user preferences (analyst name, custom instructions, response style, pinned sessions, session tags)
 - `PUT /api/preferences` — partial-merge update of preferences
 - `POST /api/preferences/pin/{session_id}` — pin a session
 - `DELETE /api/preferences/pin/{session_id}` — unpin a session
 - `PUT /api/preferences/tags/{session_id}` — set tags for a session (form: JSON body with `tags` array)
 
-Preferences stored as JSON in `config/preferences/<email_hash>.json`. Custom instructions capped at 2000 chars. Valid model tiers: `fast`/`standard`/`heavy`. Valid response styles: `concise`/`detailed`/`formal`.
+Preferences stored as JSON in `config/preferences/<email_hash>.json`. Custom instructions capped at 2000 chars. Valid response styles: `concise`/`detailed`/`formal`. Model selection is handled automatically by the agent tier system.
 
 ### Session Management Endpoints
 
@@ -116,7 +116,7 @@ The frontend is a Svelte 5 SPA built with Vite and Tailwind CSS 4. Source lives 
 - **Welcome screen**: `WelcomeScreen.svelte` — minimal branding + hint to use `/help` and `/prompts`, with context-aware `SuggestionChips.svelte` (adapts to session state — starter prompts, enrichment, disposition, IOC extraction)
 - **Message actions**: hover to reveal edit (user messages) or regenerate (last assistant message) buttons. Edit opens inline textarea; regenerate re-sends from the last user message.
 - **Token usage**: cumulative input/output tokens displayed in `StatusBar.svelte` (bolt icon with formatted count). Updated from `done` SSE events.
-- **Slash commands**: client-side interception of `/help`, `/clear`, `/new`, `/pivot`, `/threads`, `/thread`, `/context`, `/uploads`, `/status`, `/model`, `/prompts`, `/export` — never sent to the API
+- **Slash commands**: client-side interception of `/help`, `/clear`, `/new`, `/pivot`, `/threads`, `/thread`, `/context`, `/uploads`, `/status`, `/prompts`, `/export` — never sent to the API
 
 ### Cases Browse (`CasesBrowse.svelte`)
 
@@ -148,7 +148,7 @@ User preferences page accessible via sidebar nav or Ctrl+, shortcut:
 
 - **Profile section**: analyst display name
 - **Response style**: radio buttons — concise / detailed / formal. Injected into system prompt as personalisation.
-- **Default model tier**: dropdown — fast / standard / heavy
+
 - **Custom instructions**: textarea (2000 char limit with counter). Appended to system prompt for all sessions.
 - **Keyboard shortcuts**: reference grid of all shortcuts (`KeyboardShortcuts.svelte`)
 - **Integration status**: read-only info panel showing connected services

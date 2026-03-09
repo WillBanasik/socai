@@ -58,17 +58,37 @@ State the determination with appropriate confidence:
 
 ---
 
-## Co-Occurrence and Causation
+## Co-Occurrence and Causation (Critical — Non-Negotiable)
+
+**Temporal proximity is never sufficient to establish causation.** Two
+events happening on the same day, same hour, or even same minute does
+not mean one caused the other. This rule applies across all data sources:
+email, endpoint, network, identity, and cloud audit logs.
 
 When multiple findings appear on the same host or in the same timeframe,
 do not assume they are part of the same attack chain unless there is a
-demonstrable link:
+**concrete, data-level link**:
 - Process-tree parent/child relationship
-- Shared IOCs (same hash, same C2 domain)
-- Temporal sequencing proving causality
+- Shared IOCs (same hash, same C2 domain, same URL)
+- Network telemetry (DNS resolution, HTTP connection) proving the user
+  visited the attributed source during the download window
+- Audit log entry directly connecting event A to event B (e.g.
+  OfficeActivity FileDownloaded showing the source of a file)
+
+**Each link in an attribution chain requires its own independent evidence:**
+- Email delivered → user clicked link (requires click event or network
+  telemetry showing connection to the URL in the email)
+- Click led to download (requires FileOriginUrl, network connection to
+  the download source, or audit log showing the download)
+- Download led to execution (requires process event referencing the
+  downloaded file path)
+
+If any link in the chain lacks supporting data, state explicitly that
+the attribution is incomplete. Never bridge evidence gaps with
+assumptions or inferences presented as facts.
 
 Separate findings must be assessed independently. State explicitly when
-findings are unrelated.
+findings are unrelated or when the relationship has not been established.
 
 ---
 

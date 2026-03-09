@@ -132,7 +132,6 @@ export interface SessionMeta {
 
 export interface UserPreferences {
   custom_instructions: string;
-  default_model_tier: string;
   response_style: string;
   pinned_sessions: string[];
   session_tags: Record<string, string[]>;

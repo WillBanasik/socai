@@ -6,7 +6,6 @@ export const streaming = writable(false);
 export const streamText = writable('');
 export const activity = writable<ActivityItem[]>([]);
 export const pendingFiles = writable<File[]>([]);
-export const modelTier = writable<string>('standard');
 export const lastUsage = writable<TokenUsage | null>(null);
 export const sessionTokens = writable<{ input: number; output: number }>({ input: 0, output: 0 });
 

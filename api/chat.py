@@ -55,6 +55,38 @@ def _load_candidate_cache() -> list[dict]:
         return []
 
 
+# ---------------------------------------------------------------------------
+# Extended thinking configuration
+# ---------------------------------------------------------------------------
+
+_THINKING_BUDGET = 2048
+
+
+def _thinking_kwargs(model: str) -> dict:
+    """Return extra API kwargs for extended thinking when the model supports it.
+
+    Only Sonnet 4+ and Opus 4+ support extended thinking.  Includes the
+    interleaved-thinking beta for multi-turn tool conversations.
+    """
+    if "sonnet-4" in model or "opus-4" in model:
+        return {
+            "thinking": {"type": "enabled", "budget_tokens": _THINKING_BUDGET},
+            "betas": ["interleaved-thinking-2025-05-14"],
+        }
+    return {}
+
+
+def _effective_max_tokens(model: str, base: int = 4096) -> int:
+    """Return max_tokens adjusted for thinking budget if applicable.
+
+    When thinking is enabled, ``max_tokens`` covers both thinking *and* output,
+    so we bump it to preserve the effective output capacity.
+    """
+    if "sonnet-4" in model or "opus-4" in model:
+        return base + _THINKING_BUDGET
+    return base
+
+
 def _trim_for_api(messages: list[dict], max_messages: int = MAX_HISTORY_MESSAGES) -> list[dict]:
     """Return a trimmed copy of *messages* suitable for the API.
 
@@ -193,12 +225,6 @@ def _prepare_messages_for_api(messages: list[dict], model: str) -> list[dict]:
     if _supports_compaction(model):
         return _trim_for_api_compaction(messages)
     return _trim_for_api(messages)
-
-
-def _add_compaction_params(kwargs: dict, model: str) -> None:
-    """Add compaction beta headers if the model supports it."""
-    if _supports_compaction(model):
-        kwargs["betas"] = ["interleaved-thinking-2025-05-14"]
 
 
 def _filter_by_thread(messages: list[dict], thread_id: str) -> list[dict]:
@@ -892,7 +918,7 @@ def save_history(case_id: str, history: list[dict], user_email: str | None = Non
 # Main chat function — multi-turn tool loop
 # ---------------------------------------------------------------------------
 
-def chat(case_id: str, user_message: str, history: list[dict] | None = None, *, model_override: str | None = None, user_email: str | None = None, user_permissions: list[str] | None = None) -> dict:
+def chat(case_id: str, user_message: str, history: list[dict] | None = None, *, user_email: str | None = None, user_permissions: list[str] | None = None) -> dict:
     """
     Process a user message in the case chat.
 
@@ -906,11 +932,11 @@ def chat(case_id: str, user_message: str, history: list[dict] | None = None, *, 
             "history": history or [],
         }
 
-    return _chat_inner(case_id, user_message, history, model_override=model_override,
+    return _chat_inner(case_id, user_message, history,
                        user_email=user_email, user_permissions=user_permissions)
 
 
-def _chat_inner(case_id: str, user_message: str, history: list[dict] | None = None, *, model_override: str | None = None, user_email: str | None = None, user_permissions: list[str] | None = None) -> dict:
+def _chat_inner(case_id: str, user_message: str, history: list[dict] | None = None, *, user_email: str | None = None, user_permissions: list[str] | None = None) -> dict:
     """Inner chat implementation — always runs inside force_fast_model context."""
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY, max_retries=3)
     system_prompt = build_system_prompt(case_id, user_email=user_email)
@@ -918,15 +944,8 @@ def _chat_inner(case_id: str, user_message: str, history: list[dict] | None = No
     # Two-tier model: fast for routing (tool selection), heavy for final response
     _meta = _load_case_meta(case_id) or {}
     _severity = _meta.get("severity", "medium")
-    if model_override and model_override in ("fast", "standard", "heavy"):
-        import config.settings as _s
-        _tier_map = {"fast": "SOCAI_MODEL_FAST", "standard": "SOCAI_MODEL_STANDARD", "heavy": "SOCAI_MODEL_HEAVY"}
-        # Override applies to both tiers
-        _routing_model = getattr(_s, _tier_map[model_override])
-        _response_model = _routing_model
-    else:
-        _routing_model = get_model("chat_routing", _severity)
-        _response_model = get_model("chat_response", _severity)
+    _routing_model = get_model("chat_routing", _severity)
+    _response_model = get_model("chat_response", _severity)
 
     if history is None:
         history = load_history(case_id, user_email)
@@ -951,7 +970,8 @@ def _chat_inner(case_id: str, user_message: str, history: list[dict] | None = No
                 tools=TOOL_DEFS,
                 tool_choice={"type": "auto"},
                 messages=_prepare_messages_for_api(history, _model),
-                max_tokens=4096,
+                max_tokens=_effective_max_tokens(_model),
+                **_thinking_kwargs(_model),
             )
         except Exception as exc:
             from tools.common import log_error
@@ -996,8 +1016,9 @@ def _chat_inner(case_id: str, user_message: str, history: list[dict] | None = No
                         system=system_prompt,
                         tools=TOOL_DEFS,
                         tool_choice={"type": "auto"},
-                        messages=_prepare_messages_for_api(history, _model),
-                        max_tokens=4096,
+                        messages=_prepare_messages_for_api(history, _response_model),
+                        max_tokens=_effective_max_tokens(_response_model),
+                        **_thinking_kwargs(_response_model),
                     )
                 except Exception as exc:
                     from tools.common import log_error
@@ -1097,12 +1118,14 @@ def _extract_text(content) -> str:
 # Streaming chat generators (SSE)
 # ---------------------------------------------------------------------------
 
-def _stream_one_turn(client, model, system, tools, messages, max_tokens):
+def _stream_one_turn(client, model, system, tools, messages, max_tokens, **extra):
     """Stream a single API turn, yielding ``text_delta`` events.
 
     Tool calls are NOT yielded here — the caller emits ``tool_start``
     after the stream completes with the full input from the final message.
     Returns the final ``Message`` object via ``stream.get_final_message()``.
+
+    *extra* is passed through to the API — used for ``thinking`` and ``betas``.
     """
     with client.messages.stream(
         model=model,
@@ -1111,6 +1134,7 @@ def _stream_one_turn(client, model, system, tools, messages, max_tokens):
         tool_choice={"type": "auto"},
         messages=messages,
         max_tokens=max_tokens,
+        **extra,
     ) as stream:
         for event in stream:
             etype = getattr(event, "type", "")
@@ -1122,7 +1146,7 @@ def _stream_one_turn(client, model, system, tools, messages, max_tokens):
     return final
 
 
-def chat_stream(case_id: str, user_message: str, *, model_override: str | None = None, user_email: str | None = None, user_permissions: list[str] | None = None):
+def chat_stream(case_id: str, user_message: str, *, user_email: str | None = None, user_permissions: list[str] | None = None):
     """Streaming version of ``chat()`` — yields SSE event dicts.
 
     Event types: ``text_delta``, ``tool_start``, ``tool_result``, ``done``, ``error``.
@@ -1137,14 +1161,8 @@ def chat_stream(case_id: str, user_message: str, *, model_override: str | None =
 
         _meta = _load_case_meta(case_id) or {}
         _severity = _meta.get("severity", "medium")
-        if model_override and model_override in ("fast", "standard", "heavy"):
-            import config.settings as _s
-            _tier_map = {"fast": "SOCAI_MODEL_FAST", "standard": "SOCAI_MODEL_STANDARD", "heavy": "SOCAI_MODEL_HEAVY"}
-            _routing_model = getattr(_s, _tier_map[model_override])
-            _response_model = _routing_model
-        else:
-            _routing_model = get_model("chat_routing", _severity)
-            _response_model = get_model("chat_response", _severity)
+        _routing_model = get_model("chat_routing", _severity)
+        _response_model = get_model("chat_response", _severity)
 
         history = load_history(case_id, user_email)
         history.append({"role": "user", "content": user_message})
@@ -1162,7 +1180,8 @@ def chat_stream(case_id: str, user_message: str, *, model_override: str | None =
             # Stream this turn
             text_parts = []
             gen = _stream_one_turn(client, _model, system_prompt, TOOL_DEFS,
-                                   _prepare_messages_for_api(history, _model), 4096)
+                                   _prepare_messages_for_api(history, _model),
+                                   _effective_max_tokens(_model), **_thinking_kwargs(_model))
             # Consume the generator — _stream_one_turn uses return for final message
             final_message = None
             try:
@@ -1205,7 +1224,8 @@ def chat_stream(case_id: str, user_message: str, *, model_override: str | None =
                     history.pop()  # remove fast model response
                     text_parts = []
                     gen = _stream_one_turn(client, _response_model, system_prompt, TOOL_DEFS,
-                                           _prepare_messages_for_api(history, _response_model), 4096)
+                                           _prepare_messages_for_api(history, _response_model),
+                                           _effective_max_tokens(_response_model), **_thinking_kwargs(_response_model))
                     try:
                         while True:
                             evt = next(gen)
@@ -1262,7 +1282,7 @@ def chat_stream(case_id: str, user_message: str, *, model_override: str | None =
         yield {"type": "error", "message": str(exc)}
 
 
-def session_chat_stream(session_id: str, user_message: str, *, model_override: str | None = None, user_permissions: list[str] | None = None, user_email: str | None = None):
+def session_chat_stream(session_id: str, user_message: str, *, user_permissions: list[str] | None = None, user_email: str | None = None):
     """Streaming version of ``session_chat()`` — yields SSE event dicts."""
     if not ANTHROPIC_KEY:
         yield {"type": "error", "message": "Chat requires an Anthropic API key."}
@@ -1272,14 +1292,8 @@ def session_chat_stream(session_id: str, user_message: str, *, model_override: s
         client = anthropic.Anthropic(api_key=ANTHROPIC_KEY, max_retries=3)
         system_prompt = build_session_prompt(session_id, user_email=user_email)
 
-        if model_override and model_override in ("fast", "standard", "heavy"):
-            import config.settings as _s
-            _tier_map = {"fast": "SOCAI_MODEL_FAST", "standard": "SOCAI_MODEL_STANDARD", "heavy": "SOCAI_MODEL_HEAVY"}
-            _routing_model = getattr(_s, _tier_map[model_override])
-            _response_model = _routing_model
-        else:
-            _routing_model = get_model("chat_routing", "medium")
-            _response_model = get_model("chat_response", "medium")
+        _routing_model = get_model("chat_routing", "medium")
+        _response_model = get_model("chat_response", "medium")
 
         active_tid = _session_active_thread_id(session_id)
         history = _session_load_history(session_id)
@@ -1304,7 +1318,8 @@ def session_chat_stream(session_id: str, user_message: str, *, model_override: s
 
             _thread_msgs = _filter_by_thread(history, active_tid)
             gen = _stream_one_turn(client, _model, system_prompt, SESSION_TOOL_DEFS,
-                                   _prepare_messages_for_api(_thread_msgs, _model), 4096)
+                                   _prepare_messages_for_api(_thread_msgs, _model),
+                                   _effective_max_tokens(_model), **_thinking_kwargs(_model))
             final_message = None
             try:
                 while True:
@@ -1353,7 +1368,8 @@ def session_chat_stream(session_id: str, user_message: str, *, model_override: s
                     history.pop()
                     _thread_msgs = _filter_by_thread(history, active_tid)
                     gen = _stream_one_turn(client, _response_model, system_prompt, SESSION_TOOL_DEFS,
-                                           _prepare_messages_for_api(_thread_msgs, _response_model), 4096)
+                                           _prepare_messages_for_api(_thread_msgs, _response_model),
+                                           _effective_max_tokens(_response_model), **_thinking_kwargs(_response_model))
                     try:
                         while True:
                             evt = next(gen)
@@ -2436,7 +2452,7 @@ def _generate_mdr_report_from_context(session_id: str, ctx: dict) -> dict:
 # Session chat function — multi-turn tool loop (mirrors case chat)
 # ---------------------------------------------------------------------------
 
-def session_chat(session_id: str, user_message: str, *, model_override: str | None = None, user_permissions: list[str] | None = None, user_email: str | None = None) -> dict:
+def session_chat(session_id: str, user_message: str, *, user_permissions: list[str] | None = None, user_email: str | None = None) -> dict:
     """
     Process a user message in a session-mode investigation chat.
 
@@ -2453,25 +2469,18 @@ def session_chat(session_id: str, user_message: str, *, model_override: str | No
         }
 
     return _session_chat_inner(session_id, user_message,
-                               model_override=model_override,
                                user_permissions=user_permissions,
                                user_email=user_email)
 
 
-def _session_chat_inner(session_id: str, user_message: str, *, model_override: str | None = None, user_permissions: list[str] | None = None, user_email: str | None = None) -> dict:
+def _session_chat_inner(session_id: str, user_message: str, *, user_permissions: list[str] | None = None, user_email: str | None = None) -> dict:
     """Inner session chat implementation — always runs inside force_fast_model context."""
     client = anthropic.Anthropic(api_key=ANTHROPIC_KEY, max_retries=3)
     system_prompt = build_session_prompt(session_id, user_email=user_email)
 
     # Two-tier model: fast for routing (tool selection), heavy for final response
-    if model_override and model_override in ("fast", "standard", "heavy"):
-        import config.settings as _s
-        _tier_map = {"fast": "SOCAI_MODEL_FAST", "standard": "SOCAI_MODEL_STANDARD", "heavy": "SOCAI_MODEL_HEAVY"}
-        _routing_model = getattr(_s, _tier_map[model_override])
-        _response_model = _routing_model
-    else:
-        _routing_model = get_model("chat_routing", "medium")
-        _response_model = get_model("chat_response", "medium")
+    _routing_model = get_model("chat_routing", "medium")
+    _response_model = get_model("chat_response", "medium")
 
     history = _session_load_history(session_id)
 
@@ -2522,7 +2531,8 @@ def _session_chat_inner(session_id: str, user_message: str, *, model_override: s
                 tools=SESSION_TOOL_DEFS,
                 tool_choice={"type": "auto"},
                 messages=_prepare_messages_for_api(history, _model),
-                max_tokens=4096,
+                max_tokens=_effective_max_tokens(_model),
+                **_thinking_kwargs(_model),
             )
         except Exception as exc:
             return {
@@ -2547,8 +2557,9 @@ def _session_chat_inner(session_id: str, user_message: str, *, model_override: s
                         system=system_prompt,
                         tools=SESSION_TOOL_DEFS,
                         tool_choice={"type": "auto"},
-                        messages=_prepare_messages_for_api(history, _model),
-                        max_tokens=4096,
+                        messages=_prepare_messages_for_api(history, _response_model),
+                        max_tokens=_effective_max_tokens(_response_model),
+                        **_thinking_kwargs(_response_model),
                     )
                 except Exception as exc:
                     return {

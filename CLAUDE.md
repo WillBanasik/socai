@@ -87,6 +87,18 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, sessions in `sessions/`, articles in `articles/`
 - **Pipeline:** `ChiefAgent.run()` orchestrates 16 steps with parallel execution (see `docs/pipeline.md`)
 
+## Analytical Standards (MANDATORY)
+
+All investigative output — conversational analysis, reports, case artefacts — must comply with these rules. No exceptions.
+
+1. **Every finding must be provable with supplied data.** If the data does not exist to support a claim, the claim cannot be made.
+2. **Temporal proximity is never causation.** Two events happening near each other in time is not evidence of a causal link. Causation requires a data-level link (shared URL, hash, process ID, audit log entry).
+3. **No gap-filling with speculation.** If a step in the attack chain is not evidenced by data, state it as unknown. Never write "X led to Y" when no data shows X led to Y.
+4. **Prove the full evidence chain before attribution.** Each link (email → click → download → execution) requires its own independent evidence. If any link is missing, the attribution is incomplete — say so.
+5. **Actively seek disconfirming evidence.** When a hypothesis forms, identify what data would disprove it and check that data before proceeding.
+6. **Never produce final reports on incomplete evidence** without clearly marking what is confirmed, what is assessed (inference), and what is unknown.
+7. **Language discipline:** "Confirmed" = data proves it. "Assessed" / "Assessed with [high/medium/low] confidence" = inference supported by evidence. "Unknown" / "Not determined" = no data. Never use "confirmed" for an inference.
+
 ## Critical Conventions
 
 ### File I/O

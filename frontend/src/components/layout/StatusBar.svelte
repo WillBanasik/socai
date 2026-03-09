@@ -1,6 +1,6 @@
 <script lang="ts">
   import { activeCaseId, activeSessionId } from '../../lib/stores/navigation';
-  import { streaming, modelTier, sessionTokens } from '../../lib/stores/chat';
+  import { streaming, sessionTokens } from '../../lib/stores/chat';
 
   function formatTokens(n: number): string {
     if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
@@ -33,5 +33,5 @@
     </span>
   {/if}
 
-  <span>model: {$modelTier}</span>
+
 </footer>
