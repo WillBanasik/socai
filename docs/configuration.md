@@ -68,6 +68,7 @@ Severity escalation for `{secarch, report, chat_response, evtx, fp_ticket}`: fas
 | `EMAILREP_API_KEY` | EmailRep.io | email (optional; keyless tier rate-limited) |
 | `ANYRUN_API_KEY` | Any.Run | SHA256 — sandbox hash lookup + detonation |
 | `JOESANDBOX_API_KEY` | Joe Sandbox | SHA256 — sandbox hash lookup + detonation |
+| `SOCAI_BRAVE_SEARCH_KEY` | Brave Search | Web search fallback (optional; DuckDuckGo used if unset) |
 
 ### Provider Notes
 
@@ -148,6 +149,31 @@ Disposable browser sessions require Docker installed and accessible.
 noVNC access: `http://localhost:7900` (password: `secret`).
 
 Session state files are stored in `browser_sessions/<session_id>.json`.
+
+## Sandbox Detonation (Docker)
+
+Malware sandbox detonation requires Docker and pre-built sandbox images.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SOCAI_SANDBOX_IMAGE` | `socai-sandbox:latest` | Linux sandbox Docker image |
+| `SOCAI_SANDBOX_WINE_IMAGE` | `socai-sandbox-wine:latest` | Wine sandbox Docker image |
+| `SOCAI_SANDBOX_TIMEOUT_LOCAL` | `120` | Default execution timeout (seconds) |
+| `SOCAI_SANDBOX_MAX_TIMEOUT` | `600` | Maximum allowed timeout |
+| `SOCAI_SANDBOX_MEMORY` | `512m` | Container memory limit |
+| `SOCAI_SANDBOX_CPUS` | `1.0` | Container CPU limit |
+| `SOCAI_SANDBOX_NETWORK` | `monitor` | Default network mode (`monitor` or `isolate`) |
+| `SOCAI_SANDBOX_NETWORK_NAME` | `socai_sandbox_net` | Docker bridge network name |
+
+Build images:
+```bash
+docker build -t socai-sandbox:latest -f docker/sandbox/Dockerfile docker/sandbox/
+docker build -t socai-sandbox-wine:latest -f docker/sandbox/Dockerfile.wine docker/sandbox/
+```
+
+Session state files are stored in `sandbox_sessions/<session_id>.json`.
+
+See `docs/sandbox.md` for full setup guide, network modes, and safety details.
 
 ## Secret Config Files
 

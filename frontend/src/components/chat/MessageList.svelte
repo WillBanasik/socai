@@ -6,6 +6,9 @@
   import ScrollToBottom from './ScrollToBottom.svelte';
   import { onMount, tick } from 'svelte';
 
+  let { onregenerate, onedit }:
+    { onregenerate?: () => void; onedit?: (content: string, index: number) => void } = $props();
+
   let container: HTMLDivElement;
   let atBottom = $state(true);
 
@@ -33,6 +36,16 @@
   onMount(() => {
     scrollToBottom();
   });
+
+  // Find the last assistant message index
+  const lastAssistantIdx = $derived(
+    (() => {
+      for (let i = $messages.length - 1; i >= 0; i--) {
+        if ($messages[i].role === 'assistant') return i;
+      }
+      return -1;
+    })()
+  );
 </script>
 
 <div
@@ -41,7 +54,12 @@
   class="flex-1 overflow-y-auto px-4 py-4"
 >
   {#each $messages as msg, i (i)}
-    <MessageBubble message={msg} />
+    <MessageBubble
+      message={msg}
+      isLast={i === lastAssistantIdx}
+      onregenerate={i === lastAssistantIdx ? onregenerate : undefined}
+      onedit={msg.role === 'user' ? (content) => onedit?.(content, i) : undefined}
+    />
   {/each}
 
   {#if $streaming}

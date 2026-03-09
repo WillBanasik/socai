@@ -72,6 +72,20 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/browser_session/console_log.json` | Browser console output captured via CDP |
 | `cases/<ID>/artefacts/browser_session/screenshot_final.png` | Final browser state screenshot |
 | `cases/<ID>/logs/mde_browser_session.parsed.json` | Normalised browser session data for downstream pipeline (includes DNS rows) |
+| `cases/<ID>/artefacts/sandbox_detonation/sandbox_manifest.json` | Sandbox detonation session metadata, sample hashes, duration |
+| `cases/<ID>/artefacts/sandbox_detonation/strace_log.json` | Parsed syscall trace (categorised: file/network/process/permission) |
+| `cases/<ID>/artefacts/sandbox_detonation/network_capture.pcap` | Raw packet capture from sandbox |
+| `cases/<ID>/artefacts/sandbox_detonation/network_log.json` | Parsed network activity (DNS, TCP, HTTP) |
+| `cases/<ID>/artefacts/sandbox_detonation/honeypot_log.json` | Honeypot DNS/HTTP interactions |
+| `cases/<ID>/artefacts/sandbox_detonation/filesystem_changes.json` | Before/after filesystem diff |
+| `cases/<ID>/artefacts/sandbox_detonation/process_tree.json` | All spawned processes with cmdlines |
+| `cases/<ID>/artefacts/sandbox_detonation/dns_queries.json` | DNS lookups attempted |
+| `cases/<ID>/artefacts/sandbox_detonation/dropped_files/ ` | Files created by the malware |
+| `cases/<ID>/artefacts/sandbox_detonation/strings_extracted.json` | Strings from stdout/stderr/dropped files |
+| `cases/<ID>/artefacts/sandbox_detonation/interactive_log.json` | Commands sent via sandbox_exec (interactive mode) |
+| `cases/<ID>/artefacts/sandbox_detonation/llm_analysis.json` | LLM behavioural analysis (MITRE mapping, risk score) |
+| `cases/<ID>/logs/mde_sandbox_detonation.parsed.json` | Normalised sandbox log rows for downstream pipeline |
+| `cases/<ID>/logs/mde_sandbox_detonation.entities.json` | Extracted entities (IPs, domains, URLs, hashes) |
 
 ## Session Files
 

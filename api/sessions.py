@@ -167,11 +167,14 @@ def save_history(session_id: str, history: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Investigation context accumulator
+# Investigation context — threaded partitions
 # ---------------------------------------------------------------------------
 
-def _empty_context() -> dict:
+def _empty_thread(thread_id: str = "1", label: str = "Initial investigation") -> dict:
     return {
+        "id": thread_id,
+        "label": label,
+        "created": datetime.now(timezone.utc).isoformat(),
         "iocs": {"ips": [], "domains": [], "hashes": [], "urls": [], "emails": []},
         "findings": [],
         "telemetry_summaries": [],
@@ -180,54 +183,224 @@ def _empty_context() -> dict:
     }
 
 
-def load_context(session_id: str) -> dict:
+def _empty_context() -> dict:
+    thread = _empty_thread()
+    return {
+        "active_thread_id": "1",
+        "threads": {"1": thread},
+        "backing_case_id": None,
+        "disposition": None,
+    }
+
+
+def _migrate_context(ctx: dict) -> dict:
+    """Migrate old flat context to threaded format (backwards compat)."""
+    if "threads" in ctx:
+        return ctx
+    thread = {
+        "id": "1",
+        "label": "Initial investigation",
+        "created": datetime.now(timezone.utc).isoformat(),
+        "iocs": ctx.get("iocs", {"ips": [], "domains": [], "hashes": [], "urls": [], "emails": []}),
+        "findings": ctx.get("findings", []),
+        "telemetry_summaries": ctx.get("telemetry_summaries", []),
+        "files_analysed": ctx.get("files_analysed", []),
+        "disposition": ctx.get("disposition"),
+    }
+    # Preserve per-thread extras from old format
+    for k in ("loaded_case_id", "loaded_case_title", "loaded_case_severity"):
+        if k in ctx:
+            thread[k] = ctx[k]
+    return {
+        "active_thread_id": "1",
+        "threads": {"1": thread},
+        "backing_case_id": ctx.get("backing_case_id"),
+        "disposition": ctx.get("disposition"),
+    }
+
+
+def get_active_thread(ctx: dict) -> dict:
+    """Get the active thread from a full context."""
+    tid = ctx.get("active_thread_id", "1")
+    threads = ctx.get("threads", {})
+    if tid in threads:
+        return threads[tid]
+    if threads:
+        return next(iter(threads.values()))
+    return _empty_thread()
+
+
+def load_full_context(session_id: str) -> dict:
+    """Load the full threaded context structure."""
     path = SESSIONS_DIR / session_id / "context.json"
     if not path.exists():
         return _empty_context()
-    return _load_json(path) or _empty_context()
+    ctx = _load_json(path) or _empty_context()
+    return _migrate_context(ctx)
+
+
+def load_context(session_id: str) -> dict:
+    """Load context scoped to the active thread (flat format for tool compat).
+
+    Returns the active thread's IOCs/findings/telemetry plus session-global
+    extras like ``backing_case_id``.  Read-only view — use
+    ``load_full_context`` + ``save_context`` for writes.
+    """
+    full = load_full_context(session_id)
+    thread = get_active_thread(full)
+    result = {
+        "iocs": thread.get("iocs", {"ips": [], "domains": [], "hashes": [], "urls": [], "emails": []}),
+        "findings": thread.get("findings", []),
+        "telemetry_summaries": thread.get("telemetry_summaries", []),
+        "files_analysed": thread.get("files_analysed", []),
+        "disposition": thread.get("disposition"),
+        # Session-global
+        "backing_case_id": full.get("backing_case_id"),
+        # Active thread info
+        "active_thread_id": full.get("active_thread_id", "1"),
+        "active_thread_label": thread.get("label", ""),
+    }
+    # Per-thread extras (loaded case context, etc.)
+    for k in ("loaded_case_id", "loaded_case_title", "loaded_case_severity"):
+        if k in thread:
+            result[k] = thread[k]
+    return result
 
 
 def save_context(session_id: str, context: dict) -> None:
+    """Save context.  Expects the full threaded structure."""
     path = SESSIONS_DIR / session_id / "context.json"
     _save_json(path, context)
 
 
+def get_active_thread_id(session_id: str) -> str:
+    """Return the active thread ID for a session."""
+    full = load_full_context(session_id)
+    return full.get("active_thread_id", "1")
+
+
 def add_iocs(session_id: str, iocs: dict) -> None:
-    """Merge new IOCs into session context (deduplicated)."""
-    ctx = load_context(session_id)
+    """Merge new IOCs into the active thread (deduplicated)."""
+    full = load_full_context(session_id)
+    thread = get_active_thread(full)
     for ioc_type in ("ips", "domains", "hashes", "urls", "emails"):
         new = iocs.get(ioc_type) or []
         if new:
-            existing = set(ctx["iocs"].get(ioc_type, []))
+            existing = set(thread["iocs"].get(ioc_type, []))
             existing.update(new)
-            ctx["iocs"][ioc_type] = sorted(existing)
-    save_context(session_id, ctx)
+            thread["iocs"][ioc_type] = sorted(existing)
+    save_context(session_id, full)
 
 
 def add_finding(session_id: str, finding_type: str, summary: str, detail: str = "") -> None:
-    """Append a structured finding to the session context."""
-    ctx = load_context(session_id)
-    ctx["findings"].append({
+    """Append a structured finding to the active thread."""
+    full = load_full_context(session_id)
+    thread = get_active_thread(full)
+    thread["findings"].append({
         "type": finding_type,
         "summary": summary,
         "detail": detail,
         "ts": datetime.now(timezone.utc).isoformat(),
     })
-    save_context(session_id, ctx)
+    save_context(session_id, full)
 
 
 def add_telemetry_summary(session_id: str, summary: dict) -> None:
-    """Append a parsed telemetry summary."""
-    ctx = load_context(session_id)
-    ctx["telemetry_summaries"].append(summary)
-    save_context(session_id, ctx)
+    """Append a parsed telemetry summary to the active thread."""
+    full = load_full_context(session_id)
+    thread = get_active_thread(full)
+    thread["telemetry_summaries"].append(summary)
+    save_context(session_id, full)
 
 
 def set_disposition(session_id: str, disposition: str) -> None:
-    """Set session disposition (false_positive, true_positive, etc.)."""
-    ctx = load_context(session_id)
-    ctx["disposition"] = disposition
-    save_context(session_id, ctx)
+    """Set disposition on the active thread."""
+    full = load_full_context(session_id)
+    thread = get_active_thread(full)
+    thread["disposition"] = disposition
+    save_context(session_id, full)
+
+
+# ---------------------------------------------------------------------------
+# Thread management
+# ---------------------------------------------------------------------------
+
+def create_thread(session_id: str, label: str = "") -> dict:
+    """Create a new investigation thread and set it active.  Returns thread info."""
+    full = load_full_context(session_id)
+    threads = full.get("threads", {})
+    next_id = str(max(int(k) for k in threads) + 1) if threads else "1"
+    thread = _empty_thread(next_id, label or f"Thread {next_id}")
+    threads[next_id] = thread
+    full["threads"] = threads
+    full["active_thread_id"] = next_id
+    save_context(session_id, full)
+    return thread_summary(thread, active=True)
+
+
+def switch_thread(session_id: str, thread_id: str) -> dict | None:
+    """Switch the active thread.  Returns thread summary or None if not found."""
+    full = load_full_context(session_id)
+    threads = full.get("threads", {})
+    if thread_id not in threads:
+        return None
+    full["active_thread_id"] = thread_id
+    save_context(session_id, full)
+    return thread_summary(threads[thread_id], active=True)
+
+
+def list_threads(session_id: str) -> list[dict]:
+    """Return summary info for all threads in a session."""
+    full = load_full_context(session_id)
+    active_tid = full.get("active_thread_id", "1")
+    threads = full.get("threads", {})
+    result = []
+    for tid in sorted(threads, key=lambda k: int(k)):
+        t = threads[tid]
+        result.append(thread_summary(t, active=(tid == active_tid)))
+    return result
+
+
+def thread_summary(thread: dict, *, active: bool = False) -> dict:
+    """Build a compact summary dict for a single thread."""
+    iocs = thread.get("iocs", {})
+    ioc_count = sum(len(v) for v in iocs.values() if isinstance(v, list))
+    return {
+        "id": thread["id"],
+        "label": thread.get("label", ""),
+        "created": thread.get("created", ""),
+        "active": active,
+        "ioc_count": ioc_count,
+        "finding_count": len(thread.get("findings", [])),
+        "telemetry_count": len(thread.get("telemetry_summaries", [])),
+        "disposition": thread.get("disposition"),
+    }
+
+
+def get_merged_context(session_id: str) -> dict:
+    """Merge all threads into a single flat context (for materialisation)."""
+    full = load_full_context(session_id)
+    merged_iocs: dict[str, set] = {t: set() for t in ("ips", "domains", "hashes", "urls", "emails")}
+    merged_findings: list[dict] = []
+    merged_telemetry: list[dict] = []
+    merged_files: list[str] = []
+
+    for thread in full.get("threads", {}).values():
+        for ioc_type in merged_iocs:
+            for val in thread.get("iocs", {}).get(ioc_type, []):
+                merged_iocs[ioc_type].add(val)
+        merged_findings.extend(thread.get("findings", []))
+        merged_telemetry.extend(thread.get("telemetry_summaries", []))
+        merged_files.extend(thread.get("files_analysed", []))
+
+    return {
+        "iocs": {t: sorted(v) for t, v in merged_iocs.items()},
+        "findings": merged_findings,
+        "telemetry_summaries": merged_telemetry,
+        "files_analysed": merged_files,
+        "disposition": full.get("disposition"),
+        "backing_case_id": full.get("backing_case_id"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +464,8 @@ def materialise(session_id: str, case_id: str, title: str, severity: str,
             else:
                 shutil.copy2(str(item), str(dest))
 
-    # 4. Save IOCs from context
-    ctx = load_context(session_id)
+    # 4. Save IOCs from context (merged across all threads)
+    ctx = get_merged_context(session_id)
     iocs = ctx.get("iocs", {})
     has_iocs = any(iocs.get(t) for t in ("ips", "domains", "hashes", "urls", "emails"))
     if has_iocs:

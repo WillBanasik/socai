@@ -643,6 +643,97 @@ TOOL_DEFS = [
         },
     },
     {
+        "name": "start_sandbox_session",
+        "description": (
+            "Start a containerised malware sandbox to detonate a suspicious file. "
+            "Executes the sample (ELF, scripts, or Windows PE via Wine) inside a "
+            "locked-down Docker container while capturing syscalls, network traffic, "
+            "filesystem changes, and process creation. Use when static analysis is "
+            "insufficient and you need to observe runtime behaviour. The sandbox "
+            "auto-selects a Linux or Wine image based on the sample type."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sample_path": {
+                    "type": "string",
+                    "description": "Path to the sample file to detonate",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Execution timeout in seconds (default 120, max 600)",
+                    "default": 120,
+                },
+                "network_mode": {
+                    "type": "string",
+                    "description": "Network mode: 'monitor' (honeypot DNS/HTTP) or 'isolate' (air-gapped)",
+                    "enum": ["monitor", "isolate"],
+                    "default": "monitor",
+                },
+                "interactive": {
+                    "type": "boolean",
+                    "description": "If true, keep container running for manual inspection via sandbox_exec",
+                    "default": False,
+                },
+            },
+            "required": ["sample_path"],
+        },
+    },
+    {
+        "name": "stop_sandbox_session",
+        "description": (
+            "Stop an active sandbox detonation session, collect all telemetry "
+            "(syscall traces, network capture, filesystem changes, process tree, "
+            "dropped files), and tear down the Docker container."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Sandbox session ID to stop",
+                },
+            },
+            "required": ["session_id"],
+        },
+    },
+    {
+        "name": "list_sandbox_sessions",
+        "description": "List all sandbox detonation sessions (active and completed).",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "sandbox_exec",
+        "description": (
+            "Execute a command inside a running sandbox container (interactive mode only). "
+            "Useful for inspecting process maps, running lsof, checking network state, "
+            "or performing additional manual analysis. Commands execute as the sandbox "
+            "user (non-root) with a 30-second timeout."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Sandbox session ID",
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Shell command to execute inside the sandbox",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Per-command timeout in seconds (default 30, max 60)",
+                    "default": 30,
+                },
+            },
+            "required": ["session_id", "command"],
+        },
+    },
+    {
         "name": "search_threat_articles",
         "description": (
             "Search recent cybersecurity news for emerging threats (ET) and "
@@ -714,6 +805,54 @@ TOOL_DEFS = [
                     "description": "Filter by category",
                 },
             },
+        },
+    },
+    {
+        "name": "list_confluence_pages",
+        "description": (
+            "List recently published pages on Confluence, sorted by last modified. "
+            "Use when the analyst asks what articles or pages have been posted, "
+            "what's on Confluence, or wants to see recent threat intel publications. "
+            "Also use this when list_threat_articles returns empty — articles may "
+            "have been published directly to Confluence."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max pages to return (default 15)",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Filter by title (substring match)",
+                },
+            },
+        },
+    },
+    {
+        "name": "web_search",
+        "description": (
+            "Search the open web for threat intelligence, OSINT, or general security context. "
+            "Use as a FALLBACK when structured enrichment APIs (VirusTotal, AbuseIPDB, Shodan, etc.) "
+            "don't have data, or when the analyst asks about threat actors, campaigns, CVEs, "
+            "malware families, detection techniques, or any topic that requires current web knowledge. "
+            "Also useful for looking up hashes, domains, or IPs that aren't in threat intel databases. "
+            "Returns titles, URLs, and snippets from web results."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query (e.g. 'APT29 latest campaigns 2026', 'CVE-2024-1234 exploit', 'sha256:abc123 malware')",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum results to return (default 10, max 20)",
+                },
+            },
+            "required": ["query"],
         },
     },
 ]
@@ -1201,8 +1340,11 @@ _SHARED_TOOL_NAMES = {
     "run_kql", "load_kql_playbook",
     "ingest_velociraptor", "ingest_mde_package", "memory_dump_guide",
     "analyse_memory_dump", "start_browser_session", "stop_browser_session",
-    "list_browser_sessions", "search_threat_articles", "generate_threat_article",
-    "list_threat_articles",
+    "list_browser_sessions", "start_sandbox_session", "stop_sandbox_session",
+    "list_sandbox_sessions", "sandbox_exec",
+    "search_threat_articles", "generate_threat_article",
+    "list_threat_articles", "list_confluence_pages",
+    "web_search",
 }
 
 SESSION_TOOL_DEFS = _SESSION_ONLY_DEFS + [

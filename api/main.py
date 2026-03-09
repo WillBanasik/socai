@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +28,7 @@ from api.auth import (
     verify_password,
     _resolve_permissions,
 )
-from api import actions, chat, sessions, timeline
+from api import actions, chat, preferences, sessions, timeline
 from api.jobs import JobManager
 from api.parse_input import build_title, parse_analyst_input, refang
 from api.schemas import (
@@ -657,7 +657,7 @@ async def session_chat_stream_endpoint(
     perms = user.get("permissions", [])
 
     gen = chat.session_chat_stream(session_id, message.strip(), model_override=_tier or None,
-                                    user_permissions=perms)
+                                    user_permissions=perms, user_email=user["sub"])
     return StreamingResponse(_sse_generator(gen), media_type="text/event-stream")
 
 
@@ -723,6 +723,77 @@ async def list_sessions(user: Annotated[dict, _inv_read], all: bool = False):
                 except Exception:
                     pass
     return result
+
+
+@app.get("/api/sessions/search")
+async def search_sessions(user: Annotated[dict, _inv_read], q: str = ""):
+    """Search across session titles, IOCs, and findings."""
+    query = q.strip().lower()
+    if not query:
+        return []
+
+    all_sessions = sessions.list_sessions(user["sub"], include_all=True)
+    results = []
+
+    for s in all_sessions:
+        sid = s["session_id"]
+        score = 0
+        match_fields: list[str] = []
+
+        # Match title
+        title = (s.get("title") or "").lower()
+        if query in title:
+            score += 10
+            match_fields.append("title")
+
+        # Match session ID
+        if query in sid.lower():
+            score += 5
+            match_fields.append("session_id")
+
+        # Match IOCs and findings from context
+        try:
+            ctx = sessions.load_full_context(sid)
+            for thread in ctx.get("threads", {}).values():
+                iocs = thread.get("iocs", {})
+                for ioc_type, vals in iocs.items():
+                    if isinstance(vals, list):
+                        for v in vals:
+                            if query in v.lower():
+                                score += 8
+                                match_fields.append(f"ioc:{ioc_type}")
+                                break
+
+                for finding in thread.get("findings", []):
+                    summary = (finding.get("summary") or "").lower()
+                    if query in summary:
+                        score += 6
+                        match_fields.append("finding")
+                        break
+
+                label = (thread.get("label") or "").lower()
+                if query in label:
+                    score += 4
+                    match_fields.append("thread_label")
+        except Exception:
+            pass
+
+        # Match tags from preferences
+        prefs = preferences.load_preferences(user["sub"])
+        session_tags = prefs.get("session_tags", {}).get(sid, [])
+        if any(query in t.lower() for t in session_tags):
+            score += 7
+            match_fields.append("tag")
+
+        if score > 0:
+            results.append({
+                **s,
+                "score": score,
+                "match_fields": list(set(match_fields)),
+            })
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:20]
 
 
 @app.get("/api/sessions/{session_id}")
@@ -842,14 +913,19 @@ async def session_upload(
 
 
 @app.get("/api/sessions/{session_id}/history")
-async def session_history(session_id: str, user: Annotated[dict, _inv_read]):
-    """Get display-friendly chat history for a session."""
+async def session_history(session_id: str, user: Annotated[dict, _inv_read], thread: str = ""):
+    """Get display-friendly chat history for a session.
+
+    Pass ``?thread=<id>`` to get a specific thread's history,
+    ``?thread=all`` for everything, or omit for the active thread.
+    """
     meta = sessions.load_session(session_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Session not found")
     if not sessions.user_owns_session(session_id, user["sub"]):
         raise HTTPException(status_code=403, detail="Access denied")
-    return chat.get_session_display_history(session_id)
+    tid = thread.strip() or None
+    return chat.get_session_display_history(session_id, thread_id=tid)
 
 
 @app.get("/api/sessions/{session_id}/context")
@@ -861,6 +937,63 @@ async def session_context(session_id: str, user: Annotated[dict, _inv_read]):
     if not sessions.user_owns_session(session_id, user["sub"]):
         raise HTTPException(status_code=403, detail="Access denied")
     return sessions.load_context(session_id)
+
+
+@app.get("/api/sessions/{session_id}/threads")
+async def session_threads(session_id: str, user: Annotated[dict, _inv_read]):
+    """List all investigation threads in a session."""
+    meta = sessions.load_session(session_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not sessions.user_owns_session(session_id, user["sub"]):
+        raise HTTPException(status_code=403, detail="Access denied")
+    return sessions.list_threads(session_id)
+
+
+@app.post("/api/sessions/{session_id}/pivot")
+async def session_pivot(session_id: str, user: Annotated[dict, _inv_submit]):
+    """Create a new investigation thread and set it active."""
+    meta = sessions.load_session(session_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if meta.get("status") != "active":
+        raise HTTPException(status_code=400, detail=f"Session is {meta.get('status', 'inactive')}")
+    if not sessions.user_owns_session(session_id, user["sub"]):
+        raise HTTPException(status_code=403, detail="Access denied")
+    return sessions.create_thread(session_id, "")
+
+
+@app.post("/api/sessions/{session_id}/pivot-with-label")
+async def session_pivot_with_label(
+    session_id: str,
+    user: Annotated[dict, _inv_submit],
+    label: str = Form(""),
+):
+    """Create a new investigation thread with a label and set it active."""
+    meta = sessions.load_session(session_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if meta.get("status") != "active":
+        raise HTTPException(status_code=400, detail=f"Session is {meta.get('status', 'inactive')}")
+    if not sessions.user_owns_session(session_id, user["sub"]):
+        raise HTTPException(status_code=403, detail="Access denied")
+    return sessions.create_thread(session_id, label.strip())
+
+
+@app.post("/api/sessions/{session_id}/threads/{thread_id}/activate")
+async def session_activate_thread(session_id: str, thread_id: str, user: Annotated[dict, _inv_submit]):
+    """Switch the active investigation thread."""
+    meta = sessions.load_session(session_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if meta.get("status") != "active":
+        raise HTTPException(status_code=400, detail=f"Session is {meta.get('status', 'inactive')}")
+    if not sessions.user_owns_session(session_id, user["sub"]):
+        raise HTTPException(status_code=403, detail="Access denied")
+    result = sessions.switch_thread(session_id, thread_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+    return result
 
 
 @app.post("/api/sessions/{session_id}/materialise")
@@ -883,6 +1016,128 @@ async def materialise_session(
     case_id = job_manager.next_case_id()
     result = sessions.materialise(session_id, case_id, title, severity, user["sub"], disposition)
     return result
+
+
+# ---------------------------------------------------------------------------
+# User preferences
+# ---------------------------------------------------------------------------
+
+@app.get("/api/preferences")
+async def get_preferences(user: Annotated[dict, _inv_read]):
+    """Get the current user's preferences."""
+    return preferences.load_preferences(user["sub"])
+
+
+@app.put("/api/preferences")
+async def update_preferences(request: Request, user: Annotated[dict, _inv_submit]):
+    """Update the current user's preferences (partial merge)."""
+    body = await request.json()
+    return preferences.save_preferences(user["sub"], body)
+
+
+@app.post("/api/preferences/pin/{session_id}")
+async def pin_session(session_id: str, user: Annotated[dict, _inv_submit]):
+    """Pin a session to the top of the sidebar."""
+    pinned = preferences.pin_session(user["sub"], session_id)
+    return {"pinned_sessions": pinned}
+
+
+@app.delete("/api/preferences/pin/{session_id}")
+async def unpin_session(session_id: str, user: Annotated[dict, _inv_submit]):
+    """Unpin a session."""
+    pinned = preferences.unpin_session(user["sub"], session_id)
+    return {"pinned_sessions": pinned}
+
+
+@app.put("/api/preferences/tags/{session_id}")
+async def tag_session(session_id: str, request: Request, user: Annotated[dict, _inv_submit]):
+    """Set tags on a session."""
+    body = await request.json()
+    tags = body.get("tags", [])
+    result = preferences.tag_session(user["sub"], session_id, tags)
+    return {"session_tags": result}
+
+
+@app.get("/api/sessions/{session_id}/export")
+async def export_session(session_id: str, user: Annotated[dict, _inv_read]):
+    """Export a session's chat history as Markdown."""
+    meta = sessions.load_session(session_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not sessions.user_owns_session(session_id, user["sub"]):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    history = sessions.load_history(session_id)
+    ctx = sessions.load_context(session_id)
+
+    title = meta.get("title") or "Investigation Session"
+    created = meta.get("created", "")
+    status_val = meta.get("status", "")
+
+    lines = [
+        f"# {title}",
+        f"",
+        f"**Session:** `{session_id}`  ",
+        f"**Created:** {created}  ",
+        f"**Status:** {status_val}  ",
+        f"",
+    ]
+
+    # IOC summary
+    iocs = ctx.get("iocs", {})
+    ioc_parts = []
+    for ioc_type in ("ips", "domains", "hashes", "urls", "emails"):
+        items = iocs.get(ioc_type, [])
+        if items:
+            ioc_parts.append(f"{len(items)} {ioc_type}")
+    if ioc_parts:
+        lines.append(f"**IOCs:** {', '.join(ioc_parts)}")
+        lines.append("")
+
+    # Findings
+    findings = ctx.get("findings", [])
+    if findings:
+        lines.append("## Key Findings")
+        lines.append("")
+        for f in findings:
+            lines.append(f"- **{f.get('type', 'finding')}**: {f.get('summary', '')}")
+        lines.append("")
+
+    # Conversation
+    lines.append("## Conversation")
+    lines.append("")
+    for msg in history:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            # Tool result blocks
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(item.get("content", str(item)))
+                else:
+                    parts.append(str(item))
+            content = "\n".join(parts)
+
+        if role == "user":
+            lines.append(f"### Analyst")
+            lines.append(f"")
+            lines.append(content)
+            lines.append("")
+        elif role == "assistant":
+            lines.append(f"### Chief")
+            lines.append(f"")
+            lines.append(content)
+            lines.append("")
+
+    md = "\n".join(lines)
+    return PlainTextResponse(
+        content=md,
+        media_type="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="{session_id}.md"',
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -102,6 +102,12 @@ export interface SSEEvent {
   title?: string;
   severity?: string;
   message?: string;
+  usage?: TokenUsage;
+}
+
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
 }
 
 export interface ActivityItem {
@@ -120,12 +126,35 @@ export interface SessionMeta {
   created: string;
   expires: string;
   case_id?: string;
+  pinned?: boolean;
+  tags?: string[];
+}
+
+export interface UserPreferences {
+  custom_instructions: string;
+  default_model_tier: string;
+  response_style: string;
+  pinned_sessions: string[];
+  session_tags: Record<string, string[]>;
 }
 
 export interface SessionContext {
   iocs?: IOCSet;
   findings?: Finding[];
   telemetry_summaries?: string[];
+  disposition?: string;
+  active_thread_id?: string;
+  active_thread_label?: string;
+}
+
+export interface ThreadSummary {
+  id: string;
+  label: string;
+  created: string;
+  active: boolean;
+  ioc_count: number;
+  finding_count: number;
+  telemetry_count: number;
   disposition?: string;
 }
 

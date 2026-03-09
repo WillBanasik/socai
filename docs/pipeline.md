@@ -12,7 +12,8 @@ ChiefAgent.run()
       ├─ DomainInvestigatorAgent          if URLs provided (input + email-extracted)
       ├─ FileAnalystAgent                 if ZIP provided and not already extracted
       └─ LogCorrelatorAgent               if log paths provided (also runs correlate)
-  6.  SandboxAgent                        query sandbox APIs for file hashes; optional --detonate
+  6.  SandboxAgent                        query sandbox APIs for file hashes
+  6b. SandboxDetonationAgent              if --detonate and no cloud verdict: local containerised detonation
   7.  recursive capture loop (depth 2–N)  if URLs provided:
         extract_iocs → find new URLs → DomainInvestigatorAgent (repeat up to CRAWL_DEPTH)
   8.  detect_phishing_page                if URLs provided; 3-tier phishing detection
@@ -86,3 +87,6 @@ After enrichment, if verdict_summary has 0 malicious and 0 suspicious IOCs, the 
 - `browser-session` — starts a disposable Docker-based Chrome session (noVNC on :7900) with CDP network monitoring. Analyst browses manually; socai captures all requests, responses, redirects, cookies, and console output. Ctrl+C stops the session and collects artefacts. Use `--no-analyse` to skip enrichment pipeline after session ends.
 - `browser-stop` — stops an active browser session by session ID and collects artefacts.
 - `browser-list` — lists all browser sessions (active and completed).
+- `sandbox-session` — detonates a suspicious file in a containerised sandbox. Auto-selects Linux or Wine image based on sample type. Captures syscalls (strace), network traffic (tcpdump), filesystem changes (inotify), and process creation. Default network mode uses honeypot DNS/HTTP for C2 domain discovery. Use `--interactive` to keep the container running for manual inspection. Use `--no-analyse` to skip enrichment pipeline after detonation.
+- `sandbox-stop` — stops an active sandbox session by session ID and collects artefacts.
+- `sandbox-list` — lists all sandbox detonation sessions (active and completed).

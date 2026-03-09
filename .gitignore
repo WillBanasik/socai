@@ -23,6 +23,10 @@ config/users.json
 # Sessions
 sessions/
 browser_sessions/
+sandbox_sessions/
+
+# User preferences (per-user hashed email files)
+config/preferences/
 
 # Playwright
 .playwright/

@@ -41,6 +41,7 @@ function getRouteName(hash: string): string {
   if (hash === '/cases') return 'cases';
   if (hash === '/dashboard') return 'dashboard';
   if (hash === '/investigate') return 'investigate';
+  if (hash === '/settings') return 'settings';
   return 'chat';
 }
 

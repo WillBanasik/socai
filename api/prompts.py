@@ -6,9 +6,17 @@ from pathlib import Path
 
 from api.sessions import (
     list_uploads as _session_list_uploads,
-    load_context as _session_load_context,
+    load_full_context as _session_load_full_context,
+    get_active_thread,
+    thread_summary,
 )
 from config.settings import CASES_DIR
+
+_RESPONSE_STYLE_INSTRUCTIONS = {
+    "concise": "Keep responses short and direct. Lead with findings, not process. Use bullet points.",
+    "detailed": "Provide thorough, detailed responses. Explain reasoning, include evidence, walk through each step.",
+    "formal": "Use formal, report-style language suitable for client-facing documents. Be precise and professional.",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +46,10 @@ PHASE 3 — INVESTIGATE (search only for unknowns):
 - Run KQL, enrichment, URL capture, etc. ONLY for the gaps identified in Phase 2.
 - Re-use cached enrichment data for IOCs that already have fresh results.
 - This saves API costs and avoids redundant Sentinel queries.
+- WEB SEARCH FALLBACK: if structured enrichment APIs (VT, AbuseIPDB, Shodan, etc.) \
+return no data or incomplete results for an IOC, use web_search to look it up on the \
+open web. Also use web_search for threat actor profiles, campaign context, CVE details, \
+malware family research, or any OSINT that isn't available via structured APIs.
 
 COST AWARENESS:
 - Every KQL query, enrichment API call, and LLM invocation has a cost.
@@ -192,6 +204,25 @@ confirmed payload/harvester
 Always be concise and actionable. Use markdown formatting for readability."""
 
 
+def _build_personalisation(user_email: str | None) -> str:
+    """Build personalisation block from user preferences."""
+    if not user_email:
+        return ""
+    from api.preferences import load_preferences
+    prefs = load_preferences(user_email)
+    parts = []
+
+    style = prefs.get("response_style", "concise")
+    if style in _RESPONSE_STYLE_INSTRUCTIONS:
+        parts.append(f"RESPONSE STYLE: {_RESPONSE_STYLE_INSTRUCTIONS[style]}")
+
+    custom = prefs.get("custom_instructions", "").strip()
+    if custom:
+        parts.append(f"ANALYST CUSTOM INSTRUCTIONS:\n{custom}")
+
+    return "\n\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Case-mode helpers
 # ---------------------------------------------------------------------------
@@ -293,7 +324,7 @@ def _summarise_artefacts(case_id: str) -> str:
 # Case-mode system prompt
 # ---------------------------------------------------------------------------
 
-def build_system_prompt(case_id: str) -> list[dict]:
+def build_system_prompt(case_id: str, *, user_email: str | None = None) -> list[dict]:
     """Build the system prompt with case context. Returns cached content blocks."""
     meta = _load_case_meta(case_id)
     title = meta.get("title", "Unknown") if meta else "Unknown"
@@ -327,6 +358,8 @@ generate_fp_ticket.
 
 {_SHARED_GUIDANCE}
 
+{_build_personalisation(user_email)}
+
 You're a senior SOC analyst."""
 
     return [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]
@@ -336,43 +369,88 @@ You're a senior SOC analyst."""
 # Session-mode system prompt
 # ---------------------------------------------------------------------------
 
-def build_session_prompt(session_id: str) -> list[dict]:
-    """Build system prompt for session-mode chat (pre-case investigation)."""
-    ctx = _session_load_context(session_id)
-    uploads = _session_list_uploads(session_id)
-
-    # Build context summary
-    ctx_parts = []
-    iocs = ctx.get("iocs", {})
+def _build_thread_context(thread: dict) -> str:
+    """Build context summary for a single thread."""
+    parts = []
+    iocs = thread.get("iocs", {})
     for ioc_type in ("ips", "domains", "hashes", "urls", "emails"):
         items = iocs.get(ioc_type, [])
         if items:
-            ctx_parts.append(f"{len(items)} {ioc_type}")
+            parts.append(f"{len(items)} {ioc_type}")
 
-    findings = ctx.get("findings", [])
-    telemetry = ctx.get("telemetry_summaries", [])
+    findings = thread.get("findings", [])
+    telemetry = thread.get("telemetry_summaries", [])
+
+    lines = []
+    if parts:
+        lines.append(f"IOCs collected: {', '.join(parts)}")
+    if findings:
+        lines.append(f"Key findings recorded: {len(findings)}")
+        for f in findings[-5:]:
+            lines.append(f"  - [{f.get('type', '?')}] {f.get('summary', '')}")
+    if telemetry:
+        lines.append(f"Telemetry files analysed: {len(telemetry)}")
+        for t in telemetry:
+            lines.append(f"  - {t.get('source_file', '?')}: {t.get('event_count', '?')} events")
+    return "\n".join(lines)
+
+
+def build_session_prompt(session_id: str, *, user_email: str | None = None) -> list[dict]:
+    """Build system prompt for session-mode chat (pre-case investigation)."""
+    full_ctx = _session_load_full_context(session_id)
+    active_thread = get_active_thread(full_ctx)
+    active_tid = full_ctx.get("active_thread_id", "1")
+    threads_map = full_ctx.get("threads", {})
+    all_threads = [
+        thread_summary(threads_map[tid], active=(tid == active_tid))
+        for tid in sorted(threads_map, key=lambda k: int(k))
+    ]
+    uploads = _session_list_uploads(session_id)
+
+    # Active thread context (detailed)
+    active_ctx = _build_thread_context(active_thread)
+
+    # Other threads (brief summaries)
+    other_summaries = []
+    for t in all_threads:
+        if t["id"] == active_thread["id"]:
+            continue
+        line = f"- Thread {t['id']}: \"{t['label']}\" — {t['ioc_count']} IOCs, {t['finding_count']} findings"
+        if t.get("disposition"):
+            line += f" ({t['disposition']})"
+        other_summaries.append(line)
+
+    # Build the thread section
+    thread_count = len(all_threads)
+    if thread_count > 1:
+        thread_header = (
+            f"ACTIVE THREAD: \"{active_thread.get('label', 'Investigation')}\" "
+            f"(thread {active_thread['id']} of {thread_count})\n"
+        )
+    else:
+        thread_header = ""
 
     ctx_summary = ""
-    if ctx_parts:
-        ctx_summary += f"\nIOCs collected: {', '.join(ctx_parts)}"
-    if findings:
-        ctx_summary += f"\nKey findings recorded: {len(findings)}"
-        for f in findings[-5:]:
-            ctx_summary += f"\n  - [{f.get('type', '?')}] {f.get('summary', '')}"
-    if telemetry:
-        ctx_summary += f"\nTelemetry files analysed: {len(telemetry)}"
-        for t in telemetry:
-            ctx_summary += f"\n  - {t.get('source_file', '?')}: {t.get('event_count', '?')} events"
+    if thread_header:
+        ctx_summary += thread_header
+    if active_ctx:
+        ctx_summary += active_ctx
+    else:
+        ctx_summary += "No investigation data collected in this thread yet."
     if uploads:
         ctx_summary += f"\nUploaded files: {', '.join(uploads)}"
+    if other_summaries:
+        ctx_summary += "\n\nOTHER INVESTIGATION THREADS:\n" + "\n".join(other_summaries)
+        ctx_summary += "\n(The analyst can switch threads with /thread <number>. " \
+                       "You only see the active thread's conversation history.)"
 
     prompt = f"""You are Chief, a senior SOC investigation analyst for socai. You are in an \
 interactive investigation session — no case has been created yet.
 
 The analyst will share telemetry exports, alerts, IOCs, and files for you to analyse. \
-Maintain context across the conversation and build towards a disposition.
+Maintain context within the current investigation thread and build towards a disposition.
 
-{ctx_summary if ctx_summary else "No investigation data collected yet."}
+{ctx_summary}
 
 TOOLS AVAILABLE:
 - recall_cases: Search prior cases and intelligence for what is ALREADY KNOWN (CALL FIRST)
@@ -387,6 +465,16 @@ TOOLS AVAILABLE:
 - materialise_case: Convert session to a case (when ready for final output)
 - generate_fp_comment: Generate FP closure comment from investigation context
 - generate_mdr_report: Generate MDR incident report from investigation context
+- start_sandbox_session: Detonate an uploaded file in a containerised sandbox (strace, tcpdump, honeypot DNS/HTTP)
+- stop_sandbox_session: Stop a running sandbox session and collect telemetry artefacts
+- list_sandbox_sessions: List active and completed sandbox detonation sessions
+- sandbox_exec: Execute a command inside a running interactive sandbox
+
+SANDBOX DETONATION:
+When the analyst uploads a suspicious executable and asks you to analyse its runtime behaviour, \
+use start_sandbox_session with the uploaded filename. The sandbox auto-detects the file type \
+(ELF, PE/Wine, script) and captures syscalls, network traffic, filesystem changes, and process \
+creation. Use sandbox_exec in interactive mode to inspect the running container.
 
 KQL PLAYBOOK WORKFLOW:
 When investigating phishing or account compromise, prefer playbooks over ad-hoc queries. \
@@ -405,6 +493,8 @@ WORKFLOW:
 8. At that point, call materialise_case to create the case, then generate the output
 
 {_SHARED_GUIDANCE}
+
+{_build_personalisation(user_email)}
 
 Interpret results in plain language."""
 

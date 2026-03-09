@@ -600,6 +600,76 @@ python3 socai.py browser-list
 - Ports 4444, 7900, and 9222 must be available
 - `selenium` and `websocket-client` Python packages
 
+## Sandbox Detonation
+
+`tools/sandbox_session.py` provides containerised malware sandbox detonation for dynamic analysis of suspicious files. Executes samples (ELF, scripts, Windows PE via Wine) inside a locked-down Docker container while capturing syscalls, network traffic, filesystem changes, and process creation.
+
+### Architecture
+
+Two Docker images:
+- **socai-sandbox:latest** (~150 MB) — Debian slim with strace, ltrace, tcpdump, inotify-tools
+- **socai-sandbox-wine:latest** (~450 MB) — extends Linux image with Wine for Windows PE execution
+
+Container configuration:
+- `--cap-drop=ALL` + `--cap-add=SYS_PTRACE,NET_RAW`
+- `--security-opt=no-new-privileges`, `--read-only` root
+- `--cpus=1.0`, `--memory=512m`, `--pids-limit=256`
+- `--tmpfs /sandbox/workspace:exec,size=200m`, `--tmpfs /tmp:exec,size=100m`
+
+### Network Modes
+
+- **monitor** (default) — custom bridge network with honeypot DNS/HTTP inside container; malware reveals C2 domains without real egress
+- **isolate** — `--network=none`; fully air-gapped
+
+### Session Lifecycle
+
+1. `start_session(sample_path, case_id)` — detects sample type, selects image, starts container
+2. Container executes sample under strace with tcpdump + filesystem monitoring + honeypot
+3. `wait_for_completion(session_id)` — blocks until container exits or timeout
+4. `stop_session(session_id)` — copies telemetry, parses artefacts, extracts entities, tears down container
+
+### Interactive Mode
+
+`start_session(..., interactive=True)` keeps the container running for manual inspection:
+- `exec_in_sandbox(session_id, command)` — runs `docker exec` as non-root `sandbox` user, 30s timeout
+- Available as `sandbox_exec` chat tool for Claude to send commands into the running container
+
+### Output
+
+- `artefacts/sandbox_detonation/sandbox_manifest.json` — session metadata, sample hashes, duration
+- `artefacts/sandbox_detonation/strace_log.json` — parsed syscall trace (categorised)
+- `artefacts/sandbox_detonation/network_capture.pcap` — raw packet capture
+- `artefacts/sandbox_detonation/network_log.json` — parsed DNS, TCP, HTTP
+- `artefacts/sandbox_detonation/honeypot_log.json` — honeypot interactions
+- `artefacts/sandbox_detonation/filesystem_changes.json` — before/after diff
+- `artefacts/sandbox_detonation/process_tree.json` — spawned processes
+- `artefacts/sandbox_detonation/dns_queries.json` — DNS lookups
+- `artefacts/sandbox_detonation/dropped_files/` — files created by malware
+- `artefacts/sandbox_detonation/llm_analysis.json` — LLM behavioural analysis
+- `logs/mde_sandbox_detonation.parsed.json` — normalised log rows
+- `logs/mde_sandbox_detonation.entities.json` — extracted entities
+
+### CLI
+
+```bash
+python3 socai.py sandbox-session /path/to/sample --case C001
+python3 socai.py sandbox-session /path/to/sample --case C001 --interactive
+python3 socai.py sandbox-stop --session <session_id>
+python3 socai.py sandbox-list
+```
+
+### Chat Tools
+
+`start_sandbox_session`, `stop_sandbox_session`, `list_sandbox_sessions`, `sandbox_exec` are available in both case-mode and session-mode chat.
+
+### Requirements
+
+- Docker must be installed and accessible
+- Build images first: `docker build -t socai-sandbox:latest -f docker/sandbox/Dockerfile docker/sandbox/`
+- For Windows PE: `docker build -t socai-sandbox-wine:latest -f docker/sandbox/Dockerfile.wine docker/sandbox/`
+
+See `docs/sandbox.md` for full setup guide and safety details.
+
 ## Analytical Guidelines
 
 `config/analytical_guidelines.md` governs how LLM-assisted steps reason about detections. Loaded by `security_arch_review.py` and `generate_mdr_report.py`. Key principles: evidence-first analysis, mandatory alternative-explanation evaluation, co-occurrence != causation, precise determination language.

@@ -1,12 +1,13 @@
 <script lang="ts">
-  import { messages, streaming, streamText, activity, pendingFiles, modelTier, resetChat } from '../../lib/stores/chat';
+  import { messages, streaming, streamText, activity, pendingFiles, modelTier, resetChat, lastUsage, sessionTokens } from '../../lib/stores/chat';
   import { activeCaseId, activeSessionId } from '../../lib/stores/navigation';
   import { sessionList } from '../../lib/stores/sessions';
   import { contextPanelOpen } from '../../lib/stores/layout';
   import { route, navigate } from '../../lib/router';
   import { streamChat } from '../../lib/api/chat';
   import { getChatHistory } from '../../lib/api/cases';
-  import { getSessionHistory, getSessionContext, getSession, createSession } from '../../lib/api/sessions';
+  import { getSessionHistory, getSessionContext, getSession, createSession, listThreads, pivotThread, activateThread } from '../../lib/api/sessions';
+  import { exportSession } from '../../lib/api/preferences';
   import { parseSSE } from '../../lib/utils/sse';
   import { addToast } from '../../lib/stores/toasts';
   import MessageList from './MessageList.svelte';
@@ -87,11 +88,15 @@
           '| `/help` | Show this help |\n' +
           '| `/clear` | Clear chat display (context preserved) |\n' +
           '| `/new` | Start a fresh session |\n' +
-          '| `/context` | Show accumulated investigation context |\n' +
+          '| `/pivot [label]` | Start a new investigation thread (context is scoped) |\n' +
+          '| `/threads` | List all investigation threads |\n' +
+          '| `/thread <N>` | Switch to thread N |\n' +
+          '| `/context` | Show active thread\'s investigation context |\n' +
           '| `/uploads` | List uploaded files |\n' +
           '| `/status` | Show current session/case info |\n' +
           '| `/prompts` | Show example prompts by complexity |\n' +
-          '| `/model [fast\\|standard\\|heavy]` | Switch model tier |'
+          '| `/model [fast\\|standard\\|heavy]` | Switch model tier |\n' +
+          '| `/export` | Export session as Markdown |'
         );
         return true;
 
@@ -126,7 +131,9 @@
             const iocs = ctx.iocs || {};
             const findings = ctx.findings || [];
             const tel = ctx.telemetry_summaries || [];
-            let md = '**Session Context:**\n';
+            const threadLabel = ctx.active_thread_label || 'Initial investigation';
+            const threadId = ctx.active_thread_id || '1';
+            let md = `**Thread ${threadId}: ${threadLabel}**\n`;
             const iocCount = Object.values(iocs).reduce((n: number, arr: any) => n + (arr || []).length, 0);
             md += `- **IOCs:** ${iocCount} total`;
             for (const [k, v] of Object.entries(iocs)) { if (v && (v as any[]).length) md += ` (${k}: ${(v as any[]).length})`; }
@@ -158,10 +165,14 @@
         const sid = get(activeSessionId);
         const cid = get(activeCaseId);
         const tier = get(modelTier);
+        const tokens = get(sessionTokens);
         let md = '**Status:**\n';
         md += sid ? `- Session: \`${sid}\`\n` : '- No active session\n';
         md += cid ? `- Case: \`${cid}\`\n` : '- No case (session mode)\n';
         md += `- Model tier: ${tier}`;
+        if (tokens.input + tokens.output > 0) {
+          md += `\n- Tokens this session: ${tokens.input.toLocaleString()} in / ${tokens.output.toLocaleString()} out`;
+        }
         addLocalMessage(md);
         return true;
       }
@@ -191,13 +202,112 @@
         );
         return true;
 
+      case '/pivot': {
+        if ($streaming) { addLocalMessage('Cannot switch threads while a response is streaming.'); return true; }
+        const label = parts.slice(1).join(' ').trim();
+        (async () => {
+          const sid = get(activeSessionId);
+          if (!sid) { addLocalMessage('No active session.'); return; }
+          try {
+            const thread = await pivotThread(sid, label || undefined);
+            materialisedCase = null;
+            streaming.set(false);
+            streamText.set('');
+            activity.set([]);
+            messages.set([{
+              role: 'assistant',
+              content: `New investigation thread: **${thread.label}** (thread ${thread.id})\n` +
+                'Previous thread context preserved. Type `/threads` to see all threads.',
+              ts: new Date().toISOString(),
+            }]);
+          } catch (e: any) {
+            addToast('error', `Failed to create thread: ${e.message}`);
+          }
+        })();
+        return true;
+      }
+
+      case '/threads':
+        (async () => {
+          const sid = get(activeSessionId);
+          if (!sid) { addLocalMessage('No active session.'); return; }
+          try {
+            const threads = await listThreads(sid);
+            if (!threads.length) { addLocalMessage('No threads found.'); return; }
+            let md = '**Investigation Threads:**\n';
+            threads.forEach((t) => {
+              const marker = t.active ? ' **\u2190 active**' : '';
+              md += `${t.id}. **${t.label}** \u2014 ${t.ioc_count} IOCs, ${t.finding_count} findings`;
+              if (t.disposition) md += ` (${t.disposition})`;
+              md += `${marker}\n`;
+            });
+            md += '\nSwitch with `/thread <number>` or start new with `/pivot [label]`';
+            addLocalMessage(md);
+          } catch { addLocalMessage('Failed to load threads.'); }
+        })();
+        return true;
+
+      case '/thread': {
+        if ($streaming) { addLocalMessage('Cannot switch threads while a response is streaming.'); return true; }
+        const tid = parts[1]?.trim();
+        if (!tid) { addLocalMessage('Usage: `/thread <number>`'); return true; }
+        (async () => {
+          const sid = get(activeSessionId);
+          if (!sid) { addLocalMessage('No active session.'); return; }
+          try {
+            const thread = await activateThread(sid, tid);
+            // Reload history for the activated thread
+            const history = await getSessionHistory(sid, tid);
+            materialisedCase = null;
+            streaming.set(false);
+            streamText.set('');
+            activity.set([]);
+            const historyMsgs: ChatMessage[] = history.map((m: any) => ({
+              role: m.role,
+              content: m.content || '',
+              ts: m.ts,
+              tool_calls: m.tool_calls,
+            }));
+            const statusMsg: ChatMessage = {
+              role: 'assistant',
+              content: `Switched to thread ${thread.id}: **${thread.label}**`,
+              ts: new Date().toISOString(),
+            };
+            messages.set([...historyMsgs, statusMsg]);
+          } catch (e: any) {
+            addToast('error', `Failed to switch thread: ${e.message}`);
+          }
+        })();
+        return true;
+      }
+
+      case '/export':
+        (async () => {
+          const sid = get(activeSessionId);
+          if (!sid) { addLocalMessage('No active session to export.'); return; }
+          try {
+            const md = await exportSession(sid);
+            const blob = new Blob([md], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${sid}.md`;
+            a.click();
+            URL.revokeObjectURL(url);
+            addLocalMessage('Session exported as Markdown.');
+          } catch {
+            addToast('error', 'Failed to export session');
+          }
+        })();
+        return true;
+
       default:
         addLocalMessage(`Unknown command: \`${cmd}\`. Type \`/help\` for available commands.`);
         return true;
     }
   }
 
-  const COMMAND_WORDS = new Set(['help', 'clear', 'new', 'context', 'uploads', 'status', 'model', 'prompts']);
+  const COMMAND_WORDS = new Set(['help', 'clear', 'new', 'context', 'uploads', 'status', 'model', 'prompts', 'pivot', 'threads', 'thread', 'export']);
 
   async function handleSend(text: string) {
     // Intercept slash commands client-side
@@ -212,6 +322,10 @@
       return;
     }
 
+    await sendMessage(text);
+  }
+
+  async function sendMessage(text: string, replaceFrom?: number) {
     const files = get(pendingFiles);
     const tier = get(modelTier);
     const caseId = get(activeCaseId);
@@ -228,6 +342,11 @@
         addToast('error', `Failed to create session: ${e.message}`);
         return;
       }
+    }
+
+    // If replacing (edit/regenerate), trim history
+    if (replaceFrom !== undefined) {
+      messages.update((m) => m.slice(0, replaceFrom));
     }
 
     // Add user message optimistically
@@ -293,6 +412,14 @@
 
           case 'done':
             fullReply = evt.reply || fullReply;
+            // Track token usage
+            if (evt.usage) {
+              lastUsage.set(evt.usage);
+              sessionTokens.update((t) => ({
+                input: t.input + (evt.usage?.input_tokens || 0),
+                output: t.output + (evt.usage?.output_tokens || 0),
+              }));
+            }
             // If materialisation happened, switch to case mode
             if (evt.case_id) {
               activeCaseId.set(evt.case_id);
@@ -342,6 +469,26 @@
     activity.set([]);
   }
 
+  function handleRegenerate() {
+    if ($streaming) return;
+    // Find the last user message and re-send it
+    const msgs = get(messages);
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'user') {
+        const text = msgs[i].content;
+        // Remove the last assistant message and re-send
+        sendMessage(text, i + 1);
+        return;
+      }
+    }
+  }
+
+  function handleEdit(content: string, index: number) {
+    if ($streaming) return;
+    // Re-send from the edited message position
+    sendMessage(content, index);
+  }
+
   const isEmpty = $derived($messages.length === 0 && !$streaming);
 </script>
 
@@ -351,9 +498,9 @@
   {/if}
 
   {#if isEmpty}
-    <WelcomeScreen />
+    <WelcomeScreen onsend={handleSend} />
   {:else}
-    <MessageList />
+    <MessageList onregenerate={handleRegenerate} onedit={handleEdit} />
   {/if}
 
   <ChatInput onsend={handleSend} />

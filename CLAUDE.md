@@ -53,6 +53,12 @@ python3 socai.py browser-session "https://suspicious-site.com" --case C001
 python3 socai.py browser-stop <session-id>
 python3 socai.py browser-list
 
+# Sandbox detonation (Docker-based, strace/tcpdump-monitored)
+python3 socai.py sandbox-session /path/to/sample --case C001 [--timeout 120] [--network monitor|isolate]
+python3 socai.py sandbox-session /path/to/sample --case C001 --interactive
+python3 socai.py sandbox-stop --session <session-id>
+python3 socai.py sandbox-list
+
 # Other subcommands: mdr-report, triage, email-analyse, campaigns, sandbox,
 #   anomalies, errors, timeline, pe-analysis, yara, evtx, cve-context,
 #   exec-summary, queries, client-query, response-actions, weekly, list, close
@@ -75,6 +81,8 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **MDE Ingest** (`tools/mde_ingest.py`) — Microsoft Defender for Endpoint investigation package ingest with 13 normalisers; alternative to Velociraptor when MDE access is available
 - **Memory Guidance** (`tools/memory_guidance.py`) — process memory dump guidance (MDE Live Response instructions) and read-only `.dmp` analysis (strings, PE headers, suspicious patterns, risk scoring)
 - **Browser Session** (`tools/browser_session.py`) — disposable Docker-based Chrome sessions with CDP network monitoring via noVNC; fallback for Cloudflare/CAPTCHA-blocked phishing pages
+- **Sandbox Detonation** (`tools/sandbox_session.py`) — containerised malware sandbox for dynamic analysis; executes ELF/scripts/PE (via Wine) under strace with tcpdump, honeypot DNS/HTTP, and filesystem monitoring; automated and interactive modes (see `docs/sandbox.md`)
+- **Web Search** (`tools/web_search.py`) — OSINT web search fallback; Brave Search API (if `SOCAI_BRAVE_SEARCH_KEY` set) or DuckDuckGo HTML (free, no key). Used by the LLM when structured enrichment APIs lack data.
 - **Confluence** (`tools/confluence_read.py`) — read-only Confluence Cloud client (scoped token, single space)
 - **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, sessions in `sessions/`, articles in `articles/`
 - **Pipeline:** `ChiefAgent.run()` orchestrates 16 steps with parallel execution (see `docs/pipeline.md`)
@@ -126,4 +134,5 @@ Read these only when working on the relevant area:
 | `docs/extending.md` | How to add new providers, tools, agents, brands, detectors |
 | `docs/architecture.md` | High-level architecture diagram and data flow |
 | `docs/model_tiering.md` | Full model tiering matrix and call site map |
+| `docs/sandbox.md` | Sandbox detonation: setup, network modes, artefacts, safety, interactive mode |
 | `docs/roadmap.md` | Planned features: tiered incident model, SOAR/Zoho integration |

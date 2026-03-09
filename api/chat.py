@@ -18,11 +18,14 @@ from api.sessions import (
     add_iocs as _session_add_iocs,
     add_telemetry_summary as _session_add_telemetry,
     load_context as _session_load_context,
+    load_full_context as _session_load_full_context,
     load_history as _session_load_history,
     list_uploads as _session_list_uploads,
     save_history as _session_save_history,
     set_disposition as _session_set_disposition,
     upload_dir as _session_upload_dir,
+    get_active_thread_id as _session_active_thread_id,
+    get_merged_context as _session_get_merged_context,
 )
 from api.tool_schemas import TOOL_DEFS, SESSION_TOOL_DEFS
 from config.settings import ANTHROPIC_KEY, CASES_DIR, SOCAI_COMPACTION_ENABLED
@@ -105,7 +108,7 @@ def _trim_for_api(messages: list[dict], max_messages: int = MAX_HISTORY_MESSAGES
     out = []
     for msg in trimmed:
         content = msg.get("content")
-        clean = {k: v for k, v in msg.items() if k != "ts"}
+        clean = {k: v for k, v in msg.items() if k not in ("ts", "thread_id")}
         if isinstance(content, list):
             new_blocks = []
             for block in content:
@@ -170,7 +173,7 @@ def _trim_for_api_compaction(messages: list[dict]) -> list[dict]:
     out = []
     for msg in trimmed:
         content = msg.get("content")
-        clean = {k: v for k, v in msg.items() if k != "ts"}
+        clean = {k: v for k, v in msg.items() if k not in ("ts", "thread_id")}
         if isinstance(content, list):
             new_blocks = []
             for block in content:
@@ -196,6 +199,15 @@ def _add_compaction_params(kwargs: dict, model: str) -> None:
     """Add compaction beta headers if the model supports it."""
     if _supports_compaction(model):
         kwargs["betas"] = ["interleaved-thinking-2025-05-14"]
+
+
+def _filter_by_thread(messages: list[dict], thread_id: str) -> list[dict]:
+    """Return only messages belonging to *thread_id*.
+
+    Messages without a ``thread_id`` tag are assigned to thread ``"1"``
+    for backwards compatibility with pre-thread history.
+    """
+    return [m for m in messages if m.get("thread_id", "1") == thread_id]
 
 
 # ---------------------------------------------------------------------------
@@ -374,10 +386,11 @@ def execute_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permiss
 _SHARED_BACKING_REQUIRED = frozenset({
     "start_browser_session", "ingest_velociraptor", "ingest_mde_package",
     "memory_dump_guide", "analyse_memory_dump",
+    "start_sandbox_session", "stop_sandbox_session", "sandbox_exec",
 })
 
 
-def _dispatch_shared(tool_name: str, tool_input: dict, case_id: str | None, perms: list[str]) -> dict | None:
+def _dispatch_shared(tool_name: str, tool_input: dict, case_id: str | None, perms: list[str], *, session_id: str | None = None) -> dict | None:
     """Handle tools that run identically in case-mode and session-mode.
 
     Returns a result dict if the tool was handled, or ``None`` to fall through
@@ -509,6 +522,94 @@ def _dispatch_shared(tool_name: str, tool_input: dict, case_id: str | None, perm
             lines.append(line)
         return {"_message": "\n".join(lines), "sessions": sessions}
 
+    if tool_name == "start_sandbox_session":
+        from tools.sandbox_session import start_session as _sbx_start
+        sample_path = tool_input.get("sample_path", "")
+        if not sample_path:
+            return {"_message": "Sample path is required to start a sandbox session."}
+
+        # Resolve filename against upload directories (session or case mode)
+        resolved = Path(sample_path)
+        if not resolved.is_absolute() or not resolved.exists():
+            fname = Path(sample_path).name
+            # Try session uploads first
+            if session_id:
+                candidate = SESSIONS_DIR / session_id / "uploads" / fname
+                if candidate.exists():
+                    resolved = candidate
+            # Try case uploads
+            if not resolved.exists() and case_id:
+                candidate = CASES_DIR / case_id / "uploads" / fname
+                if candidate.exists():
+                    resolved = candidate
+            if not resolved.exists():
+                avail = []
+                if session_id:
+                    sd = SESSIONS_DIR / session_id / "uploads"
+                    if sd.exists():
+                        avail.extend(f.name for f in sd.iterdir() if f.is_file())
+                if case_id:
+                    cd = CASES_DIR / case_id / "uploads"
+                    if cd.exists():
+                        avail.extend(f.name for f in cd.iterdir() if f.is_file())
+                avail_str = ", ".join(avail) if avail else "none"
+                return {"_message": f"Sample not found: {sample_path}. Upload the file first.\nAvailable files: {avail_str}"}
+            sample_path = str(resolved)
+
+        result = _sbx_start(
+            sample_path, case_id,
+            timeout=tool_input.get("timeout", 120),
+            network_mode=tool_input.get("network_mode", "monitor"),
+            interactive=tool_input.get("interactive", False),
+        )
+        if result.get("status") != "ok":
+            return {"_message": f"Failed to start sandbox: {result.get('reason', 'unknown error')}"}
+        return {
+            "session_id": result["session_id"],
+            "backing_case_id": case_id,
+            "_message": result["message"] + f"\nArtefacts \u2192 case **{case_id}**",
+        }
+
+    if tool_name == "stop_sandbox_session":
+        from tools.sandbox_session import stop_session as _sbx_stop
+        sid = tool_input.get("session_id", "")
+        if not sid:
+            return {"_message": "Session ID is required."}
+        result = _sbx_stop(sid)
+        if result.get("status") != "ok":
+            return {"_message": f"Failed to stop sandbox: {result.get('reason', 'unknown error')}"}
+        stop_case = result.get("case_id", case_id)
+        msg = result.get("_message", "Session stopped.")
+        if stop_case:
+            msg += f"\nArtefacts written to case **{stop_case}**"
+        return {"_message": msg, "backing_case_id": stop_case, **result}
+
+    if tool_name == "list_sandbox_sessions":
+        from tools.sandbox_session import list_sessions as _sbx_list
+        sessions = _sbx_list()
+        if not sessions:
+            return {"_message": "No sandbox sessions found."}
+        lines = []
+        for s in sessions:
+            status = s.get("status", "unknown").upper()
+            sid = s.get("session_id", "?")
+            sample = s.get("sample_name", "")
+            stype = s.get("sample_type", "")
+            line = f"[{status}] {sid} — {sample} ({stype})"
+            lines.append(line)
+        return {"_message": "\n".join(lines), "sessions": sessions}
+
+    if tool_name == "sandbox_exec":
+        from tools.sandbox_session import exec_in_sandbox as _sbx_exec
+        sid = tool_input.get("session_id", "")
+        command = tool_input.get("command", "")
+        if not sid or not command:
+            return {"_message": "Session ID and command are required."}
+        result = _sbx_exec(sid, command, timeout=tool_input.get("timeout", 30))
+        if result.get("status") != "ok":
+            return {"_message": result.get("reason", result.get("_message", "Exec failed."))}
+        return result
+
     if tool_name == "load_kql_playbook":
         return _handle_kql_playbook(tool_input)
 
@@ -575,6 +676,36 @@ def _dispatch_shared(tool_name: str, tool_input: dict, case_id: str | None, perm
             lines.append(f"- **[{a.get('category', '?')}]** {a.get('title', '?')} "
                          f"— {a.get('date', '?')} by {a.get('analyst', '?')}")
         return {"_message": "\n".join(lines), "articles": articles}
+
+    if tool_name == "list_confluence_pages":
+        from tools.confluence_read import list_pages, _is_configured
+        if not _is_configured():
+            return {"_message": "Confluence is not configured — check .env for CONFLUENCE_* settings."}
+        limit = tool_input.get("limit", 15)
+        title = tool_input.get("title")
+        result = list_pages(limit=limit, title=title)
+        pages = result.get("pages", [])
+        if not pages:
+            return {"_message": "No pages found on Confluence."}
+        lines = [f"**{len(pages)}** recent Confluence page(s):\n"]
+        for p in pages:
+            date = (p.get("created_at") or "")[:10]
+            lines.append(f"- **{p['title']}** — {date}")
+        return {"_message": "\n".join(lines), "pages": pages}
+
+    if tool_name == "web_search":
+        from tools.web_search import web_search as _web_search
+        query = tool_input.get("query", "")
+        if not query:
+            return {"_message": "No search query provided."}
+        result = _web_search(query, max_results=tool_input.get("max_results", 10))
+        if result.get("status") != "ok" or not result.get("results"):
+            return {"_message": result.get("reason", "No results found."), **result}
+        lines = [f"**{result['result_count']}** result(s) via {result['backend']}:\n"]
+        for r in result["results"]:
+            lines.append(f"- [{r['title']}]({r['url']})\n  {r['snippet']}")
+        result["_message"] = "\n".join(lines)
+        return result
 
     return None  # Not a shared tool — fall through to mode-specific dispatch
 
@@ -781,8 +912,8 @@ def chat(case_id: str, user_message: str, history: list[dict] | None = None, *, 
 
 def _chat_inner(case_id: str, user_message: str, history: list[dict] | None = None, *, model_override: str | None = None, user_email: str | None = None, user_permissions: list[str] | None = None) -> dict:
     """Inner chat implementation — always runs inside force_fast_model context."""
-    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-    system_prompt = build_system_prompt(case_id)
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY, max_retries=3)
+    system_prompt = build_system_prompt(case_id, user_email=user_email)
 
     # Two-tier model: fast for routing (tool selection), heavy for final response
     _meta = _load_case_meta(case_id) or {}
@@ -1001,8 +1132,8 @@ def chat_stream(case_id: str, user_message: str, *, model_override: str | None =
         return
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-        system_prompt = build_system_prompt(case_id)
+        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY, max_retries=3)
+        system_prompt = build_system_prompt(case_id, user_email=user_email)
 
         _meta = _load_case_meta(case_id) or {}
         _severity = _meta.get("severity", "medium")
@@ -1022,6 +1153,8 @@ def chat_stream(case_id: str, user_message: str, *, model_override: str | None =
         tool_calls_log = []
         reply_text = ""
         response = None
+        total_input_tokens = 0
+        total_output_tokens = 0
 
         for _turn in range(MAX_TURNS):
             _model = _routing_model if _turn < MAX_TURNS - 1 else _response_model
@@ -1046,6 +1179,9 @@ def chat_stream(case_id: str, user_message: str, *, model_override: str | None =
                 return
 
             response = final_message
+            if hasattr(response, "usage") and response.usage:
+                total_input_tokens += getattr(response.usage, "input_tokens", 0)
+                total_output_tokens += getattr(response.usage, "output_tokens", 0)
             assistant_content = _serialise_content(response.content)
             history.append({"role": "assistant", "content": assistant_content})
 
@@ -1084,6 +1220,9 @@ def chat_stream(case_id: str, user_message: str, *, model_override: str | None =
                         return
 
                     response = final_message
+                    if hasattr(response, "usage") and response.usage:
+                        total_input_tokens += getattr(response.usage, "input_tokens", 0)
+                        total_output_tokens += getattr(response.usage, "output_tokens", 0)
                     assistant_content = _serialise_content(response.content)
                     history.append({"role": "assistant", "content": assistant_content})
 
@@ -1114,7 +1253,8 @@ def chat_stream(case_id: str, user_message: str, *, model_override: str | None =
         })
         save_history(case_id, history, user_email)
 
-        yield {"type": "done", "reply": reply_text, "tool_calls": tool_calls_log}
+        yield {"type": "done", "reply": reply_text, "tool_calls": tool_calls_log,
+               "usage": {"input_tokens": total_input_tokens, "output_tokens": total_output_tokens}}
 
     except Exception as exc:
         from tools.common import log_error as _log_error
@@ -1122,15 +1262,15 @@ def chat_stream(case_id: str, user_message: str, *, model_override: str | None =
         yield {"type": "error", "message": str(exc)}
 
 
-def session_chat_stream(session_id: str, user_message: str, *, model_override: str | None = None, user_permissions: list[str] | None = None):
+def session_chat_stream(session_id: str, user_message: str, *, model_override: str | None = None, user_permissions: list[str] | None = None, user_email: str | None = None):
     """Streaming version of ``session_chat()`` — yields SSE event dicts."""
     if not ANTHROPIC_KEY:
         yield {"type": "error", "message": "Chat requires an Anthropic API key."}
         return
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-        system_prompt = build_session_prompt(session_id)
+        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY, max_retries=3)
+        system_prompt = build_session_prompt(session_id, user_email=user_email)
 
         if model_override and model_override in ("fast", "standard", "heavy"):
             import config.settings as _s
@@ -1141,12 +1281,15 @@ def session_chat_stream(session_id: str, user_message: str, *, model_override: s
             _routing_model = get_model("chat_routing", "medium")
             _response_model = get_model("chat_response", "medium")
 
+        active_tid = _session_active_thread_id(session_id)
         history = _session_load_history(session_id)
-        history.append({"role": "user", "content": user_message})
+        history.append({"role": "user", "content": user_message, "thread_id": active_tid})
 
         tool_calls_log = []
         materialised_case_id = None
         response = None
+        total_input_tokens = 0
+        total_output_tokens = 0
 
         def _track_materialise(block_name, result_text):
             nonlocal materialised_case_id
@@ -1159,8 +1302,9 @@ def session_chat_stream(session_id: str, user_message: str, *, model_override: s
         for _turn in range(MAX_TURNS):
             _model = _routing_model if _turn < MAX_TURNS - 1 else _response_model
 
+            _thread_msgs = _filter_by_thread(history, active_tid)
             gen = _stream_one_turn(client, _model, system_prompt, SESSION_TOOL_DEFS,
-                                   _prepare_messages_for_api(history, _model), 4096)
+                                   _prepare_messages_for_api(_thread_msgs, _model), 4096)
             final_message = None
             try:
                 while True:
@@ -1174,8 +1318,11 @@ def session_chat_stream(session_id: str, user_message: str, *, model_override: s
                 return
 
             response = final_message
+            if hasattr(response, "usage") and response.usage:
+                total_input_tokens += getattr(response.usage, "input_tokens", 0)
+                total_output_tokens += getattr(response.usage, "output_tokens", 0)
             assistant_content = _serialise_content(response.content)
-            history.append({"role": "assistant", "content": assistant_content})
+            history.append({"role": "assistant", "content": assistant_content, "thread_id": active_tid})
 
             tool_results = []
             for block in response.content:
@@ -1204,8 +1351,9 @@ def session_chat_stream(session_id: str, user_message: str, *, model_override: s
             if not tool_results:
                 if _model == _routing_model and _routing_model != _response_model:
                     history.pop()
+                    _thread_msgs = _filter_by_thread(history, active_tid)
                     gen = _stream_one_turn(client, _response_model, system_prompt, SESSION_TOOL_DEFS,
-                                           _prepare_messages_for_api(history, _response_model), 4096)
+                                           _prepare_messages_for_api(_thread_msgs, _response_model), 4096)
                     try:
                         while True:
                             evt = next(gen)
@@ -1218,8 +1366,11 @@ def session_chat_stream(session_id: str, user_message: str, *, model_override: s
                         return
 
                     response = final_message
+                    if hasattr(response, "usage") and response.usage:
+                        total_input_tokens += getattr(response.usage, "input_tokens", 0)
+                        total_output_tokens += getattr(response.usage, "output_tokens", 0)
                     assistant_content = _serialise_content(response.content)
-                    history.append({"role": "assistant", "content": assistant_content})
+                    history.append({"role": "assistant", "content": assistant_content, "thread_id": active_tid})
 
                     for block in response.content:
                         if block.type == "tool_use":
@@ -1234,16 +1385,17 @@ def session_chat_stream(session_id: str, user_message: str, *, model_override: s
                             _track_materialise(block.name, result_text)
                             yield {"type": "tool_result", "name": block.name, "result": result_text[:500]}
                     if tool_results:
-                        history.append({"role": "user", "content": tool_results})
+                        history.append({"role": "user", "content": tool_results, "thread_id": active_tid})
                         continue
                 break
 
-            history.append({"role": "user", "content": tool_results})
+            history.append({"role": "user", "content": tool_results, "thread_id": active_tid})
 
         reply_text = _extract_text(response.content) if response else ""
         _session_save_history(session_id, history)
 
-        yield {"type": "done", "reply": reply_text, "tool_calls": tool_calls_log, "case_id": materialised_case_id}
+        yield {"type": "done", "reply": reply_text, "tool_calls": tool_calls_log, "case_id": materialised_case_id,
+               "usage": {"input_tokens": total_input_tokens, "output_tokens": total_output_tokens}}
 
     except Exception as exc:
         yield {"type": "error", "message": str(exc)}
@@ -1341,10 +1493,10 @@ def _session_ensure_backing_case(session_id: str) -> str:
     Creates a case on first call and stores the ID in session context.
     Returns the case_id.
     """
-    from api.sessions import load_context, save_context
+    from api.sessions import load_full_context, save_context
 
-    ctx = load_context(session_id)
-    existing = ctx.get("backing_case_id")
+    full = load_full_context(session_id)
+    existing = full.get("backing_case_id")
     if existing and (CASES_DIR / existing).exists():
         return existing
 
@@ -1356,9 +1508,9 @@ def _session_ensure_backing_case(session_id: str) -> str:
     from tools.case_create import case_create
     case_create(case_id, title=f"Session {session_id[:8]} investigation", severity="medium")
 
-    # Store in session context
-    ctx["backing_case_id"] = case_id
-    save_context(session_id, ctx)
+    # Store in session context (session-global, not per-thread)
+    full["backing_case_id"] = case_id
+    save_context(session_id, full)
 
     print(f"[session] Created backing case {case_id} for session {session_id[:8]}")
     return case_id
@@ -1374,7 +1526,7 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
     else:
         ctx = _session_load_context(session_id)
         _case_id = ctx.get("backing_case_id")  # may be None
-    result = _dispatch_shared(tool_name, tool_input, _case_id, perms)
+    result = _dispatch_shared(tool_name, tool_input, _case_id, perms, session_id=session_id)
     if result is not None:
         return result
 
@@ -1827,13 +1979,14 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         verdicts = _safe_load(case_dir / "artefacts" / "enrichment" / "verdict_summary.json")
         session_ctx = _safe_load(case_dir / "session_context.json")
 
-        # Store the loaded case in session context
-        ctx = _session_load_context(session_id)
-        ctx["loaded_case_id"] = target_case
-        ctx["loaded_case_title"] = meta.get("title", "")
-        ctx["loaded_case_severity"] = meta.get("severity", "")
-        from api.sessions import save_context
-        save_context(session_id, ctx)
+        # Store the loaded case in the active thread's context
+        from api.sessions import load_full_context, save_context, get_active_thread
+        full = load_full_context(session_id)
+        thread = get_active_thread(full)
+        thread["loaded_case_id"] = target_case
+        thread["loaded_case_title"] = meta.get("title", "")
+        thread["loaded_case_severity"] = meta.get("severity", "")
+        save_context(session_id, full)
 
         # Build summary for LLM
         ioc_summary_parts = []
@@ -2115,7 +2268,7 @@ IOCs:{iocs_text or " None collected"}
 Disposition: {ctx.get('disposition', 'false_positive')}"""
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY, max_retries=3)
         response = client.messages.create(
             model=get_model("fp_ticket", "medium"),
             system=[{"type": "text", "text": system}],
@@ -2251,7 +2404,7 @@ def _generate_mdr_report_from_context(session_id: str, ctx: dict) -> dict:
     )
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY, max_retries=3)
         response = client.messages.create(
             model=get_model("mdr_report", "medium"),
             system=[{"type": "text", "text": MDR_SYSTEM_PROMPT}],
@@ -2283,7 +2436,7 @@ def _generate_mdr_report_from_context(session_id: str, ctx: dict) -> dict:
 # Session chat function — multi-turn tool loop (mirrors case chat)
 # ---------------------------------------------------------------------------
 
-def session_chat(session_id: str, user_message: str, *, model_override: str | None = None, user_permissions: list[str] | None = None) -> dict:
+def session_chat(session_id: str, user_message: str, *, model_override: str | None = None, user_permissions: list[str] | None = None, user_email: str | None = None) -> dict:
     """
     Process a user message in a session-mode investigation chat.
 
@@ -2301,13 +2454,14 @@ def session_chat(session_id: str, user_message: str, *, model_override: str | No
 
     return _session_chat_inner(session_id, user_message,
                                model_override=model_override,
-                               user_permissions=user_permissions)
+                               user_permissions=user_permissions,
+                               user_email=user_email)
 
 
-def _session_chat_inner(session_id: str, user_message: str, *, model_override: str | None = None, user_permissions: list[str] | None = None) -> dict:
+def _session_chat_inner(session_id: str, user_message: str, *, model_override: str | None = None, user_permissions: list[str] | None = None, user_email: str | None = None) -> dict:
     """Inner session chat implementation — always runs inside force_fast_model context."""
-    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-    system_prompt = build_session_prompt(session_id)
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY, max_retries=3)
+    system_prompt = build_session_prompt(session_id, user_email=user_email)
 
     # Two-tier model: fast for routing (tool selection), heavy for final response
     if model_override and model_override in ("fast", "standard", "heavy"):
@@ -2428,9 +2582,16 @@ def _session_chat_inner(session_id: str, user_message: str, *, model_override: s
     }
 
 
-def get_session_display_history(session_id: str) -> list[dict]:
-    """Return session chat history in display-friendly format."""
+def get_session_display_history(session_id: str, *, thread_id: str | None = None) -> list[dict]:
+    """Return session chat history in display-friendly format.
+
+    If *thread_id* is ``None``, returns only the active thread's history.
+    Pass ``"all"`` to return the entire unfiltered history.
+    """
     history = _session_load_history(session_id)
+    if thread_id != "all":
+        _tid = thread_id or _session_active_thread_id(session_id)
+        history = _filter_by_thread(history, _tid)
     # Reuse the same formatter logic
     display = []
     for i, msg in enumerate(history):

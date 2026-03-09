@@ -4,11 +4,11 @@ The web UI is a **Svelte 5 SPA** (`frontend/src/` → built to `ui-dist/`). Anal
 
 ## Backend: `api/chat.py`
 
-- `TOOL_DEFS` — 37 tool definitions for case-mode chat (21 case-only + 16 shared)
-- `SESSION_TOOL_DEFS` — 45 tool definitions for session-mode chat (29 session-only + 16 shared); composed dynamically from `_SESSION_ONLY_DEFS + [d for d in TOOL_DEFS if d["name"] in _SHARED_TOOL_NAMES]`
-- `_dispatch_shared(tool_name, tool_input, case_id, perms)` — handles 16 tools that run identically in both modes; returns `None` if the tool is not shared, causing fall-through to mode-specific dispatch
+- `TOOL_DEFS` — 43 tool definitions for case-mode chat (21 case-only + 22 shared)
+- `SESSION_TOOL_DEFS` — 51 tool definitions for session-mode chat (29 session-only + 22 shared); composed dynamically from `_SESSION_ONLY_DEFS + [d for d in TOOL_DEFS if d["name"] in _SHARED_TOOL_NAMES]`
+- `_dispatch_shared(tool_name, tool_input, case_id, perms, *, session_id=None)` — handles 20 tools that run identically in both modes; returns `None` if the tool is not shared, causing fall-through to mode-specific dispatch. `session_id` is passed from `_dispatch_session_tool()` for upload path resolution (e.g. `start_sandbox_session` resolves filenames against `sessions/<id>/uploads/`)
 - `_dispatch_tool()` / `_dispatch_session_tool()` — mode-specific dispatchers; both call `_dispatch_shared` first, then handle mode-specific tools
-- `_SHARED_BACKING_REQUIRED` — frozenset of shared tools that need `_session_ensure_backing_case()` in session mode (`start_browser_session`, `ingest_velociraptor`, `ingest_mde_package`, `memory_dump_guide`, `analyse_memory_dump`)
+- `_SHARED_BACKING_REQUIRED` — frozenset of shared tools that need `_session_ensure_backing_case()` in session mode (`start_browser_session`, `ingest_velociraptor`, `ingest_mde_package`, `memory_dump_guide`, `analyse_memory_dump`, `start_sandbox_session`, `stop_sandbox_session`, `sandbox_exec`)
 - `build_system_prompt(case_id)` — loads case metadata + artefact summary, uses prompt caching (`cache_control: ephemeral`)
 - `chat(case_id, user_message, history)` — multi-turn tool loop (up to 10 rounds)
 - `chat_stream(case_id, user_message, history)` — streaming variant yielding SSE events
@@ -22,6 +22,10 @@ The web UI is a **Svelte 5 SPA** (`frontend/src/` → built to `ui-dist/`). Anal
 ### Session-Mode Backing Cases
 
 Session tools that need file-based artefact storage (e.g. `capture_urls`, `detect_phishing`, `generate_report`) automatically create a **backing case** via `_session_ensure_backing_case()`. The backing case ID is stored in the session context and reused for all subsequent tool calls in that session. When the session is materialised, the backing case's artefacts are already in place.
+
+**Sample path resolution:** `start_sandbox_session` resolves relative filenames against upload directories — first `sessions/<id>/uploads/`, then `cases/<id>/uploads/`. If the file is not found, the response lists available files. This mirrors the pattern used by `analyse_telemetry` and `read_uploaded_file`.
+
+**Backing case notification:** `start_sandbox_session` and `stop_sandbox_session` include `backing_case_id` in their results and mention the target case in `_message`, so the analyst knows where artefacts are being written.
 
 ## API Routes (`api/main.py`)
 
@@ -40,7 +44,7 @@ SSE event types:
 - `tool_start` — tool execution beginning (name + input)
 - `tool_result` — tool execution complete (name + result)
 - `case_context_loaded` — case context loaded into session (case_id, title, severity)
-- `done` — final summary with full reply and tool call list
+- `done` — final summary with full reply, tool call list, and `usage` (input/output token counts)
 - `error` — error message
 
 ### Browse / Dashboard / Context Endpoints
@@ -64,14 +68,31 @@ All require `investigations:read` permission. Data sourced from OpenCTI GraphQL 
 
 Watchlist stored at `registry/cti_watchlist.json`.
 
+### Preferences Endpoints
+
+- `GET /api/preferences` — load per-user preferences (analyst name, custom instructions, response style, default model tier, pinned sessions, session tags)
+- `PUT /api/preferences` — partial-merge update of preferences
+- `POST /api/preferences/pin/{session_id}` — pin a session
+- `DELETE /api/preferences/pin/{session_id}` — unpin a session
+- `PUT /api/preferences/tags/{session_id}` — set tags for a session (form: JSON body with `tags` array)
+
+Preferences stored as JSON in `config/preferences/<email_hash>.json`. Custom instructions capped at 2000 chars. Valid model tiers: `fast`/`standard`/`heavy`. Valid response styles: `concise`/`detailed`/`formal`.
+
 ### Session Management Endpoints
 
 - `POST /api/sessions` — create a new session (called lazily on first real message, not on login)
 - `GET /api/sessions` — list sessions (`?all=true` includes expired/materialised)
+- `GET /api/sessions/search` — search across session titles, IOCs, findings, and tags (query param: `q`)
 - `PATCH /api/sessions/{id}` — rename a session
 - `DELETE /api/sessions/{id}` — delete a session
 - `DELETE /api/sessions` — delete all sessions for the authenticated user
 - `POST /api/sessions/cleanup` — delete all non-materialised sessions for the user (used on logout)
+- `GET /api/sessions/{id}/threads` — list investigation threads with IOC/finding summaries
+- `GET /api/sessions/{id}/export` — export session as Markdown (messages, tool calls, metadata)
+- `POST /api/sessions/{id}/pivot` — create a new thread (no label)
+- `POST /api/sessions/{id}/pivot-with-label` — create a new thread with label (form: `label`)
+- `POST /api/sessions/{id}/threads/{tid}/activate` — switch active thread
+- `GET /api/sessions/{id}/history?thread=` — filter history by thread (omit for active, `all` for everything)
 
 ### Other Routes
 
@@ -92,8 +113,10 @@ The frontend is a Svelte 5 SPA built with Vite and Tailwind CSS 4. Source lives 
 - **Activity feed**: `ActivityFeed.svelte` — same card style as ToolCard (agent name + task description + input summary), with status dot (amber pulsing = running, green = done, red = error). Transitions to ToolCard in the final message.
 - **Case context banner**: `MaterialiseBanner.svelte` — when `load_case_context` is used in session mode, a banner shows the loaded case ID, title, and severity
 - Enter to send, Shift+Enter for newline, file drag-and-drop (`FileUploadPill.svelte`)
-- **Welcome screen**: `WelcomeScreen.svelte` — minimal branding + hint to use `/help` and `/prompts`, shown before first message
-- **Slash commands**: client-side interception of `/help`, `/clear`, `/new`, `/context`, `/uploads`, `/status`, `/model`, `/prompts` — never sent to the API
+- **Welcome screen**: `WelcomeScreen.svelte` — minimal branding + hint to use `/help` and `/prompts`, with context-aware `SuggestionChips.svelte` (adapts to session state — starter prompts, enrichment, disposition, IOC extraction)
+- **Message actions**: hover to reveal edit (user messages) or regenerate (last assistant message) buttons. Edit opens inline textarea; regenerate re-sends from the last user message.
+- **Token usage**: cumulative input/output tokens displayed in `StatusBar.svelte` (bolt icon with formatted count). Updated from `done` SSE events.
+- **Slash commands**: client-side interception of `/help`, `/clear`, `/new`, `/pivot`, `/threads`, `/thread`, `/context`, `/uploads`, `/status`, `/model`, `/prompts`, `/export` — never sent to the API
 
 ### Cases Browse (`CasesBrowse.svelte`)
 
@@ -119,9 +142,36 @@ The frontend is a Svelte 5 SPA built with Vite and Tailwind CSS 4. Source lives 
 - **Report panel** (`ReportPanel.svelte`): markdown-rendered report excerpt (first 3000 chars)
 - "Open in Chat" button navigates to `#/chat/{caseId}` for interactive follow-up
 
+### Settings (`SettingsView.svelte`)
+
+User preferences page accessible via sidebar nav or Ctrl+, shortcut:
+
+- **Profile section**: analyst display name
+- **Response style**: radio buttons — concise / detailed / formal. Injected into system prompt as personalisation.
+- **Default model tier**: dropdown — fast / standard / heavy
+- **Custom instructions**: textarea (2000 char limit with counter). Appended to system prompt for all sessions.
+- **Keyboard shortcuts**: reference grid of all shortcuts (`KeyboardShortcuts.svelte`)
+- **Integration status**: read-only info panel showing connected services
+
+Preferences stored per-user via `api/preferences.py` (hashed email filenames in `config/preferences/`).
+
 ### Navigation
 
-All pages share the `AppShell.svelte` layout with a persistent `Sidebar.svelte` (left) and `Topbar.svelte` (top). The sidebar shows: **Dashboard**, **Cases**, **Investigate** nav links, a **Sessions** list with per-session delete buttons, and a **Recent Cases** list (sorted by creation time). `CommandPalette.svelte` provides Ctrl+K quick navigation.
+All pages share the `AppShell.svelte` layout with a persistent `Sidebar.svelte` (left) and `Topbar.svelte` (top). The sidebar shows: **Dashboard**, **Cases**, **Investigate**, **Settings** nav links, a **Search box** (debounced, searches across session titles/IOCs/findings/tags), **Pinned sessions** (star/unstar toggle), a **Sessions** list with per-session delete and pin buttons, and a **Recent Cases** list (sorted by creation time). `CommandPalette.svelte` provides Ctrl+K quick navigation.
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| Ctrl+K | Command palette |
+| Ctrl+B | Toggle sidebar |
+| Ctrl+\\ | Toggle context panel |
+| Ctrl+, | Open settings |
+| Ctrl+/ | Show shortcuts overlay |
+| Enter | Send message |
+| Shift+Enter | New line |
+
+Shortcut overlay shown via Ctrl+/ or command palette. Dismissable with Esc or click-outside.
 
 ### Dashboard (`DashboardView.svelte`)
 
@@ -143,6 +193,19 @@ CTI-focused threat intelligence dashboard. Case-level summaries (stat cards, cha
 
 Form-based investigation launcher with file drop zone (`FileDropZone.svelte`) and IOC preview (`IOCPreview.svelte`). Accessible from the sidebar nav.
 
+### Investigation Threads (context scoping)
+
+Each session supports multiple **investigation threads** — isolated context partitions within a single session. Each thread has its own IOCs, findings, telemetry, and conversation history. The LLM only sees the active thread's history and context, preventing topic bleed when pivoting between investigations.
+
+- **`/pivot [label]`** — create a new thread (sets it active, clears chat display)
+- **`/threads`** — list all threads with IOC/finding counts
+- **`/thread <N>`** — switch to thread N (reloads that thread's history)
+- **`/context`** — shows the active thread's context
+- **System prompt** — includes active thread detail + brief summaries of other threads
+- **Materialisation** — merges all threads' IOCs and findings into the case
+
+Backend: threads stored in `sessions/<id>/context.json` under `threads` dict. History messages tagged with `thread_id` and filtered before API calls. Backwards-compatible — old sessions auto-migrate to a single default thread.
+
 ### Session Lifecycle
 
 Sessions are lazily created — no session exists until the analyst sends their first real message (slash commands are handled client-side and don't create sessions). Key behaviours:
@@ -159,7 +222,9 @@ Sessions are lazily created — no session exists until the analyst sends their 
 
 The persistent left sidebar provides session management:
 
-- **Session list** with per-session delete (×) buttons — always visible, red on hover
+- **Search box** — debounced (300ms) search across session titles, IOCs, findings, and tags via `GET /api/sessions/search`. Results shown in dropdown with match fields and relative timestamps.
+- **Pinned sessions** — starred sessions appear at the top. Toggle via star icon on hover or `POST/DELETE /api/preferences/pin/{id}`.
+- **Session list** with per-session delete (×) and pin (star) buttons — always visible
 - **Resume** — click a session to navigate to `#/session/{id}`
 - **Delete** — remove individual sessions via × button (calls `DELETE /api/sessions/{id}`)
 - **Clear all** — bulk-delete all sessions for the current user (appears when > 1 session)
@@ -174,13 +239,14 @@ The persistent left sidebar provides session management:
 
 - **Context label**: blank while in session mode, shows case ID (purple accent) when in case mode, shows page name for other views
 - **Sidebar toggle**: hamburger menu button (Ctrl+B)
+- **Token usage**: bolt icon with formatted cumulative session tokens (e.g. "12.3k") and breakdown tooltip
 - **Logout**: cleans up non-materialised sessions before clearing auth token
 
 ## Available Tools
 
-### Shared Tools (16 — defined once in `TOOL_DEFS`, used by both modes)
+### Shared Tools (22 — defined once in `TOOL_DEFS`, available in both modes)
 
-`assess_landscape`, `link_cases`, `merge_cases`, `recall_cases`, `run_kql`, `load_kql_playbook`, `ingest_velociraptor`, `ingest_mde_package`, `memory_dump_guide`, `analyse_memory_dump`, `start_browser_session`, `stop_browser_session`, `list_browser_sessions`, `search_threat_articles`, `generate_threat_article`, `list_threat_articles`
+`assess_landscape`, `link_cases`, `merge_cases`, `recall_cases`, `run_kql`, `load_kql_playbook`, `ingest_velociraptor`, `ingest_mde_package`, `memory_dump_guide`, `analyse_memory_dump`, `start_browser_session`, `stop_browser_session`, `list_browser_sessions`, `start_sandbox_session`, `stop_sandbox_session`, `list_sandbox_sessions`, `sandbox_exec`, `search_threat_articles`, `generate_threat_article`, `list_threat_articles`, `list_confluence_pages`, `web_search`
 
 ### Case-Only Tools (21)
 

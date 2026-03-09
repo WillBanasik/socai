@@ -252,14 +252,34 @@ class ChiefAgent(BaseAgent):
                 ))
 
         # 6. Sandbox analysis — query sandbox APIs for file hashes
+        sandbox_result = None
         try:
             from agents.sandbox_agent import SandboxAgent
-            _step("sandbox_analyse", lambda: SandboxAgent(self.case_id).run(
+            sandbox_result = _step("sandbox_analyse", lambda: SandboxAgent(self.case_id).run(
                 detonate=detonate,
             ))
         except ImportError as exc:
             log_error(self.case_id, "sandbox_analyse", str(exc), severity="info",
                       context={"reason": "SandboxAgent import unavailable"})
+
+        # 6b. Local sandbox detonation — if --detonate and cloud lookups inconclusive
+        if detonate:
+            cloud_has_verdict = (
+                sandbox_result
+                and sandbox_result.get("status") == "ok"
+                and sandbox_result.get("ok_results", 0) > 0
+            )
+            if not cloud_has_verdict:
+                try:
+                    from agents.sandbox_detonation_agent import SandboxDetonationAgent
+                    _step("sandbox_detonate", lambda: SandboxDetonationAgent(self.case_id).run())
+                except ImportError as exc:
+                    log_error(self.case_id, "sandbox_detonate", str(exc), severity="info",
+                              context={"reason": "SandboxDetonationAgent import unavailable"})
+                except Exception as exc:
+                    log_error(self.case_id, "sandbox_detonate", str(exc), severity="warning",
+                              traceback=traceback.format_exc(),
+                              context={"reason": "Local detonation failed"})
 
         # 7. Recursive capture — follow extracted URLs up to CRAWL_DEPTH levels
         if urls:

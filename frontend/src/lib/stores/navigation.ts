@@ -1,6 +1,6 @@
 import { writable, derived } from 'svelte/store';
 
-export type View = 'login' | 'chat' | 'cases' | 'case-detail' | 'dashboard' | 'investigate';
+export type View = 'login' | 'chat' | 'cases' | 'case-detail' | 'dashboard' | 'investigate' | 'settings';
 
 export const activeView = writable<View>('chat');
 export const activeCaseId = writable<string | null>(null);

@@ -1,5 +1,5 @@
 import { apiJson, apiPost, apiFetch } from './client';
-import type { SessionMeta, SessionContext } from '../types';
+import type { SessionMeta, SessionContext, ThreadSummary } from '../types';
 
 export async function listSessions(): Promise<SessionMeta[]> {
   return apiJson<SessionMeta[]>('/api/sessions');
@@ -44,12 +44,34 @@ export async function uploadToSession(sessionId: string, file: File): Promise<an
   return resp.json();
 }
 
-export async function getSessionHistory(sessionId: string): Promise<any[]> {
-  return apiJson<any[]>(`/api/sessions/${sessionId}/history`);
+export async function getSessionHistory(sessionId: string, threadId?: string): Promise<any[]> {
+  const params = threadId ? `?thread=${threadId}` : '';
+  return apiJson<any[]>(`/api/sessions/${sessionId}/history${params}`);
 }
 
 export async function getSessionContext(sessionId: string): Promise<SessionContext> {
   return apiJson<SessionContext>(`/api/sessions/${sessionId}/context`);
+}
+
+export async function listThreads(sessionId: string): Promise<ThreadSummary[]> {
+  return apiJson<ThreadSummary[]>(`/api/sessions/${sessionId}/threads`);
+}
+
+export async function pivotThread(sessionId: string, label?: string): Promise<ThreadSummary> {
+  const fd = new FormData();
+  fd.append('label', label || '');
+  const resp = await apiFetch(`/api/sessions/${sessionId}/pivot-with-label`, {
+    method: 'POST',
+    body: fd,
+  });
+  return resp.json();
+}
+
+export async function activateThread(sessionId: string, threadId: string): Promise<ThreadSummary> {
+  const resp = await apiFetch(`/api/sessions/${sessionId}/threads/${threadId}/activate`, {
+    method: 'POST',
+  });
+  return resp.json();
 }
 
 export async function materialiseSession(sessionId: string, data: {

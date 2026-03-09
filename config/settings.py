@@ -54,6 +54,9 @@ HYBRID_KEY       = os.getenv("HYBRID_ANALYSIS_API_KEY", "")  # Hybrid Analysis
 CENSYS_TOKEN     = os.getenv("CENSYS_TOKEN", "")      # Personal Access Token from censys.io → API Access
 WHOISXML_KEY     = os.getenv("WHOISXML_API_KEY", "")
 
+# Web search fallback (Brave Search API; DuckDuckGo used if no key)
+BRAVE_SEARCH_KEY = os.getenv("SOCAI_BRAVE_SEARCH_KEY", "")
+
 # Enrichment performance
 ENRICH_CACHE_FILE = BASE_DIR / "registry" / "enrichment_cache.json"
 ENRICH_CACHE_TTL  = int(os.getenv("SOCAI_ENRICH_CACHE_TTL", "24"))   # hours; 0 to disable
@@ -74,6 +77,16 @@ CONF_AUTO_CLOSE  = float(os.getenv("SOCAI_CONF_AUTO_CLOSE", "0.20"))
 # Sandbox providers
 ANYRUN_KEY       = os.getenv("ANYRUN_API_KEY", "")
 JOESANDBOX_KEY   = os.getenv("JOESANDBOX_API_KEY", "")
+
+# Local sandbox detonation
+SANDBOX_DOCKER_IMAGE      = os.getenv("SOCAI_SANDBOX_IMAGE", "socai-sandbox:latest")
+SANDBOX_WINE_IMAGE        = os.getenv("SOCAI_SANDBOX_WINE_IMAGE", "socai-sandbox-wine:latest")
+SANDBOX_DEFAULT_TIMEOUT   = int(os.getenv("SOCAI_SANDBOX_TIMEOUT_LOCAL", "120"))
+SANDBOX_MAX_TIMEOUT       = int(os.getenv("SOCAI_SANDBOX_MAX_TIMEOUT", "600"))
+SANDBOX_MEMORY_LIMIT      = os.getenv("SOCAI_SANDBOX_MEMORY", "512m")
+SANDBOX_CPU_LIMIT         = os.getenv("SOCAI_SANDBOX_CPUS", "1.0")
+SANDBOX_DEFAULT_NETWORK   = os.getenv("SOCAI_SANDBOX_NETWORK", "monitor")
+SANDBOX_NETWORK_NAME      = os.getenv("SOCAI_SANDBOX_NETWORK_NAME", "socai_sandbox_net")
 
 # Campaign clustering
 CAMPAIGNS_FILE   = BASE_DIR / "registry" / "campaigns.json"

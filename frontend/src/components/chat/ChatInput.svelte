@@ -1,6 +1,10 @@
 <script lang="ts">
   import { streaming, pendingFiles, modelTier } from '../../lib/stores/chat';
+  import { activeSessionId } from '../../lib/stores/navigation';
+  import { exportSession } from '../../lib/api/preferences';
+  import { addToast } from '../../lib/stores/toasts';
   import FileUploadPill from './FileUploadPill.svelte';
+  import { get } from 'svelte/store';
 
   let { onsend }: { onsend: (text: string) => void } = $props();
 
@@ -38,6 +42,24 @@
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
   }
+
+  async function doExport() {
+    const sid = get(activeSessionId);
+    if (!sid) { addToast('info', 'No active session to export'); return; }
+    try {
+      const md = await exportSession(sid);
+      const blob = new Blob([md], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${sid}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      addToast('success', 'Session exported');
+    } catch {
+      addToast('error', 'Failed to export session');
+    }
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -64,6 +86,18 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
       </svg>
     </button>
+
+    {#if $activeSessionId}
+      <button
+        class="flex-shrink-0 p-2 text-gray-400 hover:text-gray-200 hover:bg-surface-600 rounded-lg transition-colors"
+        onclick={doExport}
+        title="Export session (Markdown)"
+      >
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      </button>
+    {/if}
 
     <textarea
       bind:value={text}

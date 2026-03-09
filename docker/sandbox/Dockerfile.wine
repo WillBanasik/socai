@@ -1,0 +1,24 @@
+# socai-sandbox-wine:latest — Windows PE sandbox via Wine
+# Layered on top of the Linux sandbox image
+
+FROM socai-sandbox:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Enable i386 architecture for 32-bit Windows binaries
+RUN dpkg --add-architecture i386 \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    wine64 \
+    wine32 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pre-initialise Wine prefix as sandbox user (avoids first-run prompts)
+USER sandbox
+ENV WINEPREFIX=/home/sandbox/.wine
+ENV WINEDEBUG=-all
+RUN wineboot --init 2>/dev/null || true
+
+USER root
+WORKDIR /sandbox/workspace
+
+ENTRYPOINT ["/sandbox/entrypoint.sh"]

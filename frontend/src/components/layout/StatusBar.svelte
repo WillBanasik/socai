@@ -1,6 +1,13 @@
 <script lang="ts">
   import { activeCaseId, activeSessionId } from '../../lib/stores/navigation';
-  import { streaming, modelTier } from '../../lib/stores/chat';
+  import { streaming, modelTier, sessionTokens } from '../../lib/stores/chat';
+
+  function formatTokens(n: number): string {
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+    return String(n);
+  }
+
+  const totalTokens = $derived($sessionTokens.input + $sessionTokens.output);
 </script>
 
 <footer class="h-6 bg-surface-900 border-t border-surface-700 flex items-center px-3 text-[10px] text-gray-500 gap-4 flex-shrink-0">
@@ -16,6 +23,15 @@
   {/if}
 
   <div class="flex-1"></div>
+
+  {#if totalTokens > 0}
+    <span class="flex items-center gap-1" title="Tokens this session: {$sessionTokens.input} in / {$sessionTokens.output} out">
+      <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+      </svg>
+      {formatTokens(totalTokens)}
+    </span>
+  {/if}
 
   <span>model: {$modelTier}</span>
 </footer>

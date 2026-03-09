@@ -848,6 +848,119 @@ def cmd_browser_list(args: argparse.Namespace) -> None:
         print(line)
 
 
+def cmd_sandbox_session(args: argparse.Namespace) -> None:
+    from tools.sandbox_session import start_session, stop_session, wait_for_completion
+
+    sample_path = Path(args.target)
+    if not sample_path.exists():
+        print(f"[error] Sample not found: {args.target}")
+        sys.exit(1)
+
+    case_id = args.case or _next_case_id()
+
+    from config.settings import CASES_DIR
+    if not (CASES_DIR / case_id).exists():
+        from tools.case_create import case_create
+        title = f"Sandbox detonation: {sample_path.name}"
+        case_create(case_id, title=title, severity=args.severity,
+                    client=getattr(args, "client", "") or "")
+
+    result = start_session(
+        str(sample_path), case_id,
+        timeout=args.timeout,
+        network_mode=args.network,
+        interactive=args.interactive,
+    )
+
+    if result.get("status") != "ok":
+        print(f"[error] {result.get('reason', 'Session start failed')}")
+        sys.exit(1)
+
+    session_id = result["session_id"]
+    print(f"[sandbox] Session {session_id} started")
+    print(f"[sandbox] Sample: {sample_path.name} ({result.get('sample_type', '?')})")
+    print(f"[sandbox] Image: {result.get('image', '?')} | Network: {args.network}")
+
+    if args.interactive:
+        import signal as _signal
+        try:
+            print("Interactive mode — press Ctrl+C to stop and collect artefacts...")
+            _signal.pause()
+        except KeyboardInterrupt:
+            print("\n")
+    else:
+        print(f"[sandbox] Waiting up to {args.timeout}s for execution to complete...")
+        wait_for_completion(session_id)
+
+    stop_result = stop_session(session_id)
+
+    if stop_result.get("status") != "ok":
+        print(f"[error] {stop_result.get('reason', 'Session stop failed')}")
+        sys.exit(1)
+
+    dur = stop_result.get("duration_seconds", 0)
+    entities = stop_result.get("entities_summary", {})
+    print(f"[sandbox] Session stopped — duration: {dur}s")
+    print(f"[sandbox] Entities: IPs={entities.get('ips', 0)}, "
+          f"Domains={entities.get('domains', 0)}, URLs={entities.get('urls', 0)}")
+
+    if stop_result.get("execution_error"):
+        print(f"[sandbox] Execution error: {stop_result['execution_error']}")
+
+    # Optionally run analysis pipeline
+    if not args.no_analyse:
+        print("\n[sandbox] Running analysis pipeline...")
+        from tools.extract_iocs import extract_iocs
+        from tools.enrich import enrich
+        from tools.score_verdicts import score_verdicts, update_ioc_index
+        from tools.correlate import correlate
+
+        extract_iocs(case_id)
+        enrich(case_id)
+        score_verdicts(case_id)
+        update_ioc_index(case_id)
+        correlate(case_id)
+
+        from tools.generate_report import generate_report
+        report_result = generate_report(case_id)
+        print(f"\nReport: {report_result['report_path']}")
+
+    if args.json:
+        print(json.dumps(stop_result, indent=2, default=str))
+
+
+def cmd_sandbox_stop(args: argparse.Namespace) -> None:
+    from tools.sandbox_session import stop_session
+    result = stop_session(args.session_id)
+    if result.get("status") != "ok":
+        print(f"[error] {result.get('reason', 'Stop failed')}")
+        sys.exit(1)
+    dur = result.get("duration_seconds", 0)
+    print(f"[sandbox] Session {args.session_id} stopped — duration: {dur}s")
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+
+
+def cmd_sandbox_list(args: argparse.Namespace) -> None:
+    from tools.sandbox_session import list_sessions
+    sessions = list_sessions()
+    if not sessions:
+        print("No sandbox sessions found.")
+        return
+    for s in sessions:
+        status = s.get("status", "unknown")
+        sid = s.get("session_id", "?")
+        sample = s.get("sample_name", "")
+        stype = s.get("sample_type", "")
+        case = s.get("case_id", "")
+        net = s.get("network_mode", "")
+        started = s.get("started_at", "")
+        line = f"  [{status.upper():15s}] {sid}  case={case}  {sample} ({stype})  net={net}"
+        if started:
+            line += f"  (started {started})"
+        print(line)
+
+
 def cmd_mde_package(args: argparse.Namespace) -> None:
     from tools.mde_ingest import mde_ingest
 
@@ -1291,6 +1404,34 @@ def build_parser() -> argparse.ArgumentParser:
     # browser-list
     sub.add_parser("browser-list", help="List all browser sessions (active and completed).")
 
+    # sandbox-session
+    p_ss = sub.add_parser(
+        "sandbox-session",
+        help="Detonate a suspicious file in a containerised sandbox.",
+    )
+    p_ss.add_argument("target", help="Path to sample file to detonate")
+    p_ss.add_argument("--case", default=None, help="Case ID (auto-generated if omitted)")
+    p_ss.add_argument("--severity", default="medium",
+                       choices=["low", "medium", "high", "critical"])
+    p_ss.add_argument("--timeout", type=int, default=120,
+                       help="Execution timeout in seconds (default 120, max 600)")
+    p_ss.add_argument("--network", default="monitor", choices=["monitor", "isolate"],
+                       help="Network mode: monitor (honeypot) or isolate (air-gapped)")
+    p_ss.add_argument("--interactive", action="store_true",
+                       help="Keep container running for manual inspection via exec")
+    p_ss.add_argument("--no-analyse", action="store_true", dest="no_analyse",
+                       help="Skip enrichment pipeline after detonation")
+    p_ss.add_argument("--client", default="",
+                       help="Client name (loads playbook from config/clients/<name>.json)")
+
+    # sandbox-stop
+    p_sstop = sub.add_parser("sandbox-stop", help="Stop an active sandbox session and collect artefacts.")
+    p_sstop.add_argument("--session", required=True, dest="session_id",
+                          help="Session ID to stop")
+
+    # sandbox-list
+    sub.add_parser("sandbox-list", help="List all sandbox detonation sessions (active and completed).")
+
     # mde-package
     p_mde = sub.add_parser(
         "mde-package",
@@ -1455,6 +1596,9 @@ def main() -> None:
         "browser-session": cmd_browser_session,
         "browser-stop":   cmd_browser_stop,
         "browser-list":   cmd_browser_list,
+        "sandbox-session": cmd_sandbox_session,
+        "sandbox-stop":   cmd_sandbox_stop,
+        "sandbox-list":   cmd_sandbox_list,
         "mde-package":    cmd_mde_package,
         "memory-guide":   cmd_memory_guide,
         "memory-analyse": cmd_memory_analyse,
