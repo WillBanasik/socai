@@ -28,5 +28,8 @@ class LogCorrelatorAgent(BaseAgent):
         self._emit("correlating", {})
         corr = correlate(self.case_id)
 
-        self._emit("complete", {"logs_parsed": len(parse_results)})
+        self._emit("complete", {
+            "logs_parsed": len(parse_results),
+            "llm_insight": bool(corr.get("llm_insight")),
+        })
         return {"log_parses": parse_results, "correlation": corr}

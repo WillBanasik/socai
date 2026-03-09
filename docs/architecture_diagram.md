@@ -7,11 +7,11 @@ graph TB
     subgraph Entry["Entry Points"]
         CLI["socai.py<br/>CLI (34 commands)"]
         WEB["FastAPI + Svelte SPA<br/>Web Chat UI"]
-        MCP["mcp_server.py<br/>Claude MCP"]
+        MCP["mcp_server/<br/>MCP SSE + RBAC"]
     end
 
     subgraph Orchestration["Agent Orchestration Layer"]
-        CHIEF["ChiefAgent<br/>15-step pipeline"]
+        CHIEF["ChiefAgent<br/>16-step pipeline"]
         CHIEF --> TRIAGE["TriageAgent"]
         CHIEF --> PLANNER["PlannerAgent"]
         CHIEF --> EMAIL_A["EmailAnalystAgent"]
@@ -217,7 +217,7 @@ sequenceDiagram
     T->>L: Architecture review (aliased)
     L-->>T: Review markdown
 
-    C-->>U: Pipeline complete (15 steps)
+    C-->>U: Pipeline complete (16 steps)
 ```
 
 ## Data Flow

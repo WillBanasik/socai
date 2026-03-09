@@ -23,5 +23,6 @@ class AnomalyDetectionAgent(BaseAgent):
         self._emit("complete", {
             "total_findings": result.get("total_findings", 0),
             "severity_counts": result.get("severity_counts", {}),
+            "llm_context": bool(result.get("llm_context")),
         })
         return result

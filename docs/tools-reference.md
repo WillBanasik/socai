@@ -155,7 +155,7 @@ The Intezer access token is fetched **once per `enrich()` call** and reused acro
 - Three providers (parallel): Any.Run, Joe Sandbox, Hybrid Analysis
 - Extracts: network IOCs, MITRE TTPs, C2 beacons
 - Writes discovered IOCs to `artefacts/sandbox/sandbox_iocs.json` for downstream enrichment
-- `--detonate` flag is accepted but **not yet implemented**
+- `--detonate` flag triggers local containerised detonation when cloud sandbox lookups are inconclusive (see pipeline step 6b)
 
 ## Log Anomaly Detection
 

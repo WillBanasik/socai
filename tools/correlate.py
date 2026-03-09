@@ -124,6 +124,18 @@ def correlate(case_id: str) -> dict:
         "timeline_events": len(timeline),
     }
 
+    # LLM correlation interpretation (advisory)
+    if hits:
+        try:
+            from tools.llm_insight import interpret_correlations
+            meta_path = case_dir / "case_meta.json"
+            meta = load_json(meta_path) if meta_path.exists() else {"case_id": case_id}
+            llm_insight = interpret_correlations(result, meta)
+            if llm_insight:
+                result["llm_insight"] = llm_insight
+        except Exception:
+            pass
+
     write_artefact(corr_dir / "correlation.json", json.dumps(result, indent=2))
     write_artefact(corr_dir / "timeline.json",    json.dumps(timeline, indent=2))
     print(f"[correlate] Correlation complete for {case_id}: {result['hit_summary']}")

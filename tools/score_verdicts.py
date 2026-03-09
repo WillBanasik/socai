@@ -150,6 +150,22 @@ def score_verdicts(case_id: str) -> dict:
         "iocs":         ioc_scores,
     }
 
+    # LLM verdict conflict reconciliation (advisory — only for IOCs with mixed verdicts)
+    conflicting = []
+    for ioc, info in ioc_scores.items():
+        providers = info.get("providers", {})
+        verdicts_set = set(providers.values())
+        if len(verdicts_set) > 1 and verdicts_set - {"unknown"}:
+            conflicting.append({"ioc": ioc, "type": info["ioc_type"], "providers": providers})
+    if conflicting:
+        try:
+            from tools.llm_insight import reconcile_verdict_conflicts
+            reconciliation = reconcile_verdict_conflicts(conflicting[:10])
+            if reconciliation:
+                output["llm_verdict_reconciliation"] = reconciliation
+        except Exception:
+            pass
+
     out_path = CASES_DIR / case_id / "artefacts" / "enrichment" / "verdict_summary.json"
     save_json(out_path, output)
     print(

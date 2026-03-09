@@ -336,7 +336,7 @@ def _upload_case_pdfs(case_id: str, client) -> list[dict]:
 # Parallel cluster subagent
 # ---------------------------------------------------------------------------
 
-def _parallel_cluster_analysis(case_id: str, client, ioc_dict: dict) -> str:
+def _parallel_cluster_analysis(case_id: str, client, ioc_dict: dict, severity: str = "medium") -> str:
     """
     Run two focused LLM calls concurrently:
       1. Network IOC cluster (IPv4 + domain)
@@ -505,7 +505,7 @@ def security_arch_review(case_id: str) -> dict:
     if has_network and has_files:
         cluster_executor = ThreadPoolExecutor(max_workers=1)
         focused_future   = cluster_executor.submit(
-            _parallel_cluster_analysis, case_id, client, ioc_dict
+            _parallel_cluster_analysis, case_id, client, ioc_dict, severity
         )
 
     # ── 8. Build user content + make main LLM call ────────────────────────

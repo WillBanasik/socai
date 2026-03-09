@@ -78,4 +78,4 @@ Add entries to `config/article_sources.json` with `"type": "rss"` and `"categori
 
 ## MCP Server
 
-`mcp_server.py` exposes the pipeline to Claude Desktop via FastMCP (stdio transport): `investigate`, `list_cases`, `get_case`, `read_report`, `generate_weekly`, `generate_queries`, `close_case`. The `investigate` tool supports the full `ChiefAgent.run()` parameter set including `eml_paths` and `detonate`. All imports are deferred inside tool functions to avoid slow startup.
+`mcp_server/` exposes 44 tools, 11 resources, and 7 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. Long-running tools (investigate) support fire-and-forget with polling or inline-with-progress modes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.

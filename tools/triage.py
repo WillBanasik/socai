@@ -103,7 +103,7 @@ def triage(case_id: str, urls: list[str] | None = None, severity: str = "medium"
 
     # Check enrichment cache for IOCs with sufficient fresh coverage
     cache_ttl = timedelta(hours=ENRICH_CACHE_TTL) if ENRICH_CACHE_TTL > 0 else None
-    now = datetime.now(timezone.utc)
+    now = datetime.fromisoformat(utcnow().replace("Z", "+00:00"))
 
     for ioc in input_iocs:
         fresh_providers = 0
@@ -148,6 +148,16 @@ def triage(case_id: str, urls: list[str] | None = None, severity: str = "medium"
         "escalate_severity": escalate_severity,
         "ts": utcnow(),
     }
+
+    # LLM triage contextualisation (advisory)
+    if known_malicious or known_suspicious:
+        try:
+            from tools.llm_insight import contextualise_triage
+            context = contextualise_triage(result, severity)
+            if context:
+                result["llm_context"] = context
+        except Exception:
+            pass
 
     save_json(triage_dir / "triage_summary.json", result)
 

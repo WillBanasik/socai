@@ -16,7 +16,6 @@ Outputs:
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -937,7 +936,7 @@ def generate_queries(
 
     patterns = _detect_patterns(scan_text)
     ioc_summary = ", ".join(f"{v} {k}" for k, v in totals.items() if v > 0)
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now_str = utcnow()
 
     # Build document
     lines: list[str] = [
@@ -1000,6 +999,19 @@ def generate_queries(
         logscale_content = _build_logscale(iocs, yaml_collector)
         lines.append(logscale_content if logscale_content else "_No IOCs available._")
         lines.append("\n---")
+
+    # LLM-refined hunt queries (advisory)
+    try:
+        from tools.llm_insight import refine_hunt_queries
+        pattern_text = ", ".join(patterns) if patterns else "none detected"
+        refined = refine_hunt_queries(case_id, pattern_text, ioc_summary)
+        if refined:
+            lines.append("\n## LLM-Suggested Additional Queries\n")
+            lines.append("> *The following queries are LLM-generated (assessed). Validate before running.*\n")
+            lines.append(refined)
+            lines.append("\n---")
+    except Exception:
+        pass
 
     # Write markdown artefact
     out_path = case_dir / "artefacts" / "queries" / "hunt_queries.md"

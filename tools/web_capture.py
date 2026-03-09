@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import BROWSER_BACKEND, CAPTURE_SPA_DWELL, CAPTURE_TIMEOUT, CAPTURE_UA, CASES_DIR
-from tools.common import audit, log_error, sha256_bytes, utcnow, write_artefact
+from tools.common import log_error, sha256_bytes, utcnow, write_artefact
 
 
 # ---------------------------------------------------------------------------
@@ -559,7 +559,6 @@ def _write_capture_artefacts(url: str, case_id: str, data: dict) -> dict:
         )
 
     write_artefact(out_dir / "capture_manifest.json", json.dumps(manifest, indent=2))
-    audit("web_capture", str(out_dir), extra={"url": url, "case_id": case_id})
     print(f"[web_capture] Captured {url} → {out_dir}")
     return manifest
 

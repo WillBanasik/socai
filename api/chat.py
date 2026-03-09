@@ -1846,14 +1846,14 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         case_id = _session_ensure_backing_case(session_id)
         close = tool_input.get("close_case", False)
         from tools.generate_report import generate_report
-        result = generate_report(case_id, close_case=close)
+        result = generate_report(case_id)
         report_path = result.get("report_path", "")
         return {"_message": f"Report generated: {report_path}", **result}
 
     elif tool_name == "generate_executive_summary":
         case_id = _session_ensure_backing_case(session_id)
-        from tools.executive_summary import generate_executive_summary
-        result = generate_executive_summary(case_id)
+        from tools.executive_summary import executive_summary
+        result = executive_summary(case_id)
         return {"_message": "Executive summary generated.", **result}
 
     elif tool_name == "generate_fp_ticket":
@@ -1862,9 +1862,9 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         platform = tool_input.get("platform")
         if not alert_data:
             return {"_message": "No alert data provided. Paste the alert JSON in your message."}
-        from tools.fp_ticket import generate_fp_ticket
-        result = generate_fp_ticket(
-            case_id, alert_text=alert_data, platform_override=platform,
+        from tools.fp_ticket import fp_ticket
+        result = fp_ticket(
+            case_id, alert_data=alert_data, platform=platform,
         )
         return {"_message": "FP ticket generated.", **result}
 
@@ -1877,8 +1877,8 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
 
     elif tool_name == "reconstruct_timeline":
         case_id = _session_ensure_backing_case(session_id)
-        from tools.timeline_reconstruct import reconstruct_timeline
-        result = reconstruct_timeline(case_id)
+        from tools.timeline_reconstruct import timeline_reconstruct
+        result = timeline_reconstruct(case_id)
         return {"_message": "Timeline reconstructed.", **result}
 
     elif tool_name == "security_arch_review":
@@ -1901,20 +1901,20 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
 
     elif tool_name == "contextualise_cves":
         case_id = _session_ensure_backing_case(session_id)
-        from tools.cve_contextualise import contextualise_cves
-        result = contextualise_cves(case_id)
+        from tools.cve_contextualise import cve_contextualise
+        result = cve_contextualise(case_id)
         return {"_message": "CVE contextualisation complete.", **result}
 
     elif tool_name == "analyse_pe_files":
         case_id = _session_ensure_backing_case(session_id)
-        from tools.pe_analysis import analyse_pe_files
-        result = analyse_pe_files(case_id)
+        from tools.pe_analysis import pe_deep_analyse
+        result = pe_deep_analyse(case_id)
         return {"_message": "PE analysis complete.", **result}
 
     elif tool_name == "correlate_event_logs":
         case_id = _session_ensure_backing_case(session_id)
-        from tools.evtx_correlate import correlate_evtx
-        result = correlate_evtx(case_id)
+        from tools.evtx_correlate import evtx_correlate
+        result = evtx_correlate(case_id)
         return {"_message": "Event log correlation complete.", **result}
 
     elif tool_name == "yara_scan":

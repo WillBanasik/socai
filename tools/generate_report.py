@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from textwrap import fill
 
@@ -866,7 +865,7 @@ def generate_report(case_id: str) -> dict:
 
     # Build report sections
     sections = []
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now_str = utcnow()
     sections.append(f"# Investigation Report – {case_id}\n\n_Generated: {now_str}_\n")
     sections.append(_build_executive_summary(meta, iocs, correlation))
 
@@ -927,6 +926,15 @@ def generate_report(case_id: str) -> dict:
         captures, zip_manifests, analyses, log_parses, iocs, correlation, verdict_summary
     )
     sections.append(confidence_section)
+
+    # LLM-synthesised executive narrative (advisory; graceful skip if no API key)
+    try:
+        from tools.llm_insight import synthesise_report_narrative
+        narrative = synthesise_report_narrative(case_id)
+        if narrative:
+            sections.insert(1, f"## Analytical Narrative\n\n> *The following narrative is LLM-synthesised (assessed, not confirmed).*\n\n{narrative}\n")
+    except Exception:
+        pass  # LLM enhancement is optional
 
     # Artefact index
     sections.append("## Artefact Index\n")

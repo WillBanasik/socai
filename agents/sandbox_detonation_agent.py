@@ -172,7 +172,12 @@ class SandboxDetonationAgent(BaseAgent):
         try:
             import anthropic
             client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-            model = get_model("sandbox_detonation", stop_result.get("severity", "medium"))
+            case_meta = {}
+            meta_path = CASES_DIR / self.case_id / "case_meta.json"
+            if meta_path.exists():
+                from tools.common import load_json
+                case_meta = load_json(meta_path)
+            model = get_model("sandbox_detonation", case_meta.get("severity", "medium"))
 
             response = client.messages.create(
                 model=model,

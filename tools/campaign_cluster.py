@@ -243,7 +243,7 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
     components = uf.components()
 
     # Build campaigns
-    now = datetime.now(timezone.utc)
+    now = datetime.fromisoformat(utcnow().replace("Z", "+00:00"))
     campaigns: list[dict] = []
 
     for root, members in components.items():
@@ -272,6 +272,14 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
             ),
             "updated_at": utcnow(),
         }
+        # LLM campaign narrative (advisory)
+        try:
+            from tools.llm_insight import generate_campaign_narrative
+            narrative = generate_campaign_narrative(campaign)
+            if narrative:
+                campaign["narrative"] = narrative
+        except Exception:
+            pass
         campaigns.append(campaign)
 
     # Save global campaigns registry

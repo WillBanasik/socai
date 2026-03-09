@@ -807,7 +807,9 @@ def stop_session(session_id: str) -> dict:
         try:
             from datetime import datetime, timezone
             start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-            duration = int((datetime.now(timezone.utc) - start).total_seconds())
+            from tools.common import utcnow as _utcnow
+            _now = datetime.fromisoformat(_utcnow().replace("Z", "+00:00"))
+            duration = int((_now - start).total_seconds())
         except Exception:
             pass
 

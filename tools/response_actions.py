@@ -269,6 +269,15 @@ def generate_response_actions(case_id: str) -> dict:
         "ts": utcnow(),
     }
 
+    # LLM response prioritisation (advisory)
+    try:
+        from tools.llm_insight import prioritise_response_actions
+        llm_priority = prioritise_response_actions(result, meta)
+        if llm_priority:
+            result["llm_priority_assessment"] = llm_priority
+    except Exception:
+        pass
+
     # Write artefacts
     out_dir = case_dir / "artefacts" / "response_actions"
     out_dir.mkdir(parents=True, exist_ok=True)

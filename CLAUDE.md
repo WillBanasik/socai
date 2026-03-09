@@ -59,6 +59,11 @@ python3 socai.py sandbox-session /path/to/sample --case C001 --interactive
 python3 socai.py sandbox-stop --session <session-id>
 python3 socai.py sandbox-list
 
+# MCP server (HTTPS SSE, port 8001, JWT auth)
+python3 -m mcp_server                                # SSE transport (default)
+SOCAI_MCP_TRANSPORT=streamable-http python3 -m mcp_server  # Streamable HTTP
+SOCAI_MCP_PORT=9001 python3 -m mcp_server             # Custom port
+
 # Other subcommands: mdr-report, triage, email-analyse, campaigns, sandbox,
 #   anomalies, errors, timeline, pe-analysis, yara, evtx, cve-context,
 #   exec-summary, queries, client-query, response-actions, weekly, list, close
@@ -73,6 +78,7 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **CLI:** `socai.py` — entrypoint for all commands
 - **Agents** (`agents/`) — thin orchestration classes inheriting `BaseAgent`; call tool functions, never write files directly
 - **Tools** (`tools/`) — stateless functions; accept `case_id`, write via `write_artefact()`/`save_json()`, return manifest dicts
+- **MCP Server** (`mcp_server/`) — HTTPS SSE transport on port 8001 with JWT RBAC; 44 tools, 11 resources, 7 prompts for external MCP clients (Claude Desktop, LLM agents)
 - **Web UI:** `api/chat.py` + `api/main.py` + Svelte SPA (`frontend/src/` → `ui-dist/`) — streaming SSE chat with activity feed and session management (see `docs/web-ui.md`)
 - **Sessions** (`api/sessions.py`) — pre-case investigation conversations; materialise into full cases
 - **Batch** (`tools/batch.py`) — bulk LLM processing via Claude Messages Batch API
@@ -147,4 +153,5 @@ Read these only when working on the relevant area:
 | `docs/architecture.md` | High-level architecture diagram and data flow |
 | `docs/model_tiering.md` | Full model tiering matrix and call site map |
 | `docs/sandbox.md` | Sandbox detonation: setup, network modes, artefacts, safety, interactive mode |
+| `docs/mcp-server.md` | MCP server: auth, RBAC, tools, resources, prompts, deployment |
 | `docs/roadmap.md` | Planned features: tiered incident model, SOAR/Zoho integration |

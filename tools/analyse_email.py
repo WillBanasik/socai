@@ -27,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import audit, log_error, save_json, sha256_bytes, utcnow, write_artefact
+from tools.common import log_error, save_json, sha256_bytes, utcnow, write_artefact
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +379,6 @@ def analyse_email(eml_path: str | Path, case_id: str) -> dict:
 
     # Save analysis
     save_json(email_dir / "email_analysis.json", result)
-    audit("analyse_email", str(eml_path), extra={"case_id": case_id})
 
     # Print summary
     print(f"[analyse_email] Parsed: {eml_path.name}")

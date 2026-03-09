@@ -374,6 +374,8 @@ def _load_domain_age(case_id: str, hostname: str) -> int | None:
     Returns age in days or None if unavailable.
     """
     enrichment_path = CASES_DIR / case_id / "artefacts" / "enrichment" / "enrichment.json"
+    if not enrichment_path.exists():
+        return None
     enrichment = load_json(enrichment_path)
     if not enrichment:
         return None
@@ -382,10 +384,10 @@ def _load_domain_age(case_id: str, hostname: str) -> int | None:
     domain = hostname.lower().lstrip("www.")
 
     # Check enrichment results for WHOISXML data
-    for ioc_key, providers in enrichment.items():
-        if not isinstance(providers, dict):
-            continue
-        for provider_name, result in providers.items():
+    # enrichment.json format: {"results": [list of result dicts], "summary": {...}}
+    results_list = enrichment.get("results", [])
+    if isinstance(results_list, list):
+        for result in results_list:
             if not isinstance(result, dict):
                 continue
             if result.get("provider") == "whoisxml" and result.get("status") == "ok":

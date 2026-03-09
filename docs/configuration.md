@@ -87,6 +87,18 @@ IPv4 addresses use a 3-tier enrichment model to reduce API calls:
 
 Hosting providers (Linode/Akamai hosting, DigitalOcean, OCI) are deliberately **not** pre-screened since attackers use them. Only CDN-specific ASNs are filtered. Requires `dnspython` for ASN resolution (falls back to ipinfo.io free tier if unavailable).
 
+## MCP Server
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `SOCAI_MCP_PORT` | `8001` | Server port |
+| `SOCAI_MCP_HOST` | `0.0.0.0` | Bind address |
+| `SOCAI_MCP_TRANSPORT` | `sse` | Transport: `sse`, `streamable-http`, or `stdio` |
+| `SOCAI_MCP_AUTH` | `local` | Auth mode: `local` (JWT) or `entra_id` (future) |
+| `SOCAI_MCP_MOUNT_PATH` | `/` | Mount path for SSE routes |
+
+SSE/streamable-http modes require JWT auth (same tokens as web UI). stdio mode skips auth for local Claude Desktop use. See `docs/mcp-server.md` for full RBAC details.
+
 ## Client Playbooks
 
 Client-specific response playbooks are stored in `config/clients/<client_name>.json`. These drive the `response-actions` tool, which produces a deterministic response plan based on case evidence.

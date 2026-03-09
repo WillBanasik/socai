@@ -387,7 +387,7 @@ def generate_articles(
     index = _load_article_index()
     results: list[dict] = []
     model = get_model("articles")
-    now = datetime.now(timezone.utc)
+    now = datetime.fromisoformat(utcnow().replace("Z", "+00:00"))
     month_dir = now.strftime("%Y-%m")
 
     for group in groups:

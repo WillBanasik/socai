@@ -26,7 +26,7 @@ import requests as _requests
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, HYBRID_KEY
-from tools.common import audit, load_json, log_error, save_json, utcnow
+from tools.common import load_json, log_error, save_json, utcnow
 
 ANYRUN_KEY = os.getenv("ANYRUN_API_KEY", "")
 JOESANDBOX_KEY = os.getenv("JOESANDBOX_API_KEY", "")
@@ -366,11 +366,10 @@ def sandbox_analyse(case_id: str, detonate: bool = False) -> dict:
             "ts": utcnow(),
         })
 
-    audit("sandbox_analyse", str(sandbox_dir / "sandbox_results.json"), extra={"case_id": case_id})
-
     # Print summary
     ok_count = sum(1 for r in all_results if r.get("status") == "ok")
-    print(f"[sandbox_analyse] Checked {len(hashes)} hash(es) across {len(providers)} provider(s)")
+    provider_count = len(SANDBOX_FAST) + len(SANDBOX_DEEP)
+    print(f"[sandbox_analyse] Checked {len(hashes)} hash(es) across {provider_count} provider(s)")
     print(f"  Results: {ok_count} found, {len(all_results) - ok_count} not found / error")
     if unique_iocs:
         print(f"  Supplementary IOCs: {len(unique_iocs)}")

@@ -25,5 +25,6 @@ class TriageAgent(BaseAgent):
             "suspicious": len(result.get("known_suspicious", [])),
             "skip_enrichment": len(result.get("skip_enrichment_iocs", [])),
             "escalate": result.get("escalate_severity"),
+            "llm_context": bool(result.get("llm_context")),
         })
         return result

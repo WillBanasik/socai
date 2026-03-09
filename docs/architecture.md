@@ -27,6 +27,15 @@ Web UI (api/main.py + api/chat.py + Svelte SPA: frontend/src/ → ui-dist/)
     ├── CTI integration      → OpenCTI feed, trending, ATT&CK heatmap, watchlist, IOC decay (api/opencti.py)
     └── Case context switch  → load/save case context in sessions
 
+MCP Server (mcp_server/)
+    ├── HTTPS SSE transport  → port 8001, separate process
+    ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
+    ├── 44 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
+    ├── 11 resources         → read-only case data, playbooks, articles, landscape
+    ├── 7 prompts            → KQL playbooks + triage/FP workflows
+    ├── stdio fallback       → Claude Desktop backward compat (no auth)
+    └── Fire-and-forget      → long-running investigate returns job_id for polling
+
 Batch API (tools/batch.py)
     └── Bulk LLM processing  → submit / poll / collect pattern
 
@@ -93,7 +102,6 @@ registry/case_index.json  ← case registry
 registry/audit.log        ← SHA-256 artefact audit trail
 registry/batches/         ← batch API metadata + results
 registry/article_index.json ← threat article dedup index
-reports/weekly/           ← weekly rollup Markdown
 articles/YYYY-MM/         ← threat article summaries (ET/EV)
 
 sessions/<SESSION_ID>/    ← pre-case investigation sessions

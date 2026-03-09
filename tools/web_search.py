@@ -149,7 +149,7 @@ def web_search(query: str, max_results: int = _DEFAULT_MAX_RESULTS) -> dict:
                 "results": results,
             }
         except Exception as exc:
-            log_error(None, "web_search", exc, severity="warning",
+            log_error(None, "web_search", str(exc), severity="warning",
                       context={"backend": "brave", "query": query})
             # Fall through to DDG
 
@@ -164,7 +164,7 @@ def web_search(query: str, max_results: int = _DEFAULT_MAX_RESULTS) -> dict:
             "results": results,
         }
     except Exception as exc:
-        log_error(None, "web_search", exc, severity="error",
+        log_error(None, "web_search", str(exc), severity="error",
                   context={"backend": "duckduckgo", "query": query})
         return {
             "status": "error",

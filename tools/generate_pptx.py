@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_CONNECTOR_TYPE
 from pptx.enum.text import PP_ALIGN
 
 from config.settings import CASES_DIR
@@ -141,7 +142,7 @@ def _add_flow_box(slide, l, t, w, h, title, lines,
 def _arrow(slide, x1, y1, x2, y2, color=BLUE_LIGHT, width=Pt(2)):
     """Draw a horizontal arrow using a connector."""
     conn = slide.shapes.add_connector(
-        pptx.enum.shapes.MSO_CONNECTOR_TYPE.STRAIGHT, x1, y1, x2, y2
+        MSO_CONNECTOR_TYPE.STRAIGHT, x1, y1, x2, y2
     )
     conn.line.color.rgb = color
     conn.line.width     = width
@@ -200,7 +201,10 @@ def slide_title(prs, meta: dict):
                  font_size=Pt(16), color=LIGHT_GREY)
 
     # Metadata row
-    now = datetime.now(timezone.utc).strftime("%d %B %Y")
+    now = utcnow()[:10]
+    # Format as "DD Month YYYY" for display
+    from datetime import datetime as _dt
+    now = _dt.strptime(now, "%Y-%m-%d").strftime("%d %B %Y")
     meta_line = (f"Analyst: {meta.get('analyst','unassigned')}   |   "
                  f"Date: {now}   |   "
                  f"Status: {meta.get('status','open').upper()}")

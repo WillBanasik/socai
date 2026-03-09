@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, STRINGS_MIN_LEN
-from tools.common import audit, log_error, sha256_file, utcnow, write_artefact
+from tools.common import log_error, sha256_file, utcnow, write_artefact
 
 
 def _extract_strings(file_path: Path, min_len: int = STRINGS_MIN_LEN) -> str:
@@ -111,7 +111,6 @@ def extract_zip(
         manifest["errors"].append({"entry": str(zip_path), "error": f"BadZipFile: {e}"})
 
     write_artefact(out_dir / "hash_manifest.json", json.dumps(manifest, indent=2))
-    audit("extract_zip", str(out_dir), extra={"case_id": case_id, "zip": str(zip_path)})
     print(f"[extract_zip] Extracted {len(manifest['files'])} file(s) to {out_dir}")
     return manifest
 

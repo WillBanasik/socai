@@ -643,7 +643,7 @@ def cmd_batch_submit(args: argparse.Namespace) -> None:
 
 
 def cmd_batch_status(args: argparse.Namespace) -> None:
-    if args.list:
+    if args.list_batches:
         from tools.batch import list_batches
         batches = list_batches()
         if not batches:

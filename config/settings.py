@@ -124,6 +124,17 @@ SOCAI_MODEL_TIMELINE      = os.getenv("SOCAI_MODEL_TIMELINE",      "fast")
 SOCAI_MODEL_QUERIES       = os.getenv("SOCAI_MODEL_QUERIES",       "fast")
 SOCAI_MODEL_MDR_REPORT    = os.getenv("SOCAI_MODEL_MDR_REPORT",    "standard")
 
+# LLM insight helpers (tools/llm_insight.py)
+SOCAI_MODEL_REPORT_NARRATIVE    = os.getenv("SOCAI_MODEL_REPORT_NARRATIVE",    "fast")
+SOCAI_MODEL_CAMPAIGN_NARRATIVE  = os.getenv("SOCAI_MODEL_CAMPAIGN_NARRATIVE",  "fast")
+SOCAI_MODEL_QUERY_REFINEMENT    = os.getenv("SOCAI_MODEL_QUERY_REFINEMENT",    "fast")
+SOCAI_MODEL_TRIAGE_CONTEXT      = os.getenv("SOCAI_MODEL_TRIAGE_CONTEXT",      "fast")
+SOCAI_MODEL_ANOMALY_CONTEXT     = os.getenv("SOCAI_MODEL_ANOMALY_CONTEXT",     "fast")
+SOCAI_MODEL_CORRELATION_INSIGHT = os.getenv("SOCAI_MODEL_CORRELATION_INSIGHT",  "fast")
+SOCAI_MODEL_RESPONSE_PRIORITY   = os.getenv("SOCAI_MODEL_RESPONSE_PRIORITY",   "fast")
+SOCAI_MODEL_VERDICT_RECONCILE   = os.getenv("SOCAI_MODEL_VERDICT_RECONCILE",   "fast")
+SOCAI_MODEL_AUTO_CLOSE_REVIEW   = os.getenv("SOCAI_MODEL_AUTO_CLOSE_REVIEW",   "fast")
+
 # ---------------------------------------------------------------------------
 # Compaction (server-side context management for long chat sessions)
 # ---------------------------------------------------------------------------

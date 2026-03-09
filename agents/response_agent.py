@@ -23,5 +23,8 @@ class ResponseActionsAgent(BaseAgent):
 
         self._emit("starting", {"case_id": self.case_id})
         result = generate_response_actions(self.case_id)
-        self._emit("complete" if result.get("status") == "ok" else "skipped", result)
+        event = "complete" if result.get("status") == "ok" else "skipped"
+        emit_data = {k: v for k, v in result.items() if k != "llm_priority_assessment"}
+        emit_data["llm_prioritised"] = bool(result.get("llm_priority_assessment"))
+        self._emit(event, emit_data)
         return result

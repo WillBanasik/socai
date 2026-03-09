@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, REGISTRY_FILE
-from tools.common import audit, load_json, save_json, utcnow
+from tools.common import load_json, save_json, utcnow
 
 
 def index_case(
@@ -30,6 +30,18 @@ def index_case(
     meta_path = case_dir / "case_meta.json"
 
     if not meta_path.exists():
+        # Case dir missing but registry entry may exist — update registry directly
+        if status and REGISTRY_FILE.exists():
+            registry = load_json(REGISTRY_FILE)
+            if case_id in registry.get("cases", {}):
+                entry = registry["cases"][case_id]
+                entry["status"] = status
+                if disposition:
+                    entry["disposition"] = disposition
+                entry["updated_at"] = utcnow()
+                save_json(REGISTRY_FILE, registry)
+                print(f"[index_case] Case {case_id} registry updated (status={status}, dir missing)")
+                return {**entry, "case_id": case_id, "_warning": "case directory missing, registry updated"}
         return {"error": f"case_meta.json not found at {meta_path}"}
 
     meta = load_json(meta_path)
@@ -76,7 +88,6 @@ def index_case(
         "ioc_totals":  meta.get("ioc_totals", {}),
     }
     save_json(REGISTRY_FILE, registry)
-    audit("index_case", str(meta_path), extra={"case_id": case_id, "status": status})
     print(f"[index_case] Case {case_id} indexed (status={meta['status']})")
     return meta
 

@@ -34,8 +34,15 @@ get_model("secarch", "high")
 | `queries` | fast | Haiku | Haiku | no |
 | `chat_routing` | fast | Haiku | Haiku | no |
 | `articles` | standard | Sonnet | Sonnet | no |
-| ~~`planner`~~ | ~~fast~~ | — | — | — (removed; rule-based, no LLM) |
-| ~~`clarification`~~ | ~~fast~~ | — | — | — (removed; unused) |
+| `report_narrative` | fast | Haiku | Haiku | no |
+| `campaign_narrative` | fast | Haiku | Haiku | no |
+| `query_refinement` | fast | Haiku | Haiku | no |
+| `triage_context` | fast | Haiku | Haiku | no |
+| `anomaly_context` | fast | Haiku | Haiku | no |
+| `correlation_insight` | fast | Haiku | Haiku | no |
+| `response_priority` | fast | Haiku | Haiku | no |
+| `verdict_reconcile` | fast | Haiku | Haiku | no |
+| `auto_close_review` | fast | Haiku | Haiku | no |
 
 ## Per-File Call Site Map
 
@@ -76,13 +83,27 @@ get_model("secarch", "high")
 |------|------|----------------|
 | `tools/threat_articles.py` | `get_model("articles")` | Standalone tool, no case context |
 
-### Not using `get_model()` (agent layer, non-LLM tools)
+### LLM Insight calls via `tools/llm_insight.py` (9 tasks)
+
+All called indirectly through `_call_llm()` which resolves `get_model(task, severity)`.
+
+| File calling llm_insight | Task | Trigger |
+|---|---|---|
+| `tools/generate_report.py` | `report_narrative` | After all report sections built |
+| `tools/campaign_cluster.py` | `campaign_narrative` | Per campaign cluster |
+| `tools/generate_queries.py` | `query_refinement` | After template queries generated |
+| `tools/triage.py` | `triage_context` | When known malicious/suspicious IOCs found |
+| `tools/detect_anomalies.py` | `anomaly_context` | When anomaly findings exist |
+| `tools/correlate.py` | `correlation_insight` | When correlation hits exist |
+| `tools/response_actions.py` | `response_priority` | After response plan resolved |
+| `tools/score_verdicts.py` | `verdict_reconcile` | When providers disagree on verdict |
+| `agents/chief.py` | `auto_close_review` | Before auto-closing benign cases |
+
+### Not using `get_model()` (agent layer)
 
 | Area | Status |
 |------|--------|
 | `agents/*.py` | No direct LLM calls — all go through tool functions |
-| `tools/generate_queries.py` | No LLM call (template-based query generation) |
-| `tools/generate_report.py` | No LLM call (template-based report assembly) |
 
 ## Override Examples
 

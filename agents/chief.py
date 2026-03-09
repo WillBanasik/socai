@@ -119,7 +119,8 @@ class ChiefAgent(BaseAgent):
         if analyst_notes:
             notes_dir = CASES_DIR / self.case_id / "notes"
             notes_dir.mkdir(parents=True, exist_ok=True)
-            (notes_dir / "analyst_input.md").write_text(analyst_notes)
+            from tools.common import write_artefact
+            write_artefact(notes_dir / "analyst_input.md", analyst_notes)
             print(f"[chief] Analyst notes saved ({len(analyst_notes)} chars)")
 
         # 2. Triage — check input IOCs against ioc_index / enrichment cache
@@ -224,17 +225,21 @@ class ChiefAgent(BaseAgent):
                         _step, "log_correlate",
                         lambda: LogCorrelatorAgent(self.case_id).run(log_paths=log_paths),
                     )] = "log_correlate"
-                for future in as_completed(futures, timeout=600):
-                    step_name = futures[future]
-                    try:
-                        future.result()
-                    except Exception as exc:
-                        logger.error("Parallel step %s raised: %s", step_name, exc)
-                        log_error(self.case_id, step_name, str(exc),
-                                  traceback=traceback.format_exc(),
-                                  context={"parallel": True})
-                        with _results_lock:
-                            pipeline_results["errors"].append({"step": step_name, "error": str(exc)})
+                try:
+                    for future in as_completed(futures, timeout=600):
+                        step_name = futures[future]
+                        try:
+                            future.result()
+                        except Exception as exc:
+                            logger.error("Parallel step %s raised: %s", step_name, exc)
+                            log_error(self.case_id, step_name, str(exc),
+                                      traceback=traceback.format_exc(),
+                                      context={"parallel": True})
+                            with _results_lock:
+                                pipeline_results["errors"].append({"step": step_name, "error": str(exc)})
+                except TimeoutError:
+                    log_error(self.case_id, "parallel_block", "600s timeout exceeded",
+                              severity="error", context={"pending": [futures[f] for f in futures]})
         else:
             # Sequential fallback when only 0-1 tasks
             if uncaptured:
@@ -366,6 +371,21 @@ class ChiefAgent(BaseAgent):
             if mal_count == 0 and sus_count == 0:
                 should_auto_close = True
                 auto_disposition = "benign_auto_closed"
+
+                # LLM auto-close validation (advisory override)
+                try:
+                    from tools.llm_insight import validate_auto_close
+                    meta = load_json(CASES_DIR / self.case_id / "case_meta.json")
+                    anomaly_path = CASES_DIR / self.case_id / "artefacts" / "anomalies" / "anomaly_report.json"
+                    anomaly_data = load_json(anomaly_path) if anomaly_path.exists() else {}
+                    llm_review = validate_auto_close(self.case_id, meta, verdicts, anomaly_data)
+                    if llm_review.get("keep_open"):
+                        print(f"[chief] LLM recommends keeping case open: {llm_review['reason']}")
+                        should_auto_close = False
+                        auto_disposition = None
+                except Exception as exc:
+                    log_error(self.case_id, "auto_close_llm_review", str(exc),
+                              severity="info", context={"advisory": True})
 
         # 14. Report
         report_agent = ReportWriterAgent(self.case_id)

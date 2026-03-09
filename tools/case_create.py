@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, DEFAULT_CLIENT, REGISTRY_FILE
-from tools.common import audit, load_json, save_json, utcnow
+from tools.common import load_json, save_json, utcnow
 
 
 def case_create(
@@ -76,7 +76,6 @@ def case_create(
         "report_path": None,
     }
     save_json(REGISTRY_FILE, registry)
-    audit("case_create", str(case_dir / "case_meta.json"), extra={"case_id": case_id})
     print(f"[case_create] Case {case_id} initialised at {case_dir}")
     return meta
 

@@ -1207,7 +1207,9 @@ def _whoisxml_lookup(ioc: str, ioc_type: str) -> dict:
     try:
         from datetime import datetime, timezone
         created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
-        domain_age_days = (datetime.now(timezone.utc) - created_dt).days
+        from tools.common import utcnow as _utcnow
+        _now = datetime.fromisoformat(_utcnow().replace("Z", "+00:00"))
+        domain_age_days = (_now - created_dt).days
         newly_registered = domain_age_days < 30
     except Exception as exc:
         log_error("", "enrich.whoisxml_domain_age", str(exc), severity="info")
