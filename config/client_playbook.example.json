@@ -11,7 +11,7 @@
       "priority": "p1",
       "alert_name": "Ransomware Detected",
       "action_to_be_taken": "Immediate host isolation + notify IR lead.",
-      "contact_process": "Phone call to CISO — see contacts."
+      "contact_process": "Phone call to CISO \u2014 see contacts."
     }
   ],
   "crown_jewels": {
@@ -39,40 +39,96 @@
   "escalation_matrix": [
     {
       "priority": "p1",
-      "process_blocked": "none",
-      "asset_type": "server/OT",
+      "activity_blocked": false,
+      "asset_type": "workstation",
+      "sd_ticket": "immediate",
+      "phone_call": true,
+      "response_action": "asset_containment",
       "actions": [
-        "Notify client over instant messaging.",
-        "Phonecall to client contacts (if no immediate response on IM).",
-        "Host isolation & remedial actions allowed."
+        "Raise immediate SD ticket.",
+        "Phone call to client contacts.",
+        "Asset containment \u2014 isolate endpoint via EDR."
       ]
     },
     {
       "priority": "p1",
-      "process_blocked": "none",
-      "asset_type": "workstation",
+      "activity_blocked": false,
+      "asset_type": "server/privileged",
+      "sd_ticket": "immediate",
+      "phone_call": true,
+      "response_action": "confirm_asset_containment",
       "actions": [
-        "Notify client over instant messaging.",
-        "Phonecall to client contacts (if no immediate response on IM).",
-        "Host isolation & remedial actions allowed."
+        "Raise immediate SD ticket.",
+        "Phone call to client contacts.",
+        "Confirm asset containment \u2014 obtain client approval before isolating."
       ]
     },
     {
       "priority": "p2",
-      "process_blocked": "false",
+      "activity_blocked": false,
       "asset_type": "workstation",
+      "sd_ticket": "immediate",
+      "phone_call": true,
+      "response_action": "asset_containment",
       "actions": [
-        "Notify client over instant messaging.",
-        "Host isolation allowed with approval."
+        "Raise immediate SD ticket.",
+        "Phone call to client contacts.",
+        "Asset containment \u2014 isolate endpoint via EDR."
+      ]
+    },
+    {
+      "priority": "p2",
+      "activity_blocked": true,
+      "asset_type": "workstation",
+      "sd_ticket": "standard",
+      "phone_call": false,
+      "response_action": "asset_containment_not_required",
+      "actions": [
+        "Raise standard SD ticket.",
+        "Asset containment not required \u2014 activity blocked by security control."
       ]
     },
     {
       "priority": "p3",
-      "process_blocked": "false",
+      "activity_blocked": false,
       "asset_type": "workstation",
+      "sd_ticket": "standard",
+      "phone_call": false,
+      "response_action": "asset_containment",
       "actions": [
-        "Notify client over instant messaging.",
-        "Phonecall not necessary."
+        "Raise standard SD ticket.",
+        "Asset containment \u2014 isolate endpoint via EDR."
+      ]
+    }
+  ],
+  "containment_capabilities": [
+    {
+      "technology": "Defender XDR",
+      "actions": [
+        "Entra Reset Password",
+        "Entra Revoke Sessions",
+        "MDE Isolate Hosts",
+        "MDE Full or Quick AV Scan",
+        "MDE Add IOCs"
+      ]
+    }
+  ],
+  "remediation_actions": [
+    {
+      "technology": "Defender XDR",
+      "owner": "client",
+      "actions": [
+        "Entra Disable User",
+        "Entra Reset Authentication (MFA)",
+        "MDO Soft or Hard Delete Emails",
+        "MDO Manage Tenant Email Blocklist"
+      ]
+    },
+    {
+      "technology": "Client network appliances",
+      "owner": "client",
+      "actions": [
+        "Managing IOCs on network appliances"
       ]
     }
   ]

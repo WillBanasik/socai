@@ -11,7 +11,7 @@ Output:
   cases/<case_id>/artefacts/executive_summary/executive_summary_manifest.json
 
 Usage (standalone):
-  python3 tools/executive_summary.py --case C001
+  python3 tools/executive_summary.py --case IV_CASE_001
 """
 from __future__ import annotations
 

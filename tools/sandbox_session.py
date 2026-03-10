@@ -40,12 +40,12 @@ Writes:
     └── mde_sandbox_detonation.entities.json
 
 Usage (CLI):
-  python3 socai.py sandbox-session /path/to/sample --case C001
+  python3 socai.py sandbox-session /path/to/sample --case IV_CASE_001
   python3 socai.py sandbox-stop --session <session_id>
   python3 socai.py sandbox-list
 
 Usage (standalone):
-  python3 tools/sandbox_session.py start /path/to/sample --case C001
+  python3 tools/sandbox_session.py start /path/to/sample --case IV_CASE_001
   python3 tools/sandbox_session.py stop --session <session_id>
   python3 tools/sandbox_session.py list
 """
@@ -676,7 +676,7 @@ def start_session(
 
     # Validate case_id (prevent path traversal and empty values)
     if not case_id or not _RE_CASE_ID.match(case_id):
-        return {"status": "error", "reason": f"Invalid case_id: {case_id!r}. Must be alphanumeric (e.g. C001)."}
+        return {"status": "error", "reason": f"Invalid case_id: {case_id!r}. Must be alphanumeric (e.g. IV_CASE_001)."}
 
     # Validate timeout
     timeout = min(max(timeout, 10), SANDBOX_MAX_TIMEOUT)

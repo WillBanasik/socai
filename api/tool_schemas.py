@@ -1322,14 +1322,14 @@ _SESSION_ONLY_DEFS = [
         "description": (
             "Load an existing case's context into the current session. Returns case summary, "
             "IOCs, findings, and verdicts. Use when the analyst wants to work on a specific case "
-            "within a session — e.g. 'load case C310' or 'switch to case C310'."
+            "within a session — e.g. 'load case IV_CASE_010' or 'switch to case IV_CASE_010'."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "case_id": {
                     "type": "string",
-                    "description": "The case ID to load (e.g. C310)",
+                    "description": "The case ID to load (e.g. IV_CASE_010)",
                 },
             },
             "required": ["case_id"],

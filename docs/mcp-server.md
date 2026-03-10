@@ -28,7 +28,7 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  46 tools, 14 resources │
+│  47 tools, 14 resources │
 │  8 prompts              │
 └─────────────────────────┘
     │
@@ -82,9 +82,9 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `sentinel:query` | run_kql, load_kql_playbook |
 | `admin` | All tools including sandbox, browser, response_actions, merge_cases |
 
-## Tools (45)
+## Tools (47)
 
-### Tier 1 -- Core Investigation (16)
+### Tier 1 -- Core Investigation (17)
 
 | Tool | Permission |
 |---|---|
@@ -94,6 +94,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `quick_investigate_file` | `investigations:submit` |
 | `list_cases` | `investigations:read` |
 | `get_case` | `investigations:read` |
+| `case_summary` | `investigations:read` |
 | `read_report` | `investigations:read` |
 | `read_case_file` | `investigations:read` |
 | `close_case` | `investigations:submit` |
@@ -215,12 +216,13 @@ The `quick_investigate_*` and `investigate` tools are long-running (2-10 min). T
 ### Expected tool-call sequence (fire-and-forget)
 
 ```
-quick_investigate_url(url)          → {"case_id": "C042", "status": "submitted"}
-get_case("C042")                    → {"pipeline_complete": false, "_hint": "...poll again..."}
+quick_investigate_url(url)              → {"case_id": "IV_CASE_042", "status": "submitted"}
+case_summary("IV_CASE_042")             → full case overview (IOCs, verdicts, enrichment, response actions)
+get_case("IV_CASE_042")                 → {"pipeline_complete": false, "_hint": "...poll again..."}
   ... wait 30s, repeat ...
-get_case("C042")                    → {"pipeline_complete": true, "status": "open", "_hint": "...read report, then close..."}
-read_report("C042")                 → full investigation report (Markdown)
-generate_mdr_report("C042")         → MDR report generated, case auto-closed
+get_case("IV_CASE_042")                 → {"pipeline_complete": true, "status": "open", "_hint": "...read report, then close..."}
+read_report("IV_CASE_042")              → full investigation report (Markdown)
+generate_mdr_report("IV_CASE_042")      → MDR report generated, case auto-closed
 ```
 
 ### Auto-close on deliverable collection

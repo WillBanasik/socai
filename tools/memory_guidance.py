@@ -21,8 +21,8 @@ Writes:
   cases/<case_id>/logs/mde_memory_dump.entities.json        (analyse mode)
 
 Usage (standalone):
-  python3 tools/memory_guidance.py guide --case C001 --process svchost.exe --pid 1234
-  python3 tools/memory_guidance.py analyse --case C001 /path/to/process.dmp
+  python3 tools/memory_guidance.py guide --case IV_CASE_001 --process svchost.exe --pid 1234
+  python3 tools/memory_guidance.py analyse --case IV_CASE_001 /path/to/process.dmp
 """
 from __future__ import annotations
 

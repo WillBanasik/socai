@@ -232,7 +232,7 @@ The persistent left sidebar provides session management:
 
 **Session naming:** Each session displays its title based on state:
 - **"new investigation"** (italic) — default for sessions that haven't been titled yet
-- **Custom title** — if the session has been renamed or finalised (e.g. "C343 — phishing investigation")
+- **Custom title** — if the session has been renamed or finalised (e.g. "IV_CASE_043 — phishing investigation")
 - **Relative timestamp** — e.g. "39m ago", "1h ago" via `relativeTime()` utility
 
 ### Topbar (`Topbar.svelte`)

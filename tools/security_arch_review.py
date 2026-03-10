@@ -20,7 +20,7 @@ Output:
   cases/<case_id>/artefacts/security_architecture/security_arch_structured.json  (when tool fires)
 
 Usage (standalone):
-  python3 tools/security_arch_review.py --case C001
+  python3 tools/security_arch_review.py --case IV_CASE_001
 """
 from __future__ import annotations
 

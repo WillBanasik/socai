@@ -14,8 +14,8 @@ Output:
   cases/<case_id>/artefacts/yara/generated_rules.yar  (when generate_rules=True)
 
 Usage (standalone):
-  python3 tools/yara_scan.py --case C001
-  python3 tools/yara_scan.py --case C001 --generate-rules
+  python3 tools/yara_scan.py --case IV_CASE_001
+  python3 tools/yara_scan.py --case IV_CASE_001 --generate-rules
 """
 from __future__ import annotations
 

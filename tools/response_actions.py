@@ -28,9 +28,15 @@ from tools.common import load_json, log_error, save_json, utcnow, write_artefact
 
 _SEVERITY_TO_PRIORITY = {
     "critical": "p1",
-    "high":     "p1",
-    "medium":   "p2",
-    "low":      "p3",
+    "high":     "p2",
+    "medium":   "p3",
+    "low":      "p4",
+}
+
+_RESPONSE_ACTION_LABELS = {
+    "asset_containment":              "Asset Containment",
+    "confirm_asset_containment":      "Confirm Asset Containment",
+    "asset_containment_not_required": "Not Required (Blocked)",
 }
 
 
@@ -128,6 +134,26 @@ def _render_markdown(data: dict) -> str:
         lines.append(f"**Contact process:** {contact}")
         lines.append("")
 
+    # Response matrix table
+    permitted = esc.get("permitted_actions", [])
+    if permitted:
+        lines.append(f"### Response Matrix ({data['priority'].upper()})")
+        lines.append("")
+        lines.append("| Asset Type | Blocked | SD Ticket | Phone Call | Response Action |")
+        lines.append("|------------|---------|-----------|------------|-----------------|")
+        for entry in permitted:
+            if isinstance(entry, dict):
+                asset = entry.get("asset_type", "any")
+                blocked = "Yes" if entry.get("activity_blocked") else "No"
+                sd = entry.get("sd_ticket", "standard").capitalize()
+                phone = "Yes" if entry.get("phone_call") else "No"
+                action = _RESPONSE_ACTION_LABELS.get(
+                    entry.get("response_action", "asset_containment"),
+                    entry.get("response_action", "Asset Containment"),
+                )
+                lines.append(f"| {asset} | {blocked} | {sd} | {phone} | {action} |")
+        lines.append("")
+
     contacts = esc.get("contacts", [])
     if contacts and any(c for c in contacts if c):
         lines.append("### Contacts")
@@ -138,19 +164,27 @@ def _render_markdown(data: dict) -> str:
                     lines.append(f"- {', '.join(parts)}")
         lines.append("")
 
-    permitted = esc.get("permitted_actions", [])
-    if permitted:
-        lines.append("### Permitted Actions")
-        for entry in permitted:
-            if isinstance(entry, dict):
-                asset = entry.get("asset_type", "any")
-                blocked = entry.get("process_blocked", "N/A")
-                lines.append(f"**Asset type:** {asset} | **Process blocked:** {blocked}")
-                for a in entry.get("actions", []):
-                    lines.append(f"  - {a}")
-            else:
-                lines.append(f"- {entry}")
+    # Containment capabilities
+    caps = data.get("containment_capabilities", [])
+    if caps:
+        lines.append("## Available Containment Actions (SOC-Executed)")
         lines.append("")
+        for group in caps:
+            lines.append(f"### {group.get('technology', 'Unknown')}")
+            for a in group.get("actions", []):
+                lines.append(f"- {a}")
+            lines.append("")
+
+    # Remediation actions
+    remed = data.get("remediation_actions", [])
+    if remed:
+        lines.append("## Recommended Remediation (Client Responsibility)")
+        lines.append("")
+        for group in remed:
+            lines.append(f"### {group.get('technology', 'Unknown')}")
+            for a in group.get("actions", []):
+                lines.append(f"- {a}")
+            lines.append("")
 
     # IOCs
     mal = data.get("malicious_iocs", [])
@@ -216,7 +250,7 @@ def generate_response_actions(case_id: str) -> dict:
     # --- Playbook resolution ---
 
     # 1. Base priority from severity
-    priority = _SEVERITY_TO_PRIORITY.get(severity, "p2")
+    priority = _SEVERITY_TO_PRIORITY.get(severity, "p3")
     priority_source = "severity_mapping"
 
     # 2. Crown jewel check — escalate to p1 if matched
@@ -241,7 +275,10 @@ def generate_response_actions(case_id: str) -> dict:
     for entry in escalation_entries:
         permitted_actions.append({
             "asset_type": entry.get("asset_type", "any"),
-            "process_blocked": entry.get("process_blocked", "N/A"),
+            "activity_blocked": entry.get("activity_blocked"),
+            "sd_ticket": entry.get("sd_ticket", "standard"),
+            "phone_call": entry.get("phone_call", False),
+            "response_action": entry.get("response_action", "asset_containment"),
             "actions": entry.get("actions", []),
         })
 
@@ -261,6 +298,8 @@ def generate_response_actions(case_id: str) -> dict:
             "contacts": playbook.get("contacts", []),
             "permitted_actions": permitted_actions,
         },
+        "containment_capabilities": playbook.get("containment_capabilities", []),
+        "remediation_actions": playbook.get("remediation_actions", []),
         "malicious_iocs": malicious_iocs,
         "suspicious_iocs": suspicious_iocs,
         "crown_jewel_match": crown_match,

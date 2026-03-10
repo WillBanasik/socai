@@ -224,7 +224,7 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 
 - Output: `cases/<ID>/reports/pup_report.md` + `pup_report_manifest.json`
 - **Auto-closes** the case with disposition `pup_pua` on successful generation
-- CLI: `python3 socai.py pup-report --case C001`
+- CLI: `python3 socai.py pup-report --case IV_CASE_001`
 
 ### Pipeline Integration
 
@@ -404,7 +404,7 @@ Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 - `tools/security_arch_review.py` → `prepare_secarch_batch(case_id)`
 
 **CLI subcommands:**
-- `socai.py batch-submit --cases C001 C002 --tools mdr-report exec-summary` — prepare and submit
+- `socai.py batch-submit --cases IV_CASE_001 IV_CASE_002 --tools mdr-report exec-summary` — prepare and submit
 - `socai.py batch-status --batch-id <id>` / `batch-status --list` — check progress
 - `socai.py batch-collect --batch-id <id>` — retrieve results and write artefacts
 
@@ -491,10 +491,10 @@ Writes to the standard `logs/` directory using the `parse_logs` schema so all do
 python3 socai.py velociraptor /path/to/collection.zip --severity high
 
 # Ingest only (parse + normalise, no analysis)
-python3 socai.py velociraptor /path/to/results/ --case C001 --no-analyse
+python3 socai.py velociraptor /path/to/results/ --case IV_CASE_001 --no-analyse
 
 # Single VQL file
-python3 socai.py velociraptor Windows.EventLogs.Evtx.json --case C001
+python3 socai.py velociraptor Windows.EventLogs.Evtx.json --case IV_CASE_001
 ```
 
 ### Chat Tool
@@ -553,7 +553,7 @@ Extracts IPs, domains, MAC addresses, users, processes, commands, and file paths
 python3 socai.py mde-package /path/to/InvestigationPackage.zip --severity high
 
 # Ingest only (parse + normalise, no analysis)
-python3 socai.py mde-package /path/to/mde_export/ --case C001 --no-analyse
+python3 socai.py mde-package /path/to/mde_export/ --case IV_CASE_001 --no-analyse
 ```
 
 ### Chat Tool
@@ -586,11 +586,11 @@ Output: `artefacts/memory/memory_analysis.json` + `memory_analysis_manifest.json
 
 ```bash
 # Generate dump guidance
-python3 socai.py memory-guide --case C001 --process lsass.exe --pid 672 \
+python3 socai.py memory-guide --case IV_CASE_001 --process lsass.exe --pid 672 \
     --alert "Credential dumping detected" --hostname WORKSTATION01
 
 # Analyse a collected dump
-python3 socai.py memory-analyse /path/to/lsass.dmp --case C001
+python3 socai.py memory-analyse /path/to/lsass.dmp --case IV_CASE_001
 ```
 
 ### Chat Tools
@@ -651,7 +651,7 @@ Ready signalling via `threading.Event` ensures CDP monitoring is active before t
 
 ```bash
 # Start a session (blocks until Ctrl+C, then collects artefacts)
-python3 socai.py browser-session "https://suspicious-site.com" --case C001
+python3 socai.py browser-session "https://suspicious-site.com" --case IV_CASE_001
 
 # Stop a specific session
 python3 socai.py browser-stop <session-id>
@@ -722,8 +722,8 @@ Container configuration:
 ### CLI
 
 ```bash
-python3 socai.py sandbox-session /path/to/sample --case C001
-python3 socai.py sandbox-session /path/to/sample --case C001 --interactive
+python3 socai.py sandbox-session /path/to/sample --case IV_CASE_001
+python3 socai.py sandbox-session /path/to/sample --case IV_CASE_001 --interactive
 python3 socai.py sandbox-stop --session <session_id>
 python3 socai.py sandbox-list
 ```

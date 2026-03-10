@@ -5,7 +5,7 @@ Generates a management-ready PowerPoint investigation briefing
 from a case's artefacts and IOC data.
 
 Usage:
-  python3 tools/generate_pptx.py --case C003
+  python3 tools/generate_pptx.py --case IV_CASE_003
 
 Output:
   cases/<CASE_ID>/reports/investigation_briefing.pptx
@@ -739,9 +739,9 @@ def slide_closing(prs, meta: dict):
                  font_size=Pt(16), color=LIGHT_GREY)
 
     details = [
-        f"Case ID:           {meta.get('case_id','C003')}",
-        f"Report:            cases/{meta.get('case_id','C003')}/reports/investigation_report.md",
-        f"IOCs:              cases/{meta.get('case_id','C003')}/iocs/iocs.json",
+        f"Case ID:           {meta.get('case_id','IV_CASE_003')}",
+        f"Report:            cases/{meta.get('case_id','IV_CASE_003')}/reports/investigation_report.md",
+        f"IOCs:              cases/{meta.get('case_id','IV_CASE_003')}/iocs/iocs.json",
         f"Audit trail:       registry/audit.log",
         f"Analyst:           {meta.get('analyst','SOC')}",
     ]

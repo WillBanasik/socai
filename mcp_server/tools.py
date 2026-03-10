@@ -5,7 +5,7 @@ All tools validate permissions using ``_require_scope()`` before delegating to
 the existing action / tool layer.
 
 Tools are organised in three tiers:
-  Tier 1 (15) — Core Investigation   (Phase 1)
+  Tier 1 (16) — Core Investigation   (Phase 1)
   Tier 2 (12) — Extended Analysis    (Phase 2)
   Tier 3 (17) — Advanced / Restricted (Phase 3)
 """
@@ -202,7 +202,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         Parameters
         ----------
         case_id : str
-            Unique case identifier, e.g. "C001".
+            Unique case identifier, e.g. "IV_CASE_001".
         title : str
             Human-readable case title.
         severity : str
@@ -531,13 +531,17 @@ def _register_tier1(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations={"readOnlyHint": True})
     def get_case(case_id: str) -> str:
-        """Retrieve metadata for a specific case.
+        """Retrieve metadata for a specific case (lightweight — status polling).
 
         Use this to poll for investigation progress after submitting via
         ``investigate``, ``quick_investigate_url``, ``quick_investigate_domain``,
         or ``quick_investigate_file``. The investigation is complete when
         ``pipeline_complete`` is true or ``report_path`` is present. If
         still running, wait 30 seconds then poll again.
+
+        **For a full case assessment** (IOCs, verdicts, enrichment, response
+        actions, analyst notes), use ``case_summary`` instead — it returns
+        everything in a single call.
 
         **Once ``pipeline_complete`` is true and status is "open", you should
         read the report with ``read_report``, summarise the findings for the
@@ -546,7 +550,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         Parameters
         ----------
         case_id : str
-            Case identifier, e.g. "C001".
+            Case identifier, e.g. "IV_CASE_001".
         """
         _require_scope("investigations:read")
         _check_client_boundary(case_id)
@@ -573,6 +577,180 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         return _json(meta)
 
+    @mcp.tool(annotations={"readOnlyHint": True})
+    def case_summary(case_id: str) -> str:
+        """Return a comprehensive single-call summary of a case: metadata,
+        IOCs with verdicts, enrichment status, key findings, response actions,
+        and analyst notes.
+
+        **Use this as the first tool call when reviewing or resuming a case.**
+        It aggregates data from across all case artefacts so you do not need
+        to call ``get_case``, ``read_report``, or individual resources
+        separately for an initial assessment.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier, e.g. "IV_CASE_004".
+        """
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+
+        case_dir = CASES_DIR / case_id
+        meta_path = case_dir / "case_meta.json"
+        if not meta_path.exists():
+            return _json({"error": f"Case {case_id!r} not found."})
+
+        def _load(rel: str) -> dict | list | None:
+            p = case_dir / rel
+            if not p.exists():
+                return None
+            try:
+                return load_json(p)
+            except Exception:
+                return None
+
+        def _read_text(rel: str, limit: int = 8000) -> str | None:
+            p = case_dir / rel
+            if not p.exists():
+                return None
+            try:
+                t = p.read_text(encoding="utf-8", errors="replace")
+                return t[:limit] + "\n\n... [truncated]" if len(t) > limit else t
+            except Exception:
+                return None
+
+        meta = load_json(meta_path)
+
+        # Pipeline status
+        report_exists = (case_dir / "reports" / "investigation_report.md").exists()
+        meta["pipeline_complete"] = report_exists
+
+        # IOCs
+        iocs_data = _load("iocs/iocs.json")
+        ioc_summary: dict = {}
+        if iocs_data:
+            raw = iocs_data.get("iocs", {})
+            for ioc_type, vals in raw.items():
+                if vals:
+                    ioc_summary[ioc_type] = {"count": len(vals), "values": vals[:20]}
+
+        # Verdict summary
+        verdict = _load("artefacts/enrichment/verdict_summary.json")
+        verdict_highlights: dict = {}
+        if verdict:
+            verdict_highlights["malicious"] = verdict.get("high_priority", [])
+            verdict_highlights["suspicious"] = verdict.get("needs_review", [])
+            verdict_highlights["clean_count"] = len(verdict.get("clean", []))
+            verdict_highlights["total_scored"] = verdict.get("ioc_count", 0)
+            # Per-IOC detail for malicious/suspicious only
+            per_ioc = verdict.get("iocs", {})
+            detail = {}
+            for ioc_val in (verdict_highlights["malicious"] + verdict_highlights["suspicious"]):
+                info = per_ioc.get(ioc_val)
+                if info:
+                    detail[ioc_val] = {
+                        "type": info.get("ioc_type"),
+                        "verdict": info.get("verdict"),
+                        "confidence": info.get("confidence"),
+                        "providers": info.get("providers", {}),
+                    }
+            if detail:
+                verdict_highlights["detail"] = detail
+
+        # Enrichment stats
+        enrichment = _load("artefacts/enrichment/enrichment.json")
+        enrichment_stats: dict = {}
+        if enrichment:
+            enrichment_stats["total_lookups"] = enrichment.get("total_lookups", 0)
+            enrichment_stats["live_lookups"] = enrichment.get("live_lookups", enrichment.get("live_calls", 0))
+            enrichment_stats["cache_hits"] = enrichment.get("cache_hits", 0)
+            raw_results = enrichment.get("results", [])
+            if isinstance(raw_results, list):
+                enrichment_stats["providers_used"] = sorted({
+                    r.get("provider") for r in raw_results
+                    if isinstance(r, dict) and r.get("provider")
+                })
+            elif isinstance(raw_results, dict):
+                enrichment_stats["providers_used"] = sorted({
+                    p for per_ioc in raw_results.values()
+                    if isinstance(per_ioc, dict) for p in per_ioc
+                })
+
+        # Response actions
+        actions = _load("artefacts/response_actions/response_actions.json")
+        response_summary: dict = {}
+        if actions and actions.get("status") == "ok":
+            response_summary["priority"] = actions.get("priority")
+            response_summary["priority_source"] = actions.get("priority_source")
+            esc = actions.get("escalation", {})
+            response_summary["contact_process"] = esc.get("contact_process")
+            response_summary["permitted_actions"] = esc.get("permitted_actions", [])
+            response_summary["containment_capabilities"] = actions.get("containment_capabilities", [])
+            response_summary["remediation_actions"] = actions.get("remediation_actions", [])
+            response_summary["crown_jewel_match"] = actions.get("crown_jewel_match", False)
+
+        # Correlation
+        correlation = _load("artefacts/correlation/correlation.json")
+        correlation_summary: dict = {}
+        if correlation:
+            correlation_summary["hit_summary"] = correlation.get("hit_summary", {})
+            correlation_summary["timeline_events"] = correlation.get("timeline_events", 0)
+
+        # Campaign links
+        campaign = _load("artefacts/campaign/campaign_links.json")
+
+        # Analyst notes
+        analyst_notes = _read_text("notes/analyst_input.md", limit=4000)
+
+        # Timeline
+        timeline = _load("timeline.json")
+
+        # Error log (case-specific entries)
+        errors: list = []
+        try:
+            from config.settings import ERROR_LOG
+            if ERROR_LOG.exists():
+                all_errors = load_json(ERROR_LOG)
+                errors = [e for e in all_errors if e.get("case_id") == case_id]
+        except Exception:
+            pass
+
+        summary = {
+            "case_id": case_id,
+            "metadata": {
+                "title": meta.get("title"),
+                "status": meta.get("status"),
+                "disposition": meta.get("disposition"),
+                "severity": meta.get("severity"),
+                "attack_type": meta.get("attack_type"),
+                "attack_type_confidence": meta.get("attack_type_confidence"),
+                "client": meta.get("client"),
+                "analyst": meta.get("analyst"),
+                "created_at": meta.get("created_at"),
+                "updated_at": meta.get("updated_at"),
+                "pipeline_complete": meta.get("pipeline_complete"),
+            },
+            "iocs": ioc_summary,
+            "verdicts": verdict_highlights,
+            "enrichment": enrichment_stats,
+            "response_actions": response_summary,
+            "correlation": correlation_summary,
+            "campaign": campaign if campaign else {},
+            "analyst_notes": analyst_notes,
+            "timeline_events": len(timeline) if isinstance(timeline, list) else 0,
+            "errors": errors,
+            "_hint": (
+                "This is the full case summary. Use read_report to get the "
+                "investigation narrative, or read_case_file for specific artefacts."
+            ),
+        }
+
+        return _json(summary)
+
     @mcp.tool()
     def read_report(case_id: str) -> str:
         """Read the investigation Markdown report for a case.
@@ -583,7 +761,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         Parameters
         ----------
         case_id : str
-            Case identifier, e.g. "C001".
+            Case identifier, e.g. "IV_CASE_001".
         """
         _require_scope("investigations:read")
         _check_client_boundary(case_id)
@@ -669,7 +847,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         Parameters
         ----------
         case_id : str
-            Case identifier, e.g. "C001".
+            Case identifier, e.g. "IV_CASE_001".
         disposition : str
             Closing disposition. One of: "true_positive", "false_positive",
             "benign", "inconclusive", "resolved". Default "resolved".
@@ -691,7 +869,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         Parameters
         ----------
         case_id : str
-            Case identifier, e.g. "C001".
+            Case identifier, e.g. "IV_CASE_001".
         text : str
             Freeform analyst input — paste alert text, IOC lists, contextual
             notes, or any observations relevant to the investigation.
@@ -721,7 +899,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         Parameters
         ----------
         case_id : str
-            Case identifier, e.g. "C001".
+            Case identifier, e.g. "IV_CASE_001".
         finding_type : str
             Category of finding, e.g. "phishing", "malware", "credential_access",
             "lateral_movement", "exfiltration", "benign", "false_positive".

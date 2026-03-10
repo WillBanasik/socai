@@ -582,9 +582,30 @@ def materialise(session_id: str, case_id: str, title: str, severity: str,
 # Cleanup — expire old sessions
 # ---------------------------------------------------------------------------
 
+def _close_backing_case(case_id: str, disposition: str) -> None:
+    """Close a session's backing case via index_case (updates meta + registry)."""
+    try:
+        from tools.index_case import index_case
+        index_case(case_id, status="closed", disposition=disposition)
+    except Exception:
+        pass
+
+
+def _case_has_content(case_id: str) -> bool:
+    """Check whether a case directory contains any investigation artefacts."""
+    case_dir = CASES_DIR / case_id
+    if not case_dir.exists():
+        return False
+    return any(
+        (case_dir / sub).exists() and any((case_dir / sub).iterdir())
+        for sub in ("artefacts", "iocs", "reports", "notes")
+    )
+
+
 def cleanup_empty(*, user_email: str | None = None) -> int:
     """Delete active sessions with no chat history and no uploads.
-    Also removes the auto-created case if it's empty.
+    Also removes the auto-created case if it's empty, or closes it if
+    it has content but no active session.
     If *user_email* is provided, only clean that user's sessions.
     Returns count removed."""
     if not SESSIONS_DIR.exists():
@@ -609,18 +630,14 @@ def cleanup_empty(*, user_email: str | None = None) -> int:
             has_uploads = uploads_dir.exists() and any(uploads_dir.iterdir())
             if has_uploads:
                 continue
-            # Also clean up the auto-created case if it's empty
+            # Close/remove the auto-created backing case
             case_id = meta.get("case_id")
             if case_id:
-                case_dir = CASES_DIR / case_id
-                if case_dir.exists():
-                    # Only remove if the case has no artefacts/iocs/reports
-                    has_content = any(
-                        (case_dir / sub).exists() and any((case_dir / sub).iterdir())
-                        for sub in ("artefacts", "iocs", "reports", "notes")
-                    )
-                    if not has_content:
-                        shutil.rmtree(str(case_dir), ignore_errors=True)
+                if _case_has_content(case_id):
+                    _close_backing_case(case_id, "session_empty_closed")
+                else:
+                    shutil.rmtree(str(CASES_DIR / case_id), ignore_errors=True)
+                    _close_backing_case(case_id, "session_empty_closed")
             shutil.rmtree(str(sdir), ignore_errors=True)
             removed += 1
         except Exception:
@@ -629,7 +646,8 @@ def cleanup_empty(*, user_email: str | None = None) -> int:
 
 
 def cleanup_expired() -> int:
-    """Delete expired sessions. Returns count of sessions removed."""
+    """Delete expired sessions and close their backing cases.
+    Returns count of sessions removed."""
     if not SESSIONS_DIR.exists():
         return 0
     removed = 0
@@ -644,21 +662,40 @@ def cleanup_expired() -> int:
             meta = _load_json(meta_path)
             if not meta:
                 continue
+            should_remove = False
             if meta.get("status") in ("materialised", "finalised"):
                 # Keep finalised sessions for audit trail (24h after finalisation)
                 mat_at = meta.get("finalised_at", meta.get("materialised_at", meta.get("created", "")))
                 if mat_at:
                     mat_dt = datetime.fromisoformat(mat_at)
                     if now - mat_dt > timedelta(hours=SESSION_TTL_HOURS):
-                        shutil.rmtree(str(sdir), ignore_errors=True)
-                        removed += 1
+                        should_remove = True
                 continue
-            expires = meta.get("expires", "")
-            if expires:
-                exp_dt = datetime.fromisoformat(expires)
-                if now > exp_dt:
-                    shutil.rmtree(str(sdir), ignore_errors=True)
-                    removed += 1
+            else:
+                expires = meta.get("expires", "")
+                if expires:
+                    exp_dt = datetime.fromisoformat(expires)
+                    if now > exp_dt:
+                        should_remove = True
+
+            if should_remove:
+                # Close the backing case if still open
+                case_id = meta.get("case_id")
+                if case_id:
+                    case_dir = CASES_DIR / case_id
+                    meta_path_case = case_dir / "case_meta.json" if case_dir.exists() else None
+                    case_still_open = False
+                    if meta_path_case and meta_path_case.exists():
+                        try:
+                            cm = _load_json(meta_path_case)
+                            case_still_open = cm.get("status") == "open"
+                        except Exception:
+                            pass
+                    if case_still_open:
+                        disposition = "session_expired" if _case_has_content(case_id) else "session_expired_empty"
+                        _close_backing_case(case_id, disposition)
+                shutil.rmtree(str(sdir), ignore_errors=True)
+                removed += 1
         except Exception:
             continue
     return removed

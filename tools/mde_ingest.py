@@ -35,7 +35,7 @@ Writes:
   cases/<case_id>/logs/mde_<artefact>.entities.json
 
 Usage (standalone):
-  python3 tools/mde_ingest.py /path/to/investigation_package.zip --case C001
+  python3 tools/mde_ingest.py /path/to/investigation_package.zip --case IV_CASE_001
 """
 from __future__ import annotations
 

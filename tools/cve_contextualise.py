@@ -11,7 +11,7 @@ Output:
   cases/<case_id>/artefacts/cve/cve_context.json
 
 Usage (standalone):
-  python3 tools/cve_contextualise.py --case C001
+  python3 tools/cve_contextualise.py --case IV_CASE_001
 """
 from __future__ import annotations
 

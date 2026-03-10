@@ -17,7 +17,7 @@ Writes:
   cases/<case_id>/artefacts/evtx/evtx_correlation.json
 
 Usage (standalone):
-  python3 tools/evtx_correlate.py --case C001
+  python3 tools/evtx_correlate.py --case IV_CASE_001
 """
 from __future__ import annotations
 

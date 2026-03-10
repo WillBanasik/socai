@@ -6,21 +6,21 @@ SOC-AI  –  Local Multi-Agent SOC Automation
 Usage examples:
 
   # Full investigation
-  python socai.py investigate --case C001 --title "Phishing lure" --severity high \
+  python socai.py investigate --case IV_CASE_001 --title "Phishing lure" --severity high \
       --urls urls.txt --logs ./logs --zip sample.zip --zip-pass infected
 
   # Full investigation with email input
-  python socai.py investigate --case C001 --title "Phishing email" --severity high \
+  python socai.py investigate --case IV_CASE_001 --title "Phishing email" --severity high \
       --eml phish.eml --url "https://example.com"
 
   # Just generate a weekly report
   python socai.py weekly --year 2026 --week 08 --include-open
 
   # Re-run report for existing case
-  python socai.py report --case C001
+  python socai.py report --case IV_CASE_001
 
   # Close a case
-  python socai.py close --case C001
+  python socai.py close --case IV_CASE_001
 
   # List registered cases
   python socai.py list
@@ -408,13 +408,12 @@ def cmd_fp_ticket(args: argparse.Namespace) -> None:
 def _next_case_id() -> str:
     """Generate the next sequential case ID from the registry."""
     from tools.common import load_json
+    import re
     max_num = 0
     if REGISTRY_FILE.exists():
         try:
             registry = load_json(REGISTRY_FILE)
             for cid in registry.get("cases", {}):
-                # Extract numeric part from IDs like C001, C123, QUICK-001
-                import re
                 m = re.search(r"(\d+)$", cid)
                 if m:
                     max_num = max(max_num, int(m.group(1)))
@@ -422,7 +421,7 @@ def _next_case_id() -> str:
             from tools.common import log_error
             log_error("", "socai.next_case_id", str(exc), severity="warning",
                       context={"registry": str(REGISTRY_FILE)})
-    return f"C{max_num + 1:03d}"
+    return f"IV_CASE_{max_num + 1:03d}"
 
 
 def _quick_pipeline(case_id: str, title: str, severity: str,
@@ -1192,7 +1191,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # investigate
     p_inv = sub.add_parser("investigate", help="Run full investigation pipeline.")
-    p_inv.add_argument("--case",    required=True, help="Case ID (e.g. C001)")
+    p_inv.add_argument("--case",    required=True, help="Case ID (e.g. IV_CASE_001)")
     p_inv.add_argument("--title",   default="", help="Human-readable case title")
     p_inv.add_argument("--severity",default="medium",
                        choices=["low","medium","high","critical"])
@@ -1374,7 +1373,7 @@ def build_parser() -> argparse.ArgumentParser:
         "fp-ticket",
         help="Generate an FP suppression ticket with platform-specific rule/control improvements.",
     )
-    p_fp.add_argument("--case",        required=True, help="Case ID (e.g. C001)")
+    p_fp.add_argument("--case",        required=True, help="Case ID (e.g. IV_CASE_001)")
     p_fp.add_argument("--alert",       metavar="FILE", default=None,
                       help="Path to alert JSON/text file")
     p_fp.add_argument("--alert-text",  metavar="TEXT", default=None, dest="alert_text",

@@ -21,9 +21,9 @@ Output:
   cases/<case_id>/artefacts/fp_comms/fp_ticket_manifest.json
 
 Usage (standalone):
-  python3 tools/fp_ticket.py --case C001 --alert alert.json
-  python3 tools/fp_ticket.py --case C001 --alert alert.json --query rule.kql
-  python3 tools/fp_ticket.py --case C001 --alert alert.json --platform sentinel
+  python3 tools/fp_ticket.py --case IV_CASE_001 --alert alert.json
+  python3 tools/fp_ticket.py --case IV_CASE_001 --alert alert.json --query rule.kql
+  python3 tools/fp_ticket.py --case IV_CASE_001 --alert alert.json --platform sentinel
 """
 from __future__ import annotations
 

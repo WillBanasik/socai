@@ -14,7 +14,7 @@ Output:
   cases/<case_id>/reports/pup_report.md
 
 Usage (standalone):
-  python3 tools/generate_pup_report.py --case C001
+  python3 tools/generate_pup_report.py --case IV_CASE_001
 """
 from __future__ import annotations
 

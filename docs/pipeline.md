@@ -118,7 +118,7 @@ This means the standard workflow is: pipeline runs → sets disposition → case
 
 ## Quick-run Commands
 
-`socai.py url`, `domain`, and `file` provide one-shot investigation shortcuts. They auto-generate the next sequential case ID (e.g. `C042`) from the registry, then run a focused mini-pipeline: case_create → capture/analyse → extract_iocs → enrich → score → correlate → report.
+`socai.py url`, `domain`, and `file` provide one-shot investigation shortcuts. They auto-generate the next sequential case ID (e.g. `IV_CASE_042`) from the registry, then run a focused mini-pipeline: case_create → capture/analyse → extract_iocs → enrich → score → correlate → report.
 
 - `url` — web capture + phishing detection + enrichment + report
 - `domain` — same as `url` (bare domain is prefixed with `https://`)

@@ -55,7 +55,7 @@ class JobManager:
                             max_num = max(max_num, int(m.group(1)))
                 except Exception:
                     pass
-            return f"C{max_num + 1:03d}"
+            return f"IV_CASE_{max_num + 1:03d}"
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()

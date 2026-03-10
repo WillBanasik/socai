@@ -30,7 +30,7 @@ Web UI (api/main.py + api/chat.py + Svelte SPA: frontend/src/ → ui-dist/)
 MCP Server (mcp_server/)
     ├── HTTPS SSE transport  → port 8001, separate process
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
-    ├── 46 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
+    ├── 47 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
     ├── 14 resources         → case data, clients, IOC index, playbooks, articles, landscape
     ├── 8 prompts            → investigation orchestrator, KQL playbooks, triage/FP workflows
     ├── Boundary enforcement → per-conversation client + case isolation (prevents cross-contamination)

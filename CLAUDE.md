@@ -10,7 +10,7 @@ python3 -m pytest tests/ -v
 python3 -m pytest tests/test_tools.py::test_extract_iocs_from_text -v
 
 # Full investigation
-python3 socai.py investigate --case C001 --title "..." --severity high \
+python3 socai.py investigate --case IV_CASE_001 --title "..." --severity high \
     --url "https://example.com" --logs ./logs --zip sample.zip --zip-pass infected
 
 # Quick-run (auto-generates case ID)
@@ -19,14 +19,14 @@ python3 socai.py domain evil-domain.com
 python3 socai.py file sample.zip
 
 # Re-run stages
-python3 socai.py report --case C001
-python3 socai.py enrich --case C001
-python3 socai.py secarch --case C001
-python3 socai.py fp-ticket --case C001 --alert alert.json
-python3 socai.py pup-report --case C001
+python3 socai.py report --case IV_CASE_001
+python3 socai.py enrich --case IV_CASE_001
+python3 socai.py secarch --case IV_CASE_001
+python3 socai.py fp-ticket --case IV_CASE_001 --alert alert.json
+python3 socai.py pup-report --case IV_CASE_001
 
 # Batch processing
-python3 socai.py batch-submit --cases C001 C002 --tools mdr-report exec-summary
+python3 socai.py batch-submit --cases IV_CASE_001 IV_CASE_002 --tools mdr-report exec-summary
 python3 socai.py batch-status --batch-id <id>
 python3 socai.py batch-collect --batch-id <id>
 
@@ -37,26 +37,26 @@ python3 socai.py articles-generate --urls URL1 URL2 --title "..." --category ET
 python3 socai.py articles-list --month 2026-03
 
 # Velociraptor ingest (offline collector ZIP, VQL exports, or directory)
-python3 socai.py velociraptor /path/to/collection.zip --case C001
+python3 socai.py velociraptor /path/to/collection.zip --case IV_CASE_001
 python3 socai.py velociraptor /path/to/results/ --severity high
-python3 socai.py velociraptor /path/to/Windows.System.Autoruns.json --case C001 --no-analyse
+python3 socai.py velociraptor /path/to/Windows.System.Autoruns.json --case IV_CASE_001 --no-analyse
 
 # MDE investigation package ingest (alternative to Velociraptor when MDE is available)
-python3 socai.py mde-package /path/to/InvestigationPackage.zip --case C001
+python3 socai.py mde-package /path/to/InvestigationPackage.zip --case IV_CASE_001
 python3 socai.py mde-package /path/to/mde_export/ --severity high --no-analyse
 
 # Process memory dump guidance & analysis
-python3 socai.py memory-guide --case C001 --process lsass.exe --pid 672 --alert "Credential dumping detected"
-python3 socai.py memory-analyse /path/to/process.dmp --case C001
+python3 socai.py memory-guide --case IV_CASE_001 --process lsass.exe --pid 672 --alert "Credential dumping detected"
+python3 socai.py memory-analyse /path/to/process.dmp --case IV_CASE_001
 
 # Disposable browser sessions (Docker-based, CDP-monitored)
-python3 socai.py browser-session "https://suspicious-site.com" --case C001
+python3 socai.py browser-session "https://suspicious-site.com" --case IV_CASE_001
 python3 socai.py browser-stop <session-id>
 python3 socai.py browser-list
 
 # Sandbox detonation (Docker-based, strace/tcpdump-monitored)
-python3 socai.py sandbox-session /path/to/sample --case C001 [--timeout 120] [--network monitor|isolate]
-python3 socai.py sandbox-session /path/to/sample --case C001 --interactive
+python3 socai.py sandbox-session /path/to/sample --case IV_CASE_001 [--timeout 120] [--network monitor|isolate]
+python3 socai.py sandbox-session /path/to/sample --case IV_CASE_001 --interactive
 python3 socai.py sandbox-stop --session <session-id>
 python3 socai.py sandbox-list
 
@@ -79,7 +79,7 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **CLI:** `socai.py` — entrypoint for all commands
 - **Agents** (`agents/`) — thin orchestration classes inheriting `BaseAgent`; call tool functions, never write files directly
 - **Tools** (`tools/`) — stateless functions; accept `case_id`, write via `write_artefact()`/`save_json()`, return manifest dicts
-- **MCP Server** (`mcp_server/`) — HTTPS SSE transport on port 8001 with JWT RBAC; 46 tools, 14 resources, 8 prompts for external MCP clients (Claude Desktop, LLM agents)
+- **MCP Server** (`mcp_server/`) — HTTPS SSE transport on port 8001 with JWT RBAC; 47 tools, 14 resources, 8 prompts for external MCP clients (Claude Desktop, LLM agents)
 - **Web UI:** `api/chat.py` + `api/main.py` + Svelte SPA (`frontend/src/` → `ui-dist/`) — streaming SSE chat with activity feed and session management (see `docs/web-ui.md`)
 - **Sessions** (`api/sessions.py`) — investigation conversations; auto-create a case at session start, finalise with disposition when complete
 - **Batch** (`tools/batch.py`) — bulk LLM processing via Claude Messages Batch API

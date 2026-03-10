@@ -20,9 +20,9 @@ Writes:
   cases/<case_id>/logs/vr_<artefact_name>.entities.json
 
 Usage (standalone):
-  python3 tools/velociraptor_ingest.py /path/to/collection.zip --case C001
-  python3 tools/velociraptor_ingest.py /path/to/results/ --case C001
-  python3 tools/velociraptor_ingest.py /path/to/Windows.System.Autoruns.json --case C001
+  python3 tools/velociraptor_ingest.py /path/to/collection.zip --case IV_CASE_001
+  python3 tools/velociraptor_ingest.py /path/to/results/ --case IV_CASE_001
+  python3 tools/velociraptor_ingest.py /path/to/Windows.System.Autoruns.json --case IV_CASE_001
 """
 from __future__ import annotations
 

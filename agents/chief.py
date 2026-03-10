@@ -16,7 +16,7 @@ Attack-type classification adapts the pipeline:
   - generic:              run everything permitted by inputs
 
 Usage (programmatic):
-    chief = ChiefAgent(case_id="C001")
+    chief = ChiefAgent(case_id="IV_CASE_001")
     result = chief.run(
         title="Phishing email analysis",
         severity="high",

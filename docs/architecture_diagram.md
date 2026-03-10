@@ -159,9 +159,9 @@ sequenceDiagram
     participant F as Filesystem
     participant L as Claude LLM
 
-    U->>C: investigate --case C001 ...
-    C->>T: case_create(C001)
-    T->>F: cases/C001/case_meta.json
+    U->>C: investigate --case IV_CASE_001 ...
+    C->>T: case_create(IV_CASE_001)
+    T->>F: cases/IV_CASE_001/case_meta.json
 
     C->>T: triage (check IOC index)
     C->>T: planner (inspect inputs)

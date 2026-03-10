@@ -2,7 +2,7 @@
 tool: generate_capabilities_pptx
 ---------------------------------
 Generates a platform capabilities showcase PowerPoint deck using a real
-case (C003 — ClickFix / HelloMemory) as the running example.
+case (IV_CASE_003 — ClickFix / HelloMemory) as the running example.
 
 Demonstrates the full SOCAI pipeline: IOC collection, enrichment,
 verdict scoring, hunt query generation, and YAML export.
@@ -229,7 +229,7 @@ def slide_title(prs):
     _add_textbox(sl, Inches(7.2), Inches(4.35), Inches(5.4), Inches(0.35),
                  "LIVE CASE STUDY", font_size=Pt(12), bold=True, color=RED)
     _add_textbox(sl, Inches(7.2), Inches(4.7), Inches(5.4), Inches(0.7),
-                 "C003 — ClickFix / HelloMemory\n"
+                 "IV_CASE_003 — ClickFix / HelloMemory\n"
                  "Multi-stage malware delivery via fake CAPTCHA\n"
                  "Threat actor: Financially motivated IAB",
                  font_size=Pt(11), color=LIGHT_GREY)
@@ -237,7 +237,7 @@ def slide_title(prs):
     _footer(sl)
     _speaker_note(sl,
         "SOCAI is an automated security operations investigation platform. "
-        "Today we walk through a real case — C003, a ClickFix social engineering "
+        "Today we walk through a real case — IV_CASE_003, a ClickFix social engineering "
         "attack delivering the HelloMemory implant — to demonstrate how the platform "
         "collects IOCs, enriches them, scores verdicts, generates hunt queries, "
         "and exports everything as structured YAML.")
@@ -318,7 +318,7 @@ def slide_threat_actor(prs):
     sl = prs.slides.add_slide(prs.slide_layouts[6])
     _set_bg(sl, NAVY)
     _slide_header(sl, "Case Study: ClickFix / HelloMemory",
-                  "C003 — Multi-stage malware delivery via fake CAPTCHA social engineering")
+                  "IV_CASE_003 — Multi-stage malware delivery via fake CAPTCHA social engineering")
 
     # Attack chain (horizontal flow)
     chain = [
@@ -385,7 +385,7 @@ def slide_threat_actor(prs):
 
     _footer(sl)
     _speaker_note(sl,
-        "C003 was triggered by submission of a suspicious PowerShell script. "
+        "IV_CASE_003 was triggered by submission of a suspicious PowerShell script. "
         "The investigation revealed a four-stage attack chain originating from "
         "a ClickFix fake CAPTCHA campaign. The final payload, HelloMemory.dll, "
         "is a custom .NET implant that had no public threat intelligence matches — "
@@ -442,7 +442,7 @@ def slide_ioc_collection(prs):
     x0 = Inches(7.3)
 
     # Header
-    for j, (hdr, w) in enumerate(zip(["Type", "Count", "Example (C003)"], col_widths)):
+    for j, (hdr, w) in enumerate(zip(["Type", "Count", "Example (IV_CASE_003)"], col_widths)):
         _add_rect(sl, x0 + sum(cw for cw in [Inches(0)] + list(col_widths[:j])),
                   hdr_y, w, Inches(0.32), fill_color=BLUE_LIGHT)
         _add_textbox(sl, x0 + sum(cw for cw in [Inches(0)] + list(col_widths[:j])) + Inches(0.05),
@@ -468,7 +468,7 @@ def slide_ioc_collection(prs):
                  "HOW IT WORKS", font_size=Pt(12), bold=True, color=BLUE_LIGHT)
 
     code = (
-        "python3 socai.py investigate --case C003 --title \"Suspicious PowerShell\" "
+        "python3 socai.py investigate --case IV_CASE_003 --title \"Suspicious PowerShell\" "
         "--severity high --zip sample.zip --zip-pass infected --url \"https://simpludelicios.md/vcapcha.ps1\""
     )
     _code_block(sl, Inches(0.5), Inches(5.1), Inches(12.2), Inches(0.5),
@@ -477,7 +477,7 @@ def slide_ioc_collection(prs):
     _add_textbox(sl, Inches(0.5), Inches(5.7), Inches(12.2), Inches(0.3),
                  "extract_iocs scans artefacts/ and logs/ directories. "
                  "IOCs are de-duplicated, typed, and written to iocs/iocs.json. "
-                 "7 artefact files scanned in C003, yielding 20 unique IOCs across 6 types.",
+                 "7 artefact files scanned in IV_CASE_003, yielding 20 unique IOCs across 6 types.",
                  font_size=Pt(10), color=MID_GREY)
 
     _footer(sl)
@@ -839,7 +839,7 @@ def slide_per_environment(prs):
                  "EXAMPLE: SCOPED HUNT COMMAND", font_size=Pt(12), bold=True, color=BLUE_LIGHT)
 
     cmd = (
-        'python3 socai.py queries --case C003 \\\n'
+        'python3 socai.py queries --case IV_CASE_003 \\\n'
         '    --platforms kql \\\n'
         '    --tables DeviceNetworkEvents \\\n'
         '            DeviceFileEvents \\\n'
@@ -897,7 +897,7 @@ def slide_per_environment(prs):
         "PER is the example-client Sentinel workspace with 57 tables. "
         "When you scope queries to PER's confirmed tables, SOCAI only generates "
         "KQL for tables that actually exist — no wasted time running queries "
-        "against non-existent tables. The HelloMemory case (C003) generates "
+        "against non-existent tables. The HelloMemory case (IV_CASE_003) generates "
         "targeted hunts for the implant DLL hash in DeviceImageLoadEvents, "
         "C2 connections in DeviceNetworkEvents, and persistence in "
         "DeviceRegistryEvents. These queries can be pasted directly into "
@@ -915,7 +915,7 @@ def slide_yaml_export(prs):
     # Left: YAML example
     yaml_example = (
         'metadata:\n'
-        '  case_id: C003\n'
+        '  case_id: IV_CASE_003\n'
         '  generated: "2026-02-23 23:44 UTC"\n'
         '  title: "Suspicious PowerShell script"\n'
         '  severity: HIGH\n'
@@ -989,7 +989,7 @@ def slide_yaml_export(prs):
     _add_textbox(sl, Inches(6.6), Inches(5.65), Inches(6.2), Inches(0.35),
                  "GENERATE WITH ONE COMMAND", font_size=Pt(12), bold=True, color=BLUE_LIGHT)
     cmd = (
-        'python3 socai.py queries --case C003 \\\n'
+        'python3 socai.py queries --case IV_CASE_003 \\\n'
         '    --platforms kql splunk logscale \\\n'
         '    --tables DeviceNetworkEvents \\\n'
         '            IdentityLogonEvents \\\n'
@@ -1111,7 +1111,7 @@ def slide_closing(prs):
     # Key takeaways
     takeaways = [
         "15-step orchestrated pipeline with parallel execution and fault isolation",
-        "20+ IOCs extracted automatically from 7 artefact sources in C003",
+        "20+ IOCs extracted automatically from 7 artefact sources in IV_CASE_003",
         "15+ enrichment providers queried in parallel with cross-run caching",
         "Composite verdict scoring with multi-provider consensus",
         "Hunt queries generated for KQL, Splunk, and LogScale simultaneously",
@@ -1130,7 +1130,7 @@ def slide_closing(prs):
                  font_size=Pt(9), color=LIGHT_GREY)
     _speaker_note(sl,
         "Key message: SOCAI turns hours of manual analyst work into minutes "
-        "of automated investigation. The C003 case study showed the full "
+        "of automated investigation. The IV_CASE_003 case study showed the full "
         "pipeline from PowerShell script submission through IOC extraction, "
         "enrichment, verdict scoring, and hunt query generation — all with "
         "structured YAML output ready for SIEM automation.")

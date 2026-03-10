@@ -5,14 +5,14 @@ LLM-assisted MDR-style incident report following the Gold MDR/XDR Analyst
 Instruction Set — evidence-first, mandatory "What Was NOT Observed" section,
 confidence labels, UK English, professional SOC tone.
 
-Only generated on explicit request via `python3 socai.py mdr-report --case C001`.
+Only generated on explicit request via `python3 socai.py mdr-report --case IV_CASE_001`.
 The autonomous pipeline's generate_report is left untouched.
 
 Output:
   cases/<case_id>/reports/mdr_report.md
 
 Usage (standalone):
-  python3 tools/generate_mdr_report.py --case C001
+  python3 tools/generate_mdr_report.py --case IV_CASE_001
 """
 from __future__ import annotations
 
@@ -166,6 +166,17 @@ The XDR service is limited to:
 
 The service **does not perform remediation**.
 All remediation actions must be framed as **client responsibilities**.
+
+When the case includes **Approved Response Actions** with a response matrix:
+- **Asset Containment** = the SOC may isolate immediately without further approval.
+- **Confirm Asset Containment** = containment requires explicit client confirmation \
+before isolation (typically servers / privileged assets — business impact risk).
+- **Not Required (Blocked)** = the triggering activity was already blocked; containment \
+is available but not mandated.
+- Reference the SD ticket urgency (Immediate vs Standard) and phone call requirement \
+when describing the escalation and notification steps taken or recommended.
+- When containment capabilities and remediation actions are provided, reference them \
+to distinguish SOC-executed containment from client-responsible remediation.
 
 ---
 
@@ -327,12 +338,52 @@ def _build_context(case_id: str) -> str:
         cp = esc.get("contact_process")
         if cp:
             parts.append(f"- Contact process: {cp}")
-        for entry in esc.get("permitted_actions", []):
-            asset = entry.get("asset_type", "any")
-            for a in entry.get("actions", []):
-                parts.append(f"  - [{asset}] {a}")
         if actions_data.get("crown_jewel_match"):
             parts.append("- **CROWN JEWEL MATCH** — priority escalated to P1")
+
+        # Response matrix — escalation procedure per asset type / blocked status
+        permitted = esc.get("permitted_actions", [])
+        if permitted:
+            _action_labels = {
+                "asset_containment": "Asset Containment",
+                "confirm_asset_containment": "Confirm Asset Containment",
+                "asset_containment_not_required": "Not Required (Blocked)",
+            }
+            parts.append("")
+            parts.append(f"### Response Matrix ({actions_data.get('priority', '?').upper()})")
+            parts.append("| Asset Type | Blocked | SD Ticket | Phone Call | Response Action |")
+            parts.append("|------------|---------|-----------|------------|-----------------|")
+            for entry in permitted:
+                asset = entry.get("asset_type", "any")
+                blocked = "Yes" if entry.get("activity_blocked") else "No"
+                sd = entry.get("sd_ticket", "standard").capitalize()
+                phone = "Yes" if entry.get("phone_call") else "No"
+                action = _action_labels.get(
+                    entry.get("response_action", "asset_containment"),
+                    entry.get("response_action", "Asset Containment"),
+                )
+                parts.append(f"| {asset} | {blocked} | {sd} | {phone} | {action} |")
+
+        # Containment capabilities
+        caps = actions_data.get("containment_capabilities", [])
+        if caps:
+            parts.append("")
+            parts.append("### Available Containment Actions (SOC-Executed)")
+            for group in caps:
+                tech = group.get("technology", "Unknown")
+                for a in group.get("actions", []):
+                    parts.append(f"  - [{tech}] {a}")
+
+        # Remediation actions (client responsibility)
+        remed = actions_data.get("remediation_actions", [])
+        if remed:
+            parts.append("")
+            parts.append("### Recommended Remediation (Client Responsibility)")
+            for group in remed:
+                tech = group.get("technology", "Unknown")
+                for a in group.get("actions", []):
+                    parts.append(f"  - [{tech}] {a}")
+
         parts.append("")
 
     # IOC index — recurring IOCs from prior cases

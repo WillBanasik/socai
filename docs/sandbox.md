@@ -35,14 +35,14 @@ Environment variables (set in `.env` or shell):
 
 ```bash
 # Automated detonation (default)
-python3 socai.py sandbox-session /path/to/sample --case C001
+python3 socai.py sandbox-session /path/to/sample --case IV_CASE_001
 
 # With options
-python3 socai.py sandbox-session /path/to/sample --case C001 \
+python3 socai.py sandbox-session /path/to/sample --case IV_CASE_001 \
     --timeout 180 --network isolate --severity high
 
 # Interactive mode (keep container running for manual inspection)
-python3 socai.py sandbox-session /path/to/sample --case C001 --interactive
+python3 socai.py sandbox-session /path/to/sample --case IV_CASE_001 --interactive
 
 # Session management
 python3 socai.py sandbox-stop --session <session-id>
@@ -66,7 +66,7 @@ When `--detonate` is passed to `investigate`, the pipeline will:
 3. Collected telemetry feeds into enrichment, correlation, and reporting
 
 ```bash
-python3 socai.py investigate --case C001 --title "Suspicious binary" \
+python3 socai.py investigate --case IV_CASE_001 --title "Suspicious binary" \
     --zip sample.zip --zip-pass infected --detonate
 ```
 

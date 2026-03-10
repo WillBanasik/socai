@@ -728,30 +728,42 @@ def test_response_actions_with_playbook():
             "contacts": [{"name": "Test Contact", "role": "CISO"}],
             "escalation_matrix": [
                 {
-                    "priority": "p1",
-                    "process_blocked": "none",
-                    "asset_type": "server/OT",
+                    "priority": "p2",
+                    "activity_blocked": False,
+                    "asset_type": "workstation",
+                    "sd_ticket": "immediate",
+                    "phone_call": True,
+                    "response_action": "asset_containment",
                     "actions": [
-                        "Notify client over instant messaging.",
-                        "Host isolation & remedial actions allowed."
+                        "Raise immediate SD ticket.",
+                        "Asset containment — isolate endpoint via EDR."
                     ]
                 },
                 {
-                    "priority": "p1",
-                    "process_blocked": "none",
-                    "asset_type": "workstation",
+                    "priority": "p2",
+                    "activity_blocked": False,
+                    "asset_type": "server/privileged",
+                    "sd_ticket": "immediate",
+                    "phone_call": True,
+                    "response_action": "confirm_asset_containment",
                     "actions": [
-                        "Notify client over instant messaging.",
-                        "Host isolation & remedial actions allowed."
+                        "Raise immediate SD ticket.",
+                        "Confirm asset containment — obtain client approval."
                     ]
                 }
+            ],
+            "containment_capabilities": [
+                {"technology": "Defender XDR", "actions": ["MDE Isolate Hosts"]}
+            ],
+            "remediation_actions": [
+                {"technology": "Defender XDR", "owner": "client", "actions": ["Entra Disable User"]}
             ]
         })
 
         result = generate_response_actions(TEST_CASE)
 
         assert result["status"] == "ok"
-        assert result["priority"] == "p1"  # high severity maps to p1
+        assert result["priority"] == "p2"  # high severity maps to p2
         assert result["client"] == "test_client"
         assert len(result["malicious_iocs"]) == 2
         assert len(result["suspicious_iocs"]) == 1

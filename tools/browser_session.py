@@ -28,11 +28,11 @@ Writes:
   cases/<case_id>/logs/mde_browser_session.entities.json
 
 Usage (CLI):
-  python3 socai.py browser-session https://phish.com --case C001
+  python3 socai.py browser-session https://phish.com --case IV_CASE_001
   python3 socai.py browser-stop --session <session_id>
 
 Usage (standalone):
-  python3 tools/browser_session.py start https://phish.com --case C001
+  python3 tools/browser_session.py start https://phish.com --case IV_CASE_001
   python3 tools/browser_session.py stop --session <session_id>
   python3 tools/browser_session.py list
 """

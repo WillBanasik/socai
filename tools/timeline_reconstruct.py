@@ -16,7 +16,7 @@ Output:
   cases/<case_id>/artefacts/timeline/timeline.json
 
 Usage (standalone):
-  python3 tools/timeline_reconstruct.py --case C001
+  python3 tools/timeline_reconstruct.py --case IV_CASE_001
 """
 from __future__ import annotations
 

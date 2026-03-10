@@ -856,7 +856,7 @@ class TestBackingCase:
         from config.settings import CASES_DIR
 
         case_id = _session_ensure_backing_case(session_id)
-        assert case_id.startswith("C")
+        assert case_id.startswith("IV_CASE_")
         assert (CASES_DIR / case_id).exists()
 
         # Should be stored in context
