@@ -457,12 +457,15 @@ def generate_pup_report(case_id: str) -> dict:
     )
     write_artefact(out_path, header + report_text)
 
-    # Update case disposition to pup_pua
-    meta_path = CASES_DIR / case_id / "case_meta.json"
-    if meta_path.exists():
-        meta = load_json(meta_path)
-        meta["disposition"] = "pup_pua"
-        save_json(meta_path, meta)
+    # Auto-close: PUP report is the analyst deliverable — case is done
+    try:
+        from tools.index_case import index_case
+        index_case(case_id, status="closed", disposition="pup_pua",
+                   report_path=str(out_path))
+        print(f"[generate_pup_report] Case {case_id} auto-closed (PUP report collected).")
+    except Exception as exc:
+        log_error(case_id, "generate_pup_report.auto_close", str(exc),
+                  severity="warning")
 
     manifest = {
         "case_id":     case_id,

@@ -220,15 +220,24 @@ get_case("C042")                    → {"pipeline_complete": false, "_hint": ".
   ... wait 30s, repeat ...
 get_case("C042")                    → {"pipeline_complete": true, "status": "open", "_hint": "...read report, then close..."}
 read_report("C042")                 → full investigation report (Markdown)
-close_case("C042", "true_positive") → case status set to "closed"
+generate_mdr_report("C042")         → MDR report generated, case auto-closed
 ```
 
-The `close_case` tool accepts a `disposition` parameter to record the closing reason:
-`true_positive`, `false_positive`, `benign`, `inconclusive`, or `resolved` (default).
+### Auto-close on deliverable collection
+
+Generating a deliverable auto-closes the case — no separate `close_case` call needed:
+
+| Tool | Disposition set |
+|---|---|
+| `generate_mdr_report` | Preserves existing |
+| `generate_pup_report` | `pup_pua` |
+| `generate_fp_ticket` | `false_positive` |
+
+The `close_case` tool still exists for explicit closing (e.g. `true_positive`, `inconclusive`, `resolved`) or when no deliverable is generated.
 
 > **Note:** `get_case` includes a `_hint` field that guides the client through the
 > workflow. When `pipeline_complete` is true and status is "open", the hint instructs
-> the client to read the report, summarise findings, and close the case.
+> the client to read the report, summarise findings, and generate the appropriate deliverable.
 
 ## File Structure
 

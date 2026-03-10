@@ -212,7 +212,7 @@ Sessions are lazily created — no session exists until the analyst sends their 
 - **No session on login** — the welcome screen shows immediately with no backend session
 - **Lazy creation** — `POST /api/sessions` is called in `ChatView.handleSend()` only when there is no active session or case
 - **Auto-case creation** — every session creates a case immediately, visible in the case ID shown in the session prompt. Optional `reference_id` for SOAR/service desk linking.
-- **Finalisation** — when the analyst sets a disposition, `finalise_case` syncs all context to the case and marks the session `finalised`. Finalised sessions are preserved permanently.
+- **Finalisation** — when the analyst sets a disposition, `finalise_case` syncs all context to the case and marks the session `finalised`. Finalised sessions are preserved permanently. Alternatively, generating an MDR report, PUP report, or FP ticket auto-closes the backing case (the session itself remains active until explicitly finalised or cleaned up on logout).
 - **Logout cleanup** — `Topbar.logout()` calls `POST /api/sessions/cleanup` which deletes all non-finalised sessions. Finalised sessions are preserved as they are linked to cases.
 - **Routing**: `#/session/{sessionId}` for sessions, `#/chat/{caseId}` for cases — bookmarkable, shareable
 - **Stores**: `activeSessionId` and `activeCaseId` in `lib/stores/navigation.ts`
@@ -250,7 +250,9 @@ The persistent left sidebar provides session management:
 
 ### Case-Only Tools (22)
 
-`capture_urls`, `triage_iocs`, `enrich_iocs`, `detect_phishing`, `correlate`, `analyse_email`, `generate_report`, `generate_mdr_report`, `generate_pup_report`, `generate_fp_ticket`, `generate_queries`, `campaign_cluster`, `security_arch_review`, `reconstruct_timeline`, `analyse_pe_files`, `yara_scan`, `correlate_event_logs`, `contextualise_cves`, `generate_executive_summary`, `add_evidence`, `read_case_file`, `run_full_pipeline`
+`capture_urls`, `triage_iocs`, `enrich_iocs`, `detect_phishing`, `correlate`, `analyse_email`, `generate_report`, `generate_mdr_report`\*, `generate_pup_report`\*, `generate_fp_ticket`\*, `generate_queries`, `campaign_cluster`, `security_arch_review`, `reconstruct_timeline`, `analyse_pe_files`, `yara_scan`, `correlate_event_logs`, `contextualise_cves`, `generate_executive_summary`, `add_evidence`, `read_case_file`, `run_full_pipeline`
+
+\* **Auto-close on collection:** `generate_mdr_report`, `generate_pup_report`, and `generate_fp_ticket` auto-close the case on successful generation (see `docs/pipeline.md` § Auto-close on Deliverable Collection).
 
 ### Session-Only Tools (30)
 

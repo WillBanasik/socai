@@ -579,6 +579,14 @@ def fp_ticket(
     )
     write_artefact(out_path, header + ticket_text)
 
+    # Auto-close: FP ticket is the analyst deliverable — case is done
+    try:
+        from tools.index_case import index_case
+        index_case(case_id, status="closed", disposition="false_positive")
+        print(f"[fp_ticket] Case {case_id} auto-closed (FP ticket collected).")
+    except Exception as exc:
+        log_error(case_id, "fp_ticket.auto_close", str(exc), severity="warning")
+
     manifest = {
         "case_id":            case_id,
         "ticket_path":        str(out_path),

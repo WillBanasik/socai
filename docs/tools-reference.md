@@ -204,6 +204,7 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 - **Live workspace query** (`--live-query`): enables read-only KQL against the alert's Log Analytics workspace via `az monitor log-analytics query`. Max 1 query per ticket, 50 rows each, 60s timeout.
 - Output format: plain-text closure comment tailored to alert type (IOC-based, identity, endpoint, lateral movement, data access) — no markdown, no tuning suggestions
 - Applies alias/dealias cycle
+- **Auto-closes** the case with disposition `false_positive` on successful generation
 - Outputs: `artefacts/fp_comms/fp_ticket.md` + `fp_ticket_manifest.json`
 
 ## PUP/PUA Report Generation
@@ -222,11 +223,12 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 `generate_pup_report(case_id)` builds context from case artefacts and calls the LLM with a PUP-specific system prompt. The report focuses on software identification, scope assessment, risk level, and removal steps — lighter than a full MDR report.
 
 - Output: `cases/<ID>/reports/pup_report.md` + `pup_report_manifest.json`
+- **Auto-closes** the case with disposition `pup_pua` on successful generation
 - CLI: `python3 socai.py pup-report --case C001`
 
 ### Pipeline Integration
 
-`classify_attack.py` detects PUP/PUA early via keyword matching. `chief.py` also checks post-enrichment verdicts via `detect_pup()`. When PUP is detected, the pipeline short-circuits: enrich → PUP report → done (skipping phishing detection, sandbox, correlation, campaign clustering, etc.).
+`classify_attack.py` detects PUP/PUA early via keyword matching. `chief.py` also checks post-enrichment verdicts via `detect_pup()`. When PUP is detected, the pipeline short-circuits: enrich → PUP report → done (skipping phishing detection, sandbox, correlation, campaign clustering, etc.). The case auto-closes at pipeline completion since the PUP report (the deliverable) is generated inline.
 
 ## Attack-Type Classification
 

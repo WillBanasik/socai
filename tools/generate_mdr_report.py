@@ -456,6 +456,15 @@ def generate_mdr_report(case_id: str) -> dict:
     )
     write_artefact(out_path, header + report_text)
 
+    # Auto-close: MDR report is the analyst deliverable — case is done
+    try:
+        from tools.index_case import index_case
+        index_case(case_id, status="closed")
+        print(f"[generate_mdr_report] Case {case_id} auto-closed (MDR report collected).")
+    except Exception as exc:
+        log_error(case_id, "generate_mdr_report.auto_close", str(exc),
+                  severity="warning")
+
     manifest = {
         "case_id":     case_id,
         "report_path": str(out_path),

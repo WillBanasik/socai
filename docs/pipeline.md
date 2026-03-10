@@ -96,11 +96,25 @@ The classified `attack_type` and `attack_type_confidence` are stored in `case_me
 
 ### PUP/PUA Short-Circuit
 
-When classified as `pup_pua`, the pipeline short-circuits after enrichment (step 9). Instead of the standard report, `generate_pup_report()` produces a lightweight PUP-specific report covering: software identification, scope assessment, risk evaluation, and removal steps. The report is saved to `cases/<ID>/reports/pup_report.md`.
+When classified as `pup_pua`, the pipeline short-circuits after enrichment (step 9). Instead of the standard report, `generate_pup_report()` produces a lightweight PUP-specific report covering: software identification, scope assessment, risk evaluation, and removal steps. The report is saved to `cases/<ID>/reports/pup_report.md`. The case is auto-closed with disposition `pup_pua` when the PUP report is generated (handled inside the tool).
 
 ## Auto-disposition
 
 After enrichment, if verdict_summary has 0 malicious and 0 suspicious IOCs, the case is auto-closed with disposition `benign_auto_closed` — unless the report confidence score meets or exceeds `SOCAI_CONF_AUTO_CLOSE` (default 0.20), in which case the auto-close is reverted.
+
+## Auto-close on Deliverable Collection
+
+Cases auto-close when the analyst collects their deliverable. The close logic lives in the tool layer so it works consistently across all entry points (CLI, web UI, MCP server):
+
+| Deliverable | Tool | Disposition set |
+|---|---|---|
+| MDR report | `generate_mdr_report()` | Preserves existing disposition |
+| PUP report | `generate_pup_report()` | `pup_pua` |
+| FP ticket | `fp_ticket()` | `false_positive` |
+
+Each tool calls `index_case(case_id, status="closed", ...)` on successful generation. If the tool fails (skipped, error, needs_clarification), the case remains open.
+
+This means the standard workflow is: pipeline runs → sets disposition → case stays open → analyst collects deliverable → case auto-closes. For PUP cases where the pipeline generates the PUP report inline, the case closes at pipeline completion. For benign cases with 0 malicious/suspicious IOCs, the auto-disposition logic closes the case before the report step.
 
 ## Quick-run Commands
 

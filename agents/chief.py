@@ -431,15 +431,7 @@ class ChiefAgent(BaseAgent):
             from tools.generate_pup_report import generate_pup_report
             pup_result = _step("pup_report", lambda: generate_pup_report(self.case_id))
             pipeline_results["report"] = pup_result
-
-            try:
-                from tools.index_case import index_case
-                report_path = pup_result.get("report_path") if pup_result else None
-                index_case(self.case_id, status="open", disposition="pup_pua",
-                           report_path=report_path)
-            except Exception as exc:
-                log_error(self.case_id, "index_case_pup", str(exc),
-                          severity="warning", traceback=traceback.format_exc())
+            # Auto-close handled inside generate_pup_report via index_case
 
             ok_steps  = sum(1 for s in pipeline_results["steps"] if s["status"] == "ok")
             err_steps = len(pipeline_results["errors"])

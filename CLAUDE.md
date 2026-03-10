@@ -94,6 +94,7 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, sessions in `sessions/`, articles in `articles/`
 - **Attack-Type Classification** (`tools/classify_attack.py`) — deterministic keyword + input-shape classifier; routes pipeline via per-type profiles (phishing, malware, account_compromise, privilege_escalation, pup_pua, generic)
 - **PUP/PUA Playbook** (`tools/generate_pup_report.py`) — lightweight pipeline for Potentially Unwanted Program detections; auto-detected from title/notes/enrichment or analyst-triggered; skips attack-chain analysis, produces PUP-specific report with software ID, scope, risk, removal steps
+- **Auto-close on Deliverable Collection** — cases auto-close when the analyst collects their deliverable: `generate_mdr_report` (preserves existing disposition), `generate_pup_report` (`pup_pua`), `fp_ticket` (`false_positive`). Close logic lives in the tool layer so it works across CLI, web UI, and MCP server.
 - **Pipeline:** `ChiefAgent.run()` classifies attack type → selects profile → orchestrates steps with parallel execution; skips irrelevant steps per type (see `docs/pipeline.md`)
 
 ## Analytical Standards (MANDATORY)
