@@ -30,9 +30,11 @@ Web UI (api/main.py + api/chat.py + Svelte SPA: frontend/src/ → ui-dist/)
 MCP Server (mcp_server/)
     ├── HTTPS SSE transport  → port 8001, separate process
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
-    ├── 44 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
-    ├── 11 resources         → read-only case data, playbooks, articles, landscape
-    ├── 7 prompts            → KQL playbooks + triage/FP workflows
+    ├── 45 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
+    ├── 14 resources         → case data, clients, IOC index, playbooks, articles, landscape
+    ├── 8 prompts            → investigation orchestrator, KQL playbooks, triage/FP workflows
+    ├── Boundary enforcement → per-conversation client + case isolation (prevents cross-contamination)
+    ├── Data hierarchy       → global (cross-client IOCs) / client (internal) / case (details)
     ├── stdio fallback       → Claude Desktop backward compat (no auth)
     └── Fire-and-forget      → long-running investigate returns job_id for polling
 
@@ -99,6 +101,7 @@ cases/<CASE_ID>/
         │
         ▼
 registry/case_index.json  ← case registry
+registry/ioc_index.json   ← cross-case IOC index (tier + case_clients for boundary enforcement)
 registry/audit.log        ← SHA-256 artefact audit trail
 registry/batches/         ← batch API metadata + results
 registry/article_index.json ← threat article dedup index

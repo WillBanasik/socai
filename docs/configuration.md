@@ -116,7 +116,32 @@ Client-specific response playbooks are stored in `config/clients/<client_name>.j
 
 `SOCAI_ALIAS=1` enables alias/dealias cycle for LLM calls only — local artefacts always contain real names.
 
-Config: `config/client_entities.json` (git-ignored) — unified `clients` list with `name`, `alias`, optional `root: true`, `workspace_id`. Currently contains a single client: **example-client**. Entries with `"EDIT_ME"` or empty alias are skipped. Schema: `config/client_entities.example.json`.
+Config: `config/client_entities.json` (git-ignored) — unified `clients` list. Schema: `config/client_entities.example.json`.
+
+**Client entity fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | Yes | Canonical client name (case-insensitive matching) |
+| `alias` | No | LLM alias for data minimisation |
+| `root` | No | `true` for prefix matching in alias/dealias |
+| `platforms` | No | Nested object mapping platform → config (see below) |
+| `workspace_id` | No | Legacy; migrated to `platforms.sentinel.workspace_id` |
+
+**Platform scope** (`platforms` object):
+
+```json
+{
+  "platforms": {
+    "sentinel": { "workspace_id": "..." },
+    "xdr": { "tenant_id": "..." },
+    "crowdstrike": { "cid": "..." },
+    "encore": { "access": true }
+  }
+}
+```
+
+The `platforms` object determines which security platforms are available for investigation of that client's incidents. Used by `lookup_client` (MCP tool), `socai://clients` (resource), workspace resolution in `run_kql`, and the `investigate_incident` prompt (Phase 0 client gate).
 
 **Root vs exact:** `root: true` does prefix matching. Exact names do whole-word replacement.
 

@@ -114,6 +114,47 @@ def register_resources(mcp: FastMCP) -> None:
         return _json(load_json(path))
 
     # ------------------------------------------------------------------
+    # Client Registry
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://clients")
+    def list_clients() -> str:
+        """Client registry with platform scope (Sentinel, XDR, CrowdStrike, Encore).
+
+        Use this to identify which client a case belongs to and which
+        security platforms are available for that client.
+        """
+        _require_scope("investigations:read")
+
+        from config.settings import CLIENT_ENTITIES
+        from tools.common import load_json
+
+        if not CLIENT_ENTITIES.exists():
+            return _json({"clients": []})
+        entities = load_json(CLIENT_ENTITIES).get("clients", [])
+        # Return name + platforms only (strip alias for non-admin)
+        summary = []
+        for ent in entities:
+            item = {"name": ent.get("name", "")}
+            platforms = ent.get("platforms", {})
+            if not platforms and ent.get("workspace_id"):
+                platforms = {"sentinel": {"workspace_id": ent["workspace_id"]}}
+            item["platforms"] = list(platforms.keys()) if platforms else []
+            summary.append(item)
+        return _json({"clients": summary})
+
+    @mcp.resource("socai://clients/{client_name}")
+    def client_detail(client_name: str) -> str:
+        """Full client configuration including platform access scope."""
+        _require_scope("investigations:read")
+
+        from tools.common import get_client_config
+        cfg = get_client_config(client_name)
+        if not cfg:
+            return _json({"error": f"Client {client_name!r} not found in registry."})
+        return _json(cfg)
+
+    # ------------------------------------------------------------------
     # KQL Playbooks
     # ------------------------------------------------------------------
 
@@ -135,6 +176,55 @@ def register_resources(mcp: FastMCP) -> None:
         if not pb:
             return _json({"error": f"Playbook {playbook_id!r} not found."})
         return _json(pb)
+
+    # ------------------------------------------------------------------
+    # IOC Index
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://ioc-index/stats")
+    def ioc_index_stats() -> str:
+        """IOC index summary with tier breakdown and top recurring indicators."""
+        _require_scope("investigations:read")
+
+        from config.settings import IOC_INDEX_FILE
+        from tools.common import load_json
+
+        if not IOC_INDEX_FILE.exists():
+            return _json({"total": 0, "tiers": {}, "top_recurring": []})
+
+        index = load_json(IOC_INDEX_FILE)
+        tiers: dict[str, int] = {"global": 0, "client": 0}
+        by_type: dict[str, int] = {}
+        by_verdict: dict[str, int] = {}
+        recurring: list[dict] = []
+
+        for ioc, entry in index.items():
+            tier = entry.get("tier", "global")
+            tiers[tier] = tiers.get(tier, 0) + 1
+            ioc_type = entry.get("ioc_type", "unknown")
+            by_type[ioc_type] = by_type.get(ioc_type, 0) + 1
+            verdict = entry.get("verdict", "unknown")
+            by_verdict[verdict] = by_verdict.get(verdict, 0) + 1
+            cases = entry.get("cases", [])
+            if len(cases) > 1:
+                recurring.append({
+                    "ioc": ioc,
+                    "type": ioc_type,
+                    "tier": tier,
+                    "verdict": verdict,
+                    "case_count": len(cases),
+                })
+
+        recurring.sort(key=lambda r: r["case_count"], reverse=True)
+
+        return _json({
+            "total": len(index),
+            "tiers": tiers,
+            "by_type": by_type,
+            "by_verdict": by_verdict,
+            "recurring_count": len(recurring),
+            "top_recurring": recurring[:20],
+        })
 
     # ------------------------------------------------------------------
     # Threat Articles

@@ -69,20 +69,31 @@ def _resolve_workspace_id(alert_data: dict | None, case_id: str) -> str | None:
         log_error(case_id, "fp_ticket.resolve_workspace", str(exc), severity="info")
         return None
 
+    # Helper to extract sentinel workspace_id from an entity (new nested or legacy flat)
+    def _get_ws(ent: dict) -> str:
+        platforms = ent.get("platforms", {})
+        if isinstance(platforms, dict):
+            sentinel = platforms.get("sentinel", {})
+            if isinstance(sentinel, dict) and sentinel.get("workspace_id"):
+                return sentinel["workspace_id"]
+        return ent.get("workspace_id", "")
+
     # Match by TenantId
     tenant_id = alert_data.get("TenantId", "")
     if tenant_id:
         for ent in entities:
-            if ent.get("workspace_id", "").lower() == tenant_id.lower():
-                return ent["workspace_id"]
+            ws = _get_ws(ent)
+            if ws and ws.lower() == tenant_id.lower():
+                return ws
 
     # Match by DataSources name (e.g. "la-san-thungelasentinel" contains "thungela")
     data_sources = alert_data.get("DataSources", [])
     if data_sources:
         ds_str = " ".join(data_sources).lower()
         for ent in entities:
-            if ent.get("name", "").lower() in ds_str and ent.get("workspace_id"):
-                return ent["workspace_id"]
+            ws = _get_ws(ent)
+            if ent.get("name", "").lower() in ds_str and ws:
+                return ws
 
     return None
 
@@ -91,110 +102,36 @@ def _resolve_workspace_id(alert_data: dict | None, case_id: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-You are a junior SIEM/security analytics engineer working in an enterprise SOC. \
-An analyst has reviewed an investigation and determined it is a False Positive (FP). \
-Your job is to:
-  1. Understand exactly why the alert fired (from case evidence, log records, and the original rule/policy)
-  2. Explain clearly why it is a FP
-  3. Recommend the smallest targeted change that prevents this FP from recurring without creating detection gaps
+You are a SOC analyst closing a False Positive alert. Write a short FP closure comment \
+(maximum two sentences) that explains why the alert poses no risk.
 
-PLATFORM IDENTIFICATION
------------------------
-If the platform is not already specified, identify it from the alert data structure:
-
-| Platform | Key signals |
-|----------|-------------|
-| Microsoft Sentinel | WorkspaceId, SystemAlertId, DetectionSource: "Scheduled", AlertRule, KQL query field |
-| CrowdStrike Falcon | event_simpleName, FalconHostLink, SensorId, PatternDispositionDescription, cid |
-| Defender for Endpoint | MachineId or DeviceId, serviceSource: "MicrosoftDefenderForEndpoint", IncidentId |
-| Entra ID | UserPrincipalName + SignInEventTypes, riskEventType, ConditionalAccessStatus, correlationId |
-| Microsoft Cloud Apps | activityId, service.displayName, rawActivity, governanceActions, appId |
-
-If you cannot confidently determine the platform, call the `request_clarification` tool \
-with a specific question for the analyst.
-
-PER-PLATFORM IMPROVEMENT CATEGORIES
--------------------------------------
-
-SENTINEL / KQL — Analytics rule modifications (SIEM engineering team owns these):
-- Watchlist exclusion: | where AccountName !in (_GetWatchlist('FP_Exclusions') | project SearchKey)
-- Threshold tuning: adjust count() > N or time window (ago(Xm))
-- Summarise to reduce noise: | summarize count() by User, hour = bin(TimeGenerated, 1h) | where count_ > threshold
-- Add table correlation: join/union to require co-occurrence with another table
-- Field-level filter: | where <field> !has "<benign_value>" or !startswith
-- Entity scope: restrict to specific device group, user group, or workspace
-- Known-good path/process exclusion: | where FolderPath !startswith "C:\\ProgramData\\expected"
-
-CROWDSTRIKE FALCON — Control recommendations (Falcon admin team):
-- ML exclusion: by hash, path glob, or signer
-- IOA exclusion: behavior + process + command line regex
-- IOC allow: add known-clean hash/domain/IP as allow
-- Prevention policy: reduce sensitivity for this detection category
-- Sensor visibility exclusion: path-based
-
-DEFENDER FOR ENDPOINT — Control recommendations (MDE admin team):
-- Alert suppression rule (via Security portal)
-- AV exclusion: path/extension/process
-- Custom detection rule: add KQL exclusion condition
-- ASR rule exception
-
-ENTRA ID — Control recommendations (Entra admin team):
-- Named location: add trusted IP range → reference in CA policy
-- CA policy scope exclusion: exclude user/group/location
-- Identity Protection: trusted IP / risk dismissal workflow
-
-MICROSOFT CLOUD APPS — Control recommendations (MCAS admin team):
-- Activity policy exclusion filter
-- Anomaly detection scope / sensitivity reduction
-- Corporate network IP range addition
-
-OUTPUT FORMAT
--------------
-Produce a markdown ticket with these sections exactly:
-
-## Alert Summary
-(table: Alert Name, Platform, Rule/Policy, Triggered timestamp, Determination)
-
-## Why This Is a False Positive
-(evidence-based explanation citing specific IOCs, log records, verdicts, and capture data)
-
-## Recommended Changes
-
-### [For Sentinel: "Analytics Rule Modifications (SIEM Engineering)"]
-[For other platforms: "Control Recommendation — <Team Name>"]
-(For each recommendation: **Change type:**, **Rationale:**, and a code/KQL snippet if applicable)
-
-## Validation
-(How to verify the fix works: re-trigger scenario, expected non-alert outcome, test query)
-
-## IOCs — Clean Verdict (confirmed benign by enrichment)
-(markdown table: IOC | Type | Providers | Verdict — only show IOCs with clean verdict)
-
----
-*Generated by socai fp-ticket | Case: <case_id>*
+RULES:
+1. Maximum TWO sentences. No headers, no tables, no bullet points, no markdown formatting.
+2. Focus on WHY there is no risk — not on what the alert is or what fired.
+3. Tailor the comment to the alert type:
+   - IOC-based alerts (IPs, domains, URLs, hashes): state that no malicious indicators were identified \
+     across threat intelligence sources (name the key ones checked if available: VirusTotal, AbuseIPDB, etc.).
+   - Identity / authentication alerts (sign-ins, MFA, impossible travel): state that no evidence of \
+     account compromise, credential abuse, or unauthorised access was found.
+   - Endpoint / process alerts (suspicious execution, persistence, injection): state that no malicious \
+     behaviour, payload delivery, or persistence mechanisms were confirmed.
+   - Lateral movement / internal traffic alerts: state that no lateral movement, C2 communication, \
+     or data exfiltration indicators were identified.
+   - Data access / exfiltration alerts (DLP, unusual download, Key Vault access): state that the activity \
+     is consistent with expected operational patterns and no data loss risk was identified.
+4. Reference specific evidence from the case data (e.g. "enrichment confirmed all IPs are clean", \
+   "sign-in originated from a known corporate location", "process is a legitimate scheduled task").
+5. Do NOT suggest tuning, remediation, or follow-up actions — just the closure justification.
+6. Tone: direct, factual, confident.
 
 WORKSPACE QUERY TOOL
 --------------------
-If the `query_workspace` tool is available, you can run READ-ONLY KQL queries against the \
-Sentinel workspace that produced this alert. Use this to:
-- Verify the caller's historical activity pattern (is this a daily occurrence?)
-- Check how many other principals would match a proposed exclusion (blast radius)
-- Confirm the alert condition would no longer fire with the proposed fix
-- Look up the app registration display name from AADServicePrincipalSignInLogs
+If the `query_workspace` tool is available, you may run a single focused KQL query to confirm \
+the benign nature of the activity (e.g. check historical pattern, verify named location). \
+Maximum 1 query. Use only if essential — prefer the case artefacts already provided.
 
-Guidelines:
-- Keep queries time-bounded (ago(7d) or narrower) and focused
-- Maximum 5 queries per ticket — be deliberate
-- Always state the PURPOSE before querying
-- Include relevant query results in the ticket as supporting evidence
-- If the tool is NOT available, rely on the case artefacts and alert data provided
-
-IMPORTANT:
-- Be specific and minimal. Recommend the smallest change that addresses this exact FP.
-- Do NOT suggest changes that would reduce detection coverage beyond this specific pattern.
-- For Sentinel: always include the KQL snippet for the proposed change.
-- Base your explanation entirely on the evidence provided — do not invent details.
-- Tone: direct, technical, practitioner-level.
+OUTPUT:
+Return ONLY the two-sentence (or fewer) FP closure comment. Nothing else.
 """
 
 # Cached system block
@@ -232,7 +169,7 @@ _QUERY_WORKSPACE_TOOL = {
 
 # Maximum rows returned per query, maximum queries per ticket
 _QUERY_MAX_ROWS = 50
-_QUERY_MAX_CALLS = 5
+_QUERY_MAX_CALLS = 1
 
 # Tool: request clarification when platform cannot be determined
 _CLARIFICATION_TOOL = {
@@ -515,7 +452,7 @@ def fp_ticket(
         try:
             message = client.messages.create(
                 model=_model,
-                max_tokens=4096,
+                max_tokens=512,
                 system=_SYSTEM_CACHED,
                 tools=tools,
                 tool_choice={"type": "auto"},
@@ -634,7 +571,7 @@ def fp_ticket(
     out_path = out_dir / "fp_ticket.md"
 
     header = (
-        f"# FP Suppression Ticket — {case_id}\n\n"
+        f"# FP Closure Comment — {case_id}\n\n"
         f"**Date:** {utcnow()} | **Analyst:** {analyst} | **Severity:** {severity}"
         f" | Model: {_model} | Tokens: {tokens_in} in / {tokens_out} out"
         + (f" | Cache read: {tokens_cache_read}" if tokens_cache_read else "")

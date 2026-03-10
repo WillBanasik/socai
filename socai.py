@@ -35,6 +35,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 # Ensure repo root is on the path
@@ -882,10 +883,13 @@ def cmd_sandbox_session(args: argparse.Namespace) -> None:
     print(f"[sandbox] Image: {result.get('image', '?')} | Network: {args.network}")
 
     if args.interactive:
-        import signal as _signal
+        from tools.sandbox_session import _is_container_running
         try:
             print("Interactive mode — press Ctrl+C to stop and collect artefacts...")
-            _signal.pause()
+            # Poll for container exit rather than blocking forever on signal.pause()
+            while _is_container_running(session_id):
+                time.sleep(2)
+            print("[sandbox] Container exited.")
         except KeyboardInterrupt:
             print("\n")
     else:

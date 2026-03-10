@@ -22,6 +22,129 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server.auth import _get_caller_email, _get_caller_scopes, _require_scope
 
+# ---------------------------------------------------------------------------
+# Conversation boundary enforcement — prevents cross-client and cross-case
+# data mixing within a single chat session.
+# ---------------------------------------------------------------------------
+
+# Per-user active context.  Set on the first case-touching tool call in a
+# conversation; any subsequent call that references a different client or
+# case is rejected with a clear instruction to start a new chat.
+_active_client: dict[str, str] = {}   # user_email → client_name
+_active_case: dict[str, str] = {}     # user_email → case_id
+
+
+def _check_client_boundary(case_id: str) -> None:
+    """Verify the case's client matches the active client for this user.
+
+    Raises ``ToolError`` if the analyst is switching to a different client
+    mid-conversation, instructing them to start a new chat session.
+    """
+    caller = _get_caller_email()
+    if not caller:
+        return  # stdio / no auth — skip enforcement
+
+    # ── Case boundary ──────────────────────────────────────────────────
+    prev_case = _active_case.get(caller)
+    if prev_case is None:
+        _active_case[caller] = case_id
+    elif prev_case != case_id:
+        raise ToolError(
+            f"CASE BOUNDARY: This conversation is scoped to case {prev_case}. "
+            f"You are now referencing case {case_id}. "
+            f"Please start a NEW chat session for each investigation — "
+            f"mixing cases in one conversation risks context contamination."
+        )
+
+    # ── Client boundary ────────────────────────────────────────────────
+    from config.settings import CASES_DIR
+    meta_path = CASES_DIR / case_id / "case_meta.json"
+    if not meta_path.exists():
+        return  # case doesn't exist yet — will be checked on creation
+
+    try:
+        meta = json.loads(meta_path.read_text())
+    except Exception:
+        return
+    case_client = (meta.get("client") or "").strip().lower()
+    if not case_client:
+        return  # no client set on case — skip
+
+    prev = _active_client.get(caller)
+    if prev is None:
+        _active_client[caller] = case_client
+        return
+
+    if prev != case_client:
+        raise ToolError(
+            f"CLIENT BOUNDARY: This conversation is scoped to client '{prev}'. "
+            f"Case {case_id} belongs to client '{case_client}'. "
+            f"You must start a NEW chat session to investigate a different client's data. "
+            f"Client data must never be mixed in the same conversation."
+        )
+
+
+def _set_client_boundary(client_name: str) -> None:
+    """Explicitly set the active client for the current user (e.g. on case creation)."""
+    caller = _get_caller_email()
+    if not caller or not client_name:
+        return
+    client_lower = client_name.strip().lower()
+    prev = _active_client.get(caller)
+    if prev is not None and prev != client_lower:
+        raise ToolError(
+            f"CLIENT BOUNDARY: This conversation is scoped to client '{prev}'. "
+            f"You are attempting to create a case for client '{client_name}'. "
+            f"You must start a NEW chat session to work with a different client."
+        )
+    _active_client[caller] = client_lower
+
+
+def _check_workspace_boundary(workspace_id: str) -> None:
+    """Verify the workspace belongs to the active client (if one is set).
+
+    Looks up which client owns *workspace_id* in the client registry and
+    checks against ``_active_client``.  Raises ``ToolError`` on mismatch.
+    """
+    caller = _get_caller_email()
+    if not caller:
+        return
+
+    from config.settings import CLIENT_ENTITIES
+    from tools.common import load_json
+    try:
+        entities = load_json(CLIENT_ENTITIES).get("clients", [])
+    except Exception:
+        return
+
+    # Resolve workspace → owning client
+    ws_lower = workspace_id.strip().lower()
+    owner = ""
+    owner_display = ""
+    for ent in entities:
+        platforms = ent.get("platforms", {})
+        if not platforms and ent.get("workspace_id"):
+            platforms = {"sentinel": {"workspace_id": ent["workspace_id"]}}
+        sentinel_ws = (platforms.get("sentinel", {}).get("workspace_id") or "").lower()
+        if sentinel_ws == ws_lower:
+            owner = ent.get("name", "").strip().lower()
+            owner_display = ent.get("name", "")
+            break
+
+    prev = _active_client.get(caller)
+    if prev is None:
+        # First query — lock to the workspace's owning client
+        if owner:
+            _active_client[caller] = owner
+        return
+
+    if owner and owner != prev:
+        raise ToolError(
+            f"CLIENT BOUNDARY: This conversation is scoped to client '{prev}'. "
+            f"Workspace {workspace_id} belongs to client '{owner_display}'. "
+            f"You must start a NEW chat session to query a different client's data."
+        )
+
 
 def _json(obj: object) -> str:
     """Serialise *obj* to a compact JSON string.
@@ -114,6 +237,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             is False (fire-and-forget, returns job_id immediately).
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from agents.chief import ChiefAgent
 
@@ -333,6 +457,67 @@ def _register_tier1(mcp: FastMCP) -> None:
         })
 
     @mcp.tool(annotations={"readOnlyHint": True})
+    def lookup_client(client_name: str) -> str:
+        """Look up a client's configuration and platform scope.
+
+        Returns the client's available security platforms (Sentinel workspace,
+        XDR tenant, CrowdStrike CID, Encore) and escalation playbook.
+        Use this to confirm which client an incident belongs to and which
+        platforms you have access to for that client.
+
+        Parameters
+        ----------
+        client_name : str
+            Client name to look up (case-insensitive).
+        """
+        _require_scope("investigations:read")
+
+        from tools.common import get_client_config
+        cfg = get_client_config(client_name)
+        if not cfg:
+            # If a client boundary is already set, warn about scope
+            caller = _get_caller_email()
+            prev = _active_client.get(caller, "") if caller else ""
+            if prev:
+                raise ToolError(
+                    f"CLIENT BOUNDARY: This conversation is scoped to client '{prev}'. "
+                    f"Client {client_name!r} is not recognised — you may be attempting "
+                    f"to switch clients. Please start a NEW chat session for a different client."
+                )
+            # No boundary set — just report not found
+            from config.settings import CLIENT_ENTITIES
+            from tools.common import load_json
+            try:
+                entities = load_json(CLIENT_ENTITIES).get("clients", [])
+                names = [e.get("name", "") for e in entities]
+            except Exception:
+                names = []
+            return _json({
+                "error": f"Client {client_name!r} not found.",
+                "available_clients": names,
+            })
+
+        # Lock the conversation to this client (raises ToolError on mismatch)
+        _set_client_boundary(cfg.get("name", client_name))
+
+        # Include platforms and any response playbook
+        platforms = cfg.get("platforms", {})
+        if not platforms and cfg.get("workspace_id"):
+            platforms = {"sentinel": {"workspace_id": cfg["workspace_id"]}}
+
+        result = {
+            "name": cfg.get("name", ""),
+            "platforms": platforms,
+            "platform_list": list(platforms.keys()),
+        }
+        # Check for response playbook
+        from pathlib import Path
+        playbook_path = Path(__file__).resolve().parent.parent / "config" / "clients" / f"{cfg['name']}.json"
+        result["has_response_playbook"] = playbook_path.exists()
+
+        return _json(result)
+
+    @mcp.tool(annotations={"readOnlyHint": True})
     def list_cases() -> str:
         """List all registered SOC cases from the case registry."""
         _require_scope("investigations:read")
@@ -364,6 +549,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             Case identifier, e.g. "C001".
         """
         _require_scope("investigations:read")
+        _check_client_boundary(case_id)
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -380,15 +566,19 @@ def _register_tier1(mcp: FastMCP) -> None:
             meta["_hint"] = "Pipeline still running. Call get_case again in 30 seconds."
         elif meta.get("status") == "open":
             meta["_hint"] = (
-                "Pipeline complete. Read the report with read_report, "
-                "summarise the findings, then call close_case to close this investigation."
+                "Pipeline complete. Read the report with read_report "
+                "and summarise the findings for the user. "
+                "The case will be auto-closed when you read the report."
             )
 
         return _json(meta)
 
-    @mcp.tool(annotations={"readOnlyHint": True})
+    @mcp.tool()
     def read_report(case_id: str) -> str:
         """Read the investigation Markdown report for a case.
+
+        Also auto-closes the case if the pipeline is complete and the case
+        is still open (disposition: "resolved").
 
         Parameters
         ----------
@@ -396,12 +586,23 @@ def _register_tier1(mcp: FastMCP) -> None:
             Case identifier, e.g. "C001".
         """
         _require_scope("investigations:read")
+        _check_client_boundary(case_id)
 
         from config.settings import CASES_DIR
+        from tools.common import load_json
 
         report_path = CASES_DIR / case_id / "reports" / "investigation_report.md"
         if not report_path.exists():
             return f"No report found for case {case_id!r}. Run investigate or generate_report first."
+
+        # Auto-close: if the report exists and case is still open, close it
+        meta_path = CASES_DIR / case_id / "case_meta.json"
+        if meta_path.exists():
+            meta = load_json(meta_path)
+            if meta.get("status") == "open":
+                from tools.index_case import index_case
+                index_case(case_id, status="closed", disposition="resolved")
+
         return report_path.read_text(encoding="utf-8")
 
     @mcp.tool(annotations={"readOnlyHint": True})
@@ -416,6 +617,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             Relative path within the case directory (e.g. "artefacts/iocs.json").
         """
         _require_scope("investigations:read")
+        _check_client_boundary(case_id)
 
         from config.settings import CASES_DIR
 
@@ -473,6 +675,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             "benign", "inconclusive", "resolved". Default "resolved".
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from tools.index_case import index_case
         return _json(index_case(case_id, status="closed", disposition=disposition))
@@ -494,6 +697,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             notes, or any observations relevant to the investigation.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(
@@ -564,6 +768,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             Include RFC-1918 IPs.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(
@@ -583,6 +788,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             Mark the case as closed after report generation.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(
@@ -600,6 +806,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             Case identifier.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from tools.generate_mdr_report import generate_mdr_report as _mdr
         result = await asyncio.to_thread(lambda: _mdr(case_id))
@@ -623,6 +830,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             Confirmed KQL tables to scope queries to.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(
@@ -649,6 +857,7 @@ def _register_tier2(mcp: FastMCP) -> None:
             URLs to capture.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(
@@ -666,6 +875,7 @@ def _register_tier2(mcp: FastMCP) -> None:
             Case identifier. URLs must have been captured first.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(lambda: actions.detect_phishing(case_id))
@@ -681,6 +891,7 @@ def _register_tier2(mcp: FastMCP) -> None:
             Case identifier. Upload .eml files to the case first.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from config.settings import CASES_DIR
         from api import actions
@@ -705,6 +916,7 @@ def _register_tier2(mcp: FastMCP) -> None:
             Case identifier.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(lambda: actions.correlate(case_id))
@@ -720,6 +932,7 @@ def _register_tier2(mcp: FastMCP) -> None:
             Case identifier.
         """
         _require_scope("investigations:read")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(lambda: actions.reconstruct_timeline(case_id))
@@ -748,6 +961,15 @@ def _register_tier2(mcp: FastMCP) -> None:
     ) -> str:
         """Search prior investigations by IOCs, emails, or keywords.
 
+        Cross-case search respects the data hierarchy:
+        - **Global IOCs** (public IPs, domains, hashes, CVEs) are searched
+          across ALL clients.  Cross-client matches show IOC overlap and
+          verdict only — no case details are exposed.
+        - **Client-scoped IOCs** (internal hostnames, private IPs) are only
+          searched within the active client's cases.
+        - **Case details** (findings, reports, timeline) are only returned
+          for same-client cases.
+
         Parameters
         ----------
         iocs : list[str]
@@ -759,11 +981,16 @@ def _register_tier2(mcp: FastMCP) -> None:
         """
         _require_scope("investigations:read")
 
+        # Pass the active client for tier-aware filtering
+        caller = _get_caller_email()
+        active_client = _active_client.get(caller, "") if caller else ""
+
         from tools.recall import recall
         result = recall(
             iocs=iocs or [],
             emails=emails or [],
             keywords=keywords or [],
+            caller_client=active_client,
         )
         return _json(result)
 
@@ -862,6 +1089,7 @@ def _register_tier2(mcp: FastMCP) -> None:
             Case identifier.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(lambda: actions.generate_exec_summary(case_id))
@@ -888,31 +1116,23 @@ def _register_tier3(mcp: FastMCP) -> None:
         query : str
             KQL query string.
         workspace : str
-            Workspace name or GUID.
+            Workspace name or GUID. Falls back to SOCAI_SENTINEL_WORKSPACE env var.
         """
         _require_scope("sentinel:query")
 
-        import re
+        from api.chat import _resolve_kql_workspace
+        from scripts.run_kql import run_kql as _run_kql
 
         query = query.strip()
-        workspace = workspace.strip()
         if not query:
             return _json({"error": "No KQL query provided."})
-        if not workspace:
-            return _json({"error": "No workspace specified."})
 
-        from scripts.run_kql import run_kql as _run_kql, _resolve_workspace
+        ws_id = _resolve_kql_workspace(workspace.strip())
+        if not ws_id:
+            return _json({"error": "No workspace resolved. Pass workspace explicitly or set SOCAI_SENTINEL_WORKSPACE."})
 
-        _guid_re = re.compile(
-            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I
-        )
-        if _guid_re.match(workspace):
-            ws_id = workspace
-        else:
-            try:
-                ws_id = _resolve_workspace(None, workspace)
-            except SystemExit:
-                return _json({"error": f"Unknown workspace: {workspace}"})
+        # Enforce client boundary — resolve workspace back to owning client
+        _check_workspace_boundary(ws_id)
 
         q = query.rstrip().rstrip(";")
         if "| take " not in q.lower() and "| limit " not in q.lower():
@@ -971,6 +1191,7 @@ def _register_tier3(mcp: FastMCP) -> None:
             Case identifier.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(lambda: actions.security_arch_review(case_id))
@@ -1110,6 +1331,7 @@ def _register_tier3(mcp: FastMCP) -> None:
             Case identifier.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from tools.response_actions import generate_response_actions
         result = await asyncio.to_thread(lambda: generate_response_actions(case_id))
@@ -1136,6 +1358,7 @@ def _register_tier3(mcp: FastMCP) -> None:
             Original detection query text.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(

@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, IOC_INDEX_FILE
 from tools.common import load_json, log_error, save_json, utcnow
+from tools.ioc_classify import classify_ioc, get_case_client
 
 # Provider statuses that carry a meaningful verdict
 _OK_STATUSES = {"ok"}
@@ -212,7 +213,12 @@ def update_ioc_index(case_id: str) -> dict:
     new_iocs:       list[str] = []
     recurring_iocs: list[str] = []
 
+    # Resolve the client that owns this case (for cross-client boundary)
+    case_client = get_case_client(case_id)
+
     for ioc, score in ioc_scores.items():
+        tier = classify_ioc(score["ioc_type"], ioc)
+
         if ioc in index:
             entry = index[ioc]
             if case_id not in entry.get("cases", []):
@@ -224,9 +230,14 @@ def update_ioc_index(case_id: str) -> dict:
             entry["malicious"]  = score["malicious"]
             entry["suspicious"] = score["suspicious"]
             entry["clean"]      = score["clean"]
+            entry["tier"]       = tier
+            # Track which client each case belongs to
+            if case_client:
+                entry.setdefault("case_clients", {})[case_id] = case_client
         else:
-            index[ioc] = {
+            entry = {
                 "ioc_type":   score["ioc_type"],
+                "tier":       tier,
                 "first_seen": now,
                 "last_seen":  now,
                 "cases":      [case_id],
@@ -235,6 +246,9 @@ def update_ioc_index(case_id: str) -> dict:
                 "suspicious": score["suspicious"],
                 "clean":      score["clean"],
             }
+            if case_client:
+                entry["case_clients"] = {case_id: case_client}
+            index[ioc] = entry
             new_iocs.append(ioc)
 
     IOC_INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)

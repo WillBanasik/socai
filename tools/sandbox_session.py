@@ -82,6 +82,9 @@ SANDBOX_NETWORK_NAME = os.getenv("SOCAI_SANDBOX_NETWORK_NAME", "socai_sandbox_ne
 CONTAINER_PREFIX = "socai_sandbox_"
 SESSIONS_DIR = Path(__file__).resolve().parent.parent / "sandbox_sessions"
 
+# Case ID pattern: C001-style or TEST_AUTOMATED_001-style (alphanumeric + underscore)
+_RE_CASE_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+
 # Size caps for artefacts
 STRACE_MAX_BYTES = 50 * 1024 * 1024   # 50 MB
 PCAP_MAX_BYTES = 100 * 1024 * 1024    # 100 MB
@@ -322,9 +325,7 @@ def _session_path(session_id: str) -> Path:
 
 def _save_session(state: dict) -> None:
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    _session_path(state["session_id"]).write_text(
-        json.dumps(state, indent=2, default=str)
-    )
+    save_json(_session_path(state["session_id"]), state)
 
 
 def _load_session(session_id: str) -> dict | None:
@@ -673,6 +674,10 @@ def start_session(
     if not sample_path.exists():
         return {"status": "error", "reason": f"Sample not found: {sample_path}"}
 
+    # Validate case_id (prevent path traversal and empty values)
+    if not case_id or not _RE_CASE_ID.match(case_id):
+        return {"status": "error", "reason": f"Invalid case_id: {case_id!r}. Must be alphanumeric (e.g. C001)."}
+
     # Validate timeout
     timeout = min(max(timeout, 10), SANDBOX_MAX_TIMEOUT)
 
@@ -888,9 +893,15 @@ def list_sessions() -> list[dict]:
     for p in sorted(SESSIONS_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
         try:
             state = json.loads(p.read_text())
-            # Update status for containers that have stopped
+            # Update status for containers that have stopped unexpectedly
             if state.get("status") == "active" and not _is_container_running(state["session_id"]):
                 state["status"] = "stopped_unclean"
+                state["stopped_at"] = utcnow()
+                # Persist the updated status so we don't re-check Docker every call
+                try:
+                    p.write_text(json.dumps(state, indent=2, default=str))
+                except OSError:
+                    pass
             sessions.append({
                 "session_id": state.get("session_id", "?"),
                 "case_id": state.get("case_id", ""),
@@ -964,6 +975,8 @@ def wait_for_completion(session_id: str, *, poll_interval: float = 2.0, grace: i
     """Block until the sandbox container exits. Returns True if completed normally."""
     state = _load_session(session_id)
     if not state:
+        # Session file missing — stop any orphaned container rather than leaving it running
+        _stop_container(session_id)
         return False
 
     timeout = state.get("timeout", SANDBOX_DEFAULT_TIMEOUT)

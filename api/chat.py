@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -240,28 +241,86 @@ def _filter_by_thread(messages: list[dict], thread_id: str) -> list[dict]:
 # Tool execution dispatcher
 # ---------------------------------------------------------------------------
 
-def _run_kql_tool(tool_input: dict) -> dict:
+def _resolve_kql_workspace(workspace: str, case_id: str | None = None) -> str | None:
+    """Resolve workspace name/GUID from explicit value, case client, or env var.
+
+    Resolution order:
+      1. Explicit workspace param (name or GUID)
+      2. Case client → client_entities.json workspace_id
+      3. SOCAI_SENTINEL_WORKSPACE env var
+    Returns a workspace GUID, or None if unresolvable.
+    """
+    import re
+    from scripts.run_kql import _resolve_workspace
+
+    _guid_re = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I
+    )
+
+    # 1. Explicit workspace
+    if workspace:
+        if _guid_re.match(workspace):
+            return workspace
+        try:
+            return _resolve_workspace(None, workspace)
+        except SystemExit:
+            return None
+
+    # 2. Case client → client_entities.json
+    if case_id:
+        try:
+            from config.settings import CASES_DIR
+            import json as _json
+            meta_path = CASES_DIR / case_id / "case_meta.json"
+            if meta_path.exists():
+                client = _json.load(open(meta_path)).get("client", "").strip()
+                if client:
+                    ent_path = Path(__file__).resolve().parent.parent / "config" / "client_entities.json"
+                    entities = _json.load(open(ent_path)).get("clients", [])
+                    for ent in entities:
+                        if ent.get("name", "").lower() == client.lower():
+                            # New nested layout: platforms.sentinel.workspace_id
+                            platforms = ent.get("platforms", {})
+                            if isinstance(platforms, dict):
+                                sentinel = platforms.get("sentinel", {})
+                                if isinstance(sentinel, dict) and sentinel.get("workspace_id"):
+                                    return sentinel["workspace_id"]
+                            # Legacy flat layout
+                            if ent.get("workspace_id"):
+                                return ent["workspace_id"]
+                    # Also try workspace_tables.json (client name = workspace code)
+                    try:
+                        return _resolve_workspace(None, client)
+                    except SystemExit:
+                        pass
+        except (FileNotFoundError, Exception):
+            pass
+
+    # 3. Env var fallback
+    env_ws = os.environ.get("SOCAI_SENTINEL_WORKSPACE", "").strip()
+    if env_ws:
+        if _guid_re.match(env_ws):
+            return env_ws
+        try:
+            return _resolve_workspace(None, env_ws)
+        except SystemExit:
+            pass
+
+    return None
+
+
+def _run_kql_tool(tool_input: dict, case_id: str | None = None) -> dict:
     """Execute a read-only KQL query. Returns result dict."""
     query = tool_input.get("query", "").strip()
     workspace = tool_input.get("workspace", "").strip()
     if not query:
         return {"_message": "No KQL query provided."}
-    if not workspace:
-        return {"_message": "No workspace specified. Use a workspace name (example-client) or full GUID."}
 
-    from scripts.run_kql import run_kql, _resolve_workspace
+    ws_id = _resolve_kql_workspace(workspace, case_id)
+    if not ws_id:
+        return {"_message": "No workspace resolved. Pass workspace explicitly, set client on the case, or set SOCAI_SENTINEL_WORKSPACE."}
 
-    # Resolve workspace name/code → GUID (pass through if already a GUID)
-    ws_id = None
-    import re
-    _guid_re = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
-    if _guid_re.match(workspace):
-        ws_id = workspace
-    else:
-        try:
-            ws_id = _resolve_workspace(None, workspace)
-        except SystemExit:
-            return {"_message": f"Unknown workspace: {workspace}"}
+    from scripts.run_kql import run_kql
 
     # Safety: enforce row limit
     q = query.rstrip().rstrip(";")
@@ -425,7 +484,7 @@ def _dispatch_shared(tool_name: str, tool_input: dict, case_id: str | None, perm
     if tool_name == "run_kql":
         if "sentinel:query" not in perms and "admin" not in perms:
             return {"_message": "Permission denied — Sentinel query execution requires admin privileges."}
-        return _run_kql_tool(tool_input)
+        return _run_kql_tool(tool_input, case_id=case_id)
 
     if tool_name == "assess_landscape":
         from tools.case_landscape import assess_landscape

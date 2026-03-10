@@ -78,7 +78,7 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **CLI:** `socai.py` — entrypoint for all commands
 - **Agents** (`agents/`) — thin orchestration classes inheriting `BaseAgent`; call tool functions, never write files directly
 - **Tools** (`tools/`) — stateless functions; accept `case_id`, write via `write_artefact()`/`save_json()`, return manifest dicts
-- **MCP Server** (`mcp_server/`) — HTTPS SSE transport on port 8001 with JWT RBAC; 44 tools, 11 resources, 7 prompts for external MCP clients (Claude Desktop, LLM agents)
+- **MCP Server** (`mcp_server/`) — HTTPS SSE transport on port 8001 with JWT RBAC; 45 tools, 14 resources, 8 prompts for external MCP clients (Claude Desktop, LLM agents)
 - **Web UI:** `api/chat.py` + `api/main.py` + Svelte SPA (`frontend/src/` → `ui-dist/`) — streaming SSE chat with activity feed and session management (see `docs/web-ui.md`)
 - **Sessions** (`api/sessions.py`) — pre-case investigation conversations; materialise into full cases
 - **Batch** (`tools/batch.py`) — bulk LLM processing via Claude Messages Batch API

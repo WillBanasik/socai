@@ -118,7 +118,34 @@ The Intezer access token is fetched **once per `enrich()` call** and reused acro
 - **clean** — all responsive providers say clean
 - **Confidence**: HIGH (>=3 providers, >66% agree), MEDIUM (>=2 providers, strict majority >50%), LOW (otherwise)
 
-`update_ioc_index()` merges the verdict summary into `registry/ioc_index.json` and prints a warning when IOCs have been seen in prior cases.
+`update_ioc_index()` merges the verdict summary into `registry/ioc_index.json` and prints a warning when IOCs have been seen in prior cases. Each index entry now includes:
+- `tier` — `"global"` (public IPs, domains, hashes, CVEs, URLs, emails) or `"client"` (private IPs, bare hostnames), classified by `tools/ioc_classify.py`
+- `case_clients` — `{case_id: client_name}` mapping, tracking which client each case belongs to
+
+## IOC Tier Classification
+
+`tools/ioc_classify.py` classifies IOCs into tiers for cross-case search boundary enforcement:
+
+| IOC Type | Tier | Rationale |
+|---|---|---|
+| MD5, SHA1, SHA256, CVE, URL | Global | Always publicly observable |
+| IPv4 (public) | Global | Routable on the internet |
+| IPv4 (private/reserved) | Client | RFC 1918, loopback, link-local — internal only |
+| Domain (FQDN with dot) | Global | Publicly resolvable |
+| Domain (bare hostname) | Client | Internal name, no DNS context outside the org |
+| Email | Global | External addresses (future: internal domain detection) |
+
+**Usage:** Called by `score_verdicts.update_ioc_index()` during enrichment, and by `recall()` during cross-case search to filter results.
+
+## Recall (Cross-Case Intelligence)
+
+`tools/recall.py` searches prior cases and cached intelligence. Accepts an optional `caller_client` parameter for tier-aware filtering:
+
+- **Global IOCs** — cross-client matches are returned, but case details (findings, reports, timeline) are redacted. Only IOC overlap + verdict is visible.
+- **Client-scoped IOCs** — only same-client case matches are returned. Other clients' cases are invisible.
+- **Case details** (findings, report excerpts, links, external refs) — only returned for same-client cases.
+
+The MCP `recall_cases` tool automatically passes the active client from conversation boundary state.
 
 ## Triage
 
@@ -171,10 +198,11 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 
 ## FP Ticket Generation
 
-`tools/fp_ticket.py` generates platform-specific False Positive suppression tickets:
+`tools/fp_ticket.py` generates a concise False Positive closure comment (max 2 sentences):
 - Identifies alerting platform from alert data structure (Sentinel, CrowdStrike, Defender, Entra, Cloud Apps) — or accepts `--platform` override
 - Uses `request_clarification` Claude tool if platform cannot be identified
-- **Live workspace query** (`--live-query`): enables read-only KQL against the alert's Log Analytics workspace via `az monitor log-analytics query`. Max 5 queries per ticket, 50 rows each, 60s timeout.
+- **Live workspace query** (`--live-query`): enables read-only KQL against the alert's Log Analytics workspace via `az monitor log-analytics query`. Max 1 query per ticket, 50 rows each, 60s timeout.
+- Output format: plain-text closure comment tailored to alert type (IOC-based, identity, endpoint, lateral movement, data access) — no markdown, no tuning suggestions
 - Applies alias/dealias cycle
 - Outputs: `artefacts/fp_comms/fp_ticket.md` + `fp_ticket_manifest.json`
 

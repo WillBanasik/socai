@@ -28,8 +28,8 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  44 tools, 11 resources │
-│  7 prompts              │
+│  45 tools, 14 resources │
+│  8 prompts              │
 └─────────────────────────┘
     │
     │ Shared filesystem
@@ -82,9 +82,9 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `sentinel:query` | run_kql, load_kql_playbook |
 | `admin` | All tools including sandbox, browser, response_actions, merge_cases |
 
-## Tools (44)
+## Tools (45)
 
-### Tier 1 -- Core Investigation (15)
+### Tier 1 -- Core Investigation (16)
 
 | Tool | Permission |
 |---|---|
@@ -103,6 +103,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `generate_report` | `investigations:submit` |
 | `generate_mdr_report` | `investigations:submit` |
 | `generate_queries` | `investigations:submit` |
+| `lookup_client` | `investigations:read` |
 
 ### Tier 2 -- Extended Analysis (12)
 
@@ -143,7 +144,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `stop_browser_session` | `admin` |
 | `list_browser_sessions` | `admin` |
 
-## Resources (11)
+## Resources (14)
 
 | URI | Description |
 |---|---|
@@ -154,15 +155,19 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `socai://cases/{case_id}/verdicts` | Verdict summary |
 | `socai://cases/{case_id}/enrichment` | Enrichment data |
 | `socai://cases/{case_id}/timeline` | Timeline events |
+| `socai://clients` | Client registry with platform scope |
+| `socai://clients/{client_name}` | Full client configuration |
+| `socai://ioc-index/stats` | IOC index summary with tier breakdown |
 | `socai://playbooks` | KQL playbook index |
 | `socai://playbooks/{id}` | Full playbook with stages |
 | `socai://articles` | Threat article index |
 | `socai://landscape` | Threat landscape summary |
 
-## Prompts (7)
+## Prompts (8)
 
 | Prompt | Description |
 |---|---|
+| `investigate_incident` | End-to-end investigation orchestrator (client gate → intake → playbook → disposition → output) |
 | `investigate_phishing` | Multi-stage KQL phishing playbook |
 | `investigate_account_compromise` | Account compromise KQL playbook |
 | `investigate_ioc_hunt` | IOC hunting KQL playbook |
@@ -170,6 +175,35 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `investigate_privilege_escalation` | Privilege escalation KQL playbook |
 | `triage_alert` | Guided alert triage workflow |
 | `write_fp_ticket` | FP ticket generation workflow |
+
+## Conversation Boundary Enforcement
+
+The MCP server enforces per-conversation client and case isolation to prevent cross-contamination when analysts work across multiple clients.
+
+### Client Boundary
+
+The first client referenced in a conversation (via `lookup_client` or inferred from a `run_kql` workspace) locks the session to that client. Subsequent references to a different client raise a `ToolError` instructing the analyst to start a new chat session.
+
+Enforcement points:
+- **`lookup_client`** — calls `_set_client_boundary()` on successful lookup
+- **`run_kql`** — calls `_check_workspace_boundary()` which resolves workspace → client via `client_entities.json`
+- **Case-touching tools** (20 tools) — call `_check_client_boundary(case_id)` which reads the client from `case_meta.json`
+
+### Case Boundary
+
+The first `case_id` used in a conversation locks the session to that case. Attempting to reference a different case raises a `ToolError`.
+
+### Data Hierarchy
+
+Cross-case search (`recall_cases`) respects a three-tier data hierarchy:
+
+| Tier | Scope | What's searchable | Cross-client visibility |
+|---|---|---|---|
+| **Global** | All cases, all clients | Public IPs, domains, URLs, hashes, CVEs, emails | IOC value + verdict (no case details) |
+| **Client** | Same client only | Private IPs, bare hostnames | Invisible to other clients |
+| **Case** | Single case only | Findings, reports, timelines, analyst notes | Same-client cases only |
+
+Classification is determined by `tools/ioc_classify.py` and stored in the IOC index (`registry/ioc_index.json`) as the `tier` field.
 
 ## Investigation Workflow
 
@@ -205,9 +239,9 @@ mcp_server/
     server.py       # FastMCP instance, registration, main()
     auth.py         # SocaiTokenVerifier, _require_scope
     config.py       # Env var configuration
-    tools.py        # 44 MCP tool wrappers
-    resources.py    # 11 MCP resource implementations
-    prompts.py      # 7 MCP prompt implementations
+    tools.py        # 45 MCP tool wrappers
+    resources.py    # 14 MCP resource implementations
+    prompts.py      # 8 MCP prompt implementations
 ```
 
 ## Production Deployment

@@ -35,6 +35,7 @@ from config.settings import (
     CASES_DIR, ENRICH_CACHE_FILE, ENRICH_CACHE_TTL, IOC_INDEX_FILE, REGISTRY_FILE,
 )
 from tools.common import load_json, log_error
+from tools.ioc_classify import TIER_CLIENT, TIER_GLOBAL, get_case_client
 
 # Max artefact text to include per case to avoid blowing up context
 _MAX_REPORT_CHARS = 6000
@@ -71,6 +72,7 @@ def recall(
     iocs: list[str] | None = None,
     emails: list[str] | None = None,
     keywords: list[str] | None = None,
+    caller_client: str = "",
 ) -> dict:
     """
     Search prior cases and intelligence for what is already known.
@@ -79,6 +81,15 @@ def recall(
         iocs: IOC values to look up (IPs, domains, URLs, hashes)
         emails: Email addresses to search for in IOC index and case titles
         keywords: Free-text keywords to match against case titles
+        caller_client: Lowercase client name of the caller.  When set,
+            enforces the data hierarchy:
+              - **Global IOCs** (public IPs, domains, hashes, CVEs): cross-
+                client matches are returned, but case details (findings,
+                reports) are redacted for other clients' cases.
+              - **Client-scoped IOCs** (private IPs, bare hostnames): only
+                same-client case matches are returned.
+              - **Case details** (findings, report excerpts, timeline): only
+                returned for same-client cases.
 
     Returns:
         {
@@ -94,6 +105,7 @@ def recall(
     iocs = iocs or []
     emails = emails or []
     keywords = keywords or []
+    caller_client = caller_client.strip().lower()
 
     # Normalise: extract domains from any URLs in the IOC list
     url_domains = _extract_domains([i for i in iocs if "/" in i or "." in i])
@@ -105,18 +117,34 @@ def recall(
     case_registry = case_index_data.get("cases", case_index_data)
     enrich_cache = _load_optional(ENRICH_CACHE_FILE) or {}
 
-    # --- 1. IOC index lookup ---
+    # --- 1. IOC index lookup (tier-aware) ---
     known_iocs: list[dict] = []
     matched_case_ids: set[str] = set()
 
     for ioc in all_search_iocs:
         entry = ioc_index.get(ioc)
         if entry:
+            tier = entry.get("tier", TIER_GLOBAL)
             cases = entry.get("cases", [])
+            case_clients = entry.get("case_clients", {})
+
+            # Apply tier filtering when caller_client is set
+            if caller_client:
+                if tier == TIER_CLIENT:
+                    # Client-scoped: only show cases belonging to same client
+                    cases = [
+                        c for c in cases
+                        if case_clients.get(c, get_case_client(c)) == caller_client
+                    ]
+                    if not cases:
+                        continue  # no same-client matches for this IOC
+                # Global tier: all cases visible (but detail redaction happens later)
+
             matched_case_ids.update(cases)
             known_iocs.append({
                 "ioc": ioc,
                 "type": entry.get("ioc_type", "unknown"),
+                "tier": tier,
                 "verdict": entry.get("verdict", "unknown"),
                 "malicious": entry.get("malicious", 0),
                 "suspicious": entry.get("suspicious", 0),
@@ -179,68 +207,105 @@ def recall(
     for cid in sorted_case_ids[:_MAX_CASES]:
         cmeta = case_registry.get(cid, {})
         case_dir = CASES_DIR / cid
-        case_summary: dict = {
-            "case_id": cid,
-            "title": cmeta.get("title", "Unknown"),
-            "severity": cmeta.get("severity", "unknown"),
-            "status": cmeta.get("status", "unknown"),
-            "created_at": cmeta.get("created_at", ""),
-            "disposition": cmeta.get("disposition", ""),
-        }
 
-        # Load links and external refs
-        meta_full = _load_optional(case_dir / "case_meta.json")
-        if meta_full:
-            links = meta_full.get("links", [])
-            if links:
-                case_summary["links"] = links
-            ext_refs = meta_full.get("external_refs", {})
-            if ext_refs:
-                case_summary["external_refs"] = ext_refs
-            if meta_full.get("canonical_case"):
-                case_summary["canonical_case"] = meta_full["canonical_case"]
-
-        # Load IOCs
-        iocs_data = _load_optional(case_dir / "iocs" / "iocs.json")
-        if iocs_data:
-            ioc_dict = iocs_data.get("iocs", {})
-            case_summary["iocs"] = {
-                t: vals[:20] for t, vals in ioc_dict.items() if vals
-            }
-
-        # Load verdict summary
-        verdict = _load_optional(
-            case_dir / "artefacts" / "enrichment" / "verdict_summary.json"
+        # Determine if this case belongs to the same client as the caller.
+        # Cross-client cases get a redacted summary (IOC overlap + verdict
+        # only) to prevent leaking internal investigation detail.
+        case_client = get_case_client(cid)
+        same_client = (
+            not caller_client              # no boundary set — show everything
+            or not case_client             # case has no client — show everything
+            or case_client == caller_client
         )
-        if verdict:
-            case_summary["verdicts"] = {
-                "malicious": verdict.get("high_priority", []),
-                "suspicious": verdict.get("needs_review", []),
-                "clean_count": len(verdict.get("clean", [])),
+
+        if same_client:
+            # ── Full detail: same-client or no boundary ──────────────
+            case_summary: dict = {
+                "case_id": cid,
+                "title": cmeta.get("title", "Unknown"),
+                "severity": cmeta.get("severity", "unknown"),
+                "status": cmeta.get("status", "unknown"),
+                "created_at": cmeta.get("created_at", ""),
+                "disposition": cmeta.get("disposition", ""),
             }
 
-        # Load findings from session context
-        session_ctx = _load_optional(case_dir / "session_context.json")
-        if session_ctx:
-            findings = session_ctx.get("findings", [])
-            if findings:
-                case_summary["findings"] = [
-                    {"type": f.get("type", "?"), "summary": f.get("summary", "")}
-                    for f in findings[:10]
-                ]
+            # Load links and external refs
+            meta_full = _load_optional(case_dir / "case_meta.json")
+            if meta_full:
+                links = meta_full.get("links", [])
+                if links:
+                    case_summary["links"] = links
+                ext_refs = meta_full.get("external_refs", {})
+                if ext_refs:
+                    case_summary["external_refs"] = ext_refs
+                if meta_full.get("canonical_case"):
+                    case_summary["canonical_case"] = meta_full["canonical_case"]
 
-        # Load MDR report if available (prefer over pipeline report)
-        mdr_path = case_dir / "reports" / "mdr_report.md"
-        report_path = case_dir / "reports" / "investigation_report.md"
-        rpath = mdr_path if mdr_path.exists() else (report_path if report_path.exists() else None)
-        if rpath:
-            try:
-                text = rpath.read_text(encoding="utf-8", errors="replace")
-                if len(text) > _MAX_REPORT_CHARS:
-                    text = text[:_MAX_REPORT_CHARS] + "\n\n[...truncated...]"
-                case_summary["report_excerpt"] = text
-            except Exception:
-                pass
+            # Load IOCs
+            iocs_data = _load_optional(case_dir / "iocs" / "iocs.json")
+            if iocs_data:
+                ioc_dict = iocs_data.get("iocs", {})
+                case_summary["iocs"] = {
+                    t: vals[:20] for t, vals in ioc_dict.items() if vals
+                }
+
+            # Load verdict summary
+            verdict = _load_optional(
+                case_dir / "artefacts" / "enrichment" / "verdict_summary.json"
+            )
+            if verdict:
+                case_summary["verdicts"] = {
+                    "malicious": verdict.get("high_priority", []),
+                    "suspicious": verdict.get("needs_review", []),
+                    "clean_count": len(verdict.get("clean", [])),
+                }
+
+            # Load findings from session context
+            session_ctx = _load_optional(case_dir / "session_context.json")
+            if session_ctx:
+                findings = session_ctx.get("findings", [])
+                if findings:
+                    case_summary["findings"] = [
+                        {"type": f.get("type", "?"), "summary": f.get("summary", "")}
+                        for f in findings[:10]
+                    ]
+
+            # Load MDR report if available (prefer over pipeline report)
+            mdr_path = case_dir / "reports" / "mdr_report.md"
+            report_path = case_dir / "reports" / "investigation_report.md"
+            rpath = mdr_path if mdr_path.exists() else (report_path if report_path.exists() else None)
+            if rpath:
+                try:
+                    text = rpath.read_text(encoding="utf-8", errors="replace")
+                    if len(text) > _MAX_REPORT_CHARS:
+                        text = text[:_MAX_REPORT_CHARS] + "\n\n[...truncated...]"
+                    case_summary["report_excerpt"] = text
+                except Exception:
+                    pass
+        else:
+            # ── Redacted: cross-client case ──────────────────────────
+            # Only expose that an IOC overlap exists + verdict.  No title,
+            # no findings, no report content, no internal references.
+            case_summary = {
+                "case_id": cid,
+                "cross_client": True,
+                "severity": cmeta.get("severity", "unknown"),
+                "created_at": cmeta.get("created_at", ""),
+                "disposition": cmeta.get("disposition", ""),
+                "note": "Cross-client match — case details restricted.",
+            }
+            # Show only which searched IOCs matched this case
+            if ioc_index:
+                overlapping = []
+                for ioc in all_search_iocs:
+                    idx_entry = ioc_index.get(ioc, {})
+                    if cid in idx_entry.get("cases", []):
+                        overlapping.append({
+                            "ioc": ioc,
+                            "verdict": idx_entry.get("verdict", "unknown"),
+                        })
+                if overlapping:
+                    case_summary["matched_iocs"] = overlapping
 
         prior_cases.append(case_summary)
 
@@ -254,29 +319,47 @@ def recall(
 
     # --- 6. Build human-readable summary ---
     lines: list[str] = []
+    same_client_cases = [pc for pc in prior_cases if not pc.get("cross_client")]
+    cross_client_cases = [pc for pc in prior_cases if pc.get("cross_client")]
+
     if prior_cases:
         lines.append(f"**{len(prior_cases)} prior case(s) found** matching your search:")
+        if cross_client_cases:
+            lines.append(
+                f"  ({len(cross_client_cases)} cross-client — details restricted, "
+                f"IOC overlap only)"
+            )
         for pc in prior_cases:
-            lines.append(f"- **{pc['case_id']}** — {pc['title']} [{pc['severity'].upper()}] ({pc['status']})")
-            if pc.get("verdicts"):
-                v = pc["verdicts"]
-                mal = v.get("malicious", [])
-                sus = v.get("suspicious", [])
-                if mal:
-                    lines.append(f"  Malicious IOCs: {', '.join(mal[:5])}")
-                if sus:
-                    lines.append(f"  Suspicious IOCs: {', '.join(sus[:5])}")
-            if pc.get("findings"):
-                for f in pc["findings"][:3]:
-                    lines.append(f"  Finding: [{f['type']}] {f['summary']}")
-            if pc.get("links"):
-                linked_ids = [l["case_id"] for l in pc["links"]]
-                lines.append(f"  Linked to: {', '.join(linked_ids)}")
-            if pc.get("canonical_case"):
-                lines.append(f"  **DUPLICATE** of canonical case {pc['canonical_case']}")
-            if pc.get("external_refs"):
-                refs = [f"{k}={v}" for k, v in pc["external_refs"].items()]
-                lines.append(f"  External refs: {', '.join(refs)}")
+            if pc.get("cross_client"):
+                matched = pc.get("matched_iocs", [])
+                ioc_str = ", ".join(f"{m['ioc']} ({m['verdict']})" for m in matched[:5])
+                lines.append(
+                    f"- **{pc['case_id']}** — [cross-client] "
+                    f"[{pc['severity'].upper()}] ({pc.get('disposition', '?')})"
+                )
+                if ioc_str:
+                    lines.append(f"  Shared IOCs: {ioc_str}")
+            else:
+                lines.append(f"- **{pc['case_id']}** — {pc.get('title', '?')} [{pc['severity'].upper()}] ({pc.get('status', '?')})")
+                if pc.get("verdicts"):
+                    v = pc["verdicts"]
+                    mal = v.get("malicious", [])
+                    sus = v.get("suspicious", [])
+                    if mal:
+                        lines.append(f"  Malicious IOCs: {', '.join(mal[:5])}")
+                    if sus:
+                        lines.append(f"  Suspicious IOCs: {', '.join(sus[:5])}")
+                if pc.get("findings"):
+                    for f in pc["findings"][:3]:
+                        lines.append(f"  Finding: [{f['type']}] {f['summary']}")
+                if pc.get("links"):
+                    linked_ids = [l["case_id"] for l in pc["links"]]
+                    lines.append(f"  Linked to: {', '.join(linked_ids)}")
+                if pc.get("canonical_case"):
+                    lines.append(f"  **DUPLICATE** of canonical case {pc['canonical_case']}")
+                if pc.get("external_refs"):
+                    refs = [f"{k}={v}" for k, v in pc["external_refs"].items()]
+                    lines.append(f"  External refs: {', '.join(refs)}")
     else:
         lines.append("No prior cases found matching these search terms.")
 

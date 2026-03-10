@@ -239,6 +239,33 @@ def load_json(path: Path | str) -> dict | list:
         return json.load(fh)
 
 
+def get_client_config(client_name: str) -> dict | None:
+    """Look up a client's full configuration including platform scope.
+
+    Returns a dict with 'name', 'alias', and 'platforms' (sentinel, xdr,
+    crowdstrike, encore), or None if not found.  Handles both the new nested
+    ``platforms.sentinel.workspace_id`` layout and the legacy flat
+    ``workspace_id`` field.
+    """
+    from config.settings import CLIENT_ENTITIES
+
+    try:
+        entities = load_json(CLIENT_ENTITIES).get("clients", [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+    for ent in entities:
+        if ent.get("name", "").lower() == client_name.lower():
+            # Normalise: if legacy flat workspace_id, nest under platforms
+            if "platforms" not in ent and ent.get("workspace_id"):
+                ent["platforms"] = {
+                    "sentinel": {"workspace_id": ent["workspace_id"]}
+                }
+            return ent
+
+    return None
+
+
 def save_json(path: Path | str, data: dict | list, indent: int = 2) -> dict:
     path = Path(path)
     raw = json.dumps(data, indent=indent, default=str).encode()

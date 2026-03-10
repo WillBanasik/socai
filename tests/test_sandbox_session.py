@@ -24,18 +24,22 @@ def cleanup_test_case():
     """Remove the test case and sandbox sessions before and after each test."""
     from config.settings import CASES_DIR
 
+    created_sessions: list[str] = []
+
     def _rm():
         case_dir = CASES_DIR / TEST_CASE
         if case_dir.exists():
             shutil.rmtree(case_dir, ignore_errors=True)
-        # Clean sandbox session state
+        # Clean sandbox session state (both hardcoded sbx_test_* and any created during test)
         from tools.sandbox_session import SESSIONS_DIR
         if SESSIONS_DIR.exists():
             for f in SESSIONS_DIR.glob("sbx_test_*"):
                 f.unlink(missing_ok=True)
+            for sid in created_sessions:
+                (SESSIONS_DIR / f"{sid}.json").unlink(missing_ok=True)
 
     _rm()
-    yield
+    yield created_sessions
     _rm()
 
 
@@ -273,7 +277,7 @@ class TestEntityExtraction:
 
 class TestStartSession:
     @patch("tools.sandbox_session.subprocess.run")
-    def test_start_session_success(self, mock_run, tmp_path):
+    def test_start_session_success(self, mock_run, tmp_path, cleanup_test_case):
         from tools.sandbox_session import start_session
 
         sample = tmp_path / "test.elf"
@@ -292,6 +296,9 @@ class TestStartSession:
         assert result["session_id"].startswith("sbx_")
         assert result["sample_type"] == "elf"
         assert result["case_id"] == TEST_CASE
+
+        # Track for cleanup
+        cleanup_test_case.append(result["session_id"])
 
     def test_start_session_missing_sample(self):
         from tools.sandbox_session import start_session

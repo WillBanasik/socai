@@ -195,9 +195,10 @@ def extract_iocs(
 
     scan_paths: list[Path] = []
     logs_dir = case_dir / "logs"
-    for search_dir in (artefacts_dir, logs_dir):
+    notes_dir = case_dir / "notes"
+    for search_dir in (artefacts_dir, logs_dir, notes_dir):
         if search_dir.exists():
-            for ext in ("*.txt", "*.html", "*.strings.txt", "*.csv", "*.json", "*.log", "*.ps1", "*.vbs", "*.js", "*.bat", "*.cmd", "*.pdf"):
+            for ext in ("*.txt", "*.html", "*.strings.txt", "*.csv", "*.json", "*.log", "*.ps1", "*.vbs", "*.js", "*.bat", "*.cmd", "*.pdf", "*.md"):
                 scan_paths.extend(search_dir.rglob(ext))
     if extra_paths:
         scan_paths.extend(Path(p) for p in extra_paths)
