@@ -4,11 +4,10 @@ The web UI is a **Svelte 5 SPA** (`frontend/src/` → built to `ui-dist/`). Anal
 
 ## Backend: `api/chat.py`
 
-- `TOOL_DEFS` — 43 tool definitions for case-mode chat (21 case-only + 22 shared)
-- `SESSION_TOOL_DEFS` — 51 tool definitions for session-mode chat (29 session-only + 22 shared); composed dynamically from `_SESSION_ONLY_DEFS + [d for d in TOOL_DEFS if d["name"] in _SHARED_TOOL_NAMES]`
-- `_dispatch_shared(tool_name, tool_input, case_id, perms, *, session_id=None)` — handles 20 tools that run identically in both modes; returns `None` if the tool is not shared, causing fall-through to mode-specific dispatch. `session_id` is passed from `_dispatch_session_tool()` for upload path resolution (e.g. `start_sandbox_session` resolves filenames against `sessions/<id>/uploads/`)
-- `_dispatch_tool()` / `_dispatch_session_tool()` — mode-specific dispatchers; both call `_dispatch_shared` first, then handle mode-specific tools
-- `_SHARED_BACKING_REQUIRED` — frozenset of shared tools that need `_session_ensure_backing_case()` in session mode (`start_browser_session`, `ingest_velociraptor`, `ingest_mde_package`, `memory_dump_guide`, `analyse_memory_dump`, `start_sandbox_session`, `stop_sandbox_session`, `sandbox_exec`)
+- `TOOL_DEFS` — 44 tool definitions for case-mode chat (22 case-only + 22 shared)
+- `SESSION_TOOL_DEFS` — 52 tool definitions for session-mode chat (30 session-only + 22 shared); composed dynamically from `_SESSION_ONLY_DEFS + [d for d in TOOL_DEFS if d["name"] in _SHARED_TOOL_NAMES]`
+- `_dispatch_shared(tool_name, tool_input, case_id, perms, *, session_id=None)` — handles 22 tools that run identically in both modes; returns `None` if the tool is not shared, causing fall-through to mode-specific dispatch. `session_id` is passed from `_dispatch_session_tool()` for upload path resolution (e.g. `start_sandbox_session` resolves filenames against `sessions/<id>/uploads/`)
+- `_dispatch_tool()` / `_dispatch_session_tool()` — mode-specific dispatchers; both call `_dispatch_shared` first, then handle mode-specific tools. `_dispatch_session_tool` resolves the session's case_id once at the top and passes it to all tools.
 - `build_system_prompt(case_id)` — loads case metadata + artefact summary, uses prompt caching (`cache_control: ephemeral`)
 - `chat(case_id, user_message, history)` — multi-turn tool loop (up to 10 rounds)
 - `chat_stream(case_id, user_message, history)` — streaming variant yielding SSE events
@@ -19,9 +18,9 @@ The web UI is a **Svelte 5 SPA** (`frontend/src/` → built to `ui-dist/`). Anal
 - History trimming: `_trim_for_api()` sends only last 20 messages to API (full history saved to disk), with orphaned `tool_result` cleanup and tool result truncation to 3000 chars
 - **Compaction** (Opus models): when enabled, uses API-side context compaction instead of hard message truncation, preserving earlier conversation context
 
-### Session-Mode Backing Cases
+### Session-Mode Auto-Case Creation
 
-Session tools that need file-based artefact storage (e.g. `capture_urls`, `detect_phishing`, `generate_report`) automatically create a **backing case** via `_session_ensure_backing_case()`. The backing case ID is stored in the session context and reused for all subsequent tool calls in that session. When the session is materialised, the backing case's artefacts are already in place.
+Every session auto-creates a case at session start. The case ID is stored in both the session metadata and context, and is immediately available for all tool calls. `_session_ensure_backing_case()` is a simple lookup (with a legacy fallback for pre-existing sessions).
 
 **Sample path resolution:** `start_sandbox_session` resolves relative filenames against upload directories — first `sessions/<id>/uploads/`, then `cases/<id>/uploads/`. If the file is not found, the response lists available files. This mirrors the pattern used by `analyse_telemetry` and `read_uploaded_file`.
 
@@ -80,13 +79,13 @@ Preferences stored as JSON in `config/preferences/<email_hash>.json`. Custom ins
 
 ### Session Management Endpoints
 
-- `POST /api/sessions` — create a new session (called lazily on first real message, not on login)
-- `GET /api/sessions` — list sessions (`?all=true` includes expired/materialised)
+- `POST /api/sessions` — create a new session with auto-created case (accepts optional `{"reference_id": "..."}` body)
+- `GET /api/sessions` — list sessions (`?all=true` includes expired/finalised)
 - `GET /api/sessions/search` — search across session titles, IOCs, findings, and tags (query param: `q`)
 - `PATCH /api/sessions/{id}` — rename a session
 - `DELETE /api/sessions/{id}` — delete a session
 - `DELETE /api/sessions` — delete all sessions for the authenticated user
-- `POST /api/sessions/cleanup` — delete all non-materialised sessions for the user (used on logout)
+- `POST /api/sessions/cleanup` — delete all non-finalised sessions for the user (used on logout)
 - `GET /api/sessions/{id}/threads` — list investigation threads with IOC/finding summaries
 - `GET /api/sessions/{id}/export` — export session as Markdown (messages, tool calls, metadata)
 - `POST /api/sessions/{id}/pivot` — create a new thread (no label)
@@ -202,18 +201,19 @@ Each session supports multiple **investigation threads** — isolated context pa
 - **`/thread <N>`** — switch to thread N (reloads that thread's history)
 - **`/context`** — shows the active thread's context
 - **System prompt** — includes active thread detail + brief summaries of other threads
-- **Materialisation** — merges all threads' IOCs and findings into the case
+- **Finalisation** — merges all threads' IOCs and findings into the case
 
 Backend: threads stored in `sessions/<id>/context.json` under `threads` dict. History messages tagged with `thread_id` and filtered before API calls. Backwards-compatible — old sessions auto-migrate to a single default thread.
 
 ### Session Lifecycle
 
-Sessions are lazily created — no session exists until the analyst sends their first real message (slash commands are handled client-side and don't create sessions). Key behaviours:
+Sessions are lazily created — no session exists until the analyst sends their first real message (slash commands are handled client-side and don't create sessions). Every session auto-creates a case at start. Key behaviours:
 
 - **No session on login** — the welcome screen shows immediately with no backend session
 - **Lazy creation** — `POST /api/sessions` is called in `ChatView.handleSend()` only when there is no active session or case
-- **Materialisation** — when the AI creates a case, the session status becomes `materialised` and the UI switches to case mode (`#/chat/{caseId}`). Materialised sessions are preserved permanently.
-- **Logout cleanup** — `Topbar.logout()` calls `POST /api/sessions/cleanup` which deletes all non-materialised sessions. Materialised sessions are preserved as they are linked to cases.
+- **Auto-case creation** — every session creates a case immediately, visible in the case ID shown in the session prompt. Optional `reference_id` for SOAR/service desk linking.
+- **Finalisation** — when the analyst sets a disposition, `finalise_case` syncs all context to the case and marks the session `finalised`. Finalised sessions are preserved permanently.
+- **Logout cleanup** — `Topbar.logout()` calls `POST /api/sessions/cleanup` which deletes all non-finalised sessions. Finalised sessions are preserved as they are linked to cases.
 - **Routing**: `#/session/{sessionId}` for sessions, `#/chat/{caseId}` for cases — bookmarkable, shareable
 - **Stores**: `activeSessionId` and `activeCaseId` in `lib/stores/navigation.ts`
 - **Session list**: `sessionList` store populated on mount via `listSessions()` API call
@@ -232,7 +232,7 @@ The persistent left sidebar provides session management:
 
 **Session naming:** Each session displays its title based on state:
 - **"new investigation"** (italic) — default for sessions that haven't been titled yet
-- **Custom title** — if the session has been renamed or materialised (e.g. "C343 — phishing investigation")
+- **Custom title** — if the session has been renamed or finalised (e.g. "C343 — phishing investigation")
 - **Relative timestamp** — e.g. "39m ago", "1h ago" via `relativeTime()` utility
 
 ### Topbar (`Topbar.svelte`)
@@ -240,7 +240,7 @@ The persistent left sidebar provides session management:
 - **Context label**: blank while in session mode, shows case ID (purple accent) when in case mode, shows page name for other views
 - **Sidebar toggle**: hamburger menu button (Ctrl+B)
 - **Token usage**: bolt icon with formatted cumulative session tokens (e.g. "12.3k") and breakdown tooltip
-- **Logout**: cleans up non-materialised sessions before clearing auth token
+- **Logout**: cleans up non-finalised sessions before clearing auth token
 
 ## Available Tools
 
@@ -248,13 +248,13 @@ The persistent left sidebar provides session management:
 
 `assess_landscape`, `link_cases`, `merge_cases`, `recall_cases`, `run_kql`, `load_kql_playbook`, `ingest_velociraptor`, `ingest_mde_package`, `memory_dump_guide`, `analyse_memory_dump`, `start_browser_session`, `stop_browser_session`, `list_browser_sessions`, `start_sandbox_session`, `stop_sandbox_session`, `list_sandbox_sessions`, `sandbox_exec`, `search_threat_articles`, `generate_threat_article`, `list_threat_articles`, `list_confluence_pages`, `web_search`
 
-### Case-Only Tools (21)
+### Case-Only Tools (22)
 
-`capture_urls`, `triage_iocs`, `enrich_iocs`, `detect_phishing`, `correlate`, `analyse_email`, `generate_report`, `generate_mdr_report`, `generate_fp_ticket`, `generate_queries`, `campaign_cluster`, `security_arch_review`, `reconstruct_timeline`, `analyse_pe_files`, `yara_scan`, `correlate_event_logs`, `contextualise_cves`, `generate_executive_summary`, `add_evidence`, `read_case_file`, `run_full_pipeline`
+`capture_urls`, `triage_iocs`, `enrich_iocs`, `detect_phishing`, `correlate`, `analyse_email`, `generate_report`, `generate_mdr_report`, `generate_pup_report`, `generate_fp_ticket`, `generate_queries`, `campaign_cluster`, `security_arch_review`, `reconstruct_timeline`, `analyse_pe_files`, `yara_scan`, `correlate_event_logs`, `contextualise_cves`, `generate_executive_summary`, `add_evidence`, `read_case_file`, `run_full_pipeline`
 
-### Session-Only Tools (29)
+### Session-Only Tools (30)
 
-`analyse_telemetry`, `read_uploaded_file`, `extract_iocs`, `add_finding`, `materialise_case`, `generate_fp_comment`, `load_case_context`, `save_to_case`, plus session-specific variants of case tools (e.g. `capture_urls` saves IOCs to session context, `enrich_iocs` works from session context, `detect_phishing` records findings in session context)
+`analyse_telemetry`, `read_uploaded_file`, `extract_iocs`, `add_finding`, `finalise_case`, `generate_fp_comment`, `generate_mdr_report`, `generate_pup_report`, `load_case_context`, `save_to_case`, plus session-specific variants of case tools (e.g. `capture_urls` saves IOCs to session context, `enrich_iocs` works from session context, `detect_phishing` records findings in session context)
 
 ### Case Context Switching (session-mode)
 

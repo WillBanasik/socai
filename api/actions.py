@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from api import timeline
 from api.jobs import JobManager
 from config.settings import CASES_DIR
+from tools.common import md_file_note
 
 
 def _run_action(case_id: str, action: str, fn, **extra_data) -> dict:
@@ -348,6 +349,8 @@ def generate_report(case_id: str, close_case: bool = False) -> dict:
         msg = f"Investigation report generated (confidence: {conf}, score: {score:.2f})."
         if close_case:
             msg += "\nCase marked as closed."
+        if path:
+            msg += md_file_note(path)
         result["_message"] = msg
         return result
 
@@ -364,7 +367,8 @@ def generate_fp_ticket(case_id: str, alert_data: str,
                            platform=platform, query_text=query_text)
 
         if result.get("status") == "ok":
-            result["_message"] = f"FP suppression ticket generated.\nPlatform: {result.get('platform', 'auto-detected')}\nSaved to: {result.get('ticket_path', '')}"
+            ticket_path = result.get('ticket_path', '')
+            result["_message"] = f"FP suppression ticket generated.\nPlatform: {result.get('platform', 'auto-detected')}" + md_file_note(ticket_path)
         elif result.get("status") == "needs_clarification":
             result["_message"] = f"Need more information to generate FP ticket:\n{result.get('question', '')}"
         else:
@@ -446,13 +450,13 @@ def security_arch_review(case_id: str) -> dict:
         elif result.get("status") == "error":
             result["_message"] = f"Security architecture review error: {result.get('reason', '')}"
         else:
-            lines = ["Security architecture review complete."]
-            if result.get("review_path"):
-                lines.append(f"Review saved to: {result['review_path']}")
+            msg = "Security architecture review complete."
             tokens = result.get("tokens_input", 0) + result.get("tokens_output", 0)
             if tokens:
-                lines.append(f"LLM tokens used: {tokens:,}")
-            result["_message"] = "\n".join(lines)
+                msg += f"\nLLM tokens used: {tokens:,}"
+            if result.get("review_path"):
+                msg += md_file_note(result["review_path"])
+            result["_message"] = msg
         return result
 
     return _run_action(case_id, "security_arch", _do)
@@ -573,7 +577,7 @@ def generate_exec_summary(case_id: str) -> dict:
         result = executive_summary(case_id)
         if result.get("status") == "ok":
             rating = result.get("risk_rating", "?")
-            result["_message"] = f"Executive summary generated (risk: **{rating}**).\nSaved to: {result.get('summary_path', '')}"
+            result["_message"] = f"Executive summary generated (risk: **{rating}**)." + md_file_note(result.get('summary_path', ''))
         elif result.get("status") == "skipped":
             result["_message"] = f"Executive summary skipped: {result.get('reason', '')}"
         else:

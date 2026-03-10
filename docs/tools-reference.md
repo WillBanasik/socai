@@ -206,6 +206,46 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 - Applies alias/dealias cycle
 - Outputs: `artefacts/fp_comms/fp_ticket.md` + `fp_ticket_manifest.json`
 
+## PUP/PUA Report Generation
+
+`tools/generate_pup_report.py` produces a lightweight investigation report for Potentially Unwanted Programs/Applications (adware, bundleware, browser hijackers, toolbars, grayware).
+
+### Detection
+
+`detect_pup(title, analyst_notes, alert_text, verdict_summary)` uses multi-signal detection:
+- **Keyword matching** against `PUP_KEYWORDS` set (adware, bundleware, browser hijack, toolbar, grayware, junkware, etc.)
+- **Verdict tag matching** against `PUP_VERDICT_TAGS` from enrichment results (pup, pua, adware, unwanted, low-risk, grayware)
+- Returns `{"is_pup": bool, "signals": list, "confidence": str}`
+
+### Report
+
+`generate_pup_report(case_id)` builds context from case artefacts and calls the LLM with a PUP-specific system prompt. The report focuses on software identification, scope assessment, risk level, and removal steps — lighter than a full MDR report.
+
+- Output: `cases/<ID>/reports/pup_report.md` + `pup_report_manifest.json`
+- CLI: `python3 socai.py pup-report --case C001`
+
+### Pipeline Integration
+
+`classify_attack.py` detects PUP/PUA early via keyword matching. `chief.py` also checks post-enrichment verdicts via `detect_pup()`. When PUP is detected, the pipeline short-circuits: enrich → PUP report → done (skipping phishing detection, sandbox, correlation, campaign clustering, etc.).
+
+## Attack-Type Classification
+
+`tools/classify_attack.py` provides deterministic attack-type classification for pipeline routing. No LLM call — pure keyword matching with weighted scoring plus input-shape heuristics.
+
+### Attack Types
+
+`phishing`, `malware`, `account_compromise`, `privilege_escalation`, `pup_pua`, `generic`
+
+### Pipeline Profiles
+
+Each attack type defines a `PIPELINE_PROFILES` entry specifying which steps to skip. For example, `phishing` skips sandbox; `malware` skips phishing detection; `account_compromise` skips domain investigation, phishing detection, and sandbox. `generic` skips nothing.
+
+### Usage
+
+`classify_attack_type(title, analyst_notes, tags, eml_paths, urls, zip_path, log_paths)` returns `{"attack_type", "confidence", "signals", "scores", "profile"}`. `should_skip_step(step_name, attack_type)` checks whether a pipeline step should be skipped.
+
+Classification runs in `chief.py` after case creation (step 1c). Results are stored in `case_meta.json` as `attack_type` and `attack_type_confidence`.
+
 ## Forensic Timeline Reconstruction
 
 `tools/timeline_reconstruct.py` assembles a chronological event timeline from all case artefacts:

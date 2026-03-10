@@ -229,6 +229,20 @@ TOOL_DEFS = [
         },
     },
     {
+        "name": "generate_pup_report",
+        "description": (
+            "Generate a PUP/PUA (Potentially Unwanted Program/Application) report. "
+            "Use this instead of the MDR report when the detection is a PUP, adware, "
+            "bundleware, browser hijacker, toolbar, or similar unwanted software — "
+            "not an active compromise. Lighter weight than MDR, focused on software "
+            "identification, scope, risk, and removal recommendations."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
         "name": "generate_fp_ticket",
         "description": (
             "Create a False Positive suppression ticket from alert data. The analyst "
@@ -929,7 +943,7 @@ _SESSION_ONLY_DEFS = [
         "name": "add_finding",
         "description": (
             "Record a key investigation finding in the session context. "
-            "Findings are preserved when the session is materialised into a case."
+            "Findings are saved to the session's case and synced on finalisation."
         ),
         "input_schema": {
             "type": "object",
@@ -952,11 +966,12 @@ _SESSION_ONLY_DEFS = [
         },
     },
     {
-        "name": "materialise_case",
+        "name": "finalise_case",
         "description": (
-            "Convert this investigation session into a full case. "
-            "Call this when the analyst is ready for a final output (FP comment or MDR report). "
-            "Saves all IOCs, findings, and uploads to the new case."
+            "Finalise the investigation case — set title, severity, and disposition. "
+            "The case already exists (created at session start). This syncs all IOCs, "
+            "findings, and uploads to the case directory and marks the session complete. "
+            "Call this when the analyst is ready for final output."
         ),
         "input_schema": {
             "type": "object",
@@ -1002,6 +1017,19 @@ _SESSION_ONLY_DEFS = [
         "description": (
             "Generate an MDR-style incident report from the accumulated investigation "
             "context. Includes all findings, IOCs, telemetry summary, and recommendations."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "generate_pup_report",
+        "description": (
+            "Generate a PUP/PUA (Potentially Unwanted Program/Application) report from "
+            "the accumulated investigation context. Use instead of the MDR report when "
+            "the detection is unwanted software (adware, bundleware, browser hijacker, "
+            "toolbar, etc.) rather than an active attack."
         ),
         "input_schema": {
             "type": "object",

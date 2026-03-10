@@ -1,10 +1,13 @@
 """
 Session management for chat-first investigation flow.
 
-Sessions are lightweight pre-case conversations where analysts can upload
-telemetry, ask questions, and investigate interactively.  When the analyst
-decides on a disposition (FP or malicious) the session is *materialised*
-into a full case with IOCs, artefacts, and a generated report or FP comment.
+Every session auto-creates a case at start — no deferred materialisation.
+This ensures all investigations have an audit trail and a case ID for
+cross-platform linking (SOAR, service desk).
+
+When the analyst reaches a disposition, the session is *finalised* — context,
+IOCs, findings, and uploads are synced to the case, and the case metadata is
+updated with title, severity, and disposition.
 
 Storage layout:
     sessions/<session_id>/
@@ -14,7 +17,7 @@ Storage layout:
         uploads/            — analyst-uploaded files (CSV, JSON, EML, …)
         artefacts/          — tool outputs generated during session
 
-Sessions auto-expire after 24 h if not materialised.
+Sessions auto-expire after 24 h if not finalised.
 """
 from __future__ import annotations
 
@@ -34,24 +37,49 @@ SESSION_TTL_HOURS = 24
 # Session CRUD
 # ---------------------------------------------------------------------------
 
-def create_session(user_email: str) -> dict:
-    """Create a new investigation session. Returns session metadata."""
+def create_session(user_email: str, *, reference_id: str = "") -> dict:
+    """Create a new investigation session with an automatic backing case.
+
+    Every session gets a case from the start — no deferred materialisation.
+    The case is immediately available for artefact storage, audit trails, and
+    cross-platform ID linking (SOAR / service desk).
+
+    Args:
+        user_email: Analyst email address.
+        reference_id: Optional external ticket/incident ID (e.g. service desk).
+    """
     sid = f"S-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     sdir = SESSIONS_DIR / sid
     sdir.mkdir(parents=True, exist_ok=True)
     (sdir / "uploads").mkdir(exist_ok=True)
 
+    # Auto-create a case immediately
+    from api.jobs import JobManager
+    case_id = JobManager.next_case_id()
+    from tools.case_create import case_create as _case_create
+    _case_create(
+        case_id,
+        title=f"Session {sid[:20]} investigation",
+        severity="medium",
+        analyst=user_email,
+        reference_id=reference_id,
+    )
+
     meta = {
         "session_id": sid,
         "user_email": user_email,
         "status": "active",
-        "case_id": None,
+        "case_id": case_id,
+        "reference_id": reference_id or None,
         "created": datetime.now(timezone.utc).isoformat(),
         "expires": (datetime.now(timezone.utc) + timedelta(hours=SESSION_TTL_HOURS)).isoformat(),
     }
     _save_json(sdir / "session_meta.json", meta)
-    _save_json(sdir / "context.json", _empty_context())
+
+    _save_json(sdir / "context.json", _empty_context(case_id))
     _save_json(sdir / "history.json", [])
+
+    print(f"[session] Created session {sid} with case {case_id}")
     return meta
 
 
@@ -124,13 +152,13 @@ def delete_all_sessions(user_email: str) -> int:
 
 
 def cleanup_user_sessions(user_email: str) -> int:
-    """Delete all non-materialised sessions for a user (logout cleanup).
-    Materialised sessions are preserved as they are linked to cases.
+    """Delete all non-finalised sessions for a user (logout cleanup).
+    Finalised/materialised sessions are preserved as they are linked to cases.
     Returns count deleted."""
     all_sessions = list_sessions(user_email, include_all=True)
     count = 0
     for s in all_sessions:
-        if s.get("status") != "materialised":
+        if s.get("status") not in ("materialised", "finalised"):
             if delete_session(s["session_id"]):
                 count += 1
     return count
@@ -183,12 +211,12 @@ def _empty_thread(thread_id: str = "1", label: str = "Initial investigation") ->
     }
 
 
-def _empty_context() -> dict:
+def _empty_context(case_id: str | None = None) -> dict:
     thread = _empty_thread()
     return {
         "active_thread_id": "1",
         "threads": {"1": thread},
-        "backing_case_id": None,
+        "backing_case_id": case_id,
         "disposition": None,
     }
 
@@ -424,26 +452,43 @@ def list_uploads(session_id: str) -> list[str]:
 # Materialisation — session → case
 # ---------------------------------------------------------------------------
 
-def materialise(session_id: str, case_id: str, title: str, severity: str,
-                analyst: str, disposition: str = "") -> dict:
+def finalise(session_id: str, title: str, severity: str,
+             disposition: str = "") -> dict:
     """
-    Convert a session into a full case.
+    Finalise a session's case — sync context, set disposition, update metadata.
 
-    1. Create case directory and metadata
-    2. Move uploads and artefacts to case dir
+    The case already exists (created at session start).  This function:
+    1. Update case metadata (title, severity, disposition)
+    2. Sync uploads and session artefacts to case dir
     3. Copy conversation history
     4. Save IOCs from accumulated context
-    5. Update session metadata with case_id link
+    5. Save findings/telemetry as analyst notes
+    6. Mark session as finalised
     """
-    from api import actions
+    meta = load_session(session_id)
+    if not meta:
+        raise ValueError(f"Session {session_id} not found")
+    case_id = meta.get("case_id")
+    if not case_id:
+        raise ValueError(f"Session {session_id} has no case_id")
 
     sdir = SESSIONS_DIR / session_id
     cdir = CASES_DIR / case_id
 
-    # 1. Create the case
-    actions.create_case(case_id, title, severity, analyst)
+    # 1. Update case metadata
+    case_meta_path = cdir / "case_meta.json"
+    if case_meta_path.exists():
+        cmeta = _load_json(case_meta_path) or {}
+        if title:
+            cmeta["title"] = title
+        if severity:
+            cmeta["severity"] = severity
+        if disposition:
+            cmeta["disposition"] = disposition
+        cmeta["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _save_json(case_meta_path, cmeta)
 
-    # 2. Move uploads
+    # 2. Sync uploads
     src_uploads = sdir / "uploads"
     dst_uploads = cdir / "uploads"
     if src_uploads.exists() and any(src_uploads.iterdir()):
@@ -452,7 +497,7 @@ def materialise(session_id: str, case_id: str, title: str, severity: str,
             if f.is_file():
                 shutil.copy2(str(f), str(dst_uploads / f.name))
 
-    # 3. Move session artefacts
+    # 3. Sync session artefacts
     src_artefacts = sdir / "artefacts"
     if src_artefacts.exists():
         dst_artefacts = cdir / "artefacts"
@@ -475,6 +520,7 @@ def materialise(session_id: str, case_id: str, title: str, severity: str,
 
     # 5. Copy history to case chat history
     history = load_history(session_id)
+    analyst = meta.get("user_email", "unknown")
     if history:
         from api.chat import save_history as save_case_history
         save_case_history(case_id, history, user_email=analyst)
@@ -505,34 +551,31 @@ def materialise(session_id: str, case_id: str, title: str, severity: str,
     # 7. Save full context.json to case for reference
     _save_json(cdir / "session_context.json", ctx)
 
-    # 8. Update session metadata
-    meta = load_session(session_id)
-    if meta:
-        meta["status"] = "materialised"
-        meta["case_id"] = case_id
-        meta["materialised_at"] = datetime.now(timezone.utc).isoformat()
-        # Auto-title with case ID + brief description
-        if not meta.get("title"):
-            short = (title[:60].rsplit(" ", 1)[0]) if len(title) > 60 else title
-            meta["title"] = f"{case_id} — {short}" if short else case_id
-        _save_json(sdir / "session_meta.json", meta)
-
-    # 9. Set disposition on case meta if provided
-    if disposition:
-        case_meta_path = cdir / "case_meta.json"
-        if case_meta_path.exists():
-            cmeta = _load_json(case_meta_path)
-            if cmeta:
-                cmeta["disposition"] = disposition
-                _save_json(case_meta_path, cmeta)
+    # 8. Mark session as finalised
+    meta["status"] = "finalised"
+    meta["finalised_at"] = datetime.now(timezone.utc).isoformat()
+    if not meta.get("title"):
+        short = (title[:60].rsplit(" ", 1)[0]) if len(title) > 60 else title
+        meta["title"] = f"{case_id} — {short}" if short else case_id
+    _save_json(sdir / "session_meta.json", meta)
 
     return {
         "case_id": case_id,
         "session_id": session_id,
         "iocs_saved": has_iocs,
         "findings_count": len(findings),
-        "uploads_moved": len(list_uploads(session_id)),
+        "uploads_synced": len(list_uploads(session_id)),
     }
+
+
+def materialise(session_id: str, case_id: str, title: str, severity: str,
+                analyst: str, disposition: str = "") -> dict:
+    """Legacy wrapper — delegates to finalise().
+
+    Kept for backwards compatibility with any callers that pass case_id explicitly.
+    The case_id arg is ignored since the session already owns a case.
+    """
+    return finalise(session_id, title, severity, disposition)
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +584,7 @@ def materialise(session_id: str, case_id: str, title: str, severity: str,
 
 def cleanup_empty(*, user_email: str | None = None) -> int:
     """Delete active sessions with no chat history and no uploads.
+    Also removes the auto-created case if it's empty.
     If *user_email* is provided, only clean that user's sessions.
     Returns count removed."""
     if not SESSIONS_DIR.exists():
@@ -565,6 +609,18 @@ def cleanup_empty(*, user_email: str | None = None) -> int:
             has_uploads = uploads_dir.exists() and any(uploads_dir.iterdir())
             if has_uploads:
                 continue
+            # Also clean up the auto-created case if it's empty
+            case_id = meta.get("case_id")
+            if case_id:
+                case_dir = CASES_DIR / case_id
+                if case_dir.exists():
+                    # Only remove if the case has no artefacts/iocs/reports
+                    has_content = any(
+                        (case_dir / sub).exists() and any((case_dir / sub).iterdir())
+                        for sub in ("artefacts", "iocs", "reports", "notes")
+                    )
+                    if not has_content:
+                        shutil.rmtree(str(case_dir), ignore_errors=True)
             shutil.rmtree(str(sdir), ignore_errors=True)
             removed += 1
         except Exception:
@@ -588,9 +644,9 @@ def cleanup_expired() -> int:
             meta = _load_json(meta_path)
             if not meta:
                 continue
-            if meta.get("status") == "materialised":
-                # Keep materialised sessions for audit trail (24h after materialisation)
-                mat_at = meta.get("materialised_at", meta.get("created", ""))
+            if meta.get("status") in ("materialised", "finalised"):
+                # Keep finalised sessions for audit trail (24h after finalisation)
+                mat_at = meta.get("finalised_at", meta.get("materialised_at", meta.get("created", "")))
                 if mat_at:
                     mat_dt = datetime.fromisoformat(mat_at)
                     if now - mat_dt > timedelta(hours=SESSION_TTL_HOURS):

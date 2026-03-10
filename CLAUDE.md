@@ -23,6 +23,7 @@ python3 socai.py report --case C001
 python3 socai.py enrich --case C001
 python3 socai.py secarch --case C001
 python3 socai.py fp-ticket --case C001 --alert alert.json
+python3 socai.py pup-report --case C001
 
 # Batch processing
 python3 socai.py batch-submit --cases C001 C002 --tools mdr-report exec-summary
@@ -78,9 +79,9 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **CLI:** `socai.py` — entrypoint for all commands
 - **Agents** (`agents/`) — thin orchestration classes inheriting `BaseAgent`; call tool functions, never write files directly
 - **Tools** (`tools/`) — stateless functions; accept `case_id`, write via `write_artefact()`/`save_json()`, return manifest dicts
-- **MCP Server** (`mcp_server/`) — HTTPS SSE transport on port 8001 with JWT RBAC; 45 tools, 14 resources, 8 prompts for external MCP clients (Claude Desktop, LLM agents)
+- **MCP Server** (`mcp_server/`) — HTTPS SSE transport on port 8001 with JWT RBAC; 46 tools, 14 resources, 8 prompts for external MCP clients (Claude Desktop, LLM agents)
 - **Web UI:** `api/chat.py` + `api/main.py` + Svelte SPA (`frontend/src/` → `ui-dist/`) — streaming SSE chat with activity feed and session management (see `docs/web-ui.md`)
-- **Sessions** (`api/sessions.py`) — pre-case investigation conversations; materialise into full cases
+- **Sessions** (`api/sessions.py`) — investigation conversations; auto-create a case at session start, finalise with disposition when complete
 - **Batch** (`tools/batch.py`) — bulk LLM processing via Claude Messages Batch API
 - **Threat Articles** (`tools/threat_articles.py`) — ET/EV article discovery, clustering, and generation for monthly reporting; dedup via local index + Confluence
 - **Velociraptor** (`tools/velociraptor_ingest.py`) — offline collector ZIP / VQL result ingest with artefact-aware normalisation (EVTX, autoruns, netstat, processes, services, tasks, prefetch, shimcache, amcache, MFT, USN)
@@ -91,7 +92,9 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **Web Search** (`tools/web_search.py`) — OSINT web search fallback; Brave Search API (if `SOCAI_BRAVE_SEARCH_KEY` set) or DuckDuckGo HTML (free, no key). Used by the LLM when structured enrichment APIs lack data.
 - **Confluence** (`tools/confluence_read.py`) — read-only Confluence Cloud client (scoped token, single space)
 - **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, sessions in `sessions/`, articles in `articles/`
-- **Pipeline:** `ChiefAgent.run()` orchestrates 16 steps with parallel execution (see `docs/pipeline.md`)
+- **Attack-Type Classification** (`tools/classify_attack.py`) — deterministic keyword + input-shape classifier; routes pipeline via per-type profiles (phishing, malware, account_compromise, privilege_escalation, pup_pua, generic)
+- **PUP/PUA Playbook** (`tools/generate_pup_report.py`) — lightweight pipeline for Potentially Unwanted Program detections; auto-detected from title/notes/enrichment or analyst-triggered; skips attack-chain analysis, produces PUP-specific report with software ID, scope, risk, removal steps
+- **Pipeline:** `ChiefAgent.run()` classifies attack type → selects profile → orchestrates steps with parallel execution; skips irrelevant steps per type (see `docs/pipeline.md`)
 
 ## Analytical Standards (MANDATORY)
 

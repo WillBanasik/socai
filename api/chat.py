@@ -30,7 +30,7 @@ from api.sessions import (
 )
 from api.tool_schemas import TOOL_DEFS, SESSION_TOOL_DEFS
 from config.settings import ANTHROPIC_KEY, CASES_DIR, SOCAI_COMPACTION_ENABLED
-from tools.common import get_model
+from tools.common import get_model, md_file_note as _md_file_note
 
 from tools.common import utcnow as _utcnow
 
@@ -467,12 +467,6 @@ def execute_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permiss
 # Shared tool handlers — identical in case-mode and session-mode
 # ---------------------------------------------------------------------------
 
-# Tools that require a backing case when called from session mode
-_SHARED_BACKING_REQUIRED = frozenset({
-    "start_browser_session", "ingest_velociraptor", "ingest_mde_package",
-    "memory_dump_guide", "analyse_memory_dump",
-    "start_sandbox_session", "stop_sandbox_session", "sandbox_exec",
-})
 
 
 def _dispatch_shared(tool_name: str, tool_input: dict, case_id: str | None, perms: list[str], *, session_id: str | None = None) -> dict | None:
@@ -844,8 +838,17 @@ def _dispatch_tool(case_id: str, tool_name: str, tool_input: dict, *, user_permi
         if result.get("status") == "ok":
             report_path = Path(result["report_path"])
             report_text = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
-            return {"_message": report_text or "MDR report generated.", **result}
+            return {"_message": (report_text or "MDR report generated.") + _md_file_note(report_path), **result}
         return {"_message": result.get("reason", "MDR report generation failed."), **result}
+
+    elif tool_name == "generate_pup_report":
+        from tools.generate_pup_report import generate_pup_report
+        result = generate_pup_report(case_id)
+        if result.get("status") == "ok":
+            report_path = Path(result["report_path"])
+            report_text = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
+            return {"_message": (report_text or "PUP/PUA report generated.") + _md_file_note(report_path), **result}
+        return {"_message": result.get("reason", "PUP/PUA report generation failed."), **result}
 
     elif tool_name == "generate_fp_ticket":
         alert_data = tool_input.get("alert_data", "")
@@ -1366,9 +1369,9 @@ def session_chat_stream(session_id: str, user_message: str, *, user_permissions:
 
         def _track_materialise(block_name, result_text):
             nonlocal materialised_case_id
-            if block_name == "materialise_case":
+            if block_name in ("finalise_case", "materialise_case"):
                 import re
-                m = re.search(r"Case \*\*(\w+)\*\* created", result_text)
+                m = re.search(r"Case \*\*(\w+)\*\*", result_text)
                 if m:
                     materialised_case_id = m.group(1)
 
@@ -1563,10 +1566,11 @@ def execute_session_tool(session_id: str, tool_name: str, tool_input: dict, *, u
 
 
 def _session_ensure_backing_case(session_id: str) -> str:
-    """Ensure a backing case exists for session artefact storage (web captures, etc.).
+    """Return the case ID for this session.
 
-    Creates a case on first call and stores the ID in session context.
-    Returns the case_id.
+    Every session has a case from creation — this is a simple lookup.
+    Falls back to legacy on-demand creation for any old sessions that
+    pre-date auto-case-creation.
     """
     from api.sessions import load_full_context, save_context
 
@@ -1575,19 +1579,25 @@ def _session_ensure_backing_case(session_id: str) -> str:
     if existing and (CASES_DIR / existing).exists():
         return existing
 
-    # Generate a new case ID
+    # Legacy fallback: old session without auto-created case
     from api.jobs import JobManager
     case_id = JobManager.next_case_id()
 
-    # Minimal case creation — just enough for tools to write artefacts
     from tools.case_create import case_create
-    case_create(case_id, title=f"Session {session_id[:8]} investigation", severity="medium")
+    case_create(case_id, title=f"Session {session_id[:20]} investigation", severity="medium")
 
-    # Store in session context (session-global, not per-thread)
     full["backing_case_id"] = case_id
     save_context(session_id, full)
 
-    print(f"[session] Created backing case {case_id} for session {session_id[:8]}")
+    # Also update session meta
+    from api.sessions import load_session
+    meta = load_session(session_id)
+    if meta:
+        meta["case_id"] = case_id
+        from api.sessions import _save_json, SESSIONS_DIR
+        _save_json(SESSIONS_DIR / session_id / "session_meta.json", meta)
+
+    print(f"[session] Legacy fallback: created case {case_id} for session {session_id[:20]}")
     return case_id
 
 
@@ -1595,12 +1605,10 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
     """Route session tool calls."""
     perms = user_permissions or []
 
+    # Every session has a case from creation.  Resolve once for all tools.
+    _case_id = _session_ensure_backing_case(session_id)
+
     # Delegate shared tools (identical in case-mode and session-mode)
-    if tool_name in _SHARED_BACKING_REQUIRED:
-        _case_id = _session_ensure_backing_case(session_id)
-    else:
-        ctx = _session_load_context(session_id)
-        _case_id = ctx.get("backing_case_id")  # may be None
     result = _dispatch_shared(tool_name, tool_input, _case_id, perms, session_id=session_id)
     if result is not None:
         return result
@@ -1610,8 +1618,7 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         if not urls:
             return {"_message": "No URLs provided."}
 
-        # Ensure a backing case exists for artefact storage
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
 
         from api import actions
         result = actions.capture_urls(case_id, urls)
@@ -1637,9 +1644,10 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         return result
 
     elif tool_name == "detect_phishing":
-        ctx = _session_load_context(session_id)
-        case_id = ctx.get("backing_case_id")
-        if not case_id:
+        case_id = _case_id
+        # Check if any web captures exist
+        web_dir = CASES_DIR / case_id / "artefacts" / "web"
+        if not web_dir.exists() or not any(web_dir.iterdir()):
             return {"_message": "No URLs have been captured yet. Use capture_urls first."}
 
         from tools.detect_phishing_page import detect_phishing_page
@@ -1786,36 +1794,27 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         _session_add_finding(session_id, ftype, summary, detail)
         return {"_message": f"Finding recorded: [{ftype}] {summary}"}
 
-    elif tool_name == "materialise_case":
+    elif tool_name in ("finalise_case", "materialise_case"):
         title = tool_input.get("title", "Investigation")
         severity = tool_input.get("severity", "medium")
         disposition = tool_input.get("disposition", "")
-        meta = _session_load_context(session_id)
 
-        # Get user email from session meta
-        from api.sessions import load_session
-        smeta = load_session(session_id)
-        analyst = smeta.get("user_email", "unknown") if smeta else "unknown"
-
-        # Generate case ID
-        from api.jobs import JobManager
-        case_id = JobManager.next_case_id()
-
-        from api.sessions import materialise
-        result = materialise(session_id, case_id, title, severity, analyst, disposition)
+        case_id = _case_id
+        from api.sessions import finalise
+        result = finalise(session_id, title, severity, disposition)
 
         if disposition:
             _session_set_disposition(session_id, disposition)
 
         return {
             "_message": (
-                f"Case **{case_id}** created from session.\n"
+                f"Case **{case_id}** finalised.\n"
                 f"- Title: {title}\n"
                 f"- Severity: {severity}\n"
                 f"- Disposition: {disposition}\n"
                 f"- IOCs saved: {result.get('iocs_saved', False)}\n"
                 f"- Findings: {result.get('findings_count', 0)}\n"
-                f"- Uploads moved: {result.get('uploads_moved', 0)}"
+                f"- Uploads synced: {result.get('uploads_synced', 0)}"
             ),
             "case_id": case_id,
         }
@@ -1828,6 +1827,10 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
     elif tool_name == "generate_mdr_report":
         ctx = _session_load_context(session_id)
         return _generate_mdr_report_from_context(session_id, ctx)
+
+    elif tool_name == "generate_pup_report":
+        ctx = _session_load_context(session_id)
+        return _generate_pup_report_from_context(session_id, ctx)
 
     elif tool_name == "enrich_iocs":
         # Create a temp case-like structure for enrichment, or enrich inline
@@ -1870,7 +1873,7 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
     # ------------------------------------------------------------------
 
     elif tool_name == "analyse_email":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         uploads_dir = SESSIONS_DIR / session_id / "uploads"
         eml_files = list(uploads_dir.glob("*.eml")) if uploads_dir.exists() else []
         if not eml_files:
@@ -1896,13 +1899,13 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         }
 
     elif tool_name == "correlate":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         from tools.correlate import correlate
         result = correlate(case_id)
         return {"_message": f"Correlation complete for {case_id}.", **result}
 
     elif tool_name == "generate_report":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         close = tool_input.get("close_case", False)
         from tools.generate_report import generate_report
         result = generate_report(case_id)
@@ -1910,13 +1913,13 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         return {"_message": f"Report generated: {report_path}", **result}
 
     elif tool_name == "generate_executive_summary":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         from tools.executive_summary import executive_summary
         result = executive_summary(case_id)
         return {"_message": "Executive summary generated.", **result}
 
     elif tool_name == "generate_fp_ticket":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         alert_data = tool_input.get("alert_data", "")
         platform = tool_input.get("platform")
         if not alert_data:
@@ -1928,26 +1931,26 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         return {"_message": "FP ticket generated.", **result}
 
     elif tool_name == "generate_queries":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         platforms = tool_input.get("platforms")
         from tools.generate_queries import generate_queries
         result = generate_queries(case_id, platforms=platforms)
         return {"_message": "SIEM queries generated.", **result}
 
     elif tool_name == "reconstruct_timeline":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         from tools.timeline_reconstruct import timeline_reconstruct
         result = timeline_reconstruct(case_id)
         return {"_message": "Timeline reconstructed.", **result}
 
     elif tool_name == "security_arch_review":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         from tools.security_arch_review import security_arch_review
         result = security_arch_review(case_id)
         return {"_message": "Security architecture review complete.", **result}
 
     elif tool_name == "run_full_pipeline":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         ctx = _session_load_context(session_id)
         urls = ctx.get("iocs", {}).get("urls", [])
         from agents.chief import ChiefAgent
@@ -1959,32 +1962,32 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         return {"_message": f"Full pipeline complete for {case_id}.", **result}
 
     elif tool_name == "contextualise_cves":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         from tools.cve_contextualise import cve_contextualise
         result = cve_contextualise(case_id)
         return {"_message": "CVE contextualisation complete.", **result}
 
     elif tool_name == "analyse_pe_files":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         from tools.pe_analysis import pe_deep_analyse
         result = pe_deep_analyse(case_id)
         return {"_message": "PE analysis complete.", **result}
 
     elif tool_name == "correlate_event_logs":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         from tools.evtx_correlate import evtx_correlate
         result = evtx_correlate(case_id)
         return {"_message": "Event log correlation complete.", **result}
 
     elif tool_name == "yara_scan":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         generate_rules = tool_input.get("generate_rules", False)
         from tools.yara_scan import yara_scan
         result = yara_scan(case_id, generate_rules=generate_rules)
         return {"_message": "YARA scan complete.", **result}
 
     elif tool_name == "read_case_file":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         file_path = tool_input.get("file_path", "")
         if not file_path:
             return {"_message": "No file path provided."}
@@ -2005,7 +2008,7 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
             return {"_message": f"Error reading file: {exc}"}
 
     elif tool_name == "add_evidence":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         text = tool_input.get("text", "")
         if not text:
             return {"_message": "No text provided."}
@@ -2027,7 +2030,7 @@ def _dispatch_session_tool(session_id: str, tool_name: str, tool_input: dict, *,
         return {"_message": "No IOCs found in the provided text."}
 
     elif tool_name == "campaign_cluster":
-        case_id = _session_ensure_backing_case(session_id)
+        case_id = _case_id
         from tools.campaign_cluster import campaign_cluster
         result = campaign_cluster(case_id)
         return {"_message": "Campaign clustering complete.", **result}
@@ -2488,23 +2491,144 @@ def _generate_mdr_report_from_context(session_id: str, ctx: dict) -> dict:
         )
         report = _extract_text(response.content)
 
-        # Save to session artefacts
+        # Save to session artefacts AND case directory (case always exists)
         art_dir = SESSIONS_DIR / session_id / "artefacts" / "reports"
         art_dir.mkdir(parents=True, exist_ok=True)
         (art_dir / "mdr_report.md").write_text(report)
 
-        # If session has been materialised, also save to the case directory
         from api.sessions import load_session as _load_session_meta
         smeta = _load_session_meta(session_id)
-        linked_case = smeta.get("case_id") if smeta else None
-        if linked_case:
-            case_report_dir = CASES_DIR / linked_case / "reports"
+        case_id = smeta.get("case_id") if smeta else None
+        md_path = art_dir / "mdr_report.md"
+        if case_id:
+            case_report_dir = CASES_DIR / case_id / "reports"
             case_report_dir.mkdir(parents=True, exist_ok=True)
             (case_report_dir / "mdr_report.md").write_text(report)
+            md_path = case_report_dir / "mdr_report.md"
 
-        return {"_message": report}
+        return {"_message": report + _md_file_note(md_path)}
     except Exception as exc:
         return {"_message": f"Error generating MDR report: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# PUP/PUA report generation from session context
+# ---------------------------------------------------------------------------
+
+def _generate_pup_report_from_context(session_id: str, ctx: dict) -> dict:
+    """Generate a PUP/PUA report using the PUP/PUA Analyst Instruction Set.
+
+    Uses the same system prompt as the CLI's generate_pup_report tool so that
+    web-UI and CLI reports are structurally identical.
+    """
+    if not ANTHROPIC_KEY:
+        return {"_message": "PUP/PUA report generation requires an Anthropic API key."}
+
+    from tools.generate_pup_report import _SYSTEM_PROMPT as PUP_SYSTEM_PROMPT
+
+    # --- Build investigation context from session data ---
+    parts: list[str] = ["# Investigation Context\n"]
+
+    # Findings
+    findings = ctx.get("findings", [])
+    if findings:
+        parts.append("## Findings")
+        for f in findings:
+            parts.append(f"- [{f.get('type', '?')}] {f.get('summary', '')}")
+            if f.get("detail"):
+                parts.append(f"  {f['detail']}")
+        parts.append("")
+
+    # Telemetry summaries
+    telemetry = ctx.get("telemetry_summaries", [])
+    if telemetry:
+        parts.append("## Telemetry Summaries")
+        for t in telemetry:
+            line = f"- {t.get('source_file', '?')}: {t.get('event_count', '?')} events"
+            line += f" (platform: {t.get('platform', '?')})"
+            if t.get("computers"):
+                line += f", hosts: {', '.join(t['computers'])}"
+            if t.get("users"):
+                line += f", users: {', '.join(t['users'])}"
+            parts.append(line)
+        parts.append("")
+
+    # IOCs
+    iocs = ctx.get("iocs", {})
+    if any(iocs.get(t) for t in ("ips", "domains", "hashes", "urls")):
+        parts.append("## Extracted IOCs")
+        for itype, items in iocs.items():
+            if items:
+                parts.append(f"### {itype.upper()} ({len(items)})")
+                for v in items[:50]:
+                    parts.append(f"  - {v}")
+        parts.append("")
+
+    # Disposition
+    disposition = ctx.get("disposition", "unknown")
+    parts.append(f"## Disposition: {disposition}\n")
+
+    # Conversation history for evidence context
+    history = _session_load_history(session_id)
+    if history:
+        evidence_lines: list[str] = []
+        for msg in history:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "assistant" and isinstance(content, str) and content.strip():
+                evidence_lines.append(content.strip())
+            elif role == "user" and isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        tr_content = block.get("content", "")
+                        if isinstance(tr_content, str) and tr_content.strip():
+                            evidence_lines.append(tr_content.strip())
+        if evidence_lines:
+            evidence_text = "\n\n---\n\n".join(evidence_lines)
+            if len(evidence_text) > 12000:
+                evidence_text = evidence_text[-12000:]
+                evidence_text = "...[earlier context truncated]...\n\n" + evidence_text
+            parts.append("## Investigation Evidence (from session)")
+            parts.append(evidence_text)
+            parts.append("")
+
+    context_block = "\n".join(parts)
+
+    user_content = (
+        "Please produce a PUP/PUA (Potentially Unwanted Program/Application) report "
+        "for the following investigation, following the PUP/PUA Analyst Instruction "
+        "Set exactly.\n\n"
+        f"{context_block}"
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY, max_retries=3)
+        response = client.messages.create(
+            model=get_model("mdr_report", "medium"),
+            system=[{"type": "text", "text": PUP_SYSTEM_PROMPT}],
+            messages=[{"role": "user", "content": user_content}],
+            max_tokens=6144,
+        )
+        report = _extract_text(response.content)
+
+        # Save to session artefacts AND case directory (case always exists)
+        art_dir = SESSIONS_DIR / session_id / "artefacts" / "reports"
+        art_dir.mkdir(parents=True, exist_ok=True)
+        (art_dir / "pup_report.md").write_text(report)
+
+        from api.sessions import load_session as _load_session_meta
+        smeta = _load_session_meta(session_id)
+        case_id = smeta.get("case_id") if smeta else None
+        md_path = art_dir / "pup_report.md"
+        if case_id:
+            case_report_dir = CASES_DIR / case_id / "reports"
+            case_report_dir.mkdir(parents=True, exist_ok=True)
+            (case_report_dir / "pup_report.md").write_text(report)
+            md_path = case_report_dir / "pup_report.md"
+
+        return {"_message": report + _md_file_note(md_path)}
+    except Exception as exc:
+        return {"_message": f"Error generating PUP/PUA report: {exc}"}
 
 
 # ---------------------------------------------------------------------------
@@ -2550,12 +2674,12 @@ def _session_chat_inner(session_id: str, user_message: str, *, user_permissions:
     materialised_case_id = None
 
     def _track_materialise(block_name, result_text):
-        """Check if a materialise_case tool produced a case ID."""
+        """Check if a finalise_case/materialise_case tool produced a case ID."""
         nonlocal materialised_case_id
-        if block_name == "materialise_case":
+        if block_name in ("finalise_case", "materialise_case"):
             try:
                 import re
-                m = re.search(r"Case \*\*(\w+)\*\* created", result_text)
+                m = re.search(r"Case \*\*(\w+)\*\*", result_text)
                 if m:
                     materialised_case_id = m.group(1)
             except Exception:

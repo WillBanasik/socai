@@ -17,7 +17,7 @@ All persistent state is on the filesystem. There is no database.
 
 | File | Purpose |
 |------|---------|
-| `cases/<ID>/case_meta.json` | Metadata: status, severity, report path, IOC totals |
+| `cases/<ID>/case_meta.json` | Metadata: status, severity, attack_type, reference_id, report path, IOC totals |
 | `cases/<ID>/iocs/iocs.json` | Canonical IOC list; consumed by `enrich` and `correlate` |
 | `cases/<ID>/chat_history_{email}.json` | Per-user LLM chat history (Anthropic API message format) |
 | `cases/<ID>/artefacts/enrichment/enrichment.json` | Raw per-provider enrichment results; includes `tiered_enrichment` stats and `asn_prescreen` entries for infra-skipped IPs |
@@ -47,6 +47,7 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/security_architecture/security_arch_manifest.json` | Security arch review metadata |
 | `cases/<ID>/artefacts/response_actions/response_actions.json` | Client-specific response plan (machine-readable) |
 | `cases/<ID>/artefacts/response_actions/response_actions.md` | Formatted response plan (human-readable) |
+| `cases/<ID>/reports/pup_report.md` | PUP/PUA investigation report (lightweight MDR variant) |
 | `cases/<ID>/artefacts/velociraptor/ingest_manifest.json` | Velociraptor ingest processing summary |
 | `cases/<ID>/artefacts/velociraptor/collection_context.json` | Copied from offline collector ZIP (if present) |
 | `cases/<ID>/artefacts/velociraptor/host_info.json` | Host metadata from `Generic.Client.Info` (if present) |

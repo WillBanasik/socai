@@ -5,6 +5,10 @@
 ```
 ChiefAgent.run()
   1.  case_create                         always first
+  1b. classify_attack_type                deterministic keyword + input-shape classifier
+                                          → sets attack_type + attack_type_confidence in case_meta
+                                          → selects pipeline profile (steps to skip per type)
+                                          → PUP/PUA short-circuits to step 9 → PUP report → done
   2.  TriageAgent                         if URLs provided; check vs ioc_index, escalate severity
   3.  PlannerAgent                        informational only; result not used for routing
   4.  EmailAnalystAgent                   if --eml provided; parse headers, extract URLs + attachments
@@ -68,6 +72,31 @@ When a case has a `client` field and a matching playbook exists in `config/clien
 5. **Contact process** — from default `response[]` entry or alert-specific override
 
 The tool is purely deterministic (no LLM call). Output is consumed by the MDR report's "Approved Response Actions" section.
+
+## Attack-Type Classification (Step 1b)
+
+After `case_create`, `classify_attack_type()` from `tools/classify_attack.py` analyses the case title, notes, and input shape (URLs, ZIPs, logs, EML) to determine the attack type. This is a deterministic keyword + input-shape scorer — no LLM call.
+
+**Attack types:** `phishing`, `malware`, `account_compromise`, `privilege_escalation`, `pup_pua`, `generic`
+
+Each type has a pipeline profile in `PIPELINE_PROFILES` defining which steps to skip:
+
+| Type | Skipped steps |
+|------|---------------|
+| `phishing` | sandbox, anomaly_detection, evtx |
+| `malware` | phishing_detection |
+| `account_compromise` | sandbox, phishing_detection |
+| `privilege_escalation` | sandbox, phishing_detection, web_capture |
+| `pup_pua` | Full short-circuit: enrich → PUP report → done |
+| `generic` | Nothing skipped (fallback) |
+
+**Score threshold:** A single weak signal (score ≤ 1) falls through to `generic` to avoid misrouting on ambiguous input.
+
+The classified `attack_type` and `attack_type_confidence` are stored in `case_meta.json`. Each pipeline step checks `should_skip_step(attack_type, step_name)` before executing.
+
+### PUP/PUA Short-Circuit
+
+When classified as `pup_pua`, the pipeline short-circuits after enrichment (step 9). Instead of the standard report, `generate_pup_report()` produces a lightweight PUP-specific report covering: software identification, scope assessment, risk evaluation, and removal steps. The report is saved to `cases/<ID>/reports/pup_report.md`.
 
 ## Auto-disposition
 

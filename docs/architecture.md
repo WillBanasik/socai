@@ -17,10 +17,10 @@ CLI (socai.py)
           └── ReportWriterAgent      → generate_report + index_case
 
 Web UI (api/main.py + api/chat.py + Svelte SPA: frontend/src/ → ui-dist/)
-    ├── Case-mode chat       → 37 tools via TOOL_DEFS (21 case-only + 16 shared)
-    ├── Session-mode chat    → 45 tools via SESSION_TOOL_DEFS (29 session-only + 16 shared)
+    ├── Case-mode chat       → 44 tools via TOOL_DEFS (22 case-only + 22 shared)
+    ├── Session-mode chat    → 52 tools via SESSION_TOOL_DEFS (30 session-only + 22 shared)
     ├── SSE streaming        → progressive token delivery
-    ├── Session management   → CRUD + materialisation to cases
+    ├── Session management   → CRUD + auto-case creation + finalisation
     ├── Cases browse page    → filterable card grid (CasesBrowse.svelte)
     ├── Case detail page     → read-only summary with investigation log & KQL queries (CaseDetail.svelte)
     ├── Dashboard            → CTI-focused threat intelligence (DashboardView.svelte)
@@ -30,7 +30,7 @@ Web UI (api/main.py + api/chat.py + Svelte SPA: frontend/src/ → ui-dist/)
 MCP Server (mcp_server/)
     ├── HTTPS SSE transport  → port 8001, separate process
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
-    ├── 45 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
+    ├── 46 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
     ├── 14 resources         → case data, clients, IOC index, playbooks, articles, landscape
     ├── 8 prompts            → investigation orchestrator, KQL playbooks, triage/FP workflows
     ├── Boundary enforcement → per-conversation client + case isolation (prevents cross-contamination)
@@ -97,7 +97,7 @@ cases/<CASE_ID>/
   iocs/         ← iocs.json (all extracted IOCs)
   logs/         ← parsed log JSON + entity JSON
   reports/      ← investigation_report.md
-  session_context.json  ← materialised session context (if from session)
+  session_context.json  ← synced session context (if from session)
         │
         ▼
 registry/case_index.json  ← case registry
@@ -107,8 +107,8 @@ registry/batches/         ← batch API metadata + results
 registry/article_index.json ← threat article dedup index
 articles/YYYY-MM/         ← threat article summaries (ET/EV)
 
-sessions/<SESSION_ID>/    ← pre-case investigation sessions
-  session_meta.json       ← status, user, expiry, backing case
+sessions/<SESSION_ID>/    ← investigation sessions (auto-create case at start)
+  session_meta.json       ← status, user, expiry, case_id, reference_id
   history.json            ← conversation history
   context.json            ← accumulated IOCs, findings, disposition
   uploads/                ← analyst-uploaded files

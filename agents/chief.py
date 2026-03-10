@@ -2,9 +2,18 @@
 Chief Agent (Orchestrator)
 --------------------------
 Drives the full investigation pipeline by:
-  1. Delegating to the Planner for a task list
-  2. Dispatching to specialist agents in order
-  3. Collecting results and surfacing errors
+  1. Classifying the attack type from inputs
+  2. Selecting a pipeline profile (which steps to skip)
+  3. Dispatching to specialist agents in order
+  4. Collecting results and surfacing errors
+
+Attack-type classification adapts the pipeline:
+  - phishing:             skip sandbox
+  - malware:              skip phishing detection, recursive capture
+  - account_compromise:   skip domain investigation, sandbox, phishing
+  - privilege_escalation: skip domain investigation, sandbox, phishing
+  - pup_pua:              short-circuit to PUP report after enrichment
+  - generic:              run everything permitted by inputs
 
 Usage (programmatic):
     chief = ChiefAgent(case_id="C001")
@@ -40,9 +49,11 @@ from agents.report_writer import ReportWriterAgent
 from agents.security_arch_agent import SecurityArchAgent
 from config.settings import CASES_DIR, CONF_AUTO_CLOSE, CRAWL_DEPTH, CRAWL_MAX_URLS
 from tools.case_create import case_create
-from tools.common import KNOWN_CLEAN_DOMAINS, load_json, log_error
+from tools.classify_attack import classify_attack_type, should_skip_step
+from tools.common import KNOWN_CLEAN_DOMAINS, load_json, log_error, save_json
 from tools.detect_phishing_page import detect_phishing_page as _detect_phishing
 from tools.extract_iocs import extract_iocs as _extract_iocs
+from tools.generate_pup_report import detect_pup
 from tools.web_capture import _safe_dirname
 
 logger = logging.getLogger("socai.chief")
@@ -109,7 +120,13 @@ class ChiefAgent(BaseAgent):
                     pipeline_results["errors"].append({"step": name, "error": str(exc)})
                 return None
 
+        def _skip(step_name: str) -> bool:
+            """Check if step should be skipped by the attack-type profile."""
+            return should_skip_step(step_name, attack_type)
+
+        # ==================================================================
         # 1. Initialise case
+        # ==================================================================
         _step("case_create", lambda: case_create(
             self.case_id, title=title, severity=severity,
             analyst=analyst, tags=tags or [], client=client,
@@ -123,7 +140,41 @@ class ChiefAgent(BaseAgent):
             write_artefact(notes_dir / "analyst_input.md", analyst_notes)
             print(f"[chief] Analyst notes saved ({len(analyst_notes)} chars)")
 
+        # ==================================================================
+        # 1c. Classify attack type — determines which steps to skip
+        # ==================================================================
+        classification = classify_attack_type(
+            title=title,
+            analyst_notes=analyst_notes or "",
+            tags=tags,
+            eml_paths=eml_paths,
+            urls=urls,
+            zip_path=zip_path,
+            log_paths=log_paths,
+        )
+        attack_type = classification["attack_type"]
+        pipeline_results["attack_type"] = attack_type
+        pipeline_results["classification"] = classification
+
+        print(f"[chief] Attack type: {attack_type} "
+              f"(confidence: {classification['confidence']}, "
+              f"signals: {classification['signals']})")
+
+        # Persist to case metadata
+        meta_path = CASES_DIR / self.case_id / "case_meta.json"
+        if meta_path.exists():
+            meta = load_json(meta_path)
+            meta["attack_type"] = attack_type
+            meta["attack_type_confidence"] = classification["confidence"]
+            save_json(meta_path, meta)
+
+        skipped_steps = classification["profile"]["skip"]
+        if skipped_steps:
+            print(f"[chief] Profile skips: {', '.join(sorted(skipped_steps))}")
+
+        # ==================================================================
         # 2. Triage — check input IOCs against ioc_index / enrichment cache
+        # ==================================================================
         triage_result = None
         if urls:
             try:
@@ -137,31 +188,33 @@ class ChiefAgent(BaseAgent):
                     if new_sev != severity:
                         print(f"[chief] Triage recommends severity escalation: {severity} → {new_sev}")
                         severity = new_sev
-                        # Update case_meta.json
-                        meta_path = CASES_DIR / self.case_id / "case_meta.json"
                         if meta_path.exists():
                             meta = load_json(meta_path)
                             meta["severity"] = new_sev
-                            from tools.common import save_json
                             save_json(meta_path, meta)
             except ImportError as exc:
                 log_error(self.case_id, "triage", str(exc), severity="info",
                           context={"reason": "TriageAgent import unavailable"})
 
-        # 3. Plan
-        planner = PlannerAgent(self.case_id)
-        plan = _step("plan", lambda: planner.run(
-            urls=urls, zip_path=zip_path, zip_pass=zip_pass, log_paths=log_paths
-        ))
+        # ==================================================================
+        # 3. Plan — informational task list (skipped for lightweight profiles)
+        # ==================================================================
+        if not _skip("plan"):
+            planner = PlannerAgent(self.case_id)
+            _step("plan", lambda: planner.run(
+                urls=urls, zip_path=zip_path, zip_pass=zip_pass, log_paths=log_paths
+            ))
 
+        # ==================================================================
         # 4. Email analysis — parse .eml files, extract URLs + attachments
+        #    Always runs if EML provided (input-driven, not profile-gated)
+        # ==================================================================
         if eml_paths:
             try:
                 from agents.email_analyst import EmailAnalystAgent
                 email_result = _step("email_analyse", lambda: EmailAnalystAgent(self.case_id).run(
                     eml_paths=eml_paths,
                 ))
-                # Merge extracted URLs into the URL list
                 if email_result:
                     extracted_urls = email_result.get("extracted_urls", [])
                     if extracted_urls:
@@ -171,13 +224,14 @@ class ChiefAgent(BaseAgent):
                 log_error(self.case_id, "email_analyse", str(exc), severity="info",
                           context={"reason": "EmailAnalystAgent import unavailable"})
 
+        # ==================================================================
         # 5. PARALLEL: Domain investigation, File analysis, Log correlation
-        # These write to non-overlapping paths and have no data dependencies.
+        # ==================================================================
         parallel_tasks = []
 
-        # 5a. Domain investigation — skip URLs whose capture_manifest.json already exists
+        # 5a. Domain investigation — profile + input gated
         uncaptured = []
-        if urls:
+        if urls and not _skip("domain_investigate"):
             for url in urls:
                 manifest = (
                     CASES_DIR / self.case_id / "artefacts" / "web"
@@ -189,8 +243,10 @@ class ChiefAgent(BaseAgent):
                     uncaptured.append(url)
             if uncaptured:
                 parallel_tasks.append(("domain_investigate", uncaptured))
+        elif urls and _skip("domain_investigate"):
+            print(f"[chief] Skipping domain investigation ({attack_type} profile)")
 
-        # 5b. File analysis (ZIP) — skip if extraction artefacts already exist
+        # 5b. File analysis (ZIP) — always runs if ZIP provided (not profile-gated)
         run_file_analyse = False
         if zip_path:
             zip_art_dir = CASES_DIR / self.case_id / "artefacts" / "zip"
@@ -199,7 +255,7 @@ class ChiefAgent(BaseAgent):
             else:
                 run_file_analyse = True
 
-        # 5c. Log parsing + correlation
+        # 5c. Log parsing + correlation — input-driven
         run_log_correlate = bool(log_paths)
 
         # Execute parallel block
@@ -256,38 +312,45 @@ class ChiefAgent(BaseAgent):
                     log_paths=log_paths
                 ))
 
-        # 6. Sandbox analysis — query sandbox APIs for file hashes
+        # ==================================================================
+        # 6. Sandbox analysis — profile gated
+        # ==================================================================
         sandbox_result = None
-        try:
-            from agents.sandbox_agent import SandboxAgent
-            sandbox_result = _step("sandbox_analyse", lambda: SandboxAgent(self.case_id).run(
-                detonate=detonate,
-            ))
-        except ImportError as exc:
-            log_error(self.case_id, "sandbox_analyse", str(exc), severity="info",
-                      context={"reason": "SandboxAgent import unavailable"})
+        if not _skip("sandbox_analyse"):
+            try:
+                from agents.sandbox_agent import SandboxAgent
+                sandbox_result = _step("sandbox_analyse", lambda: SandboxAgent(self.case_id).run(
+                    detonate=detonate,
+                ))
+            except ImportError as exc:
+                log_error(self.case_id, "sandbox_analyse", str(exc), severity="info",
+                          context={"reason": "SandboxAgent import unavailable"})
 
-        # 6b. Local sandbox detonation — if --detonate and cloud lookups inconclusive
-        if detonate:
-            cloud_has_verdict = (
-                sandbox_result
-                and sandbox_result.get("status") == "ok"
-                and sandbox_result.get("ok_results", 0) > 0
-            )
-            if not cloud_has_verdict:
-                try:
-                    from agents.sandbox_detonation_agent import SandboxDetonationAgent
-                    _step("sandbox_detonate", lambda: SandboxDetonationAgent(self.case_id).run())
-                except ImportError as exc:
-                    log_error(self.case_id, "sandbox_detonate", str(exc), severity="info",
-                              context={"reason": "SandboxDetonationAgent import unavailable"})
-                except Exception as exc:
-                    log_error(self.case_id, "sandbox_detonate", str(exc), severity="warning",
-                              traceback=traceback.format_exc(),
-                              context={"reason": "Local detonation failed"})
+            # 6b. Local sandbox detonation — if --detonate and cloud lookups inconclusive
+            if detonate and not _skip("sandbox_detonate"):
+                cloud_has_verdict = (
+                    sandbox_result
+                    and sandbox_result.get("status") == "ok"
+                    and sandbox_result.get("ok_results", 0) > 0
+                )
+                if not cloud_has_verdict:
+                    try:
+                        from agents.sandbox_detonation_agent import SandboxDetonationAgent
+                        _step("sandbox_detonate", lambda: SandboxDetonationAgent(self.case_id).run())
+                    except ImportError as exc:
+                        log_error(self.case_id, "sandbox_detonate", str(exc), severity="info",
+                                  context={"reason": "SandboxDetonationAgent import unavailable"})
+                    except Exception as exc:
+                        log_error(self.case_id, "sandbox_detonate", str(exc), severity="warning",
+                                  traceback=traceback.format_exc(),
+                                  context={"reason": "Local detonation failed"})
+        elif urls or zip_path:
+            print(f"[chief] Skipping sandbox analysis ({attack_type} profile)")
 
-        # 7. Recursive capture — follow extracted URLs up to CRAWL_DEPTH levels
-        if urls:
+        # ==================================================================
+        # 7. Recursive capture — profile gated
+        # ==================================================================
+        if urls and not _skip("recursive_capture"):
             captured_urls: set[str] = set(urls)
             for depth in range(2, CRAWL_DEPTH + 1):
                 ioc_result = _extract_iocs(self.case_id, include_private=include_private_ips)
@@ -315,28 +378,92 @@ class ChiefAgent(BaseAgent):
                     lambda u=uncaptured_new: DomainInvestigatorAgent(self.case_id).run(urls=u),
                 )
                 captured_urls.update(uncaptured_new)
+        elif urls and _skip("recursive_capture"):
+            print(f"[chief] Skipping recursive capture ({attack_type} profile)")
 
-        # 8. Brand impersonation detection across all captured pages
-        if urls:
+        # ==================================================================
+        # 8. Brand impersonation detection — profile gated
+        # ==================================================================
+        if urls and not _skip("detect_phishing_page"):
             _step("detect_phishing_page", lambda: _detect_phishing(self.case_id))
+        elif urls and _skip("detect_phishing_page"):
+            print(f"[chief] Skipping phishing detection ({attack_type} profile)")
 
-        # 9. Enrichment (IOC extraction + enrichment calls)
-        # Pass skip_iocs from triage if available
+        # ==================================================================
+        # 9. Enrichment — always runs
+        # ==================================================================
         skip_iocs = set()
         if triage_result and triage_result.get("skip_enrichment_iocs"):
             skip_iocs = set(triage_result["skip_enrichment_iocs"])
 
-        enrich_result = _step("enrich", lambda: EnrichmentAgent(self.case_id).run(
+        _step("enrich", lambda: EnrichmentAgent(self.case_id).run(
             include_private=include_private_ips,
             skip_iocs=skip_iocs,
         ))
 
-        # If there are no logs, run correlate anyway (handles missing log dir gracefully)
+        # ==================================================================
+        # 9b. Late PUP/PUA detection — post-enrichment verdict check
+        # ==================================================================
+        if attack_type != "pup_pua":
+            verdict_path_pup = CASES_DIR / self.case_id / "artefacts" / "enrichment" / "verdict_summary.json"
+            if verdict_path_pup.exists():
+                pup_verdicts = load_json(verdict_path_pup)
+                pup_check = detect_pup(
+                    title=title,
+                    analyst_notes=analyst_notes or "",
+                    verdict_summary=pup_verdicts,
+                )
+                if pup_check["is_pup"]:
+                    attack_type = "pup_pua"
+                    pipeline_results["attack_type"] = "pup_pua"
+                    print(f"[chief] PUP/PUA detected (post-enrichment): {pup_check['signals']}")
+                    # Update case metadata
+                    if meta_path.exists():
+                        meta = load_json(meta_path)
+                        meta["attack_type"] = "pup_pua"
+                        save_json(meta_path, meta)
+
+        # ==================================================================
+        # PUP/PUA SHORT-CIRCUIT — skip remaining steps, generate PUP report
+        # ==================================================================
+        if attack_type == "pup_pua":
+            print("[chief] PUP/PUA pipeline — skipping attack-chain analysis steps")
+            from tools.generate_pup_report import generate_pup_report
+            pup_result = _step("pup_report", lambda: generate_pup_report(self.case_id))
+            pipeline_results["report"] = pup_result
+
+            try:
+                from tools.index_case import index_case
+                report_path = pup_result.get("report_path") if pup_result else None
+                index_case(self.case_id, status="open", disposition="pup_pua",
+                           report_path=report_path)
+            except Exception as exc:
+                log_error(self.case_id, "index_case_pup", str(exc),
+                          severity="warning", traceback=traceback.format_exc())
+
+            ok_steps  = sum(1 for s in pipeline_results["steps"] if s["status"] == "ok")
+            err_steps = len(pipeline_results["errors"])
+            self._emit("pipeline_complete", {
+                "ok": ok_steps, "errors": err_steps,
+                "report": pup_result.get("report_path") if pup_result else None,
+                "disposition": "pup_pua",
+            })
+            print(f"\n[chief] PUP/PUA pipeline complete for {self.case_id}: "
+                  f"{ok_steps} step(s) OK, {err_steps} error(s).")
+            if pup_result:
+                print(f"[chief] PUP Report: {pup_result.get('report_path')}")
+            return pipeline_results
+
+        # ==================================================================
+        # 10. Correlate — runs unless logs already handled it
+        # ==================================================================
         if not log_paths:
             from tools.correlate import correlate
             _step("correlate", lambda: correlate(self.case_id))
 
-        # 10. Anomaly detection — behavioural anomaly detection on parsed logs
+        # ==================================================================
+        # 11. Anomaly detection — behavioural anomaly detection on parsed logs
+        # ==================================================================
         try:
             from agents.anomaly_detection_agent import AnomalyDetectionAgent
             _step("anomaly_detection", lambda: AnomalyDetectionAgent(self.case_id).run())
@@ -344,7 +471,9 @@ class ChiefAgent(BaseAgent):
             log_error(self.case_id, "anomaly_detection", str(exc), severity="info",
                       context={"reason": "AnomalyDetectionAgent import unavailable"})
 
-        # 11. Campaign clustering — cross-case IOC clustering
+        # ==================================================================
+        # 12. Campaign clustering — cross-case IOC clustering
+        # ==================================================================
         try:
             from agents.campaign_agent import CampaignAgent
             _step("campaign_cluster", lambda: CampaignAgent(self.case_id).run())
@@ -352,7 +481,9 @@ class ChiefAgent(BaseAgent):
             log_error(self.case_id, "campaign_cluster", str(exc), severity="info",
                       context={"reason": "CampaignAgent import unavailable"})
 
-        # 12. Response actions — client-specific response plan for TP cases
+        # ==================================================================
+        # 13. Response actions — client-specific response plan for TP cases
+        # ==================================================================
         try:
             from agents.response_agent import ResponseActionsAgent
             _step("response_actions", lambda: ResponseActionsAgent(self.case_id).run())
@@ -360,7 +491,9 @@ class ChiefAgent(BaseAgent):
             log_error(self.case_id, "response_actions", str(exc), severity="info",
                       context={"reason": "ResponseActionsAgent import unavailable"})
 
-        # 13. Auto-disposition check before report
+        # ==================================================================
+        # 14. Auto-disposition check before report
+        # ==================================================================
         auto_disposition = None
         should_auto_close = False
         verdict_path = CASES_DIR / self.case_id / "artefacts" / "enrichment" / "verdict_summary.json"
@@ -387,7 +520,9 @@ class ChiefAgent(BaseAgent):
                     log_error(self.case_id, "auto_close_llm_review", str(exc),
                               severity="info", context={"advisory": True})
 
-        # 14. Report
+        # ==================================================================
+        # 15. Report
+        # ==================================================================
         report_agent = ReportWriterAgent(self.case_id)
         report_result = _step("report", lambda: report_agent.run(
             close_case=close_case or should_auto_close,
@@ -396,45 +531,48 @@ class ChiefAgent(BaseAgent):
         pipeline_results["report"] = report_result
 
         if should_auto_close:
-            # Verify confidence is below threshold from the generated report
             report_path = report_result.get("report_path") if report_result else None
             if report_path and Path(report_path).exists():
                 report_text = Path(report_path).read_text(errors="ignore")
-                # Extract confidence from report (format: "Confidence: 0.XX")
                 import re
                 conf_match = re.search(r"Confidence:\s*([\d.]+)", report_text)
                 if conf_match:
                     confidence = float(conf_match.group(1))
                     if confidence >= CONF_AUTO_CLOSE:
-                        # Confidence too high — revert auto-close
                         print(f"[chief] Confidence {confidence:.2f} >= {CONF_AUTO_CLOSE} — reverting auto-close")
                         should_auto_close = False
-                        # Re-index as open
                         from tools.index_case import index_case
                         index_case(self.case_id, status="open", report_path=report_path)
                     else:
                         print(f"[chief] Auto-closing case {self.case_id}: "
                               f"confidence={confidence:.2f}, 0 malicious, 0 suspicious → benign_auto_closed")
 
-        # 15. Hunt query generation (runs after report so threat patterns can be detected)
+        # ==================================================================
+        # 16. Hunt query generation
+        # ==================================================================
         query_result = _step("query_gen", lambda: QueryGenAgent(self.case_id).run())
         if query_result:
             pipeline_results["queries"] = query_result.get("query_path")
 
-        # 16. Security architecture review (LLM-assisted; skipped gracefully if no API key)
+        # ==================================================================
+        # 17. Security architecture review
+        # ==================================================================
         arch_result = _step("security_arch", lambda: SecurityArchAgent(self.case_id).run())
         if arch_result and arch_result.get("status") == "ok":
             pipeline_results["security_arch_review"] = arch_result.get("review_path")
 
+        # ==================================================================
         # Summary
+        # ==================================================================
         ok_steps  = sum(1 for s in pipeline_results["steps"] if s["status"] == "ok")
         err_steps = len(pipeline_results["errors"])
         self._emit("pipeline_complete", {
             "ok": ok_steps, "errors": err_steps,
             "report": report_result.get("report_path") if report_result else None,
+            "attack_type": attack_type,
         })
 
-        print(f"\n[chief] Pipeline complete for {self.case_id}: "
+        print(f"\n[chief] Pipeline complete for {self.case_id} [{attack_type}]: "
               f"{ok_steps} step(s) OK, {err_steps} error(s).")
         if report_result:
             print(f"[chief] Report: {report_result.get('report_path')}")

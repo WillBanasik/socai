@@ -34,7 +34,7 @@ def cleanup():
         case_dir = CASES_DIR / TEST_CASE
         if case_dir.exists():
             shutil.rmtree(case_dir)
-        # Clean up any test sessions
+        # Clean up any test sessions and their auto-created cases
         if SESSIONS_DIR.exists():
             for d in SESSIONS_DIR.iterdir():
                 if d.is_dir() and d.name.startswith("S-"):
@@ -43,6 +43,12 @@ def cleanup():
                         try:
                             meta = json.loads(meta_path.read_text())
                             if meta.get("user_email") == TEST_EMAIL:
+                                # Clean up auto-created case
+                                session_case = meta.get("case_id")
+                                if session_case:
+                                    sc_dir = CASES_DIR / session_case
+                                    if sc_dir.exists():
+                                        shutil.rmtree(sc_dir)
                                 shutil.rmtree(d)
                         except Exception:
                             pass
@@ -405,10 +411,14 @@ class TestSessionCRUD:
 
     def test_create_session(self):
         from api.sessions import create_session
+        from config.settings import CASES_DIR
         meta = create_session(TEST_EMAIL)
         assert meta["session_id"].startswith("S-")
         assert meta["user_email"] == TEST_EMAIL
         assert meta["status"] == "active"
+        # Auto-created case
+        assert meta["case_id"] is not None
+        assert (CASES_DIR / meta["case_id"]).exists()
 
     def test_load_session(self, session_id):
         from api.sessions import load_session
@@ -553,61 +563,68 @@ class TestSessionHistory:
 class TestMaterialisation:
     """Tests for converting a session into a full case."""
 
-    def test_materialise_creates_case(self, session_id):
-        from api.sessions import materialise, add_iocs, add_finding, load_session
+    def test_finalise_syncs_case(self, session_id):
+        from api.sessions import finalise, add_iocs, add_finding, load_session
         from config.settings import CASES_DIR
+
+        # Get the auto-created case ID
+        meta = load_session(session_id)
+        case_id = meta["case_id"]
+        assert case_id is not None
 
         # Populate session with data
         add_iocs(session_id, {"ips": ["10.0.0.1"], "domains": ["evil.example.com"]})
         add_finding(session_id, "malware", "Cobalt Strike beacon detected")
 
-        result = materialise(session_id, TEST_CASE, "Test investigation",
-                             "high", TEST_EMAIL, "true_positive")
+        result = finalise(session_id, "Test investigation", "high", "true_positive")
 
-        assert result["case_id"] == TEST_CASE
+        assert result["case_id"] == case_id
         assert result["iocs_saved"] is True
         assert result["findings_count"] == 1
 
-        # Case directory should exist with metadata
-        case_meta = json.loads((CASES_DIR / TEST_CASE / "case_meta.json").read_text())
+        # Case directory should exist with updated metadata
+        case_meta = json.loads((CASES_DIR / case_id / "case_meta.json").read_text())
         assert case_meta["title"] == "Test investigation"
         assert case_meta["severity"] == "high"
         assert case_meta["disposition"] == "true_positive"
 
         # IOCs should be copied
-        iocs = json.loads((CASES_DIR / TEST_CASE / "iocs" / "iocs.json").read_text())
+        iocs = json.loads((CASES_DIR / case_id / "iocs" / "iocs.json").read_text())
         assert "10.0.0.1" in iocs["iocs"]["ips"]
 
-        # Session should be marked materialised
+        # Session should be marked finalised
         meta = load_session(session_id)
-        assert meta["status"] == "materialised"
-        assert meta["case_id"] == TEST_CASE
+        assert meta["status"] == "finalised"
 
-    def test_materialise_copies_uploads(self, session_id):
-        from api.sessions import materialise, upload_dir
+    def test_finalise_copies_uploads(self, session_id):
+        from api.sessions import finalise, upload_dir, load_session
         from config.settings import CASES_DIR
+
+        case_id = load_session(session_id)["case_id"]
 
         # Create a fake upload
         udir = upload_dir(session_id)
         (udir / "alert_export.csv").write_text("timestamp,alert\n2026-01-01,test")
 
-        materialise(session_id, TEST_CASE, "Test", "medium", TEST_EMAIL)
+        finalise(session_id, "Test", "medium")
 
-        assert (CASES_DIR / TEST_CASE / "uploads" / "alert_export.csv").exists()
+        assert (CASES_DIR / case_id / "uploads" / "alert_export.csv").exists()
 
-    def test_materialise_copies_history(self, session_id):
-        from api.sessions import materialise, save_history as save_sess_hist
+    def test_finalise_copies_history(self, session_id):
+        from api.sessions import finalise, save_history as save_sess_hist, load_session
         from api.chat import load_history
         from config.settings import CASES_DIR
+
+        case_id = load_session(session_id)["case_id"]
 
         save_sess_hist(session_id, [
             {"role": "user", "content": "Investigate"},
             {"role": "assistant", "content": "On it"},
         ])
 
-        materialise(session_id, TEST_CASE, "Test", "medium", TEST_EMAIL)
+        finalise(session_id, "Test", "medium")
 
-        case_history = load_history(TEST_CASE, user_email=TEST_EMAIL)
+        case_history = load_history(case_id, user_email=TEST_EMAIL)
         assert len(case_history) == 2
 
 
@@ -788,31 +805,33 @@ class TestSessionToolDispatch:
         )
         assert "not found" in result.get("_message", "").lower()
 
-    def test_materialise_creates_case(self, session_id):
+    def test_finalise_case(self, session_id):
         from api.chat import _dispatch_session_tool
         from api.sessions import add_iocs, load_session
         from config.settings import CASES_DIR
 
         add_iocs(session_id, {"ips": ["192.168.1.1"]})
 
+        # Session already has a case from creation — finalise it
+        meta_before = load_session(session_id)
+        existing_case_id = meta_before.get("case_id")
+        assert existing_case_id is not None, "Session should have auto-created case"
+
         result = _dispatch_session_tool(
-            session_id, "materialise_case",
-            {"title": "Test materialise", "severity": "high", "disposition": "true_positive"},
+            session_id, "finalise_case",
+            {"title": "Test finalise", "severity": "high", "disposition": "true_positive"},
         )
 
-        assert "created" in result.get("_message", "").lower()
-        new_case_id = result.get("case_id")
-        assert new_case_id is not None
+        assert "finalised" in result.get("_message", "").lower()
+        case_id = result.get("case_id")
+        assert case_id == existing_case_id
 
         # Verify case exists
-        assert (CASES_DIR / new_case_id).exists()
+        assert (CASES_DIR / case_id).exists()
 
-        # Session should be materialised
+        # Session should be finalised
         meta = load_session(session_id)
-        assert meta["status"] == "materialised"
-
-        # Cleanup the dynamically created case
-        shutil.rmtree(CASES_DIR / new_case_id, ignore_errors=True)
+        assert meta["status"] == "finalised"
 
     def test_session_run_kql_requires_permission(self, session_id):
         from api.chat import _dispatch_session_tool

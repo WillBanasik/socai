@@ -182,6 +182,17 @@ def cmd_mdr_report(args: argparse.Namespace) -> None:
         print(json.dumps(result, indent=2, default=str))
 
 
+def cmd_pup_report(args: argparse.Namespace) -> None:
+    from tools.generate_pup_report import generate_pup_report
+    result = generate_pup_report(args.case)
+    if result.get("status") == "ok":
+        print(f"PUP/PUA report: {result['report_path']}")
+    else:
+        print(f"[pup-report] {result.get('status','?')}: {result.get('reason','')}")
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+
+
 def cmd_secarch(args: argparse.Namespace) -> None:
     from tools.security_arch_review import security_arch_review
     result = security_arch_review(args.case)
@@ -1251,6 +1262,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_mdr.add_argument("--case", required=True)
 
+    # pup-report
+    p_pup = sub.add_parser(
+        "pup-report",
+        help="Generate a PUP/PUA (Potentially Unwanted Program) report for a case.",
+    )
+    p_pup.add_argument("--case", required=True)
+
     # secarch
     p_sa = sub.add_parser(
         "secarch",
@@ -1581,6 +1599,7 @@ def main() -> None:
         "client-query":   cmd_client_query,
         "secarch":        cmd_secarch,
         "mdr-report":     cmd_mdr_report,
+        "pup-report":     cmd_pup_report,
         "triage":         cmd_triage,
         "email-analyse":  cmd_email_analyse,
         "landscape":      cmd_landscape,

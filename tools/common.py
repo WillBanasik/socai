@@ -107,6 +107,18 @@ def defang_ioc(value: str) -> str:
     return s
 
 
+def md_file_note(file_path) -> str:
+    """Return a footer note pointing the analyst to the raw markdown file.
+
+    Appended to report responses so the analyst can open the file in a text
+    editor and copy clean markdown without HTML formatting bloat.
+    """
+    return (
+        f"\n\n---\n*Markdown file: `{file_path}` — "
+        f"open in a text editor to copy without formatting.*"
+    )
+
+
 def defang_report(text: str, malicious_iocs: set[str] | None = None) -> str:
     """Defang all *malicious_iocs* wherever they appear in *text*.
 

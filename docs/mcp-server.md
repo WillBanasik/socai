@@ -28,7 +28,7 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  45 tools, 14 resources │
+│  46 tools, 14 resources │
 │  8 prompts              │
 └─────────────────────────┘
     │

@@ -30,6 +30,7 @@ def case_create(
     analyst: str = "unassigned",
     tags: list[str] | None = None,
     client: str = "",
+    reference_id: str = "",
 ) -> dict:
     """
     Create folder structure and registry entry for *case_id*.
@@ -50,6 +51,9 @@ def case_create(
         "analyst": analyst,
         "client": resolved_client,
         "tags": tags or [],
+        "attack_type": None,
+        "attack_type_confidence": None,
+        "reference_id": reference_id or None,
         "status": "open",
         "created_at": utcnow(),
         "updated_at": utcnow(),

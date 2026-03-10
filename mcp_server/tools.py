@@ -813,6 +813,26 @@ def _register_tier1(mcp: FastMCP) -> None:
         return _json(result)
 
     @mcp.tool()
+    async def generate_pup_report(case_id: str) -> str:
+        """Generate a PUP/PUA (Potentially Unwanted Program/Application) report.
+
+        Use instead of generate_mdr_report when the detection is unwanted software
+        (adware, bundleware, browser hijacker, toolbar, etc.) rather than an active
+        compromise or targeted attack.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from tools.generate_pup_report import generate_pup_report as _pup
+        result = await asyncio.to_thread(lambda: _pup(case_id))
+        return _json(result)
+
+    @mcp.tool()
     async def generate_queries(
         case_id: str,
         platforms: list[str] | None = None,

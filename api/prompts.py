@@ -488,8 +488,18 @@ def build_session_prompt(session_id: str, *, user_email: str | None = None) -> l
         ctx_summary += "\n(The analyst can switch threads with /thread <number>. " \
                        "You only see the active thread's conversation history.)"
 
+    # Get the case ID from session meta (always exists)
+    from api.sessions import load_session as _load_smeta
+    smeta = _load_smeta(session_id)
+    session_case_id = smeta.get("case_id", "unknown") if smeta else "unknown"
+    reference_id = smeta.get("reference_id") if smeta else None
+
+    ref_line = f"\nReference ID: {reference_id}" if reference_id else ""
+
     prompt = f"""You are Chief, a senior SOC investigation analyst for socai. You are in an \
-interactive investigation session — no case has been created yet.
+interactive investigation session.
+
+Case: **{session_case_id}** (auto-created at session start — all artefacts are saved here){ref_line}
 
 The analyst will share telemetry exports, alerts, IOCs, and files for you to analyse. \
 Maintain context within the current investigation thread and build towards a disposition.
@@ -506,9 +516,10 @@ TOOLS AVAILABLE:
 - triage_iocs: Check IOCs against prior case intelligence
 - run_kql: Execute read-only KQL queries against Sentinel workspaces
 - load_kql_playbook: Load pre-built multi-stage KQL investigation playbooks (phishing, account-compromise, malware-execution, privilege-escalation)
-- materialise_case: Convert session to a case (when ready for final output)
+- finalise_case: Finalise the case with title, severity, and disposition (syncs all context)
 - generate_fp_comment: Generate FP closure comment from investigation context
 - generate_mdr_report: Generate MDR incident report from investigation context
+- generate_pup_report: Generate PUP/PUA report — use instead of MDR when the detection is unwanted software (adware, bundleware, browser hijacker, toolbar, etc.)
 - start_sandbox_session: Detonate an uploaded file in a containerised sandbox (strace, tcpdump, honeypot DNS/HTTP)
 - stop_sandbox_session: Stop a running sandbox session and collect telemetry artefacts
 - list_sandbox_sessions: List active and completed sandbox detonation sessions
@@ -533,8 +544,12 @@ WORKFLOW:
 4. As you discover IOCs, use extract_iocs to save them to context
 5. Use add_finding to record key observations
 6. Only run enrichment/KQL for gaps — skip IOCs with fresh cached data
-7. When ready for disposition, the analyst will ask for an FP comment or MDR report
-8. At that point, call materialise_case to create the case, then generate the output
+7. When ready for disposition, the analyst will ask for an FP comment, MDR report, or PUP report
+8. If the detection is a PUP/PUA (adware, bundleware, toolbar, browser hijacker, etc.), use \
+generate_pup_report instead of generate_mdr_report — it produces a lighter-weight report \
+focused on software identification, scope, risk, and removal
+9. Call finalise_case to set the title, severity, and disposition — this syncs all context \
+to the case directory. Reports can be generated before or after finalisation.
 
 {_SHARED_GUIDANCE}
 

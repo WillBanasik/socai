@@ -671,15 +671,24 @@ async def case_chat_history(case_id: str, user: Annotated[dict, _inv_read]):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/sessions")
-async def create_session(user: Annotated[dict, _inv_submit]):
-    """Create a new investigation session (pre-case)."""
-    meta = sessions.create_session(user["sub"])
+async def create_session(user: Annotated[dict, _inv_submit], request: Request):
+    """Create a new investigation session with an auto-created case.
+
+    Accepts optional JSON body: {"reference_id": "SD-12345"}
+    """
+    reference_id = ""
+    try:
+        body = await request.json()
+        reference_id = body.get("reference_id", "")
+    except Exception:
+        pass  # No body or non-JSON — fine
+    meta = sessions.create_session(user["sub"], reference_id=reference_id)
     return meta
 
 
 @app.get("/api/sessions")
 async def list_sessions(user: Annotated[dict, _inv_read], all: bool = False):
-    """List sessions for the current user. ?all=true includes materialised."""
+    """List sessions for the current user. ?all=true includes finalised."""
     result = sessions.list_sessions(user["sub"], include_all=all)
     # Enrich with case title when a backing case exists
     for s in result:
@@ -961,24 +970,24 @@ async def session_activate_thread(session_id: str, thread_id: str, user: Annotat
 
 
 @app.post("/api/sessions/{session_id}/materialise")
-async def materialise_session(
+@app.post("/api/sessions/{session_id}/finalise")
+async def finalise_session(
     session_id: str,
     user: Annotated[dict, _inv_submit],
     title: str = Form("Investigation"),
     severity: str = Form("medium"),
     disposition: str = Form(""),
 ):
-    """Manually materialise a session into a case (alternative to LLM-driven materialisation)."""
+    """Finalise a session's case — set title, severity, disposition, sync context."""
     meta = sessions.load_session(session_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Session not found")
-    if meta.get("status") != "active":
+    if meta.get("status") not in ("active", None):
         raise HTTPException(status_code=400, detail=f"Session is {meta.get('status', 'inactive')}")
     if not sessions.user_owns_session(session_id, user["sub"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    case_id = job_manager.next_case_id()
-    result = sessions.materialise(session_id, case_id, title, severity, user["sub"], disposition)
+    result = sessions.finalise(session_id, title, severity, disposition)
     return result
 
 
@@ -1267,7 +1276,8 @@ async def case_context_summary(case_id: str, user: Annotated[dict, _inv_read]):
         "recall_cases": "Searched prior case intelligence",
         "analyse_telemetry": "Analysed telemetry data",
         "add_finding": "Recorded investigation finding",
-        "materialise_case": "Materialised session into a case",
+        "finalise_case": "Finalised investigation case",
+        "materialise_case": "Finalised investigation case",
         "load_case_context": "Loaded case context into session",
         "save_to_case": "Saved updates back to case",
     }
