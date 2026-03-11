@@ -356,12 +356,37 @@ Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 | `ioc-hunt` | 2 (IOC presence sweep, conditional context pivot) | `iocs` (comma-separated), `lookback` (default 30d), `hit_table`/`hit_time`/`hit_device` (stage 2) |
 | `malware-execution` | 3 (process ancestry + script content, file delivery chain, initial access vector) | `device_name`, `filename` (or `__NONE__`), `sha256` (or `__NONE__`), `lookback` (default 7d) |
 | `privilege-escalation` | 3 (escalation event detail, actor legitimacy check, post-escalation activity) | `actor_upn`, `target_user` (or `__NONE__`), `target_group` (or `__NONE__`), `lookback` (default 14d) |
+| `data-exfiltration` | 3 (volume anomaly + DLP, cloud application access, network exfil indicators) | `target_upn`, `threshold_mb` (default 100), `lookback` (default 7d) |
+| `lateral-movement` | 3 (lateral connections RDP/SMB/WMI, credential access, movement chain) | `source_host`, `destination_hosts` (comma-separated), `lookback` (default 7d) |
 
 **API:** `list_playbooks()`, `load_playbook(id)`, `render_stage(pb, stage, params)`
 
 **Chat integration:** The `load_kql_playbook` tool is available in both case-mode and session-mode chat. The LLM loads a playbook, substitutes parameters from the investigation context, and executes each stage via `run_kql`.
 
 **Adding a playbook:** Create `config/kql_playbooks/<name>.kql` with frontmatter between `// ---` markers and stage blocks delimited by `// STAGE N — Title` headers.
+
+## Sentinel Composite Queries
+
+`tools/sentinel_queries.py` loads and renders composite KQL templates from `config/kql_playbooks/sentinel/`. Unlike the multi-stage playbooks above, composite queries produce a **single monolithic KQL string** with multiple `let` sections unioned together — designed for single-execution full-picture investigations using Sentinel-native tables only (OfficeActivity, SigninLogs, SecurityAlert, AlertEvidence).
+
+**Available scenarios:**
+
+| Scenario | Sections | Key focus |
+|----------|----------|-----------|
+| `mailbox-permission-change` | 9 | Permission grants, inbox rules, forwarding, delegate access, IP footprint, tenant-wide perms, sign-ins, OAuth, alerts |
+| `suspicious-signin` | 8 | Interactive sign-ins, patterns, failed sign-ins, IP footprint, post-auth Exchange/SharePoint, directory changes, alerts |
+| `inbox-rule-bec` | 8 | Inbox rules, forwarding, permissions, send activity, sign-ins, baseline, OAuth, alerts |
+| `email-threat-zap` | 7 | Email alerts, alert evidence, post-delivery Exchange, file activity, sign-ins, IP spread, other alerts |
+| `dlp-exfiltration` | 8 | DLP alerts, downloads, volume summary, external sharing, email exfil, OAuth, sign-ins, other alerts |
+| `oauth-consent-grant` | 8 | Consent events, AAD activity, service principal sign-ins, Graph API activity, data access, sign-ins, IP activity, alerts |
+
+**API:** `list_scenarios()`, `load_scenario(id)`, `render_query(id, upn=..., ip=..., ...)`
+
+**Parameters:** All scenarios require `upn`. Optional: `ip`, `object_id`, `mailbox_id`, `additional_upns` (comma-separated), `lookback_hours` (default 24, max 720). Empty optional parameters produce valid KQL via `isnotempty()` guards.
+
+**MCP integration:** The `generate_sentinel_query` tool (Tier 3, `sentinel:query` scope) wraps `render_query()`. The `classify_attack` tool includes a `sentinel_composite_queries` field recommending relevant scenarios per attack type. The automated flow is: `classify_attack` → `generate_sentinel_query` → `run_kql`.
+
+**Adding a scenario:** Create `config/kql_playbooks/sentinel/<name>.kql` with frontmatter between `// ---` markers and a single query body using `let`/`union isfuzzy=true` pattern. Register in `_composite_map` in `mcp_server/tools.py` to link to attack types.
 
 ## LogScale Query Syntax
 

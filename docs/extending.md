@@ -44,25 +44,9 @@ Add a `_norm_*()` function in `tools/mde_ingest.py` that maps MDE-specific field
 
 Add entries to `_SUSPICIOUS_PATTERNS` in `tools/memory_guidance.py` with `pattern` (compiled regex), `name`, and `category`. For suspicious DLLs, add to `_SUSPICIOUS_DLLS`. Risk scoring thresholds are in `_assess_risk()`.
 
-## New Chat Tool
+## New MCP Tool
 
-Tool definitions are in `api/tool_schemas.py`; dispatch handlers are in `api/chat.py`.
-
-**Shared tool** (runs identically in case-mode and session-mode):
-1. Add the schema to `TOOL_DEFS` (it flows into `SESSION_TOOL_DEFS` automatically via `_SHARED_TOOL_NAMES`)
-2. Add the tool name to `_SHARED_TOOL_NAMES` in `api/tool_schemas.py`
-3. Add the handler in `_dispatch_shared()` in `api/chat.py`
-4. If the tool needs file-based artefact storage in session mode, add it to `_SHARED_BACKING_REQUIRED`
-
-**Case-only tool:**
-1. Add the schema to `TOOL_DEFS`
-2. Add the handler in `_dispatch_tool()` in `api/chat.py`
-
-**Session-only tool:**
-1. Add the schema to `_SESSION_ONLY_DEFS` in `api/tool_schemas.py`
-2. Add the handler in `_dispatch_session_tool()` in `api/chat.py`
-
-The handler should map to an existing `api/actions.py` function or a new one following the `_run_action()` pattern.
+Add a `@mcp.tool()` handler in `mcp_server/tools.py` in the appropriate tier (`_register_tier1/2/3`). Add RBAC via `_require_scope()` at the top of the handler. If the tool needs orchestration (error handling, timeline logging), add a wrapper in `api/actions.py` following the `_run_action()` pattern.
 
 ## New Structured Output Schema
 
@@ -78,4 +62,8 @@ Add entries to `config/article_sources.json` with `"type": "rss"` and `"categori
 
 ## MCP Server
 
-`mcp_server/` exposes 44 tools, 11 resources, and 7 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. Long-running tools (investigate) support fire-and-forget with polling or inline-with-progress modes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
+`mcp_server/` exposes 52 tools, 18 resources, and 4 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. Long-running tools (investigate) support fire-and-forget with polling or inline-with-progress modes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
+
+## Sentinel Composite Query Template
+
+Create `config/kql_playbooks/sentinel/<scenario>.kql` with the same frontmatter format as stage-based playbooks. Use `composite: true` in the metadata. The query body is a single monolithic KQL with `let` sections and a `union isfuzzy=true` at the end. Parameters use `{{param}}` substitution. Required parameters: `{{upn}}`, `{{lookback_start}}`, `{{lookback_end}}`. Optional: `{{ip}}`, `{{object_id}}`, `{{mailbox_id}}`, `{{additional_upns}}`. Use `isnotempty()` guards for optional parameters so empty values produce valid KQL. Register the scenario in the `_composite_map` in `mcp_server/tools.py` `classify_attack` to link it to attack types.

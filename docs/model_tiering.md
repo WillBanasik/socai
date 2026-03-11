@@ -46,11 +46,10 @@ get_model("secarch", "high")
 
 ## Per-File Call Site Map
 
-### Severity from `case_meta.json` (10 files)
+### Severity from `case_meta.json` (9 files)
 
 | File | Call | Task | Severity Source |
 |------|------|------|----------------|
-| `api/chat.py` | `get_model("chat_response", _severity)` | chat_response | `_load_case_meta(case_id)` |
 | `tools/security_arch_review.py` (main) | `get_model("secarch", severity)` | secarch | `meta.get("severity")` |
 | `tools/security_arch_review.py` (cluster) | `get_model("secarch", severity)` | secarch | passed into cluster subagent |
 | `tools/fp_ticket.py` | `get_model("fp_ticket", severity)` | fp_ticket | `meta.get("severity")` |

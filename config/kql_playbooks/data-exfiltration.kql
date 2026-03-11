@@ -1,0 +1,224 @@
+// ---
+// name: Data Exfiltration Investigation
+// description: >
+//   Multi-stage data exfiltration investigation. Stage 1 identifies abnormal
+//   download/upload volumes and DLP alerts for the target user. Stage 2 checks
+//   cloud application activity (SharePoint, OneDrive, Exchange) for bulk access
+//   or sharing events. Stage 3 correlates with network telemetry to identify
+//   external data transfer destinations.
+// parameters:
+//   - name: target_upn
+//     type: string
+//     description: User Principal Name of the suspect account
+//   - name: lookback
+//     type: string
+//     description: KQL timespan for lookback window (default 30d)
+//   - name: threshold_mb
+//     type: string
+//     description: Download volume threshold in MB to flag as abnormal (default 500)
+// stages:
+//   - stage: 1
+//     name: Volume anomaly and DLP alerts
+//     description: Identify abnormal download/upload volumes and any DLP policy matches for the target user
+//     run: always
+//   - stage: 2
+//     name: Cloud application file access
+//     description: SharePoint, OneDrive, and Exchange bulk access or external sharing events
+//     run: always
+//   - stage: 3
+//     name: Network exfiltration indicators
+//     description: Outbound data transfers to external destinations from the target user's devices
+//     run: when Stage 1 or Stage 2 shows suspicious volume or access patterns
+// tables:
+//   - OfficeActivity
+//   - SecurityAlert
+//   - CloudAppEvents
+//   - DeviceNetworkEvents
+//   - DeviceFileEvents
+//   - SigninLogs
+// ---
+
+
+// ============================================================================
+// STAGE 1 — Volume anomaly and DLP alerts
+// ============================================================================
+// Parameters: target_upn, lookback (default 30d)
+// Run: ALWAYS — baseline check for abnormal data movement and DLP triggers.
+// Returns: daily download/upload volume per user, plus any DLP alert matches.
+
+let target_user = "{{target_upn}}";
+let lookback = {{lookback}};
+let DLPAlerts = SecurityAlert
+    | where TimeGenerated >= ago(lookback)
+    | where Entities has target_user
+    | where AlertName has_any ("DLP", "data loss", "exfiltration", "mass download",
+                                "unusual volume", "sensitive data", "information protection")
+    | project
+        AlertTime = TimeGenerated,
+        AlertName,
+        Severity,
+        Description,
+        Entities;
+let OfficeVolume = OfficeActivity
+    | where TimeGenerated >= ago(lookback)
+    | where UserId =~ target_user
+    | where Operation in ("FileDownloaded", "FileUploaded", "FileSyncDownloadedFull",
+                           "FileModifiedExtended", "FileCopied")
+    | summarize
+        DownloadCount = countif(Operation in ("FileDownloaded", "FileSyncDownloadedFull")),
+        UploadCount = countif(Operation == "FileUploaded"),
+        CopyCount = countif(Operation == "FileCopied"),
+        UniqueFiles = dcount(SourceFileName),
+        Sites = make_set(Site_Url)
+      by bin(TimeGenerated, 1d), UserId;
+union
+(
+    DLPAlerts
+    | extend RecordType = "DLP_Alert"
+    | project RecordType, TimeGenerated = AlertTime, Detail = AlertName,
+              Severity, Extra = Description
+),
+(
+    OfficeVolume
+    | extend RecordType = "DailyVolume"
+    | project RecordType, TimeGenerated,
+              Detail = strcat("Downloads:", DownloadCount, " Uploads:", UploadCount,
+                              " Copies:", CopyCount, " UniqueFiles:", UniqueFiles),
+              Severity = "",
+              Extra = tostring(Sites)
+)
+| sort by TimeGenerated desc
+
+
+// ============================================================================
+// STAGE 2 — Cloud application file access
+// ============================================================================
+// Parameters: target_upn, lookback (default 30d)
+// Run: ALWAYS — check for bulk file access, external sharing, and mailbox forwarding.
+// Returns: file access events, sharing changes, and mail forwarding rules.
+
+let target_user = "{{target_upn}}";
+let lookback = {{lookback}};
+let BulkAccess = OfficeActivity
+    | where TimeGenerated >= ago(lookback)
+    | where UserId =~ target_user
+    | where Operation in ("FileDownloaded", "FileSyncDownloadedFull", "FileAccessed",
+                           "FolderModified", "ListItemUpdated")
+    | summarize
+        EventCount = count(),
+        UniqueFiles = dcount(SourceFileName),
+        UniqueSites = dcount(Site_Url),
+        Operations = make_set(Operation),
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated)
+      by bin(TimeGenerated, 1h), UserId;
+let SharingEvents = OfficeActivity
+    | where TimeGenerated >= ago(lookback)
+    | where UserId =~ target_user
+    | where Operation has_any ("SharingSet", "AddedToGroup", "AnonymousLinkCreated",
+                                "CompanyLinkCreated", "SharingInvitationCreated",
+                                "SecureLinkCreated")
+    | project
+        TimeGenerated,
+        Operation,
+        TargetUser = TargetUserOrGroupName,
+        SourceFileName,
+        Site_Url;
+let MailForwarding = OfficeActivity
+    | where TimeGenerated >= ago(lookback)
+    | where UserId =~ target_user
+    | where Operation in ("Set-Mailbox", "New-InboxRule", "Set-InboxRule",
+                           "UpdateInboxRules", "New-TransportRule")
+    | project
+        TimeGenerated,
+        Operation,
+        Parameters = tostring(Parameters);
+union
+(
+    BulkAccess
+    | extend RecordType = "BulkAccess"
+    | project RecordType, TimeGenerated, Detail = strcat("Events:", EventCount,
+              " Files:", UniqueFiles, " Sites:", UniqueSites),
+              Extra = tostring(Operations)
+),
+(
+    SharingEvents
+    | extend RecordType = "Sharing"
+    | project RecordType, TimeGenerated,
+              Detail = strcat(Operation, " → ", TargetUser, " | ", SourceFileName),
+              Extra = Site_Url
+),
+(
+    MailForwarding
+    | extend RecordType = "MailRule"
+    | project RecordType, TimeGenerated,
+              Detail = Operation,
+              Extra = Parameters
+)
+| sort by TimeGenerated desc
+| take 50
+
+
+// ============================================================================
+// STAGE 3 — Network exfiltration indicators
+// ============================================================================
+// Parameters: target_upn, lookback (default 30d)
+// Run: when Stage 1 or Stage 2 shows suspicious volume or access patterns.
+// Purpose: correlate with endpoint network events to identify external
+//          destinations receiving data from the target user's devices.
+
+let target_user = "{{target_upn}}";
+let lookback = {{lookback}};
+let UserDevices = SigninLogs
+    | where TimeGenerated >= ago(lookback)
+    | where UserPrincipalName =~ target_user
+    | where isnotempty(DeviceDetail.displayName)
+    | summarize arg_max(TimeGenerated, *) by tostring(DeviceDetail.displayName)
+    | project DeviceName = tostring(DeviceDetail.displayName);
+let UploadEvents = DeviceNetworkEvents
+    | where TimeGenerated >= ago(lookback)
+    | where DeviceName in (UserDevices)
+    | where ActionType == "ConnectionSuccess"
+    | where RemotePort in (443, 80, 22, 21, 445)
+    | where not(ipv4_is_private(RemoteIP))
+    | summarize
+        ConnectionCount = count(),
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated),
+        Processes = make_set(InitiatingProcessFileName),
+        Ports = make_set(RemotePort)
+      by DeviceName, RemoteIP, RemoteUrl;
+let LargeFileOps = DeviceFileEvents
+    | where TimeGenerated >= ago(lookback)
+    | where DeviceName in (UserDevices)
+    | where ActionType in ("FileCreated", "FileModified", "FileRenamed")
+    | where FolderPath has_any ("usb", "removable", "external", "cloud",
+                                 "onedrive", "dropbox", "google drive")
+    | project
+        TimeGenerated,
+        DeviceName,
+        FileName,
+        FolderPath,
+        ActionType,
+        InitiatingProcessFileName;
+union
+(
+    UploadEvents
+    | extend RecordType = "NetworkUpload"
+    | project RecordType, TimeGenerated = LastSeen,
+              DeviceName,
+              Detail = strcat(RemoteIP, " | Connections:", ConnectionCount,
+                              " | Ports:", tostring(Ports)),
+              Extra = strcat("Processes: ", tostring(Processes),
+                             " | URL: ", RemoteUrl)
+),
+(
+    LargeFileOps
+    | extend RecordType = "SuspiciousFilePath"
+    | project RecordType, TimeGenerated,
+              DeviceName,
+              Detail = strcat(ActionType, " | ", FileName),
+              Extra = strcat(FolderPath, " via ", InitiatingProcessFileName)
+)
+| sort by TimeGenerated desc
+| take 50

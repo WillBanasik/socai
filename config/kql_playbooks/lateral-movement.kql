@@ -1,0 +1,286 @@
+// ---
+// name: Lateral Movement Investigation
+// description: >
+//   Multi-stage lateral movement investigation. Stage 1 identifies RDP, SMB,
+//   WMI, PsExec, and WinRM connections from the compromised host. Stage 2
+//   checks for credential access (pass-the-hash, Kerberos abuse, LSASS access)
+//   on the source and destination hosts. Stage 3 traces the full movement chain
+//   across multiple hops to map the blast radius.
+// parameters:
+//   - name: source_host
+//     type: string
+//     description: Initially compromised hostname or DeviceName
+//   - name: source_user
+//     type: string
+//     description: Compromised user account (UPN or AccountName)
+//   - name: lookback
+//     type: string
+//     description: KQL timespan for lookback window (default 7d)
+//   - name: destination_hosts
+//     type: string
+//     description: Comma-separated destination hosts from Stage 1 (used in Stages 2-3)
+// stages:
+//   - stage: 1
+//     name: Lateral movement connections
+//     description: RDP, SMB, WMI, PsExec, WinRM, and SSH connections from the source host
+//     run: always
+//   - stage: 2
+//     name: Credential access on movement path
+//     description: LSASS access, Kerberos anomalies, credential dumping on source and destination hosts
+//     run: when Stage 1 identifies lateral connections
+//   - stage: 3
+//     name: Movement chain and blast radius
+//     description: Multi-hop movement tracing to map the full blast radius
+//     run: when Stage 2 confirms credential access or Stage 1 shows multiple destinations
+// definitions:
+//   - term: Lateral Movement
+//     definition: Techniques where an adversary moves from one system to another within the network, typically using legitimate remote access protocols (RDP, SMB, WMI) with stolen or escalated credentials.
+//   - term: Blast Radius
+//     definition: The total set of systems and accounts accessed by the adversary from the initial point of compromise, including all intermediate hops.
+// tables:
+//   - DeviceNetworkEvents
+//   - DeviceLogonEvents
+//   - DeviceProcessEvents
+//   - DeviceEvents
+//   - IdentityLogonEvents
+//   - SecurityAlert
+// ---
+
+
+// ============================================================================
+// STAGE 1 — Lateral movement connections
+// ============================================================================
+// Parameters: source_host, source_user (optional), lookback (default 7d)
+// Run: ALWAYS — identify all lateral movement from the source host.
+// Returns: outbound connections using lateral movement protocols/tools.
+
+let source = "{{source_host}}";
+let lookback = {{lookback}};
+let LateralPorts = DeviceNetworkEvents
+    | where TimeGenerated >= ago(lookback)
+    | where DeviceName =~ source
+    | where ActionType == "ConnectionSuccess"
+    | where RemotePort in (3389, 445, 135, 5985, 5986, 22, 23)
+    | where not(RemoteIP == "127.0.0.1")
+    | project
+        TimeGenerated,
+        SourceHost = DeviceName,
+        DestinationIP = RemoteIP,
+        DestinationPort = RemotePort,
+        Protocol = case(
+            RemotePort == 3389, "RDP",
+            RemotePort == 445, "SMB",
+            RemotePort == 135, "WMI/DCOM",
+            RemotePort in (5985, 5986), "WinRM",
+            RemotePort == 22, "SSH",
+            RemotePort == 23, "Telnet",
+            strcat("Port:", RemotePort)
+        ),
+        InitiatingProcess = InitiatingProcessFileName,
+        InitiatingCmdLine = InitiatingProcessCommandLine,
+        User = InitiatingProcessAccountName;
+let LateralTools = DeviceProcessEvents
+    | where TimeGenerated >= ago(lookback)
+    | where DeviceName =~ source
+    | where FileName in~ ("psexec.exe", "psexec64.exe", "paexec.exe",
+                           "wmic.exe", "winrs.exe", "mstsc.exe",
+                           "ssh.exe", "plink.exe", "putty.exe")
+            or ProcessCommandLine has_any ("Invoke-Command", "Enter-PSSession",
+                                           "New-PSSession", "wmic /node",
+                                           "Invoke-WmiMethod", "schtasks /create /s")
+    | project
+        TimeGenerated,
+        SourceHost = DeviceName,
+        FileName,
+        ProcessCommandLine,
+        User = AccountName,
+        ParentProcess = InitiatingProcessFileName;
+let RemoteLogons = DeviceLogonEvents
+    | where TimeGenerated >= ago(lookback)
+    | where RemoteDeviceName =~ source
+    | where LogonType in ("RemoteInteractive", "Network", "NewCredentials")
+    | where ActionType == "LogonSuccess"
+    | project
+        TimeGenerated,
+        SourceHost = RemoteDeviceName,
+        DestinationHost = DeviceName,
+        LogonType,
+        User = AccountName,
+        AccountDomain;
+union
+(
+    LateralPorts
+    | extend RecordType = "NetworkConnection"
+    | project RecordType, TimeGenerated, SourceHost,
+              Detail = strcat(Protocol, " → ", DestinationIP, ":", DestinationPort),
+              User,
+              Extra = strcat(InitiatingProcess, " | ", InitiatingCmdLine)
+),
+(
+    LateralTools
+    | extend RecordType = "LateralTool"
+    | project RecordType, TimeGenerated, SourceHost,
+              Detail = strcat(FileName, " | ", ProcessCommandLine),
+              User,
+              Extra = strcat("Parent: ", ParentProcess)
+),
+(
+    RemoteLogons
+    | extend RecordType = "RemoteLogon"
+    | project RecordType, TimeGenerated, SourceHost,
+              Detail = strcat(LogonType, " → ", DestinationHost),
+              User,
+              Extra = AccountDomain
+)
+| sort by TimeGenerated asc
+| take 50
+
+
+// ============================================================================
+// STAGE 2 — Credential access on movement path
+// ============================================================================
+// Parameters: source_host, destination_hosts (comma-separated from Stage 1), lookback
+// Run: when Stage 1 identifies lateral connections.
+// Purpose: detect credential theft techniques on source and destination hosts.
+
+let hosts = dynamic([{{destination_hosts}}]);
+let source = "{{source_host}}";
+let all_hosts = array_concat(hosts, dynamic([source]));
+let lookback = {{lookback}};
+let LsassAccess = DeviceProcessEvents
+    | where TimeGenerated >= ago(lookback)
+    | where DeviceName in~ (all_hosts)
+    | where FileName in~ ("mimikatz.exe", "procdump.exe", "procdump64.exe",
+                           "comsvcs.dll", "nanodump.exe", "pypykatz")
+            or (ProcessCommandLine has "lsass" and ProcessCommandLine has_any
+                ("MiniDump", "procdump", "comsvcs", "sekurlsa", "logonpasswords"))
+    | project
+        TimeGenerated,
+        DeviceName,
+        FileName,
+        ProcessCommandLine,
+        User = AccountName,
+        ParentProcess = InitiatingProcessFileName;
+let KerberosAnomalies = IdentityLogonEvents
+    | where TimeGenerated >= ago(lookback)
+    | where DeviceName in~ (all_hosts)
+    | where LogonType in ("Kerberos", "KerberosAS")
+    | where Application has_any ("overpass", "pass-the-ticket", "golden", "silver")
+            or FailureReason has_any ("KDC_ERR", "PREAUTH_FAILED", "encryption type")
+    | project
+        TimeGenerated,
+        DeviceName,
+        LogonType,
+        User = AccountUpn,
+        FailureReason,
+        Application;
+let CredentialAlerts = SecurityAlert
+    | where TimeGenerated >= ago(lookback)
+    | where Entities has_any (all_hosts)
+    | where AlertName has_any ("credential", "LSASS", "pass-the-hash",
+                                "kerberoast", "golden ticket", "DCSync",
+                                "lateral movement", "mimikatz", "brute force")
+    | project
+        TimeGenerated,
+        AlertName,
+        Severity,
+        Description,
+        Entities;
+union
+(
+    LsassAccess
+    | extend RecordType = "CredentialTool"
+    | project RecordType, TimeGenerated, DeviceName,
+              Detail = strcat(FileName, " | ", ProcessCommandLine),
+              Severity = "High",
+              Extra = strcat("User: ", User, " Parent: ", ParentProcess)
+),
+(
+    KerberosAnomalies
+    | extend RecordType = "KerberosAnomaly"
+    | project RecordType, TimeGenerated, DeviceName,
+              Detail = strcat(LogonType, " | ", User),
+              Severity = "Medium",
+              Extra = FailureReason
+),
+(
+    CredentialAlerts
+    | extend RecordType = "CredentialAlert"
+    | project RecordType, TimeGenerated, DeviceName = "",
+              Detail = AlertName,
+              Severity,
+              Extra = Description
+)
+| sort by TimeGenerated asc
+| take 50
+
+
+// ============================================================================
+// STAGE 3 — Movement chain and blast radius
+// ============================================================================
+// Parameters: destination_hosts (from Stage 1), lookback
+// Run: when Stage 2 confirms credential access or Stage 1 shows multiple destinations.
+// Purpose: trace secondary hops — did the adversary move further from the
+//          initial destination hosts? Maps the full blast radius.
+
+let first_hop_hosts = dynamic([{{destination_hosts}}]);
+let lookback = {{lookback}};
+let SecondHop = DeviceNetworkEvents
+    | where TimeGenerated >= ago(lookback)
+    | where DeviceName in~ (first_hop_hosts)
+    | where ActionType == "ConnectionSuccess"
+    | where RemotePort in (3389, 445, 135, 5985, 5986, 22)
+    | where not(RemoteIP == "127.0.0.1")
+    | project
+        TimeGenerated,
+        SourceHost = DeviceName,
+        DestinationIP = RemoteIP,
+        DestinationPort = RemotePort,
+        Protocol = case(
+            RemotePort == 3389, "RDP",
+            RemotePort == 445, "SMB",
+            RemotePort == 135, "WMI/DCOM",
+            RemotePort in (5985, 5986), "WinRM",
+            RemotePort == 22, "SSH",
+            strcat("Port:", RemotePort)
+        ),
+        User = InitiatingProcessAccountName,
+        Process = InitiatingProcessFileName;
+let SecondHopLogons = DeviceLogonEvents
+    | where TimeGenerated >= ago(lookback)
+    | where RemoteDeviceName in~ (first_hop_hosts)
+    | where LogonType in ("RemoteInteractive", "Network", "NewCredentials")
+    | where ActionType == "LogonSuccess"
+    | project
+        TimeGenerated,
+        SourceHost = RemoteDeviceName,
+        DestinationHost = DeviceName,
+        LogonType,
+        User = AccountName;
+let AllHosts = union
+    (SecondHop | project Host = SourceHost),
+    (SecondHop | project Host = DestinationIP),
+    (SecondHopLogons | project Host = SourceHost),
+    (SecondHopLogons | project Host = DestinationHost)
+    | distinct Host;
+let BlastRadius = AllHosts
+    | summarize Hosts = make_set(Host);
+union
+(
+    SecondHop
+    | extend RecordType = "SecondHopNetwork"
+    | project RecordType, TimeGenerated, SourceHost,
+              Detail = strcat(Protocol, " → ", DestinationIP, ":", DestinationPort),
+              User,
+              Extra = Process
+),
+(
+    SecondHopLogons
+    | extend RecordType = "SecondHopLogon"
+    | project RecordType, TimeGenerated, SourceHost,
+              Detail = strcat(LogonType, " → ", DestinationHost),
+              User,
+              Extra = ""
+)
+| sort by TimeGenerated asc
+| take 50

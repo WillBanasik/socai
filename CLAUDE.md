@@ -23,6 +23,7 @@ python3 socai.py report --case IV_CASE_001
 python3 socai.py enrich --case IV_CASE_001
 python3 socai.py secarch --case IV_CASE_001
 python3 socai.py fp-ticket --case IV_CASE_001 --alert alert.json
+python3 socai.py fp-tuning --case IV_CASE_001 --alert alert.json [--query rule.kql] [--platform sentinel]
 python3 socai.py pup-report --case IV_CASE_001
 
 # Batch processing
@@ -79,9 +80,8 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **CLI:** `socai.py` — entrypoint for all commands
 - **Agents** (`agents/`) — thin orchestration classes inheriting `BaseAgent`; call tool functions, never write files directly
 - **Tools** (`tools/`) — stateless functions; accept `case_id`, write via `write_artefact()`/`save_json()`, return manifest dicts
-- **MCP Server** (`mcp_server/`) — HTTPS SSE transport on port 8001 with JWT RBAC; 47 tools, 14 resources, 8 prompts for external MCP clients (Claude Desktop, LLM agents)
-- **Web UI:** `api/chat.py` + `api/main.py` + Svelte SPA (`frontend/src/` → `ui-dist/`) — streaming SSE chat with activity feed and session management (see `docs/web-ui.md`)
-- **Sessions** (`api/sessions.py`) — investigation conversations; auto-create a case at session start, finalise with disposition when complete
+- **MCP Server** (`mcp_server/`) — HTTPS SSE transport on port 8001 with JWT RBAC; 52 tools, 18 resources, 4 prompts for external MCP clients (Claude Desktop, LLM agents)
+- **Shared API** (`api/`) — auth (JWT), jobs (background pipeline), actions (tool orchestration), timeline, input parsing — used by MCP server
 - **Batch** (`tools/batch.py`) — bulk LLM processing via Claude Messages Batch API
 - **Threat Articles** (`tools/threat_articles.py`) — ET/EV article discovery, clustering, and generation for monthly reporting; dedup via local index + Confluence
 - **Velociraptor** (`tools/velociraptor_ingest.py`) — offline collector ZIP / VQL result ingest with artefact-aware normalisation (EVTX, autoruns, netstat, processes, services, tasks, prefetch, shimcache, amcache, MFT, USN)
@@ -91,10 +91,10 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **Sandbox Detonation** (`tools/sandbox_session.py`) — containerised malware sandbox for dynamic analysis; executes ELF/scripts/PE (via Wine) under strace with tcpdump, honeypot DNS/HTTP, and filesystem monitoring; automated and interactive modes (see `docs/sandbox.md`)
 - **Web Search** (`tools/web_search.py`) — OSINT web search fallback; Brave Search API (if `SOCAI_BRAVE_SEARCH_KEY` set) or DuckDuckGo HTML (free, no key). Used by the LLM when structured enrichment APIs lack data.
 - **Confluence** (`tools/confluence_read.py`) — read-only Confluence Cloud client (scoped token, single space)
-- **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, sessions in `sessions/`, articles in `articles/`
+- **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, articles in `articles/`
 - **Attack-Type Classification** (`tools/classify_attack.py`) — deterministic keyword + input-shape classifier; routes pipeline via per-type profiles (phishing, malware, account_compromise, privilege_escalation, pup_pua, generic)
 - **PUP/PUA Playbook** (`tools/generate_pup_report.py`) — lightweight pipeline for Potentially Unwanted Program detections; auto-detected from title/notes/enrichment or analyst-triggered; skips attack-chain analysis, produces PUP-specific report with software ID, scope, risk, removal steps
-- **Auto-close on Deliverable Collection** — cases auto-close when the analyst collects their deliverable: `generate_mdr_report` (preserves existing disposition), `generate_pup_report` (`pup_pua`), `fp_ticket` (`false_positive`). Close logic lives in the tool layer so it works across CLI, web UI, and MCP server.
+- **Auto-close on Deliverable Collection** — cases auto-close when the analyst collects their deliverable: `generate_mdr_report` (preserves existing disposition), `generate_pup_report` (`pup_pua`), `fp_ticket` (`false_positive`). Close logic lives in the tool layer so it works across CLI and MCP server. Note: `fp_tuning_ticket` does NOT auto-close — it generates the SIEM engineering handoff alongside the FP closure.
 - **Pipeline:** `ChiefAgent.run()` classifies attack type → selects profile → orchestrates steps with parallel execution; skips irrelevant steps per type (see `docs/pipeline.md`)
 
 ## Analytical Standards (MANDATORY)
@@ -152,7 +152,6 @@ Read these only when working on the relevant area:
 | `docs/tools-reference.md` | All tool details: web capture, phishing, enrichment, sandbox, forensics, etc. |
 | `docs/configuration.md` | Env vars, API keys, model tiering summary, client aliasing config |
 | `docs/artefacts.md` | Complete file/artefact path reference table |
-| `docs/web-ui.md` | Chat interface, API routes, access control, available tools |
 | `docs/extending.md` | How to add new providers, tools, agents, brands, detectors |
 | `docs/architecture.md` | High-level architecture diagram and data flow |
 | `docs/model_tiering.md` | Full model tiering matrix and call site map |

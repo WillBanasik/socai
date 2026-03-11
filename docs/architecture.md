@@ -16,23 +16,19 @@ CLI (socai.py)
           ├── EnrichmentAgent        → extract_iocs + enrich
           └── ReportWriterAgent      → generate_report + index_case
 
-Web UI (api/main.py + api/chat.py + Svelte SPA: frontend/src/ → ui-dist/)
-    ├── Case-mode chat       → 44 tools via TOOL_DEFS (22 case-only + 22 shared)
-    ├── Session-mode chat    → 52 tools via SESSION_TOOL_DEFS (30 session-only + 22 shared)
-    ├── SSE streaming        → progressive token delivery
-    ├── Session management   → CRUD + auto-case creation + finalisation
-    ├── Cases browse page    → filterable card grid (CasesBrowse.svelte)
-    ├── Case detail page     → read-only summary with investigation log & KQL queries (CaseDetail.svelte)
-    ├── Dashboard            → CTI-focused threat intelligence (DashboardView.svelte)
-    ├── CTI integration      → OpenCTI feed, trending, ATT&CK heatmap, watchlist, IOC decay (api/opencti.py)
-    └── Case context switch  → load/save case context in sessions
+Shared API (api/)
+    ├── auth.py              → JWT constants + user store (shared with MCP)
+    ├── jobs.py              → background job manager (thread pool, case ID gen)
+    ├── actions.py           → tool orchestration wrappers (16+ pipeline actions)
+    ├── timeline.py          → case timeline event log
+    └── parse_input.py       → freeform analyst input → structured IOC extraction
 
 MCP Server (mcp_server/)
     ├── HTTPS SSE transport  → port 8001, separate process
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
-    ├── 47 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
-    ├── 14 resources         → case data, clients, IOC index, playbooks, articles, landscape
-    ├── 8 prompts            → investigation orchestrator, KQL playbooks, triage/FP workflows
+    ├── 52 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
+    ├── 18 resources         → case data, clients, IOC index, playbooks, sentinel queries, articles, landscape
+    ├── 4 prompts            → investigation orchestrator, KQL investigation, triage, FP workflows
     ├── Boundary enforcement → per-conversation client + case isolation (prevents cross-contamination)
     ├── Data hierarchy       → global (cross-client IOCs) / client (internal) / case (details)
     ├── stdio fallback       → Claude Desktop backward compat (no auth)
@@ -97,7 +93,6 @@ cases/<CASE_ID>/
   iocs/         ← iocs.json (all extracted IOCs)
   logs/         ← parsed log JSON + entity JSON
   reports/      ← investigation_report.md
-  session_context.json  ← synced session context (if from session)
         │
         ▼
 registry/case_index.json  ← case registry
@@ -106,26 +101,18 @@ registry/audit.log        ← SHA-256 artefact audit trail
 registry/batches/         ← batch API metadata + results
 registry/article_index.json ← threat article dedup index
 articles/YYYY-MM/         ← threat article summaries (ET/EV)
-
-sessions/<SESSION_ID>/    ← investigation sessions (auto-create case at start)
-  session_meta.json       ← status, user, expiry, case_id, reference_id
-  history.json            ← conversation history
-  context.json            ← accumulated IOCs, findings, disposition
-  uploads/                ← analyst-uploaded files
 ```
 
 ## Claude API Integration
 
 | Feature | Where Used |
 |---------|-----------|
-| **Tool use** | All LLM-assisted tools; chat dispatches tools via `tool_use` API |
-| **Prompt caching** | `security_arch_review.py`, `api/chat.py` system prompts |
+| **Tool use** | All LLM-assisted tools; MCP dispatches tools via `tool_use` API |
+| **Prompt caching** | `security_arch_review.py` |
 | **Vision** | `detect_phishing_page.py` screenshot analysis |
 | **Files API** | `security_arch_review.py` PDF uploads |
-| **Streaming** | `api/chat.py` SSE endpoints for progressive web UI response |
 | **Adaptive thinking** | `security_arch_review.py` for high/critical severity cases |
 | **Structured outputs** | `tools/structured_llm.py` wrapper with JSON schema validation |
-| **Compaction** | `api/chat.py` for long conversations (Opus models) |
 | **Batch API** | `tools/batch.py` for bulk report generation |
 | **Structured outputs** | `tools/threat_articles.py` article generation via `ArticleSummary` schema |
 
@@ -156,7 +143,7 @@ Every tool wrapper:
 1. Create `tools/my_tool.py` following the pattern in `tools/extract_iocs.py`.
 2. Register it in `agents/chief.py` as a new pipeline step.
 3. Add a CLI sub-command in `socai.py` if needed.
-4. For chat tools: add schema to `TOOL_DEFS` in `api/tool_schemas.py` and handler to `_dispatch_shared()` in `api/chat.py` for shared tools (also add to `_SHARED_TOOL_NAMES`); or add to `_SESSION_ONLY_DEFS` / `_dispatch_session_tool()` for session-only tools.
+4. For MCP tools: add a `@mcp.tool()` handler in `mcp_server/tools.py` in the appropriate tier. Add an orchestration wrapper in `api/actions.py` if needed.
 
 ### Adding a new enrichment provider
 See `tools/enrich.py` – implement a function and add it to the `PROVIDERS` and `_PROVIDER_NAMES` dicts. For IPv4 providers, also add to `PROVIDERS_IP_FAST` or `PROVIDERS_IP_DEEP`.

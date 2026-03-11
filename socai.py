@@ -266,6 +266,19 @@ def cmd_errors(args: argparse.Namespace) -> None:
         print(f"Cleared {cleared['cleared']} error records.")
 
 
+def cmd_mcp_usage(args: argparse.Namespace) -> None:
+    from tools.mcp_usage import assess_mcp_usage, clear_mcp_usage_log
+    result = assess_mcp_usage(
+        top_n=args.top, caller_filter=args.caller,
+        tool_filter=args.tool, json_output=args.json,
+    )
+    if args.json:
+        print(json.dumps(result, indent=2))
+    if args.clear:
+        cleared = clear_mcp_usage_log()
+        print(f"Cleared {cleared['cleared']} usage records.")
+
+
 def cmd_sandbox(args: argparse.Namespace) -> None:
     from tools.sandbox_analyse import sandbox_analyse
     result = sandbox_analyse(args.case, detonate=args.detonate)
@@ -397,6 +410,46 @@ def cmd_fp_ticket(args: argparse.Namespace) -> None:
         sys.exit(2)
     else:
         print(f"[fp-ticket] {status}: {result.get('reason', '')}")
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+
+
+def cmd_fp_tuning(args: argparse.Namespace) -> None:
+    from agents.fp_tuning_agent import FPTuningAgent
+
+    if args.alert:
+        alert_data = Path(args.alert).read_text(encoding="utf-8")
+    elif args.alert_text:
+        alert_data = args.alert_text
+    else:
+        print("[error] Provide --alert <file> or --alert-text <string>")
+        sys.exit(1)
+
+    query_text = None
+    if args.query:
+        query_text = Path(args.query).read_text(encoding="utf-8")
+    elif args.query_text:
+        query_text = args.query_text
+
+    result = FPTuningAgent(args.case).run(
+        alert_data=alert_data,
+        query_text=query_text,
+        platform=args.platform,
+        live_query=args.live_query,
+    )
+
+    status = result.get("status", "unknown")
+    if status == "ok":
+        print(f"Tuning ticket: {result['ticket_path']}")
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+    elif status == "needs_clarification":
+        print(f"[fp-tuning] Information missing — analyst input required:")
+        print(f"  {result.get('question', '')}")
+        print("\nRe-run with --platform <sentinel|crowdstrike|defender|entra|cloudapps|splunk>")
+        sys.exit(2)
+    else:
+        print(f"[fp-tuning] {status}: {result.get('reason', '')}")
         if args.json:
             print(json.dumps(result, indent=2, default=str))
 
@@ -1335,6 +1388,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_err.add_argument("--clear", action="store_true",
                        help="Clear the error log after assessment")
 
+    # mcp-usage
+    p_mu = sub.add_parser("mcp-usage", help="Assess MCP server usage — calls, errors, latency.")
+    p_mu.add_argument("--top", type=int, default=20, help="Top N tools to show")
+    p_mu.add_argument("--tool", default=None, help="Filter by tool name")
+    p_mu.add_argument("--caller", default=None, help="Filter by caller")
+    p_mu.add_argument("--clear", action="store_true",
+                      help="Clear the usage log after assessment")
+
     # timeline
     p_tl = sub.add_parser("timeline", help="Reconstruct forensic timeline from case artefacts.")
     p_tl.add_argument("--case", required=True)
@@ -1386,6 +1447,26 @@ def build_parser() -> argparse.ArgumentParser:
                       choices=["sentinel", "crowdstrike", "defender", "entra", "cloudapps"],
                       help="Override platform detection")
     p_fp.add_argument("--live-query",  action="store_true", default=False, dest="live_query",
+                      help="Enable read-only KQL queries against the alert workspace (requires az CLI auth)")
+
+    # fp-tuning
+    p_ft = sub.add_parser(
+        "fp-tuning",
+        help="Generate a SIEM engineering tuning ticket with root cause analysis and before/after query modifications.",
+    )
+    p_ft.add_argument("--case",        required=True, help="Case ID (e.g. IV_CASE_001)")
+    p_ft.add_argument("--alert",       metavar="FILE", default=None,
+                      help="Path to alert JSON/text file")
+    p_ft.add_argument("--alert-text",  metavar="TEXT", default=None, dest="alert_text",
+                      help="Inline alert string")
+    p_ft.add_argument("--query",       metavar="FILE", default=None,
+                      help="Path to KQL rule file (Sentinel)")
+    p_ft.add_argument("--query-text",  metavar="KQL",  default=None, dest="query_text",
+                      help="Inline KQL rule string")
+    p_ft.add_argument("--platform",    default=None,
+                      choices=["sentinel", "crowdstrike", "defender", "entra", "cloudapps", "splunk"],
+                      help="Override platform detection")
+    p_ft.add_argument("--live-query",  action="store_true", default=False, dest="live_query",
                       help="Enable read-only KQL queries against the alert workspace (requires az CLI auth)")
 
     # velociraptor
@@ -1606,8 +1687,10 @@ def main() -> None:
         "sandbox":        cmd_sandbox,
         "anomalies":      cmd_anomalies,
         "errors":         cmd_errors,
+        "mcp-usage":      cmd_mcp_usage,
         "response-actions": cmd_response_actions,
         "fp-ticket":      cmd_fp_ticket,
+        "fp-tuning":      cmd_fp_tuning,
         "timeline":       cmd_timeline,
         "pe-analysis":    cmd_pe_analysis,
         "yara":           cmd_yara,

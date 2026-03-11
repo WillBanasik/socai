@@ -178,6 +178,110 @@ def register_resources(mcp: FastMCP) -> None:
         return _json(pb)
 
     # ------------------------------------------------------------------
+    # Sentinel Composite Queries
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://sentinel-queries")
+    def list_sentinel_queries() -> str:
+        """List of all Sentinel composite query scenarios.
+
+        Composite queries are single-execution full-picture queries using
+        Sentinel-native tables (OfficeActivity, SigninLogs, SecurityAlert).
+        Use generate_sentinel_query tool to hydrate them with parameters.
+        """
+        _require_scope("sentinel:query")
+
+        from tools.sentinel_queries import list_scenarios
+        return _json({"scenarios": list_scenarios()})
+
+    # ------------------------------------------------------------------
+    # Client Response Playbooks
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://clients/{client_name}/playbook")
+    def client_playbook(client_name: str) -> str:
+        """Client-specific response playbook: escalation matrix, containment
+        capabilities, remediation actions, crown jewels, and contact procedures.
+
+        Use this to understand what response actions are available for a client
+        BEFORE calling ``response_actions``.  Tells you:
+        - What containment actions the SOC can take (EDR isolate, password reset, etc.)
+        - What remediation actions the client owns (email purge, network blocklist, etc.)
+        - Escalation matrix by priority and asset type (when to phone, when to ticket)
+        - Crown jewel hosts that trigger P1 escalation if compromised
+        """
+        _require_scope("investigations:read")
+
+        from config.settings import CLIENT_PLAYBOOKS_DIR as CLIENTS_DIR
+        from tools.common import load_json
+
+        # Try exact name, then lowercase
+        path = CLIENTS_DIR / f"{client_name}.json"
+        if not path.exists():
+            path = CLIENTS_DIR / f"{client_name.lower().replace(' ', '_')}.json"
+        if not path.exists():
+            # Search by client_name field inside JSON files
+            for p in CLIENTS_DIR.glob("*.json"):
+                try:
+                    data = load_json(p)
+                    if data.get("client_name", "").lower() == client_name.lower():
+                        path = p
+                        break
+                except Exception:
+                    continue
+            else:
+                return _json({"error": f"No response playbook found for client {client_name!r}."})
+
+        data = load_json(path)
+        # Return the response-relevant sections (strip raw contacts for privacy)
+        playbook = {
+            "client_name": data.get("client_name", client_name),
+            "escalation_matrix": data.get("escalation_matrix", []),
+            "containment_capabilities": data.get("containment_capabilities", []),
+            "remediation_actions": data.get("remediation_actions", []),
+            "crown_jewels": data.get("crown_jewels", {}),
+            "response_notes": [
+                r.get("action_to_be_taken", "")
+                for r in data.get("response", [])
+                if r.get("action_to_be_taken")
+            ],
+        }
+        return _json(playbook)
+
+    # ------------------------------------------------------------------
+    # Pipeline Profiles (Attack-Type Routing)
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://pipeline-profiles")
+    def pipeline_profiles() -> str:
+        """Attack-type pipeline profiles — which investigation steps to run
+        or skip for each attack type.
+
+        Each profile includes:
+        - **skip** — steps excluded for this attack type
+        - **description** — what the investigation focuses on
+
+        Attack types: phishing, malware, account_compromise,
+        privilege_escalation, pup_pua, generic.
+
+        The LLM should read this to understand investigation routing.
+        Use ``classify_attack`` or ``plan_investigation`` tools for
+        per-case classification.
+        """
+        _require_scope("investigations:read")
+
+        from tools.classify_attack import PIPELINE_PROFILES, ATTACK_TYPES
+
+        profiles = {}
+        for at in ATTACK_TYPES:
+            profile = PIPELINE_PROFILES.get(at, {})
+            profiles[at] = {
+                "skip": sorted(profile.get("skip", set())),
+                "description": profile.get("description", ""),
+            }
+        return _json({"profiles": profiles, "attack_types": list(ATTACK_TYPES)})
+
+    # ------------------------------------------------------------------
     # IOC Index
     # ------------------------------------------------------------------
 
@@ -246,3 +350,144 @@ def register_resources(mcp: FastMCP) -> None:
 
         from tools.case_landscape import assess_landscape
         return _json(assess_landscape())
+
+    # ------------------------------------------------------------------
+    # Capabilities overview
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://capabilities")
+    def capabilities_overview() -> str:
+        """Structured overview of all SOCAI tools, prompts, and resources.
+
+        Read this resource to answer "what can you do?" in a single call
+        instead of enumerating tool schemas.
+        """
+        return _json({
+            "platform": "SOCAI — SOC Investigation Platform",
+            "start_here": (
+                "Call classify_attack or plan_investigation with alert data to get "
+                "an attack-type classification and step-by-step tool sequence. "
+                "Follow the returned plan."
+            ),
+            "tools": {
+                "total": 50,
+                "categories": {
+                    "investigation_and_triage": {
+                        "description": "Classify alerts and run automated investigation pipelines",
+                        "tools": [
+                            "classify_attack", "plan_investigation", "investigate",
+                            "quick_investigate_url", "quick_investigate_domain",
+                            "quick_investigate_file",
+                        ],
+                    },
+                    "case_management": {
+                        "description": "Create, read, update, close, link, and merge cases",
+                        "tools": [
+                            "list_cases", "get_case", "case_summary", "read_report",
+                            "read_case_file", "new_investigation", "close_case",
+                            "link_cases", "merge_cases", "add_evidence", "add_finding",
+                        ],
+                    },
+                    "enrichment_and_analysis": {
+                        "description": "Enrich IOCs, correlate across cases, check CVEs, and search OSINT",
+                        "tools": [
+                            "enrich_iocs", "correlate", "contextualise_cves",
+                            "recall_cases", "campaign_cluster", "web_search",
+                        ],
+                    },
+                    "email_and_phishing": {
+                        "description": "Parse emails, capture URLs, and detect phishing pages",
+                        "tools": ["analyse_email", "capture_urls", "detect_phishing"],
+                    },
+                    "siem_and_endpoint": {
+                        "description": "Query Sentinel, load KQL playbooks, generate hunt queries, ingest endpoint packages",
+                        "tools": [
+                            "lookup_client", "run_kql", "load_kql_playbook",
+                            "generate_queries", "ingest_velociraptor", "ingest_mde_package",
+                        ],
+                    },
+                    "dynamic_analysis": {
+                        "description": "Detonate malware in sandboxes and browse suspicious sites in disposable browsers",
+                        "tools": [
+                            "start_sandbox_session", "stop_sandbox_session",
+                            "list_sandbox_sessions", "start_browser_session",
+                            "stop_browser_session", "list_browser_sessions",
+                        ],
+                    },
+                    "reporting": {
+                        "description": "Generate investigation reports, MDR deliverables, executive summaries, and response guidance",
+                        "tools": [
+                            "generate_report", "generate_mdr_report", "generate_pup_report",
+                            "generate_executive_summary", "generate_weekly",
+                            "generate_fp_ticket", "generate_fp_tuning_ticket",
+                            "reconstruct_timeline",
+                            "security_arch_review", "response_actions",
+                        ],
+                    },
+                    "threat_intelligence": {
+                        "description": "Assess threat landscape, search and generate threat articles",
+                        "tools": [
+                            "assess_landscape", "search_threat_articles",
+                            "generate_threat_article",
+                        ],
+                    },
+                },
+            },
+            "prompts": {
+                "total": 4,
+                "items": [
+                    {
+                        "name": "investigate_incident",
+                        "description": "End-to-end incident investigation — from raw alert to MDR report or FP closure. The primary guided workflow.",
+                    },
+                    {
+                        "name": "triage_alert",
+                        "description": "Structured alert triage: classify, extract IOCs, enrich, verdict, next steps.",
+                    },
+                    {
+                        "name": "write_fp_ticket",
+                        "description": "False-positive analysis and suppression ticket generation.",
+                    },
+                    {
+                        "name": "kql_investigation",
+                        "description": "Unified KQL playbook prompt. Select a playbook: phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, or ioc-hunt.",
+                    },
+                ],
+            },
+            "resources": {
+                "total": 18,
+                "uris": [
+                    {"uri": "socai://capabilities", "description": "This overview"},
+                    {"uri": "socai://cases", "description": "Full case registry"},
+                    {"uri": "socai://cases/{case_id}/meta", "description": "Case metadata"},
+                    {"uri": "socai://cases/{case_id}/report", "description": "Investigation report markdown"},
+                    {"uri": "socai://cases/{case_id}/iocs", "description": "Extracted IOCs"},
+                    {"uri": "socai://cases/{case_id}/verdicts", "description": "Verdict summary"},
+                    {"uri": "socai://cases/{case_id}/enrichment", "description": "Enrichment data"},
+                    {"uri": "socai://cases/{case_id}/timeline", "description": "Timeline events"},
+                    {"uri": "socai://clients", "description": "Client registry with platform scope"},
+                    {"uri": "socai://clients/{name}", "description": "Full client configuration"},
+                    {"uri": "socai://clients/{name}/playbook", "description": "Client response playbook"},
+                    {"uri": "socai://playbooks", "description": "KQL playbook index"},
+                    {"uri": "socai://playbooks/{id}", "description": "Full KQL playbook with stages"},
+                    {"uri": "socai://sentinel-queries", "description": "Sentinel composite query scenarios"},
+                    {"uri": "socai://pipeline-profiles", "description": "Attack-type routing profiles"},
+                    {"uri": "socai://ioc-index/stats", "description": "IOC index summary with recurring indicators"},
+                    {"uri": "socai://articles", "description": "Threat article index"},
+                    {"uri": "socai://landscape", "description": "Threat landscape across recent cases"},
+                ],
+            },
+            "common_workflows": {
+                "phishing": "lookup_client → classify_attack → add_evidence → enrich_iocs → capture_urls → detect_phishing → analyse_email → run_kql → generate_mdr_report",
+                "malware": "lookup_client → classify_attack → add_evidence → enrich_iocs → start_sandbox_session → run_kql → generate_mdr_report",
+                "account_compromise": "lookup_client → classify_attack → add_evidence → enrich_iocs → run_kql → generate_mdr_report",
+                "false_positive": "add_evidence → enrich_iocs → generate_fp_ticket → generate_fp_tuning_ticket (if tuning needed)",
+                "pup_pua": "classify_attack → enrich_iocs → generate_pup_report",
+            },
+            "rules": [
+                "Always identify the client (lookup_client) before running SIEM queries.",
+                "Always call recall_cases before enrichment to check prior investigations.",
+                "Reports auto-close cases: generate_mdr_report, generate_pup_report, generate_fp_ticket.",
+                "Every finding must be provable with data — never speculate or fill evidence gaps.",
+            ],
+        })

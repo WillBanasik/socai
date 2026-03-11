@@ -17,6 +17,7 @@ WEEKLY_REPORTS   = REPORTS_DIR / "weekly"
 REGISTRY_FILE    = BASE_DIR / "registry" / "case_index.json"
 AUDIT_LOG        = BASE_DIR / "registry" / "audit.log"
 ERROR_LOG        = BASE_DIR / "registry" / "error_log.jsonl"
+MCP_USAGE_LOG    = BASE_DIR / "registry" / "mcp_usage.jsonl"
 
 # Web capture
 CAPTURE_TIMEOUT  = int(os.getenv("SOCAI_CAPTURE_TIMEOUT", "20"))      # seconds
@@ -116,6 +117,7 @@ SOCAI_MODEL_SECARCH       = os.getenv("SOCAI_MODEL_SECARCH",       "standard")
 SOCAI_MODEL_REPORT        = os.getenv("SOCAI_MODEL_REPORT",        "fast")
 SOCAI_MODEL_EXEC_SUMMARY  = os.getenv("SOCAI_MODEL_EXEC_SUMMARY",  "standard")
 SOCAI_MODEL_FP_TICKET     = os.getenv("SOCAI_MODEL_FP_TICKET",     "standard")
+SOCAI_MODEL_FP_TUNING_TICKET = os.getenv("SOCAI_MODEL_FP_TUNING_TICKET", "standard")
 SOCAI_MODEL_EVTX          = os.getenv("SOCAI_MODEL_EVTX",          "standard")
 SOCAI_MODEL_PE_ANALYSIS   = os.getenv("SOCAI_MODEL_PE_ANALYSIS",   "standard")
 SOCAI_MODEL_CVE           = os.getenv("SOCAI_MODEL_CVE",           "fast")
@@ -134,11 +136,6 @@ SOCAI_MODEL_CORRELATION_INSIGHT = os.getenv("SOCAI_MODEL_CORRELATION_INSIGHT",  
 SOCAI_MODEL_RESPONSE_PRIORITY   = os.getenv("SOCAI_MODEL_RESPONSE_PRIORITY",   "fast")
 SOCAI_MODEL_VERDICT_RECONCILE   = os.getenv("SOCAI_MODEL_VERDICT_RECONCILE",   "fast")
 SOCAI_MODEL_AUTO_CLOSE_REVIEW   = os.getenv("SOCAI_MODEL_AUTO_CLOSE_REVIEW",   "fast")
-
-# ---------------------------------------------------------------------------
-# Compaction (server-side context management for long chat sessions)
-# ---------------------------------------------------------------------------
-SOCAI_COMPACTION_ENABLED = os.getenv("SOCAI_COMPACTION_ENABLED", "1") == "1"
 
 # ---------------------------------------------------------------------------
 # Batch API
@@ -163,13 +160,3 @@ CONFLUENCE_EMAIL     = os.getenv("CONFLUENCE_EMAIL", "")
 CONFLUENCE_API_TOKEN = os.getenv("CONFLUENCE_API_TOKEN", "")
 CONFLUENCE_SPACE_KEY = os.getenv("CONFLUENCE_SPACE_KEY", "")
 
-# ---------------------------------------------------------------------------
-# CORS — allowed origins for web UI
-# ---------------------------------------------------------------------------
-# Comma-separated list of allowed origins. Defaults to localhost development.
-# Set SOCAI_CORS_ORIGINS in .env for production (e.g. "https://socai.internal.company.com").
-CORS_ORIGINS = [
-    o.strip() for o in
-    os.getenv("SOCAI_CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
-    if o.strip()
-]

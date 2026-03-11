@@ -41,6 +41,8 @@ ATTACK_TYPES = (
     "malware",
     "account_compromise",
     "privilege_escalation",
+    "data_exfiltration",
+    "lateral_movement",
     "pup_pua",
     "generic",
 )
@@ -90,6 +92,28 @@ _KEYWORD_RULES: list[tuple[str, list[str], int]] = [
         "local admin", "domain admin", "global admin",
         "aad role", "entra role", "sudo abuse", "suid",
         "service account abuse", "token manipulation",
+    ], 3),
+
+    # Data exfiltration — DLP, insider threat, mass download
+    ("data_exfiltration", [
+        "data exfiltration", "data theft", "data leak", "data loss",
+        "mass download", "bulk download", "unusual download",
+        "dlp alert", "dlp policy", "information protection",
+        "insider threat", "insider risk", "data staging",
+        "unauthorized transfer", "sensitive data", "cloud app anomaly",
+        "mass file access", "bulk file", "excessive download",
+        "sharepoint mass", "onedrive mass", "email forwarding rule",
+    ], 3),
+
+    # Lateral movement — internal pivoting, pass-the-hash, RDP
+    ("lateral_movement", [
+        "lateral movement", "lateral move", "pass the hash", "pass-the-hash",
+        "pass the ticket", "pass-the-ticket", "overpass the hash",
+        "rdp pivot", "internal rdp", "smb lateral", "psexec",
+        "wmi remote", "winrm", "dcom lateral", "host hop",
+        "credential relay", "ntlm relay", "kerberoast",
+        "golden ticket", "silver ticket", "dcsync",
+        "internal pivot", "network pivot", "host compromise spread",
     ], 3),
 
     # PUP/PUA — handled by detect_pup() separately, but classify here too
@@ -144,6 +168,26 @@ PIPELINE_PROFILES: dict[str, dict] = {
             "sandbox_detonate",
         },
         "description": "Escalation focused — log correlation, anomaly detection, enrichment",
+    },
+    "data_exfiltration": {
+        "skip": {
+            "domain_investigate",
+            "recursive_capture",
+            "detect_phishing_page",
+            "sandbox_analyse",
+            "sandbox_detonate",
+        },
+        "description": "Data movement focused — DLP alerts, volume anomalies, cloud app activity, network exfiltration",
+    },
+    "lateral_movement": {
+        "skip": {
+            "domain_investigate",
+            "recursive_capture",
+            "detect_phishing_page",
+            "sandbox_analyse",
+            "sandbox_detonate",
+        },
+        "description": "Internal movement focused — RDP/SMB/WMI connections, credential access, blast radius mapping",
     },
     "pup_pua": {
         # Full short-circuit handled in chief.py — this profile is for reference

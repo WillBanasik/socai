@@ -443,7 +443,7 @@ _TIER_MAP = {
 }
 
 _ESCALATE_TASKS = frozenset({
-    "secarch", "report", "chat_response", "evtx", "fp_ticket",
+    "secarch", "report", "chat_response", "evtx", "fp_ticket", "fp_tuning_ticket",
 })
 
 _TIER_ORDER = ["fast", "standard", "heavy"]

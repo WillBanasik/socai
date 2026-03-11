@@ -17,7 +17,7 @@ SOCAI_MCP_TRANSPORT=streamable-http python3 -m mcp_server
 
 ## Architecture
 
-Separate process on port 8001, independent of the web UI (port 8000). Both share the same filesystem state (`cases/`, `registry/`).
+Standalone process on port 8001. Shares filesystem state (`cases/`, `registry/`) with the CLI.
 
 ```
 Client (Claude Desktop / LLM agent)
@@ -28,32 +28,24 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  47 tools, 14 resources │
-│  8 prompts              │
+│  52 tools, 18 resources │
+│  4 prompts              │
 └─────────────────────────┘
     │
     │ Shared filesystem
     ▼
 cases/ + registry/ + articles/
-    ▲
-    │
-┌─────────────────────────┐
-│  api/ (port 8000)       │
-│  Web UI for analysts    │
-└─────────────────────────┘
 ```
 
 ## Authentication
 
 ### Local Auth (default)
 
-Uses the same JWT tokens as the web UI (`api/auth.py`). Clients authenticate with `Authorization: Bearer <token>`.
+Uses self-issued JWTs (`api/auth.py`). Clients authenticate with `Authorization: Bearer <token>`.
 
 ```bash
-# Generate a token via the web UI login endpoint
-curl -X POST http://localhost:8000/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email": "analyst@example.com", "password": "..."}'
+# Generate a token via Python
+python3 -c "from api.auth import create_access_token; print(create_access_token('analyst@example.com', 'analyst', ['investigations:submit','investigations:read','campaigns:read','sentinel:query']))"
 ```
 
 ### Entra ID (future)
@@ -79,19 +71,21 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `investigations:read` | list_cases, get_case, read_report, read_case_file, recall_cases, resources |
 | `investigations:submit` | investigate, quick_investigate_*, capture_urls, enrich_iocs, generate_report, all write tools |
 | `campaigns:read` | campaign_cluster, assess_landscape, search_threat_articles |
-| `sentinel:query` | run_kql, load_kql_playbook |
+| `sentinel:query` | run_kql, load_kql_playbook, generate_sentinel_query |
 | `admin` | All tools including sandbox, browser, response_actions, merge_cases |
 
-## Tools (47)
+## Tools (52)
 
-### Tier 1 -- Core Investigation (17)
+### Tier 1 -- Core Investigation (21)
 
 | Tool | Permission |
 |---|---|
+| `new_investigation` | `investigations:submit` |
 | `investigate` | `investigations:submit` |
 | `quick_investigate_url` | `investigations:submit` |
 | `quick_investigate_domain` | `investigations:submit` |
 | `quick_investigate_file` | `investigations:submit` |
+| `lookup_client` | `investigations:read` |
 | `list_cases` | `investigations:read` |
 | `get_case` | `investigations:read` |
 | `case_summary` | `investigations:read` |
@@ -103,8 +97,10 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `enrich_iocs` | `investigations:submit` |
 | `generate_report` | `investigations:submit` |
 | `generate_mdr_report` | `investigations:submit` |
+| `generate_pup_report` | `investigations:submit` |
 | `generate_queries` | `investigations:submit` |
-| `lookup_client` | `investigations:read` |
+| `classify_attack` | `investigations:read` |
+| `plan_investigation` | `investigations:read` |
 
 ### Tier 2 -- Extended Analysis (12)
 
@@ -123,12 +119,13 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `web_search` | `investigations:submit` |
 | `generate_executive_summary` | `investigations:submit` |
 
-### Tier 3 -- Advanced / Restricted (17)
+### Tier 3 -- Advanced / Restricted (19)
 
 | Tool | Permission |
 |---|---|
 | `run_kql` | `sentinel:query` |
 | `load_kql_playbook` | `sentinel:query` |
+| `generate_sentinel_query` | `sentinel:query` |
 | `security_arch_review` | `investigations:submit` |
 | `contextualise_cves` | `investigations:read` |
 | `ingest_velociraptor` | `investigations:submit` |
@@ -138,6 +135,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `merge_cases` | `admin` |
 | `response_actions` | `investigations:submit` |
 | `generate_fp_ticket` | `investigations:submit` |
+| `generate_fp_tuning_ticket` | `investigations:submit` |
 | `start_sandbox_session` | `admin` |
 | `stop_sandbox_session` | `admin` |
 | `list_sandbox_sessions` | `admin` |
@@ -145,10 +143,11 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `stop_browser_session` | `admin` |
 | `list_browser_sessions` | `admin` |
 
-## Resources (14)
+## Resources (18)
 
 | URI | Description |
 |---|---|
+| `socai://capabilities` | Structured overview of all tools, prompts, and resources |
 | `socai://cases` | All cases from registry |
 | `socai://cases/{case_id}/meta` | Case metadata |
 | `socai://cases/{case_id}/report` | Investigation report |
@@ -158,24 +157,23 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `socai://cases/{case_id}/timeline` | Timeline events |
 | `socai://clients` | Client registry with platform scope |
 | `socai://clients/{client_name}` | Full client configuration |
+| `socai://clients/{name}/playbook` | Client response playbook |
 | `socai://ioc-index/stats` | IOC index summary with tier breakdown |
 | `socai://playbooks` | KQL playbook index |
 | `socai://playbooks/{id}` | Full playbook with stages |
+| `socai://sentinel-queries` | Sentinel composite query scenarios |
+| `socai://pipeline-profiles` | Attack-type routing profiles |
 | `socai://articles` | Threat article index |
 | `socai://landscape` | Threat landscape summary |
 
-## Prompts (8)
+## Prompts (4)
 
 | Prompt | Description |
 |---|---|
 | `investigate_incident` | End-to-end investigation orchestrator (client gate → intake → playbook → disposition → output) |
-| `investigate_phishing` | Multi-stage KQL phishing playbook |
-| `investigate_account_compromise` | Account compromise KQL playbook |
-| `investigate_ioc_hunt` | IOC hunting KQL playbook |
-| `investigate_malware_execution` | Malware execution KQL playbook |
-| `investigate_privilege_escalation` | Privilege escalation KQL playbook |
 | `triage_alert` | Guided alert triage workflow |
 | `write_fp_ticket` | FP ticket generation workflow |
+| `kql_investigation` | Unified KQL playbook prompt (select playbook: phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, ioc-hunt) |
 
 ## Conversation Boundary Enforcement
 
@@ -250,9 +248,9 @@ mcp_server/
     server.py       # FastMCP instance, registration, main()
     auth.py         # SocaiTokenVerifier, _require_scope
     config.py       # Env var configuration
-    tools.py        # 45 MCP tool wrappers
-    resources.py    # 14 MCP resource implementations
-    prompts.py      # 8 MCP prompt implementations
+    tools.py        # 52 MCP tool wrappers
+    resources.py    # 18 MCP resource implementations
+    prompts.py      # 4 MCP prompt implementations
 ```
 
 ## Production Deployment
@@ -260,18 +258,12 @@ mcp_server/
 Use a reverse proxy (nginx/Caddy) to terminate TLS:
 
 ```nginx
-# /mcp/ -> MCP server (8001)
-location /mcp/ {
+location / {
     proxy_pass http://127.0.0.1:8001/;
     proxy_http_version 1.1;
     proxy_set_header Connection "";
     proxy_buffering off;
     proxy_cache off;
-}
-
-# / -> Web UI (8000)
-location / {
-    proxy_pass http://127.0.0.1:8000;
 }
 ```
 

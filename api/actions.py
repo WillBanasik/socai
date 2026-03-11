@@ -379,6 +379,28 @@ def generate_fp_ticket(case_id: str, alert_data: str,
                        platform=platform or "auto-detect")
 
 
+def generate_fp_tuning_ticket(case_id: str, alert_data: str,
+                              platform: str | None = None,
+                              query_text: str | None = None) -> dict:
+    """Generate SIEM engineering tuning ticket."""
+    def _do():
+        from tools.fp_tuning_ticket import fp_tuning_ticket
+        result = fp_tuning_ticket(case_id, alert_data=alert_data,
+                                  platform=platform, query_text=query_text)
+
+        if result.get("status") == "ok":
+            ticket_path = result.get('ticket_path', '')
+            result["_message"] = f"SIEM tuning ticket generated." + md_file_note(ticket_path)
+        elif result.get("status") == "needs_clarification":
+            result["_message"] = f"Need more information to generate tuning ticket:\n{result.get('question', '')}"
+        else:
+            result["_message"] = f"Tuning ticket generation: {result.get('reason', result.get('status', 'unknown'))}"
+        return result
+
+    return _run_action(case_id, "fp_tuning_ticket", _do,
+                       platform=platform or "auto-detect")
+
+
 def generate_queries(case_id: str,
                      platforms: list[str] | None = None,
                      tables: list[str] | None = None) -> dict:

@@ -38,8 +38,7 @@ One incident may contain multiple investigations, run sequentially or in paralle
 | Campaign clusters | `tools/campaign_cluster.py` | Groups cases sharing IOCs — natural incident candidates |
 | Landscape clusters | `tools/case_landscape.py` | Cross-case cluster view for dashboard |
 | Timeline reconstruction | `tools/timeline_reconstruct.py` | Per-case forensic timeline; extend to multi-case |
-| Case context switching | `api/chat.py` `load_case_context` / `save_to_case` | Work on any case from a session |
-| Dashboard clusters panel | `frontend/src/components/dashboard/` | Already renders linked case groups |
+| Dashboard (future) | Web UI dashboard planned for case browsing + cluster view | Paused — MCP-first phase |
 
 ### Implementation plan (when SOAR/Zoho integration begins)
 

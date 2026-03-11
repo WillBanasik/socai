@@ -1,16 +1,16 @@
-"""JWT authentication and user management for the socai REST API."""
+"""JWT authentication and user management for socai.
+
+Used by the MCP server (token verification) and user management.
+"""
 from __future__ import annotations
 
 import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Annotated
 
 import bcrypt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+from jose import jwt
 
 from config.settings import BASE_DIR
 
@@ -19,7 +19,6 @@ JWT_SECRET = os.getenv("SOCAI_JWT_SECRET", "change-me-in-production-set-SOCAI_JW
 JWT_ALGORITHM = "HS256"
 JWT_TTL_HOURS = int(os.getenv("SOCAI_JWT_TTL_HOURS", "8"))
 
-_bearer_scheme = HTTPBearer()
 
 # ---------------------------------------------------------------------------
 # User store helpers
@@ -74,41 +73,3 @@ def _resolve_permissions(user_data: dict) -> list[str]:
             "sentinel:query",
         ]
     return perms
-
-
-# ---------------------------------------------------------------------------
-# FastAPI dependencies
-# ---------------------------------------------------------------------------
-
-async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_scheme)],
-) -> dict:
-    """Validate the JWT and return the decoded payload."""
-    try:
-        payload = jwt.decode(
-            credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM]
-        )
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        )
-    email = payload.get("sub")
-    if not email:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    return payload
-
-
-def require_permission(permission: str):
-    """Factory that returns a dependency checking for a specific permission."""
-
-    async def _check(user: Annotated[dict, Depends(get_current_user)]) -> dict:
-        perms = user.get("permissions", [])
-        if "admin" not in perms and permission not in perms:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Missing permission: {permission}",
-            )
-        return user
-
-    return _check

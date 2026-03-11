@@ -1,76 +1,158 @@
 """MCP prompt implementations — workflow templates for LLM consumption.
 
-KQL playbooks map naturally to MCP prompts: they're parameterised templates
-with stage-by-stage investigation guidance. Three additional prompts provide
-triage, FP-ticket, and end-to-end incident investigation workflows.
+Prompts provide guided investigation workflows that analysts can select from
+the Claude Desktop prompt picker. Four prompts cover the full investigation
+lifecycle:
+
+- ``kql_investigation`` — parameterised KQL playbook for any attack type
+- ``triage_alert`` — structured alert triage process
+- ``write_fp_ticket`` — false-positive analysis and suppression ticket
+- ``investigate_incident`` — end-to-end investigation orchestration
 """
 from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
 
+# Valid KQL playbook IDs and their human-readable names
+_KQL_PLAYBOOKS = {
+    "phishing": "Phishing",
+    "account-compromise": "Account Investigation",
+    "malware-execution": "Malware Execution",
+    "privilege-escalation": "Privilege Escalation",
+    "data-exfiltration": "Data Exfiltration",
+    "lateral-movement": "Lateral Movement",
+    "ioc-hunt": "IOC Hunt",
+}
+
+
 def register_prompts(mcp: FastMCP) -> None:
     """Register all MCP prompt handlers."""
 
     # ------------------------------------------------------------------
-    # KQL Playbook prompts (5)
+    # Unified KQL Playbook prompt (replaces 7 individual prompts)
     # ------------------------------------------------------------------
 
     @mcp.prompt()
-    def investigate_phishing(
-        target_email: str = "",
-        suspicious_url: str = "",
-        target_ids: str = "",
+    def kql_investigation(
+        playbook: str = "",
+        target_entity: str = "",
+        timeframe: str = "7d",
+        extra_params: str = "",
     ) -> str:
-        """Multi-stage KQL phishing investigation playbook.
+        """Multi-stage KQL investigation playbook — select the playbook that matches your attack type.
+
+        Available playbooks:
+        - **phishing** — email delivery, URL clicks, credential harvest
+        - **account-compromise** — sign-ins, on-prem AD logons, lockouts, MDI, UEBA, post-compromise audit
+        - **malware-execution** — process tree, file events, persistence
+        - **privilege-escalation** — role changes, actor legitimacy
+        - **data-exfiltration** — volume anomalies, cloud access, network transfers
+        - **lateral-movement** — RDP/SMB pivots, credential access, blast radius
+        - **ioc-hunt** — cross-table IOC sweep + context pivot
+
+        Tip: call `classify_attack` first to determine which playbook to use,
+        then select this prompt with the matching playbook ID.
 
         Parameters
         ----------
-        target_email : str
-            Email address of the phishing target.
-        suspicious_url : str
-            The suspicious URL from the phishing email.
-        target_ids : str
-            Comma-separated quoted list of target user IDs for KQL queries.
+        playbook : str
+            Playbook ID (e.g. "phishing", "account-compromise", "malware-execution").
+        target_entity : str
+            Primary target — email address, UPN, hostname, or IOC value depending on playbook.
+        timeframe : str
+            Lookback period (e.g. "7d", "24h", "30d"). Defaults to 7d.
+        extra_params : str
+            Additional parameters as key=value pairs, comma-separated
+            (e.g. "threshold_mb=500,source_host=DESKTOP-01").
         """
         from tools.kql_playbooks import load_playbook, render_stage
 
-        pb = load_playbook("phishing")
-        if not pb:
-            return "Phishing playbook not found."
+        # Resolve playbook
+        playbook_id = playbook.strip().lower() if playbook else ""
+        if playbook_id not in _KQL_PLAYBOOKS:
+            valid = ", ".join(f"`{k}`" for k in _KQL_PLAYBOOKS)
+            return (
+                f"Unknown playbook `{playbook_id}`. "
+                f"Valid playbooks: {valid}.\n\n"
+                "Tip: call `classify_attack` to determine which playbook matches your alert."
+            )
 
+        pb = load_playbook(playbook_id)
+        if not pb:
+            return f"Playbook `{playbook_id}` not found on disk."
+
+        display_name = _KQL_PLAYBOOKS[playbook_id]
+
+        # Build KQL parameter dict from inputs
+        params: dict[str, str] = {}
+        if timeframe:
+            # Different playbooks use different param names for timeframe
+            params["timeframe"] = timeframe
+            params["lookback"] = timeframe
+
+        # Map target_entity to the playbook's expected parameter
+        if target_entity:
+            _entity_map = {
+                "phishing": "target_email",
+                "account-compromise": "upn",
+                "malware-execution": "hostname",
+                "privilege-escalation": "target_host",
+                "data-exfiltration": "target_upn",
+                "lateral-movement": "source_host",
+                "ioc-hunt": "ioc_value",
+            }
+            param_name = _entity_map.get(playbook_id, "target_entity")
+            params[param_name] = target_entity
+            # Account investigation needs both UPN and sAMAccountName
+            if playbook_id == "account-compromise" and "username" not in params:
+                # Derive sAMAccountName from UPN (part before @)
+                username = target_entity.split("@")[0] if "@" in target_entity else target_entity
+                params["username"] = username
+
+        # Parse extra_params (key=value,key=value)
+        if extra_params:
+            for pair in extra_params.split(","):
+                pair = pair.strip()
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    params[k.strip()] = v.strip()
+
+        # Render the playbook
         lines = [
-            f"# Phishing Investigation Playbook",
-            f"",
-            f"**Target email:** {target_email or '(not specified)'}",
-            f"**Suspicious URL:** {suspicious_url or '(not specified)'}",
-            f"**Target IDs:** {target_ids or '(not specified)'}",
-            f"",
-            f"## Overview",
-            f"{pb.get('description', '')}",
-            f"",
-            f"## Parameters",
+            f"# {display_name} Investigation Playbook",
+            "",
+            f"**Playbook:** `{playbook_id}`",
+            f"**Target entity:** {target_entity or '(not specified)'}",
+            f"**Timeframe:** {timeframe}",
+            "",
+            "**Before proceeding:** Confirm the client via `lookup_client` and register "
+            "the alert via `add_evidence`. Call `classify_attack` if you have not already.",
+            "",
+            "## Overview",
+            pb.get("description", ""),
+            "",
         ]
 
-        for param in pb.get("parameters", []):
-            lines.append(f"- **{param['name']}**: {param.get('description', '')}")
+        if pb.get("parameters"):
+            lines.append("## Playbook Parameters")
+            for param in pb["parameters"]:
+                lines.append(f"- **{param['name']}**: {param.get('description', '')}")
+            lines.append("")
 
-        lines.append("")
         lines.append("## Investigation Stages")
         lines.append("")
-
-        params = {}
-        if target_ids:
-            params["target_ids"] = target_ids
-        if suspicious_url:
-            params["suspicious_url"] = suspicious_url
-        if target_email:
-            params["target_email"] = target_email
+        lines.append("Execute each stage using `load_kql_playbook` then `run_kql`. "
+                      "Check Stage 1 results before running subsequent stages. "
+                      "**Use `max_rows=200` or higher on `run_kql`** for stages that "
+                      "return summarised data — this minimises round-trips and gives you "
+                      "the full analytical picture in a single call.")
+        lines.append("")
 
         for i, stage in enumerate(pb.get("stages", []), 1):
             lines.append(f"### Stage {i} — {stage.get('name', stage.get('title', ''))}")
             if stage.get("description"):
-                lines.append(f"{stage['description']}")
+                lines.append(stage["description"])
             lines.append("")
 
             rendered = render_stage(pb, i, params)
@@ -87,138 +169,8 @@ def register_prompts(mcp: FastMCP) -> None:
 
         return "\n".join(lines)
 
-    @mcp.prompt()
-    def investigate_account_compromise(
-        target_upn: str = "",
-        timeframe: str = "7d",
-    ) -> str:
-        """Multi-stage KQL account compromise investigation playbook.
-
-        Parameters
-        ----------
-        target_upn : str
-            User Principal Name of the compromised account.
-        timeframe : str
-            Lookback period (e.g. "7d", "24h").
-        """
-        from tools.kql_playbooks import load_playbook, render_stage
-
-        pb = load_playbook("account-compromise")
-        if not pb:
-            return "Account compromise playbook not found."
-
-        params = {}
-        if target_upn:
-            params["target_upn"] = target_upn
-        if timeframe:
-            params["timeframe"] = timeframe
-
-        return _render_playbook(pb, "Account Compromise Investigation", params, {
-            "target_upn": target_upn,
-            "timeframe": timeframe,
-        })
-
-    @mcp.prompt()
-    def investigate_ioc_hunt(
-        ioc_value: str = "",
-        ioc_type: str = "",
-    ) -> str:
-        """Multi-stage KQL IOC hunting playbook.
-
-        Parameters
-        ----------
-        ioc_value : str
-            The IOC value to hunt for.
-        ioc_type : str
-            IOC type: ip, domain, hash, url.
-        """
-        from tools.kql_playbooks import load_playbook
-
-        pb = load_playbook("ioc-hunt")
-        if not pb:
-            return "IOC hunt playbook not found."
-
-        params = {}
-        if ioc_value:
-            params["ioc_value"] = ioc_value
-        if ioc_type:
-            params["ioc_type"] = ioc_type
-
-        return _render_playbook(pb, "IOC Hunt", params, {
-            "ioc_value": ioc_value,
-            "ioc_type": ioc_type,
-        })
-
-    @mcp.prompt()
-    def investigate_malware_execution(
-        hostname: str = "",
-        process_name: str = "",
-        hash: str = "",
-    ) -> str:
-        """Multi-stage KQL malware execution investigation playbook.
-
-        Parameters
-        ----------
-        hostname : str
-            Target hostname.
-        process_name : str
-            Suspicious process name.
-        hash : str
-            File hash (SHA256 preferred).
-        """
-        from tools.kql_playbooks import load_playbook
-
-        pb = load_playbook("malware-execution")
-        if not pb:
-            return "Malware execution playbook not found."
-
-        params = {}
-        if hostname:
-            params["hostname"] = hostname
-        if process_name:
-            params["process_name"] = process_name
-        if hash:
-            params["hash"] = hash
-
-        return _render_playbook(pb, "Malware Execution Investigation", params, {
-            "hostname": hostname,
-            "process_name": process_name,
-            "hash": hash,
-        })
-
-    @mcp.prompt()
-    def investigate_privilege_escalation(
-        target_host: str = "",
-        timeframe: str = "7d",
-    ) -> str:
-        """Multi-stage KQL privilege escalation investigation playbook.
-
-        Parameters
-        ----------
-        target_host : str
-            Target hostname or IP.
-        timeframe : str
-            Lookback period.
-        """
-        from tools.kql_playbooks import load_playbook
-
-        pb = load_playbook("privilege-escalation")
-        if not pb:
-            return "Privilege escalation playbook not found."
-
-        params = {}
-        if target_host:
-            params["target_host"] = target_host
-        if timeframe:
-            params["timeframe"] = timeframe
-
-        return _render_playbook(pb, "Privilege Escalation Investigation", params, {
-            "target_host": target_host,
-            "timeframe": timeframe,
-        })
-
     # ------------------------------------------------------------------
-    # Workflow prompts (2)
+    # Workflow prompts
     # ------------------------------------------------------------------
 
     @mcp.prompt()
@@ -262,34 +214,46 @@ def register_prompts(mcp: FastMCP) -> None:
             "## Triage Steps",
             "",
             "### 1. Classification",
-            "- Identify the alert category (phishing, malware, credential access, lateral movement, etc.)",
-            "- Determine if this is a known detection pattern or novel activity",
-            "- Check if the alert source and detection logic are reliable",
+            "- Call `classify_attack` with the alert title and description",
+            "- The result tells you the attack type and recommended tool sequence",
+            "- Do NOT skip this step, even if the attack type seems obvious",
             "",
-            "### 2. IOC Extraction",
-            "- Extract all IOCs from the alert: IPs, domains, URLs, hashes, email addresses",
-            "- Use `recall_cases` to check if any IOCs appear in prior investigations",
-            "- Use `enrich_iocs` to query threat intelligence providers",
+            "### 2. Client Identification",
+            "- Call `lookup_client` to confirm the client and available platforms",
+            "- Do NOT proceed without a confirmed client",
             "",
-            "### 3. Contextualisation",
+            "### 3. IOC Extraction & Enrichment",
+            "- Call `recall_cases` to check if any IOCs appear in prior investigations",
+            "- Call `enrich_iocs` to query threat intelligence providers",
+            "",
+            "### 4. Contextualisation",
             "- Identify the affected user(s) and asset(s)",
             "- Determine the business impact and data sensitivity",
             "- Check for related alerts in the same timeframe",
             "",
-            "### 4. Verdict",
+            "### 5. Verdict",
             "- **True Positive** — confirmed malicious activity requiring response",
             "- **Benign True Positive** — legitimate activity triggering the detection",
             "- **False Positive** — detection error, consider `generate_fp_ticket`",
             "- **Inconclusive** — insufficient data, escalate or gather more evidence",
             "",
-            "### 5. Response Recommendation",
+            "**CRITICAL — Assess behaviour, not just indicators:**",
+            "A suspicious IP or impossible-travel alert is a SIGNAL, not a verdict. Before",
+            "concluding compromise, check what the session actually did. Attackers perform",
+            "attacker actions (inbox rules, mail forwarding, BEC, bulk download, OAuth consent,",
+            "MFA registration). Normal users perform normal actions (reading routine emails,",
+            "opening shared docs, calendar). If the activity pattern is entirely benign with",
+            "zero attacker TTPs, the most likely explanation is a VPN — confirm with the user",
+            "before recommending containment.",
+            "",
+            "### 6. Response Recommendation",
             "- If TP: recommend containment, eradication, and recovery actions",
             "- If BTP/FP: document the finding and any tuning recommendations",
             "- If Inconclusive: identify what additional data is needed",
             "",
-            "### 6. Documentation",
-            "- Create a case with `investigate` or `quick_investigate_url`",
-            "- Generate report with `generate_report`",
+            "### 7. Documentation",
+            "- Register evidence with `add_evidence`",
+            "- Generate report with `generate_report` or `generate_mdr_report`",
             "- If FP, generate suppression ticket with `generate_fp_ticket`",
         ])
 
@@ -358,10 +322,11 @@ def register_prompts(mcp: FastMCP) -> None:
             "- Ensure the tuning does not create blind spots for real threats",
             "- Consider allowlisting vs. query refinement vs. threshold adjustment",
             "",
-            "### 4. Generate Ticket",
-            "- Use `generate_fp_ticket` with the alert data and platform",
-            "- Review the generated ticket for accuracy",
-            "- Include the detection query and proposed modifications",
+            "### 4. Generate Tickets",
+            "- Use `generate_fp_ticket` with the alert data and platform → 2-sentence closure comment (auto-closes case)",
+            "- Use `generate_fp_tuning_ticket` with the alert data, platform, and detection query → structured SIEM engineering handoff (does NOT auto-close)",
+            "- The FP ticket closes the alert; the tuning ticket tells detection engineering how to fix the rule",
+            "- Generate BOTH when the analyst wants the alert closed AND the rule tuned",
         ])
 
         return "\n".join(lines)
@@ -414,12 +379,34 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "---",
             "",
-            "### PHASE 0 — CLIENT IDENTIFICATION (MANDATORY HARD GATE)",
+            "### PHASE 0 — CLASSIFY & PLAN (DO THIS FIRST)",
+            "",
+            "**Before doing anything else, call `classify_attack` or `plan_investigation`.**",
+            "",
+            "These tools instantly classify the attack type (phishing, malware, account_compromise,",
+            "privilege_escalation, pup_pua, or generic) and return:",
+            "- Which tools to call and in what order",
+            "- Which steps to SKIP (saves time — e.g. phishing cases skip sandbox analysis)",
+            "- Which KQL playbook to use",
+            "- Dependencies between tools",
+            "",
+            "**`classify_attack`** — lightweight; returns attack type + recommended tools.",
+            "**`plan_investigation`** — full plan; returns numbered steps with phases, reasons, and conditions.",
+            "",
+            "Pass the alert title, notes/description, and any available context (URLs, file names,",
+            "whether .eml or logs are available). No case ID needed — works on raw text.",
+            "",
+            "**Use the returned plan to guide all subsequent phases.** Do not run tools that the",
+            "plan says to skip. Follow the recommended order.",
+            "",
+            "---",
+            "",
+            "### PHASE 1 — CLIENT IDENTIFICATION (MANDATORY HARD GATE)",
             "",
             "**THIS PHASE IS NON-NEGOTIABLE. No investigation proceeds until the client is confirmed.**",
             "",
-            "Every incident belongs to exactly ONE client. Client data must NEVER be mixed across cases. ",
-            "The client determines which security platforms (Sentinel workspace, XDR tenant, CrowdStrike ",
+            "Every incident belongs to exactly ONE client. Client data must NEVER be mixed across cases.",
+            "The client determines which security platforms (Sentinel workspace, XDR tenant, CrowdStrike",
             "CID, Encore) you have access to for this investigation.",
             "",
             "**Step 1 — Identify the client:**",
@@ -434,245 +421,149 @@ def register_prompts(mcp: FastMCP) -> None:
             "**Step 2 — Validate against the client registry:**",
             "- Call `lookup_client` with the identified client name",
             "- If the client is NOT in the registry, STOP and ask the analyst to confirm",
-            "- If the client IS found, note the available platforms — these are your ONLY ",
+            "- If the client IS found, note the available platforms — these are your ONLY",
             "  permitted data sources for this investigation",
             "",
             "**Step 3 — Set the scope boundary:**",
-            "- The case MUST be created with the correct `client` field",
-            "- ALL subsequent queries (KQL, XDR, CrowdStrike) MUST target ONLY this client's ",
+            "- ALL subsequent queries (KQL, XDR, CrowdStrike) MUST target ONLY this client's",
             "  platforms and workspace(s)",
             "- Do NOT query other clients' workspaces, even for correlation or context",
-            "- Do NOT mix IOCs or findings from other clients' cases into this investigation",
-            "- Cross-client correlation is only permitted via `recall_cases` (which searches the ",
-            "  shared IOC index) — but findings from other clients' cases must be clearly attributed",
+            "- Cross-client correlation is only permitted via `recall_cases` (shared IOC index)",
             "",
             "**If the client cannot be determined, DO NOT PROCEED. Ask the analyst.**",
             "",
             "---",
             "",
-            "### PHASE 1 — INTAKE & CLASSIFICATION",
+            "### PHASE 2 — INTAKE & CLASSIFICATION",
             "",
-            "Extract the following from the incident data:",
-            "- **Client** (confirmed in Phase 0)",
-            "- **Alert name / rule** that fired",
-            "- **Platform** (Sentinel, MDE, CrowdStrike, Entra ID, Cloud Apps)",
-            "- **Severity** (use provided override, or derive from alert data)",
-            "- **Affected entities** — users (UPN), hosts (hostname/DeviceId), IPs, emails",
-            "- **IOCs** — all IPs, domains, URLs, hashes, email addresses present",
-            "- **MITRE ATT&CK technique** if identified in the alert",
-            "- **Timestamp** of the alert / incident",
+            "Extract from the incident data:",
+            "- **Alert name / rule**, **Platform**, **Severity**, **Timestamp**",
+            "- **Affected entities** — users (UPN), hosts, IPs, emails",
+            "- **IOCs** — all IPs, domains, URLs, hashes, email addresses",
+            "- **MITRE ATT&CK technique** if identified",
             "",
-            "Then classify the incident into ONE primary category:",
-            "",
-            "| Category | Indicators |",
-            "|----------|------------|",
-            "| **Phishing** | Email alert, suspicious URL/attachment, UrlClickEvents, EmailEvents |",
-            "| **Malware / Endpoint** | Process execution, file creation, persistence, MDE alerts |",
-            "| **Account Compromise** | Risky sign-in, impossible travel, MFA anomaly, token theft |",
-            "| **Privilege Escalation** | Role/group change, PIM elevation, AD event 4728/4732/4756 |",
-            "| **Lateral Movement** | Internal RDP/SMB, pass-the-hash, service account misuse |",
-            "| **Data Exfiltration** | DLP alert, unusual download volume, Cloud Apps anomaly |",
-            "| **IOC Match** | TI Map alert, watchlist hit, known-bad hash/IP/domain |",
+            "The attack type was already classified in Phase 0. Use that classification —",
+            "do NOT re-classify manually.",
             "",
             "**Action:** Call `add_evidence` with the raw incident data to register it in the case.",
             "",
             "---",
             "",
-            "### PHASE 2 — RECALL & CONTEXT",
+            "### PHASE 3 — RECALL & ENRICHMENT",
             "",
-            "Before running ANY queries or enrichment:",
+            "Before running ANY queries:",
             "",
-            "1. **`recall_cases`** — search for all extracted IOCs and entities across prior investigations",
-            "2. **`enrich_iocs`** — extract and enrich all IOCs (runs extract_iocs → enrich → score)",
+            "1. **`recall_cases`** — search for all extracted IOCs across prior investigations",
+            "2. **`enrich_iocs`** — extract and enrich all IOCs (runs extract → enrich → score)",
             "",
-            "Review the results. If prior cases fully cover the investigation, present what is known ",
-            "and ask whether the analyst wants to re-investigate or build on existing data.",
-            "",
-            "State explicitly: what is already known vs. what gaps remain.",
+            "If prior cases fully cover the investigation, present what is known and ask whether",
+            "the analyst wants to re-investigate or build on existing data.",
             "",
             "---",
             "",
-            "### PHASE 3 — EVIDENCE COLLECTION (Playbook-Driven)",
+            "### PHASE 4 — EVIDENCE COLLECTION (Follow the Plan)",
             "",
-            "**SCOPE ENFORCEMENT:** Only query platforms confirmed for this client in Phase 0. ",
-            "If the client only has Sentinel access, do not attempt XDR or CrowdStrike queries. ",
-            "The `lookup_client` result from Phase 0 defines your permitted platform boundary.",
+            "**SCOPE ENFORCEMENT:** Only query platforms confirmed for this client in Phase 1.",
             "",
-            "Based on the classification from Phase 1, execute the appropriate KQL playbook. ",
-            "Use `load_kql_playbook` to get the parameterised queries, then `run_kql` to execute each stage.",
+            "**Follow the tool sequence from `plan_investigation` (Phase 0).** The plan already",
+            "accounts for the attack type, skips irrelevant steps, and orders tools correctly.",
             "",
-            "#### Phishing",
-            "- **Playbook:** `phishing` (4 stages)",
-            "- **Params:** `target_ids` (NetworkMessageId), `url`, `sha256`",
-            "- **Also:** `capture_urls` on any suspicious URLs, then `detect_phishing` on captures",
-            "- **Also:** `analyse_email` if .eml file is available",
-            "- Check: did the user click? Was the attachment executed? Were credentials entered?",
+            "Key tool dependencies to respect:",
+            "- `detect_phishing` requires `capture_urls` first",
+            "- `run_kql` requires confirmed Sentinel workspace from `lookup_client`",
+            "- `start_sandbox_session` is optional and only for file-based investigations",
             "",
-            "#### Malware / Endpoint",
-            "- **Playbook:** `malware-execution` (3 stages)",
-            "- **Params:** `device_name`, `filename`, `sha256`, `lookback`",
-            "- **Also:** Consider `start_sandbox_session` for dynamic analysis of suspicious files",
-            "- Trace: execution → delivery → initial access vector",
+            "#### KQL Playbooks (use `load_kql_playbook` then `run_kql`):",
+            "- **Phishing:** `phishing` — email delivery, URL clicks, credential harvest",
+            "- **Malware:** `malware-execution` — process tree, file events, persistence",
+            "- **Account Compromise:** `account-compromise` — sign-ins, MFA, post-compromise audit",
+            "- **Privilege Escalation:** `privilege-escalation` — role changes, actor legitimacy",
+            "- **Data Exfiltration:** `data-exfiltration` — volume anomalies, cloud access, transfers",
+            "- **Lateral Movement:** `lateral-movement` — RDP/SMB pivots, credential access, blast radius",
+            "- **IOC Hunt:** `ioc-hunt` — cross-table sweep + context pivot",
             "",
-            "#### Account Compromise",
-            "- **Playbook:** `account-compromise` (2 stages)",
-            "- **Params:** `upn`, `ip` (optional), `lookback`",
-            "- Stage 1: sign-in history with risk signals and triage summary",
-            "- Stage 2: post-compromise audit (MFA changes, OAuth consent, mailbox rules)",
-            "",
-            "#### Privilege Escalation",
-            "- **Playbook:** `privilege-escalation` (3 stages)",
-            "- **Params:** `actor_upn`, `target_user`, `target_group`, `lookback`",
-            "- Stage 1: escalation events + related alerts",
-            "- Stage 2: actor legitimacy (sign-in activity, IdentityInfo)",
-            "- Stage 3: post-escalation activity (conditional)",
-            "",
-            "#### IOC Match / Lateral Movement / Data Exfiltration",
-            "- **Playbook:** `ioc-hunt` (2 stages)",
-            "- **Params:** `iocs` (comma-separated), `lookback`",
-            "- Stage 1: union sweep across all tables",
-            "- Stage 2: context pivot (30-min window around hits)",
-            "- For data exfiltration: also check OfficeActivity, DLP logs",
-            "",
-            "#### No matching playbook",
-            "- Use ad-hoc `run_kql` queries targeting the relevant tables",
-            "- Follow the investigation hierarchy: Incidents → Alerts → Events",
-            "",
-            "**Important:** Execute playbook stages conditionally — check Stage 1 results ",
-            "before running subsequent stages. Each stage has run conditions documented in the playbook.",
+            "Execute playbook stages conditionally — check Stage 1 results before running subsequent stages.",
             "",
             "---",
             "",
-            "### PHASE 4 — ANALYSIS & DISPOSITION",
+            "### PHASE 5 — ANALYSIS & DISPOSITION",
             "",
             "With all evidence collected, determine the disposition:",
             "",
-            "**True Positive** — confirmed malicious activity:",
-            "- Evidence chain is complete (every link proven with data)",
-            "- Enrichment confirms malicious IOCs",
-            "- Endpoint telemetry shows execution/impact",
+            "**True Positive** — confirmed malicious (complete evidence chain, malicious IOCs, execution evidence)",
+            "**False Positive** — no malicious activity (clean IOCs, normal operations, no compromise evidence)",
+            "**Inconclusive** — insufficient evidence (state what is confirmed / assessed / unknown)",
             "",
-            "**False Positive** — no malicious activity:",
-            "- IOCs are clean across all TI sources",
-            "- Activity is consistent with normal operations",
-            "- No evidence of compromise, lateral movement, or data loss",
-            "",
-            "**Inconclusive** — insufficient evidence:",
-            "- Some links in the evidence chain are missing",
-            "- State what is confirmed, what is assessed, and what is unknown",
-            "- Identify what additional data would resolve the ambiguity",
-            "",
-            "**Analytical standards apply — these are NON-NEGOTIABLE:**",
+            "**Analytical standards — NON-NEGOTIABLE:**",
             "- Every finding must be provable with supplied data",
             "- Temporal proximity is NEVER causation",
             "- No gap-filling with speculation",
-            "- Distinguish: Confirmed (data proves it) / Assessed (inference) / Unknown (no data)",
+            "- Language: Confirmed (data proves it) / Assessed (inference) / Unknown (no data)",
+            "",
+            "**Behavioural assessment — what the session DID matters more than where it came FROM:**",
+            "- A suspicious IP alone is not proof of compromise. You must assess the ACTIVITY performed",
+            "  during the session, not just the access vector indicators (IP reputation, geolocation).",
+            "- Attacker TTPs after token theft / credential compromise: inbox rule creation, mail forwarding,",
+            "  keyword searching (invoice, payment, password), BEC composition, OAuth app consent, MFA",
+            "  registration, bulk mail download, SharePoint/OneDrive mass exfiltration, rapid lateral movement.",
+            "- Normal user behaviour: reading routine emails, opening shared docs from colleagues, calendar",
+            "  interactions, standard app usage patterns, slow/organic browsing of inbox.",
+            "- If the session activity is ENTIRELY consistent with normal user behaviour and shows ZERO",
+            "  attacker TTPs, this is strong disconfirming evidence — even if the IP is a datacenter/VPN.",
+            "  Adversarial IP + benign activity pattern = likely personal VPN, not compromise.",
+            "- Do NOT anchor on IP reputation alone. Assess the complete behavioural picture before",
+            "  recommending containment actions that disrupt the user.",
+            "- When the activity is benign: recommend confirming VPN usage with the user BEFORE",
+            "  revoking sessions or forcing password resets.",
             "",
             "---",
             "",
-            "### PHASE 5 — OUTPUT",
+            "### PHASE 6 — OUTPUT (Follow the Plan)",
             "",
-            "Based on the disposition:",
+            "The `plan_investigation` output already specifies which report tools to call.",
+            "General guidance by disposition:",
             "",
             "#### True Positive → MDR Report",
-            "1. Call `generate_report` to produce the investigation report",
-            "2. Call `generate_mdr_report` for the structured MDR deliverable",
-            "3. Call `generate_queries` for SIEM hunt queries the client can deploy",
-            "4. Optionally call `response_actions` for containment/eradication guidance",
-            "5. Call `generate_executive_summary` if this is high/critical severity",
+            "1. `generate_report` → investigation narrative",
+            "2. `generate_mdr_report` → client-facing deliverable (auto-closes case)",
+            "3. `generate_queries` → SIEM hunt queries",
+            "4. `response_actions` → containment/eradication guidance",
+            "5. `generate_executive_summary` → if high/critical severity",
             "",
             "#### PUP/PUA → PUP Report",
-            "1. If the detection is a Potentially Unwanted Program/Application (adware, bundleware,",
-            "   browser hijacker, toolbar, search redirector, etc.), use the PUP pipeline instead",
-            "2. Call `generate_pup_report` — lighter weight than MDR, focused on software",
-            "   identification, scope, risk assessment, and removal recommendations",
-            "3. Skip attack-chain analysis steps (sandbox, phishing, campaign clustering)",
+            "1. `generate_pup_report` → lightweight PUP deliverable (auto-closes case)",
+            "2. Skip attack-chain analysis, sandbox, campaign clustering",
             "",
-            "#### False Positive → FP Closure Comment",
-            "1. Call `generate_fp_ticket` with the alert data and platform",
-            "2. The output is a concise 1-2 sentence closure comment explaining why there is no risk",
-            "3. The comment is tailored to the alert type (IOC-based, identity, endpoint, etc.)",
+            "#### False Positive → FP Closure + Tuning",
+            "1. `generate_fp_ticket` → closure comment with suppression recommendation (auto-closes case)",
+            "2. `generate_fp_tuning_ticket` → SIEM engineering tuning ticket with root cause, before/after query, impact assessment (does NOT auto-close)",
+            "3. Generate BOTH when the analyst wants the alert closed AND the detection rule tuned",
             "",
             "#### Inconclusive → Partial Report",
-            "1. Call `generate_report` — it will mark findings as confirmed/assessed/unknown",
-            "2. Document what additional evidence is needed to reach a conclusion",
+            "1. `generate_report` → marks findings as confirmed/assessed/unknown",
+            "2. Document what additional evidence is needed",
             "3. Do NOT produce an MDR report on incomplete evidence",
             "",
             "---",
             "",
-            "### PHASE 6 — CASE CLOSURE",
+            "### PHASE 7 — CASE CLOSURE",
             "",
-            "1. Call `close_case` with the appropriate disposition:",
-            "   - `true_positive` — confirmed malicious",
-            "   - `false_positive` — confirmed benign",
-            "   - `benign_true_positive` — legitimate activity that triggered detection",
-            "   - `inconclusive` — insufficient evidence",
-            "2. Ensure all artefacts are generated before closing",
+            "Most report tools auto-close the case. If not already closed:",
+            "- Call `close_case` with disposition: `true_positive`, `false_positive`,",
+            "  `benign_true_positive`, or `inconclusive`",
             "",
             "---",
             "",
             "## Reminders",
             "",
+            "- **Classify first** — always call `classify_attack` or `plan_investigation` before starting",
+            "- **Follow the plan** — don't run tools the plan says to skip",
             "- **Recall before investigate** — always check prior cases first",
-            "- **Playbooks over ad-hoc** — use the structured playbooks when they match",
+            "- **Playbooks over ad-hoc** — use structured playbooks when they match",
             "- **Evidence chain required** — every link must be proven, not assumed",
             "- **Be autonomous** — exhaust 2-3 approaches before asking the analyst for help",
             "- **Keep it concise** — lead with findings, not process narration",
+            "- **Default to open cases** — when listing cases, show open only unless asked otherwise",
         ])
 
         return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
-
-def _render_playbook(
-    pb: dict,
-    title: str,
-    kql_params: dict,
-    display_params: dict,
-) -> str:
-    """Render a full playbook into a prompt string."""
-    from tools.kql_playbooks import render_stage
-
-    lines = [
-        f"# {title} Playbook",
-        "",
-    ]
-
-    for key, val in display_params.items():
-        lines.append(f"**{key}:** {val or '(not specified)'}")
-    lines.append("")
-
-    lines.append("## Overview")
-    lines.append(pb.get("description", ""))
-    lines.append("")
-
-    lines.append("## Parameters")
-    for param in pb.get("parameters", []):
-        lines.append(f"- **{param['name']}**: {param.get('description', '')}")
-    lines.append("")
-
-    lines.append("## Investigation Stages")
-    lines.append("")
-
-    for i, stage in enumerate(pb.get("stages", []), 1):
-        lines.append(f"### Stage {i} — {stage.get('name', stage.get('title', ''))}")
-        if stage.get("description"):
-            lines.append(stage["description"])
-        lines.append("")
-
-        rendered = render_stage(pb, i, kql_params)
-        if rendered:
-            lines.append("```kql")
-            lines.append(rendered)
-            lines.append("```")
-            lines.append("")
-
-    if pb.get("definitions"):
-        lines.append("## Definitions")
-        for defn in pb["definitions"]:
-            lines.append(f"- **{defn['term']}**: {defn['definition']}")
-
-    return "\n".join(lines)

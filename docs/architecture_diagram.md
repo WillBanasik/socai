@@ -6,7 +6,6 @@
 graph TB
     subgraph Entry["Entry Points"]
         CLI["socai.py<br/>CLI (34 commands)"]
-        WEB["FastAPI + Svelte SPA<br/>Web Chat UI"]
         MCP["mcp_server/<br/>MCP SSE + RBAC"]
     end
 
@@ -31,8 +30,7 @@ graph TB
     end
 
     CLI --> CHIEF
-    WEB -->|"api/chat.py<br/>tool dispatch"| CHIEF
-    MCP --> CHIEF
+    MCP -->|"api/actions.py<br/>tool dispatch"| CHIEF
 
     subgraph Tools["Tool Layer (stateless functions)"]
         direction LR
@@ -152,7 +150,7 @@ graph TB
 
 ```mermaid
 sequenceDiagram
-    participant U as User (CLI/Web)
+    participant U as User (CLI/MCP)
     participant C as ChiefAgent
     participant T as Tools
     participant E as External APIs
