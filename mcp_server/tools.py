@@ -5,9 +5,9 @@ All tools validate permissions using ``_require_scope()`` before delegating to
 the existing action / tool layer.
 
 Tools are organised in three tiers:
-  Tier 1 (18) — Core Investigation   (Phase 1)
-  Tier 2 (12) — Extended Analysis    (Phase 2)
-  Tier 3 (19) — Advanced / Restricted (Phase 3)
+  Tier 1 (25) — Core Investigation   (Phase 1)
+  Tier 2 (19) — Extended Analysis    (Phase 2)
+  Tier 3 (23) — Advanced / Restricted (Phase 3)
 """
 from __future__ import annotations
 
@@ -183,7 +183,7 @@ def _pop_message(result: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Tier 1 — Core Investigation (18 tools)
+# Tier 1 — Core Investigation (25 tools)
 # ---------------------------------------------------------------------------
 
 def _register_tier1(mcp: FastMCP) -> None:
@@ -250,7 +250,10 @@ def _register_tier1(mcp: FastMCP) -> None:
         Parameters
         ----------
         case_id : str
-            Unique case identifier, e.g. "IV_CASE_001".
+            Unique case identifier, e.g. "IV_CASE_001". Omit to auto-generate.
+            **Always create a new case for each new alert** — never reuse an
+            existing case ID to append new alert data. Use ``recall_cases``
+            for cross-case historical context instead.
         title : str
             Human-readable case title.
         severity : str
@@ -285,6 +288,11 @@ def _register_tier1(mcp: FastMCP) -> None:
             is False (fire-and-forget, returns job_id immediately).
         """
         _require_scope("investigations:submit")
+
+        # Strict case ID format enforcement
+        import re as _re
+        if case_id and not _re.match(r"^IV_CASE_\d{3,}$", case_id):
+            return _json({"error": f"Invalid case_id {case_id!r}. Must match IV_CASE_XXX (e.g. IV_CASE_219). Omit case_id to auto-generate."})
 
         # Auto-reset boundaries when creating a brand-new case so that
         # a new conversation isn't blocked by stale state from a prior one.
@@ -893,13 +901,18 @@ def _register_tier1(mcp: FastMCP) -> None:
     def read_case_file(case_id: str, file_path: str) -> str:
         """Use when you need to read a specific artefact file from a case — e.g.
         raw enrichment JSON, IOC lists, captured HTML, phishing detection results,
-        or any other file produced by the pipeline.
+        screenshots, or any other file produced by the pipeline.
 
         Takes a relative path within the case directory. Common paths include:
         ``iocs/iocs.json``, ``artefacts/enrichment/enrichment.json``,
         ``artefacts/enrichment/verdict_summary.json``,
         ``artefacts/phishing/detection.json``, ``artefacts/captures/*.html``,
-        ``notes/analyst_input.md``, ``reports/investigation_report.md``.
+        ``artefacts/web/*/screenshot.png``, ``notes/analyst_input.md``,
+        ``reports/investigation_report.md``.
+
+        **Image files** (PNG, JPG, GIF, WebP) are returned as rendered images
+        that display directly in chat. Use this to view screenshots from web
+        captures, browser sessions, or sandbox detonations.
 
         For the investigation report specifically, prefer ``read_report`` (which
         also handles auto-close). For a full case overview, use ``case_summary``.
@@ -942,6 +955,15 @@ def _register_tier1(mcp: FastMCP) -> None:
             else:
                 return _json({"error": f"File not found: {file_path}"})
 
+        # Image files → return as rendered image via MCP ImageContent
+        _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        if full_path.suffix.lower() in _IMAGE_SUFFIXES:
+            from mcp.server.fastmcp.utilities.types import Image
+            max_image_bytes = 10 * 1024 * 1024  # 10 MB safety cap
+            if full_path.stat().st_size > max_image_bytes:
+                return _json({"error": f"Image too large ({full_path.stat().st_size} bytes). Max 10 MB."})
+            return Image(path=full_path)
+
         try:
             content = full_path.read_text(encoding="utf-8", errors="replace")
             if len(content) > 50000:
@@ -965,15 +987,17 @@ def _register_tier1(mcp: FastMCP) -> None:
         read_report -> summarise -> **close_case**. Note that ``read_report``
         auto-closes with disposition "resolved", so you only need this tool
         explicitly when the analyst wants a specific disposition (e.g. "false_positive",
-        "true_positive", "benign", "inconclusive").
+        "true_positive", "benign_positive", "benign", "inconclusive").
 
         Parameters
         ----------
         case_id : str
             Case identifier, e.g. "IV_CASE_001".
         disposition : str
-            Closing disposition. One of: "true_positive", "false_positive",
-            "benign", "inconclusive", "resolved". Default "resolved".
+            Closing disposition. One of: "true_positive", "benign_positive",
+            "false_positive", "benign", "inconclusive", "resolved". Default "resolved".
+            Use "benign_positive" when the alert fired correctly on real activity
+            but that activity was authorised/non-threatening (not "true_positive").
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
@@ -984,7 +1008,7 @@ def _register_tier1(mcp: FastMCP) -> None:
     @mcp.tool(title="Add Evidence")
     async def add_evidence(case_id: str, text: str) -> str:
         """Use when the analyst pastes in raw alert data, IOC lists, log snippets,
-        or contextual notes that should be attached to an existing case. Trigger
+        or contextual notes that should be attached to the CURRENT case. Trigger
         phrases: "here's the alert", "add these IOCs", "paste this into the case",
         "here's more context".
 
@@ -993,6 +1017,11 @@ def _register_tier1(mcp: FastMCP) -> None:
         Parses the text for IOCs (URLs, IPs, domains, hashes, emails, CVEs) and
         saves both the raw text and extracted IOCs to the case. The extracted IOCs
         are merged into the case IOC set.
+
+        **IMPORTANT — Case isolation:** This tool adds evidence to the specified
+        case only. If you have a NEW alert involving the same user/host/IOCs as a
+        prior case, create a NEW case first — do not add new alert data to the old
+        case. Use ``recall_cases`` for historical cross-case context instead.
 
         **Difference from ``add_finding``:** this tool is for raw input data
         (alert JSON, IOC lists, analyst notes). ``add_finding`` is for recording
@@ -1056,6 +1085,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             Extended detail, evidence references, or analyst reasoning.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from config.settings import CASES_DIR
         from tools.common import utcnow
@@ -1778,9 +1808,342 @@ def _register_tier1(mcp: FastMCP) -> None:
                     "For fully automated execution, use the `investigate` tool instead.",
         })
 
+    @mcp.tool(title="Quick IOC Enrichment", annotations={"readOnlyHint": True})
+    async def quick_enrich(
+        iocs: list[str],
+        deep: bool = True,
+    ) -> str:
+        """Use for fast, ad-hoc IOC lookups — no case required.  Trigger
+        phrases: "enrich this IP", "look up this hash", "is this domain
+        malicious?", "check these IOCs", or whenever the analyst pastes
+        IOC values and wants immediate reputation data.
+
+        Accepts raw IOC values (IPs, domains, URLs, hashes, emails) and
+        auto-detects the type.  Runs all configured providers in parallel
+        and returns per-IOC composite verdicts (malicious / suspicious /
+        clean / unknown) with confidence levels.
+
+        This tool does NOT create or modify a case — results are returned
+        inline only.  For case-bound enrichment that persists artefacts,
+        use ``enrich_iocs`` instead.
+
+        Parameters
+        ----------
+        iocs : list[str]
+            One or more raw IOC values.  Examples:
+            ``["20.23.78.212", "evil-domain.com", "abc123..."]``
+        deep : bool
+            True (default) = run both fast and deep provider tiers.
+            False = fast providers only (quicker, fewer API calls).
+        """
+        _require_scope("investigations:read")
+
+        from tools.enrich import quick_enrich as _quick_enrich
+
+        result = await asyncio.to_thread(
+            lambda: _quick_enrich(iocs, deep=deep)
+        )
+        return _json(result)
+
+
+    @mcp.tool(title="Query OpenCTI", annotations={"readOnlyHint": True, "openWorldHint": True})
+    async def query_opencti(
+        query: str,
+        query_type: str = "auto",
+    ) -> str:
+        """Use when the analyst asks about threat actors, malware families, campaigns,
+        attack patterns, or IOCs **from OpenCTI specifically** — e.g. "what does OpenCTI
+        say about this IP?", "search OpenCTI for Lazarus", "any OpenCTI reports on this
+        hash?", "check our threat intel platform", "what's trending in OpenCTI?".
+
+        Also use when the analyst asks about CVE exploitation context, EPSS scores,
+        or CISA KEV status — OpenCTI enriches vulnerability data with these fields.
+
+        This queries the internal OpenCTI instance directly via GraphQL.
+        No case required — results are returned inline.
+
+        For routine IOC enrichment as part of an investigation, prefer ``quick_enrich``
+        or ``enrich_iocs`` which call OpenCTI automatically alongside other providers.
+        Use this tool for **targeted OpenCTI queries** — when the analyst specifically
+        wants threat intel context, related threat actors, campaigns, or reports.
+
+        Parameters
+        ----------
+        query : str
+            The search term — an IOC value (IP, domain, URL, hash, email),
+            a CVE ID (e.g. "CVE-2024-1234"), or a keyword to search for
+            threat actors, malware, campaigns, or reports.
+        query_type : str
+            One of: ``auto``, ``ioc``, ``cve``, ``threat_actor``, ``malware``,
+            ``campaign``, ``report``, ``attack_pattern``.
+            Default ``auto`` detects IOCs and CVEs automatically, falls back
+            to a broad STIX object search for keywords.
+        """
+        _require_scope("investigations:read")
+
+        from tools.enrich import _opencti_lookup, _detect_ioc_type
+        from config.settings import OPENCTI_KEY, OPENCTI_URL
+
+        if not OPENCTI_KEY:
+            return _json({"status": "error",
+                          "message": "OpenCTI not configured (SOCAI_OPENCTI_KEY not set)"})
+
+        result = await asyncio.to_thread(
+            lambda: _query_opencti_inner(query, query_type, _opencti_lookup,
+                                         _detect_ioc_type, OPENCTI_KEY, OPENCTI_URL)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Extract IOCs from Text", annotations={"readOnlyHint": True})
+    def extract_iocs_from_text(text: str, include_private: bool = False) -> str:
+        """Use when the analyst pastes raw alert text, email bodies, log snippets,
+        or threat reports and wants structured IOCs extracted — e.g. "extract IOCs
+        from this", "what IOCs are in this alert?", "parse this for indicators".
+
+        Extracts IPv4 addresses, domains, URLs, hashes (MD5/SHA1/SHA256), email
+        addresses, and CVE identifiers from raw text. No case required — results
+        returned inline. Feed the output into ``quick_enrich`` for reputation data.
+
+        Parameters
+        ----------
+        text : str
+            Raw text to extract IOCs from (alert body, email, log snippet, etc.).
+        include_private : bool
+            Include RFC-1918 / loopback IPs (default False).
+        """
+        _require_scope("investigations:read")
+
+        from tools.extract_iocs import _extract_from_text
+        raw = _extract_from_text(text, include_private=include_private)
+        # Convert sets to sorted lists for JSON serialisation
+        result = {k: sorted(v) for k, v in raw.items()}
+        total = sum(len(v) for v in result.values())
+        return _json({"status": "ok", "total_iocs": total, "iocs": result})
+
+    @mcp.tool(title="Search Confluence", annotations={"readOnlyHint": True, "openWorldHint": True})
+    async def search_confluence(
+        query: str = "",
+        page_id: str = "",
+        limit: int = 15,
+    ) -> str:
+        """Use when the analyst says "what's on Confluence?", "check Confluence for X",
+        "find the policy on Y", "show me the Confluence page about Z", or asks about
+        published documentation, policies, processes, or threat hunting articles that
+        live on the team wiki.
+
+        Confluence is the team's internal knowledge base. It holds published threat
+        articles, SOC policies, processes, runbooks, and documentation. This tool
+        searches or retrieves pages from the configured Confluence space.
+
+        **IMPORTANT — "articles" is ambiguous.** When the analyst asks about "articles"
+        without specifying Confluence, clarify before acting:
+        - "Check Confluence for articles on X" → use this tool
+        - "Find articles about X" → could mean Confluence (published) OR online
+          discovery (``search_threat_articles`` / ``web_search``). Ask which they mean.
+        - "Search for new threat articles" → online discovery, NOT this tool
+
+        Modes:
+        - **Browse** (no query, no page_id): returns the most recently modified pages
+        - **Search** (query provided): searches page titles for the query string
+        - **Read** (page_id provided): returns full page content by ID
+
+        Parameters
+        ----------
+        query : str
+            Search term to find pages by title. Leave empty to browse recent pages.
+        page_id : str
+            Specific page ID to retrieve with full body content. Overrides query.
+        limit : int
+            Max pages to return when browsing or searching (default 15).
+        """
+        _require_scope("investigations:read")
+
+        from tools.confluence_read import (
+            _is_configured,
+            get_page,
+            list_pages,
+            search_pages,
+        )
+
+        if not _is_configured():
+            raise ToolError(
+                "Confluence not configured. Set CONFLUENCE_URL, CONFLUENCE_CLOUD_ID, "
+                "CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN, and CONFLUENCE_SPACE_KEY."
+            )
+
+        # Mode: read a specific page
+        if page_id:
+            result = await asyncio.to_thread(get_page, page_id)
+            if not result:
+                raise ToolError(f"Page {page_id} not found or not accessible.")
+            return _json({"status": "ok", "mode": "read", "page": result})
+
+        # Mode: search by title
+        if query:
+            pages = await asyncio.to_thread(search_pages, query, limit)
+            return _json({
+                "status": "ok",
+                "mode": "search",
+                "query": query,
+                "results": len(pages),
+                "pages": pages,
+                "_hint": (
+                    "To read the full content of a page, call search_confluence "
+                    "again with the page_id from the results above."
+                ),
+            })
+
+        # Mode: browse recent pages
+        result = await asyncio.to_thread(list_pages, limit)
+        return _json({
+            "status": "ok",
+            "mode": "browse",
+            "results": len(result.get("pages", [])),
+            "pages": result.get("pages", []),
+            "next_cursor": result.get("next_cursor"),
+            "_hint": (
+                "To read the full content of a page, call search_confluence "
+                "again with the page_id from the results above."
+            ),
+        })
+
+
+def _query_opencti_inner(
+    query: str,
+    query_type: str,
+    _opencti_lookup,
+    _detect_ioc_type,
+    opencti_key: str,
+    opencti_url: str,
+) -> dict:
+    """Synchronous inner logic for query_opencti tool."""
+    import requests as _requests
+
+    # Auto-detect query type
+    if query_type == "auto":
+        ioc_type = _detect_ioc_type(query)
+        if ioc_type:
+            query_type = "ioc"
+        elif query.upper().startswith("CVE-"):
+            query_type = "cve"
+        else:
+            query_type = "search"
+
+    # IOC lookup — delegate to existing provider function
+    if query_type == "ioc":
+        ioc_type = _detect_ioc_type(query)
+        if not ioc_type:
+            return {"status": "error", "message": f"Could not detect IOC type for: {query}"}
+        return _opencti_lookup(query, ioc_type)
+
+    # CVE lookup — delegate to existing provider function
+    if query_type == "cve":
+        return _opencti_lookup(query.upper(), "cve")
+
+    # Keyword search — threat actors, malware, campaigns, reports, attack patterns
+    entity_map = {
+        "threat_actor": ("threatActors", "ThreatActor"),
+        "malware": ("malwares", "Malware"),
+        "campaign": ("campaigns", "Campaign"),
+        "report": ("reports", "Report"),
+        "attack_pattern": ("attackPatterns", "AttackPattern"),
+        "search": None,  # broad search across all types
+    }
+
+    headers = {"Authorization": f"Bearer {opencti_key}", "Content-Type": "application/json"}
+    graphql_url = f"{opencti_url}/graphql"
+
+    if query_type in entity_map and entity_map[query_type]:
+        collection, _ = entity_map[query_type]
+        gql = """{
+          %s(search: "%s", first: 10, orderBy: created_at, orderMode: desc) {
+            edges { node { id entity_type name description created_at } }
+          }
+        }""" % (collection, query.replace('"', '\\"'))
+    else:
+        # Broad search across STIX domain objects
+        gql = """{
+          stixDomainObjects(search: "%s", first: 15, orderBy: created_at, orderMode: desc) {
+            edges {
+              node {
+                id
+                entity_type
+                ... on ThreatActorGroup  { name description }
+                ... on ThreatActorIndividual { name description }
+                ... on Malware           { name description malware_types }
+                ... on Campaign          { name description }
+                ... on Report            { name description published }
+                ... on IntrusionSet      { name description }
+                ... on AttackPattern     { name description x_mitre_id }
+                ... on Vulnerability     { name description }
+                created_at
+              }
+            }
+          }
+        }""" % query.replace('"', '\\"')
+
+    try:
+        resp = _requests.post(graphql_url, headers=headers, json={"query": gql}, timeout=15)
+        resp.raise_for_status()
+    except Exception as exc:
+        return {"provider": "opencti", "status": "error", "query": query, "error": str(exc)}
+
+    data = resp.json()
+    if "errors" in data:
+        return {"provider": "opencti", "status": "api_error", "query": query,
+                "message": data["errors"][0].get("message")}
+
+    # Extract results from whichever collection was queried
+    results = []
+    for key in ("stixDomainObjects", "threatActors", "malwares", "campaigns",
+                "reports", "attackPatterns"):
+        edges = data.get("data", {}).get(key, {}).get("edges", [])
+        if edges:
+            for e in edges:
+                node = e["node"]
+                entry = {
+                    "id": node.get("id"),
+                    "type": node.get("entity_type"),
+                    "name": node.get("name"),
+                    "created_at": node.get("created_at"),
+                }
+                if node.get("description"):
+                    entry["description"] = node["description"][:300]
+                if node.get("x_mitre_id"):
+                    entry["mitre_id"] = node["x_mitre_id"]
+                if node.get("malware_types"):
+                    entry["malware_types"] = node["malware_types"]
+                if node.get("published"):
+                    entry["published"] = node["published"]
+                # Build direct link
+                path_map = {
+                    "Threat-Actor-Group": "threats/threat_actors_group",
+                    "Threat-Actor-Individual": "threats/threat_actors_individual",
+                    "Malware": "arsenal/malwares",
+                    "Campaign": "threats/campaigns",
+                    "Report": "analyses/reports",
+                    "Intrusion-Set": "threats/intrusion_sets",
+                    "Attack-Pattern": "techniques/attack_patterns",
+                    "Vulnerability": "arsenal/vulnerabilities",
+                }
+                etype = node.get("entity_type", "")
+                if etype in path_map:
+                    entry["opencti_link"] = f"{opencti_url}/dashboard/{path_map[etype]}/{node['id']}"
+                results.append(entry)
+            break
+
+    return {
+        "provider": "opencti",
+        "status": "ok",
+        "query": query,
+        "query_type": query_type,
+        "result_count": len(results),
+        "results": results,
+    }
+
 
 # ---------------------------------------------------------------------------
-# Tier 2 — Extended Analysis (12 tools)
+# Tier 2 — Extended Analysis (19 tools)
 # ---------------------------------------------------------------------------
 
 def _register_tier2(mcp: FastMCP) -> None:
@@ -1795,6 +2158,9 @@ def _register_tier2(mcp: FastMCP) -> None:
 
         Visits each URL and captures: screenshot, full HTML source, HTTP response
         headers, and redirect chain. All artefacts are saved to the case directory.
+
+        **To view screenshots:** call ``read_case_file`` with the screenshot path
+        (e.g. ``artefacts/web/<domain>/screenshot.png``) — images render directly in chat.
 
         **This tool is a prerequisite for ``detect_phishing``** — phishing detection
         analyses the captured page content, so you must capture URLs first.
@@ -1962,6 +2328,7 @@ def _register_tier2(mcp: FastMCP) -> None:
             Case identifier.
         """
         _require_scope("campaigns:read")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(lambda: actions.run_campaign_cluster(case_id))
@@ -1976,6 +2343,14 @@ def _register_tier2(mcp: FastMCP) -> None:
         """Use when the analyst says "have we seen this before?", "prior art",
         "similar incidents", "search old cases for this IOC", "any history on
         this domain/IP/hash?", or "check previous investigations".
+
+        **This is the cross-case correlation mechanism.** Each alert gets its own
+        case (never merge), but ``recall_cases`` provides historical context by
+        searching all prior investigations for overlapping IOCs, users, or
+        keywords. Use it during Phase 3 of every investigation to check whether
+        entities in the current alert have appeared before. Note overlaps in
+        your analysis (e.g. "user also targeted in IV_CASE_205"), but keep all
+        evidence in the current case.
 
         Searches all prior investigations by IOC values, email addresses, or
         free-text keywords. Returns matching cases with their status, severity,
@@ -2103,6 +2478,8 @@ def _register_tier2(mcp: FastMCP) -> None:
             Optional case ID to associate with.
         """
         _require_scope("investigations:submit")
+        if case_id:
+            _check_client_boundary(case_id)
 
         from tools.threat_articles import generate_articles
         # Build candidate dicts from URLs
@@ -2171,9 +2548,315 @@ def _register_tier2(mcp: FastMCP) -> None:
         result = await asyncio.to_thread(lambda: actions.generate_exec_summary(case_id))
         return _json(_pop_message(result))
 
+    @mcp.tool(title="Parse Log Files")
+    async def parse_logs(case_id: str) -> str:
+        """Use when the analyst says "parse these logs", "extract entities from logs",
+        "process the log files", or after uploading CSV/JSON/JSONL log files to a case.
+
+        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+
+        Parses CSV, JSON, and JSONL log files from the case uploads directory.
+        Extracts structured entities: timestamps, IPs, usernames, process names,
+        command lines, HTTP methods/statuses, Windows Event IDs, and file paths.
+
+        Upload log files to the case ``uploads/`` directory before calling.
+        After parsing, use ``detect_anomalies`` to run behavioural detection on
+        the parsed data, or ``correlate_evtx`` for Windows Event Log chain analysis.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from api import actions
+        result = await asyncio.to_thread(lambda: actions.parse_logs_action(case_id))
+        return _json(_pop_message(result))
+
+    @mcp.tool(title="Detect Anomalies", annotations={"readOnlyHint": True})
+    async def detect_anomalies(case_id: str) -> str:
+        """Use when the analyst says "check for anomalies", "look for suspicious patterns",
+        "run anomaly detection", "any impossible travel?", "brute force attempts?", or
+        after parsing logs to find behavioural outliers.
+
+        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+
+        Runs six behavioural anomaly detectors on parsed log data:
+        1. **Temporal** — logins outside business hours / weekends
+        2. **Impossible travel** — same user, different geo IPs within time window
+        3. **Brute force** — N+ failed logins from same source in window
+        4. **First-seen entities** — processes/commands not seen in prior cases
+        5. **Volume spikes** — events per IP/user exceeding statistical threshold
+        6. **Lateral movement** — same user from 3+ distinct IPs in time window
+
+        **Prerequisite:** Logs must be parsed first (via ``parse_logs``,
+        ``ingest_velociraptor``, or ``ingest_mde_package``).
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from api import actions
+        result = await asyncio.to_thread(lambda: actions.detect_anomalies_action(case_id))
+        return _json(_pop_message(result))
+
+    @mcp.tool(title="Correlate EVTX Attack Chains")
+    async def correlate_evtx(case_id: str) -> str:
+        """Use when the analyst says "correlate event logs", "check for attack chains",
+        "EVTX analysis", "look for lateral movement in logs", or after ingesting
+        Windows Event Log data.
+
+        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+
+        Correlates parsed Windows Event Log data to detect multi-step attack chains:
+        1. **Brute force → success** (4625 failures then 4624 success)
+        2. **Lateral movement** (type 3 logon from internal IP → process creation)
+        3. **Persistence** (scheduled task 4698 / service install 7045 after logon)
+        4. **Privilege escalation** (low-priv parent → elevated child, or RDP → group add)
+        5. **Account manipulation** (4720 account created → 4732 added to group)
+        6. **Kerberos abuse** (4768/4769 with RC4-HMAC encryption)
+        7. **Pass-the-hash** (NTLM type 3 logon without 4776 validation)
+
+        Optionally sends detected chains to Claude for narrative reconstruction
+        and MITRE ATT&CK mapping.
+
+        **Prerequisite:** Logs must be parsed first (via ``parse_logs``,
+        ``ingest_velociraptor``, or ``ingest_mde_package``).
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from api import actions
+        result = await asyncio.to_thread(lambda: actions.correlate_event_logs(case_id))
+        return _json(_pop_message(result))
+
+    @mcp.tool(title="Triage IOCs", annotations={"readOnlyHint": True})
+    async def triage_iocs(case_id: str, urls: list[str] | None = None,
+                          severity: str = "medium") -> str:
+        """Use for fast pre-pipeline IOC triage — checks input IOCs against the
+        cross-case IOC index and enrichment cache before running a full
+        investigation. Trigger phrases: "triage these IOCs", "quick reputation
+        check", "have we seen this before?", "pre-check these indicators".
+
+        Returns known-malicious/suspicious hits, cache status, and severity
+        escalation recommendations. Much faster than ``enrich_iocs`` — use this
+        first to decide whether full enrichment is needed.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        urls : list[str]
+            URLs to triage (domains are auto-extracted).
+        severity : str
+            Current case severity (used for escalation recommendations).
+        """
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from tools.triage import triage as _triage
+        result = await asyncio.to_thread(
+            lambda: _triage(case_id, urls=urls, severity=severity)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Score Verdicts", annotations={"readOnlyHint": True})
+    async def score_ioc_verdicts(case_id: str) -> str:
+        """Use after enrichment to compute composite verdicts for all IOCs in a
+        case. Trigger phrases: "score the IOCs", "what are the verdicts?",
+        "composite verdict", "verdict summary".
+
+        Aggregates per-provider enrichment results into a single verdict per IOC
+        (malicious / suspicious / clean / unknown) with confidence levels
+        (HIGH / MEDIUM / LOW). Also updates the cross-case IOC index.
+
+        **Prerequisite:** ``enrich_iocs`` must have run first.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier with completed enrichment.
+        """
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from tools.score_verdicts import score_verdicts, update_ioc_index
+
+        def _run():
+            result = score_verdicts(case_id)
+            update_ioc_index(case_id)
+            return result
+
+        result = await asyncio.to_thread(_run)
+        return _json(result)
+
+    @mcp.tool(title="Analyse Static File", annotations={"readOnlyHint": True})
+    async def analyse_static_file(file_path: str, case_id: str) -> str:
+        """Use for quick binary file triage — hashes, entropy, file type, strings,
+        and PE metadata extraction. Trigger phrases: "analyse this file",
+        "what is this binary?", "file triage", "quick file analysis".
+
+        Lighter and faster than ``analyse_pe`` (full PE deep-dive). Use this for
+        initial file triage; escalate to ``analyse_pe`` for suspicious binaries.
+
+        Parameters
+        ----------
+        file_path : str
+            Absolute path to the file to analyse.
+        case_id : str
+            Case identifier for artefact storage.
+        """
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from tools.static_file_analyse import static_file_analyse
+        result = await asyncio.to_thread(
+            lambda: static_file_analyse(file_path, case_id)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Sandbox API Lookup", annotations={"readOnlyHint": True, "openWorldHint": True})
+    async def sandbox_api_lookup(case_id: str) -> str:
+        """Use to check whether file hashes from a case have existing sandbox
+        detonation reports. Trigger phrases: "check sandbox", "has this been
+        detonated?", "any sandbox reports?", "Any.Run lookup", "Joe Sandbox".
+
+        Queries Hybrid Analysis, Any.Run, and Joe Sandbox APIs for existing
+        analysis reports by SHA256. This is an **API lookup** of prior
+        detonations — for live detonation in a container, use
+        ``start_sandbox_session`` instead.
+
+        **Prerequisite:** Static file analysis (``analyse_static_file`` or
+        ``analyse_pe``) must have run first to produce SHA256 hashes.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier with file analysis artefacts.
+        """
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from tools.sandbox_analyse import sandbox_analyse
+        result = await asyncio.to_thread(lambda: sandbox_analyse(case_id))
+        return _json(result)
+
 
 # ---------------------------------------------------------------------------
-# Tier 3 — Advanced / Restricted (18 tools)
+# Tier 2b — Rumsfeld Investigation Pipeline (5 tools)
+# ---------------------------------------------------------------------------
+
+def _register_tier2_rumsfeld(mcp: FastMCP) -> None:
+
+    @mcp.tool(title="Generate Investigation Matrix")
+    async def generate_investigation_matrix(case_id: str) -> str:
+        """Generate a structured investigation reasoning matrix for a case.
+
+        Produces known_knowns (facts with evidence), known_unknowns (evidence
+        gaps), and hypotheses (testable claims with disconfirming checks).
+
+        Use after enrichment completes to get a structured view of the
+        investigation state. The matrix enforces analytical standards —
+        every finding must cite evidence, every hypothesis must have a
+        disconfirming check.
+
+        Returns JSON matrix with known_knowns, known_unknowns, hypotheses.
+        """
+        _require_scope("investigations:write")
+        _check_client_boundary(case_id)
+
+        from api.actions import generate_investigation_matrix as _gen
+        result = await asyncio.to_thread(lambda: _gen(case_id))
+        return _json(result)
+
+    @mcp.tool(title="Review Report Quality")
+    async def review_report_quality(case_id: str) -> str:
+        """Run the analytical standards quality gate on a case report.
+
+        Checks for:
+        - 'confirmed' claims without matrix evidence backing
+        - Causal language without cited data links
+        - Speculative language (likely, probably, presumably)
+        - Matrix coverage (are all findings addressed?)
+
+        Returns pass/fail with specific flags and suggestions.
+        """
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from api.actions import review_report_quality as _review
+        result = await asyncio.to_thread(lambda: _review(case_id))
+        return _json(result)
+
+    @mcp.tool(title="Run Determination Analysis")
+    async def run_determination(case_id: str) -> str:
+        """Run evidence-chain determination analysis (shadow mode).
+
+        Analyses all case evidence and produces a structured disposition
+        proposal with:
+        - Disposition (TP/FP/benign/PUP/inconclusive) with confidence
+        - Full evidence chain with per-link status
+        - Gap declarations
+        - Disconfirming checks performed
+
+        This is advisory — it does not change the case disposition.
+        When it disagrees with the deterministic auto-disposition,
+        the case is flagged for analyst review.
+        """
+        _require_scope("investigations:write")
+        _check_client_boundary(case_id)
+
+        from api.actions import run_determination as _det
+        result = await asyncio.to_thread(lambda: _det(case_id))
+        return _json(result)
+
+    @mcp.tool(title="List Follow-up Proposals")
+    async def list_followups(case_id: str) -> str:
+        """List follow-up investigation proposals for a case.
+
+        After the Rumsfeld pipeline runs, it generates proposals for
+        closing evidence gaps. Use this to review them before approving.
+        """
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from api.actions import list_followup_proposals as _list
+        result = await asyncio.to_thread(lambda: _list(case_id))
+        return _json(result)
+
+    @mcp.tool(title="Execute Follow-up Proposal")
+    async def execute_followup(case_id: str, proposal_id: str) -> str:
+        """Execute an approved follow-up investigation proposal.
+
+        Runs the tool call specified in the proposal and updates the
+        investigation matrix. Only execute after reviewing the proposal
+        via list_followups.
+
+        Parameters:
+            case_id: The case to execute against
+            proposal_id: The proposal ID (e.g. "p_001")
+        """
+        _require_scope("investigations:write")
+        _check_client_boundary(case_id)
+
+        from api.actions import execute_followup_proposal as _exec
+        result = await asyncio.to_thread(lambda: _exec(case_id, proposal_id))
+        return _json(result)
+
+
+# ---------------------------------------------------------------------------
+# Tier 3 — Advanced / Restricted (23 tools)
 # ---------------------------------------------------------------------------
 
 def _register_tier3(mcp: FastMCP) -> None:
@@ -2415,6 +3098,7 @@ def _register_tier3(mcp: FastMCP) -> None:
             Case identifier.
         """
         _require_scope("investigations:read")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(lambda: actions.contextualise_cves(case_id))
@@ -2447,6 +3131,7 @@ def _register_tier3(mcp: FastMCP) -> None:
             Run analysis pipeline after ingest (extract, enrich, correlate).
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(
@@ -2480,6 +3165,7 @@ def _register_tier3(mcp: FastMCP) -> None:
             Run analysis pipeline after ingest.
         """
         _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(
@@ -2703,14 +3389,14 @@ def _register_tier3(mcp: FastMCP) -> None:
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
-        from tools.fp_tuning_ticket import fp_tuning_ticket
+        from api import actions
         result = await asyncio.to_thread(
-            lambda: fp_tuning_ticket(
+            lambda: actions.generate_fp_tuning_ticket(
                 case_id, alert_data=alert_data,
                 platform=platform, query_text=query_text,
             )
         )
-        return _json(result)
+        return _json(_pop_message(result))
 
     @mcp.tool(title="Start Sandbox Detonation", annotations={"destructiveHint": True})
     async def start_sandbox_session(
@@ -2752,6 +3438,7 @@ def _register_tier3(mcp: FastMCP) -> None:
             Enable interactive shell mode.
         """
         _require_scope("admin")
+        _check_client_boundary(case_id)
 
         from tools.sandbox_session import start_session
         result = await asyncio.to_thread(
@@ -2793,29 +3480,36 @@ def _register_tier3(mcp: FastMCP) -> None:
         return _json({"sessions": list_sessions()})
 
     @mcp.tool(title="Start Disposable Browser Session", annotations={"destructiveHint": True})
-    async def start_browser_session(url: str, case_id: str) -> str:
+    async def start_browser_session(url: str, case_id: str = "") -> str:
         """Use when the analyst says "open this in a browser", "I need to interact
         with the page", "Cloudflare is blocking", "CAPTCHA", or when automated
         URL capture (``capture_urls``) fails due to bot protection.
 
         **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
 
-        Starts a disposable Docker-based Chrome session with CDP (Chrome DevTools
-        Protocol) network monitoring. Returns a noVNC URL for the analyst to
-        visually interact with the page — useful for bypassing Cloudflare,
-        solving CAPTCHAs, or navigating multi-step phishing flows.
+        Starts a disposable Docker-based Chrome session with passive tcpdump
+        network capture. Returns a noVNC URL for the analyst to manually
+        interact with the page — no automation markers, no CDP, no Selenium.
+        Phishing pages see a real browser with a real user driving it.
 
-        All network traffic is captured automatically. Call ``stop_browser_session``
-        when done to collect the artefacts.
+        Network traffic is captured passively via tcpdump (pcap). Call
+        ``stop_browser_session`` when done to collect the artefacts.
+
+        When ``case_id`` is omitted, artefacts are stored under the session
+        directory (``browser_sessions/<session_id>/artefacts/``) with no case
+        created. Pass a case_id to attach artefacts to an existing investigation.
 
         Parameters
         ----------
         url : str
             URL to load in the browser.
         case_id : str
-            Case identifier for artefact storage.
+            Optional case identifier. When empty, no case is created — artefacts
+            are stored in the session directory.
         """
         _require_scope("admin")
+        if case_id:
+            _check_client_boundary(case_id)
 
         from tools.browser_session import start_session
         result = await asyncio.to_thread(lambda: start_session(url, case_id))
@@ -2824,7 +3518,7 @@ def _register_tier3(mcp: FastMCP) -> None:
     @mcp.tool(title="Stop Browser Session", annotations={"destructiveHint": True})
     def stop_browser_session(session_id: str) -> str:
         """Use to stop a running disposable browser session and collect network
-        artefacts (captured requests, responses, redirects). Call this after
+        artefacts (pcap, parsed DNS/TCP/HTTP/TLS, entities). Call this after
         the analyst has finished interacting with the page via noVNC.
 
         **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
@@ -2849,6 +3543,161 @@ def _register_tier3(mcp: FastMCP) -> None:
         from tools.browser_session import list_sessions
         return _json({"sessions": list_sessions()})
 
+    @mcp.tool(title="Analyse PE Files")
+    async def analyse_pe(case_id: str) -> str:
+        """Use when the analyst says "analyse the binary", "PE analysis", "check the
+        executable", "static analysis", or after extracting PE files (EXE, DLL, SYS)
+        from a ZIP or email attachment.
+
+        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+
+        Runs deep static analysis on all PE files found in the case artefacts
+        (extracted ZIPs and email attachments):
+        - Shannon entropy (per-section + overall)
+        - Section analysis (W+X, size mismatches, unnamed sections)
+        - Full import table with suspicious API flagging
+        - Export table analysis
+        - PE header anomalies (timestamp, checksum, subsystem)
+        - Overlay detection, packer signature heuristics, Rich header hash
+        - File hashes (MD5, SHA1, SHA256) and strings extraction
+        - Optional LLM-powered malware classification
+
+        Requires the ``pefile`` library. Returns skip manifest if not installed.
+
+        After PE analysis, use ``yara_scan`` for rule-based detection, optionally
+        with ``generate_rules=True`` to create custom YARA rules from the findings.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from api import actions
+        result = await asyncio.to_thread(lambda: actions.pe_analysis_action(case_id))
+        return _json(_pop_message(result))
+
+    @mcp.tool(title="YARA Scan")
+    async def yara_scan(case_id: str, generate_rules: bool = False) -> str:
+        """Use when the analyst says "run YARA", "scan for malware signatures",
+        "check against YARA rules", or after PE analysis to match known threat
+        patterns against case artefacts.
+
+        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+
+        Scans extracted files, email attachments, and web captures against:
+        - **Built-in rules** — suspicious PE, PowerShell obfuscation, C2 patterns,
+          base64-encoded PE headers, common RAT strings
+        - **External rules** — custom ``.yar``/``.yara`` files from ``config/yara_rules/``
+        - **LLM-generated rules** (when ``generate_rules=True``) — custom YARA rules
+          created from PE analysis and enrichment verdicts
+
+        Requires the ``yara-python`` library. Returns skip manifest if not installed.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        generate_rules : bool
+            Generate custom YARA rules from PE analysis and enrichment data via LLM.
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from api import actions
+        result = await asyncio.to_thread(
+            lambda: actions.yara_scan_action(case_id, generate_rules=generate_rules)
+        )
+        return _json(_pop_message(result))
+
+    @mcp.tool(title="Generate Memory Dump Guidance")
+    async def memory_dump_guide(
+        case_id: str,
+        process_name: str = "",
+        pid: str = "",
+        alert_title: str = "",
+        hostname: str = "",
+    ) -> str:
+        """Use when the analyst says "how do I collect a memory dump?", "guide me
+        through procdump", "I need to dump this process", or when a suspicious process
+        needs memory analysis but the dump hasn't been collected yet.
+
+        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+
+        Generates step-by-step instructions for collecting a process memory dump via
+        MDE Live Response (ProcDump, built-in memdump, or investigation package).
+        Tailored to the specific process, PID, and host provided.
+
+        After collecting the dump, use ``analyse_memory_dump`` to process it.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        process_name : str
+            Name of the suspicious process (e.g. svchost.exe).
+        pid : str
+            Process ID to dump.
+        alert_title : str
+            Title of the triggering alert (for context).
+        hostname : str
+            Target hostname (for Live Response connection instructions).
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from api import actions
+        result = await asyncio.to_thread(
+            lambda: actions.memory_dump_guide(
+                case_id,
+                process_name=process_name,
+                pid=pid,
+                alert_title=alert_title,
+                hostname=hostname,
+            )
+        )
+        return _json(_pop_message(result))
+
+    @mcp.tool(title="Analyse Memory Dump")
+    async def analyse_memory_dump(case_id: str, run_analysis: bool = True) -> str:
+        """Use when the analyst says "analyse the memory dump", "check the dump file",
+        "what's in this procdump?", or after collecting a process memory dump.
+
+        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+
+        Performs read-only analysis of process memory dump files (.dmp, .dump, .raw, .bin)
+        from the case uploads directory:
+        - String extraction (ASCII + UTF-16LE)
+        - IOC extraction (IPs, URLs, domains, hashes, emails, file paths, registry keys)
+        - DLL reference analysis (flags suspicious DLLs: AMSI, debug, network, credential)
+        - Suspicious pattern detection (injection markers, shellcode, credential theft,
+          AMSI/ETW bypass, PowerShell, Mimikatz modules)
+        - Embedded PE header detection
+        - Risk scoring and assessment
+
+        Upload .dmp files to the case ``uploads/`` directory before calling.
+
+        Set ``run_analysis=True`` (default) to automatically extract IOCs and enrich
+        after analysis. Set ``run_analysis=False`` to review raw findings first.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        run_analysis : bool
+            Run IOC enrichment after analysis.
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from api import actions
+        result = await asyncio.to_thread(
+            lambda: actions.analyse_memory_dump_action(case_id, run_analysis=run_analysis)
+        )
+        return _json(_pop_message(result))
+
 
 # ---------------------------------------------------------------------------
 # Registration entry point
@@ -2858,4 +3707,5 @@ def register_tools(mcp: FastMCP) -> None:
     """Register all MCP tool handlers on the given FastMCP instance."""
     _register_tier1(mcp)
     _register_tier2(mcp)
+    _register_tier2_rumsfeld(mcp)
     _register_tier3(mcp)

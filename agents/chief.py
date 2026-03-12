@@ -447,6 +447,16 @@ class ChiefAgent(BaseAgent):
             return pipeline_results
 
         # ==================================================================
+        # 9c. Investigation matrix — structured reasoning scaffold
+        # ==================================================================
+        try:
+            from tools.investigation_matrix import generate_matrix
+            _step("investigation_matrix", lambda: generate_matrix(self.case_id))
+        except ImportError as exc:
+            log_error(self.case_id, "investigation_matrix", str(exc), severity="info",
+                      context={"reason": "investigation_matrix module unavailable"})
+
+        # ==================================================================
         # 10. Correlate — runs unless logs already handled it
         # ==================================================================
         if not log_paths:
@@ -497,20 +507,49 @@ class ChiefAgent(BaseAgent):
                 should_auto_close = True
                 auto_disposition = "benign_auto_closed"
 
-                # LLM auto-close validation (advisory override)
+                # 14b. Determination engine (shadow mode) — enhanced auto-close validation
                 try:
-                    from tools.llm_insight import validate_auto_close
-                    meta = load_json(CASES_DIR / self.case_id / "case_meta.json")
-                    anomaly_path = CASES_DIR / self.case_id / "artefacts" / "anomalies" / "anomaly_report.json"
-                    anomaly_data = load_json(anomaly_path) if anomaly_path.exists() else {}
-                    llm_review = validate_auto_close(self.case_id, meta, verdicts, anomaly_data)
-                    if llm_review.get("keep_open"):
-                        print(f"[chief] LLM recommends keeping case open: {llm_review['reason']}")
-                        should_auto_close = False
-                        auto_disposition = None
+                    from tools.determination import llm_determine, compare_dispositions
+                    det_result = _step("determination", lambda: llm_determine(self.case_id))
+                    if det_result:
+                        comparison = compare_dispositions(auto_disposition, det_result)
+                        pipeline_results["determination"] = det_result
+                        pipeline_results["determination_comparison"] = comparison
+
+                        if not comparison.get("agrees"):
+                            rec = comparison.get("recommendation", "")
+                            if rec == "flag_for_review":
+                                print(f"[chief] Determination disagrees "
+                                      f"(LLM: {det_result['disposition']}, "
+                                      f"confidence: {det_result['confidence']}) "
+                                      f"— flagging for analyst review")
+                                should_auto_close = False
+                                auto_disposition = None
+                            elif rec == "log_disagreement":
+                                print(f"[chief] Determination low-confidence disagreement "
+                                      f"(LLM: {det_result['disposition']}) — logged, "
+                                      f"proceeding with auto-close")
+                except ImportError:
+                    pass  # determination module not available
                 except Exception as exc:
-                    log_error(self.case_id, "auto_close_llm_review", str(exc),
+                    log_error(self.case_id, "determination", str(exc),
                               severity="info", context={"advisory": True})
+
+                # Fallback: existing validate_auto_close if determination didn't run
+                if should_auto_close and "determination" not in pipeline_results:
+                    try:
+                        from tools.llm_insight import validate_auto_close
+                        meta = load_json(CASES_DIR / self.case_id / "case_meta.json")
+                        anomaly_path = CASES_DIR / self.case_id / "artefacts" / "anomalies" / "anomaly_report.json"
+                        anomaly_data = load_json(anomaly_path) if anomaly_path.exists() else {}
+                        llm_review = validate_auto_close(self.case_id, meta, verdicts, anomaly_data)
+                        if llm_review.get("keep_open"):
+                            print(f"[chief] LLM recommends keeping case open: {llm_review['reason']}")
+                            should_auto_close = False
+                            auto_disposition = None
+                    except Exception as exc:
+                        log_error(self.case_id, "auto_close_llm_review", str(exc),
+                                  severity="info", context={"advisory": True})
 
         # ==================================================================
         # 15. Report
@@ -538,6 +577,21 @@ class ChiefAgent(BaseAgent):
                     else:
                         print(f"[chief] Auto-closing case {self.case_id}: "
                               f"confidence={confidence:.2f}, 0 malicious, 0 suspicious → benign_auto_closed")
+
+        # ==================================================================
+        # 15b. Report quality gate — analytical standards validation
+        # ==================================================================
+        try:
+            from tools.report_quality_gate import review_report
+            review = _step("quality_gate", lambda: review_report(self.case_id))
+            if review and not review.get("passed"):
+                err_count = review.get("error_count", 0)
+                if err_count:
+                    print(f"[chief] Quality gate: {err_count} error(s) flagged in report")
+            pipeline_results["quality_gate"] = review
+        except ImportError as exc:
+            log_error(self.case_id, "quality_gate", str(exc), severity="info",
+                      context={"reason": "report_quality_gate module unavailable"})
 
         # ==================================================================
         # 16. Hunt query generation

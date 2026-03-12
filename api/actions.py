@@ -897,3 +897,143 @@ def analyse_memory_dump_action(case_id: str, run_analysis: bool = True) -> dict:
         }
 
     return _run_action(case_id, "analyse_memory_dump", _do)
+
+
+def parse_logs_action(case_id: str) -> dict:
+    """Parse log files from case uploads directory."""
+    def _do():
+        from tools.parse_logs import parse_logs
+
+        uploads_dir = CASES_DIR / case_id / "uploads"
+        if not uploads_dir.exists():
+            return {"_message": "No uploads directory found — upload log files first."}
+
+        log_exts = {".csv", ".json", ".jsonl", ".log", ".txt"}
+        log_files = sorted(
+            f for f in uploads_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in log_exts
+        )
+        if not log_files:
+            return {"_message": f"No log files found in uploads ({', '.join(log_exts)})."}
+
+        all_results = []
+        for lf in log_files:
+            result = parse_logs(lf, case_id)
+            all_results.append(result)
+
+        total_rows = sum(r.get("row_count", 0) for r in all_results)
+        lines = [f"Parsed {len(all_results)} log file(s), {total_rows} total row(s):"]
+        for r in all_results:
+            lines.append(
+                f"  • {Path(r.get('source_file', '?')).name}: "
+                f"{r.get('row_count', 0)} rows, format={r.get('format', '?')}"
+            )
+
+        return {
+            "files_parsed": len(all_results),
+            "total_rows": total_rows,
+            "_message": "\n".join(lines),
+        }
+
+    return _run_action(case_id, "parse_logs", _do)
+
+
+def detect_anomalies_action(case_id: str) -> dict:
+    """Run behavioural anomaly detection on parsed logs."""
+    def _do():
+        from tools.detect_anomalies import detect_anomalies
+        result = detect_anomalies(case_id)
+
+        findings = result.get("findings", [])
+        if not findings:
+            result["_message"] = "Anomaly detection complete — no anomalies found."
+        else:
+            lines = [f"Detected {len(findings)} anomaly(ies):"]
+            type_counts = result.get("type_counts", {})
+            for atype, count in sorted(type_counts.items(), key=lambda x: -x[1]):
+                lines.append(f"  {atype}: {count}")
+            result["_message"] = "\n".join(lines)
+        return result
+
+    return _run_action(case_id, "detect_anomalies", _do)
+
+
+def pe_analysis_action(case_id: str) -> dict:
+    """Run deep PE analysis on case artefacts."""
+    def _do():
+        from tools.pe_analysis import pe_deep_analyse
+        result = pe_deep_analyse(case_id)
+
+        files = result.get("files", [])
+        if not files:
+            result["_message"] = result.get("reason", "No PE files found to analyse.")
+        else:
+            lines = [f"Analysed {len(files)} PE file(s):"]
+            for f in files:
+                flagged = len(f.get("flagged_apis", []))
+                packed = bool(f.get("packer_signatures"))
+                ent = f.get("overall_entropy", 0)
+                lines.append(
+                    f"  • {f.get('filename', '?')}: "
+                    f"entropy={ent:.2f}, flagged_apis={flagged}"
+                    + (", PACKED" if packed else "")
+                )
+            result["_message"] = "\n".join(lines)
+        return result
+
+    return _run_action(case_id, "pe_analysis", _do)
+
+
+# ---------------------------------------------------------------------------
+# Rumsfeld investigation pipeline actions
+# ---------------------------------------------------------------------------
+
+def generate_investigation_matrix(case_id: str) -> dict:
+    """Generate or regenerate the investigation reasoning matrix."""
+    from tools.investigation_matrix import generate_matrix
+    return _run_action(case_id, "investigation_matrix",
+                       lambda: generate_matrix(case_id) or {"status": "no_result"})
+
+
+def review_report_quality(case_id: str) -> dict:
+    """Run the report quality gate."""
+    from tools.report_quality_gate import review_report
+    return _run_action(case_id, "quality_gate",
+                       lambda: review_report(case_id) or {"status": "no_report"})
+
+
+def run_determination(case_id: str) -> dict:
+    """Run evidence-chain determination analysis."""
+    from tools.determination import llm_determine
+    return _run_action(case_id, "determination",
+                       lambda: llm_determine(case_id) or {"status": "no_result"})
+
+
+def get_matrix_summary(case_id: str) -> dict:
+    """Return compact investigation matrix summary."""
+    from tools.investigation_matrix import get_matrix_summary as _summary
+    result = _summary(case_id)
+    if not result:
+        return {"status": "not_found", "case_id": case_id}
+    return result
+
+
+def list_followup_proposals(case_id: str) -> dict:
+    """List follow-up proposals for a case."""
+    from agents.rumsfeld import list_proposals
+    proposals = list_proposals(case_id)
+    return {"case_id": case_id, "proposals": proposals, "count": len(proposals)}
+
+
+def execute_followup_proposal(case_id: str, proposal_id: str) -> dict:
+    """Execute a single approved follow-up proposal."""
+    from agents.rumsfeld import execute_followup
+    return _run_action(case_id, f"followup.{proposal_id}",
+                       lambda: execute_followup(case_id, proposal_id))
+
+
+def run_full_rumsfeld_pipeline(case_id: str, **kwargs) -> dict:
+    """Run the full Rumsfeld investigation pipeline."""
+    from agents.rumsfeld import RumsfeldAgent
+    return _run_action(case_id, "rumsfeld_pipeline",
+                       lambda: RumsfeldAgent(case_id).run(**kwargs))

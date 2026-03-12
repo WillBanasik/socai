@@ -28,7 +28,7 @@ MCP Server (mcp_server/)
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
     ├── 52 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
     ├── 18 resources         → case data, clients, IOC index, playbooks, sentinel queries, articles, landscape
-    ├── 4 prompts            → investigation orchestrator, KQL investigation, triage, FP workflows
+    ├── 5 prompts            → investigation orchestrator, KQL investigation, triage, FP workflows, user security check
     ├── Boundary enforcement → per-conversation client + case isolation (prevents cross-contamination)
     ├── Data hierarchy       → global (cross-client IOCs) / client (internal) / case (details)
     ├── stdio fallback       → Claude Desktop backward compat (no auth)
@@ -60,9 +60,9 @@ Memory Guidance (tools/memory_guidance.py)
     └── Analyse mode  → .dmp file analysis (strings, PE headers, DLLs, risk scoring)
 
 Browser Session (tools/browser_session.py)
-    ├── Docker (selenium/standalone-chrome) → disposable Chrome via noVNC (:7900)
-    ├── CDP monitor (WebSocket)             → captures requests, responses, redirects, cookies, console
-    └── Session lifecycle                   → start → analyst browses → stop → artefact collection
+    ├── Docker (socai-browser:latest)       → vanilla Chrome via noVNC (:7900), no automation markers
+    ├── tcpdump (passive capture)           → DNS, TCP, HTTP, TLS SNI extraction from pcap
+    └── Session lifecycle                   → start → analyst browses manually → stop → pcap collection
 
 Confluence (tools/confluence_read.py)
     └── Read-only client      → scoped API token, single space (MDR1)
@@ -79,7 +79,7 @@ Input
   Velociraptor exports (collector ZIP / VQL files / directory)
   MDE investigation packages (ZIP or directory)
   Process memory dumps (.dmp / .dump / .raw / .bin)
-  Browser session traffic (CDP-captured network data)
+  Browser session traffic (tcpdump pcap network capture)
         │
         ▼
 cases/<CASE_ID>/

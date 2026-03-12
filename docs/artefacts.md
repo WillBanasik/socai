@@ -65,14 +65,13 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/memory/memory_analysis.json` | Memory dump analysis results (strings, PE headers, patterns, risk) |
 | `cases/<ID>/artefacts/memory/memory_analysis_manifest.json` | Memory analysis metadata |
 | `cases/<ID>/logs/mde_memory_dump.parsed.json` | Normalised memory dump findings for downstream pipeline |
-| `cases/<ID>/artefacts/browser_session/session_manifest.json` | Browser session investigation summary (includes DNS resolution table) |
-| `cases/<ID>/artefacts/browser_session/network_log.json` | All CDP-captured HTTP requests and responses |
-| `cases/<ID>/artefacts/browser_session/dns_log.json` | DNS resolution table — domain → resolved IPs, first/last seen, request count |
-| `cases/<ID>/artefacts/browser_session/redirect_chains.json` | Redirect chain reconstruction from network log |
-| `cases/<ID>/artefacts/browser_session/cookies.json` | Cookies observed via Set-Cookie headers |
-| `cases/<ID>/artefacts/browser_session/console_log.json` | Browser console output captured via CDP |
+| `cases/<ID>/artefacts/browser_session/session_manifest.json` | Browser session investigation summary (DNS queries, TLS SNI, network stats) |
+| `cases/<ID>/artefacts/browser_session/capture.pcap` | Raw packet capture from browser session |
+| `cases/<ID>/artefacts/browser_session/network_log.json` | Parsed network telemetry — DNS queries, TCP connections, HTTP requests, TLS SNI |
+| `cases/<ID>/artefacts/browser_session/dns_log.json` | DNS queries observed during session |
 | `cases/<ID>/artefacts/browser_session/screenshot_final.png` | Final browser state screenshot |
-| `cases/<ID>/logs/mde_browser_session.parsed.json` | Normalised browser session data for downstream pipeline (includes DNS rows) |
+| `cases/<ID>/logs/mde_browser_session.parsed.json` | Normalised browser session data for downstream pipeline (format: `pcap_capture`) |
+| `cases/<ID>/logs/mde_browser_session.entities.json` | Extracted entities from browser session (IPs, domains, URLs) |
 | `cases/<ID>/artefacts/sandbox_detonation/sandbox_manifest.json` | Sandbox detonation session metadata, sample hashes, duration |
 | `cases/<ID>/artefacts/sandbox_detonation/strace_log.json` | Parsed syscall trace (categorised: file/network/process/permission) |
 | `cases/<ID>/artefacts/sandbox_detonation/network_capture.pcap` | Raw packet capture from sandbox |

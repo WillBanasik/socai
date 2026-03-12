@@ -178,12 +178,18 @@ Disposable browser sessions require Docker installed and accessible.
 | Requirement | Detail |
 |-------------|--------|
 | Docker | Must be installed; current user in `docker` group or sudo |
-| Ports | 4444 (Selenium), 7900 (noVNC), 9222 (CDP) — must be free |
-| Image | `selenium/standalone-chrome:latest` (auto-pulled on first use) |
-| Python packages | `selenium`, `websocket-client` |
+| Port | 7900 (noVNC) — must be free |
+| Image | `socai-browser:latest` — build with `docker build -t socai-browser:latest docker/browser/` |
+| Host tools | `tcpdump` (for pcap parsing on session stop) |
 | Network mode | `--network=host` (one session at a time) |
 
-noVNC access: `http://localhost:7900` (password: `secret`).
+| Variable | Default | Description |
+|---|---|---|
+| `SOCAI_BROWSER_IMAGE` | `socai-browser:latest` | Docker image for browser sessions |
+| `SOCAI_BROWSER_IDLE_TIMEOUT` | `300` | Seconds of network inactivity before auto-stop |
+| `SOCAI_BROWSER_MAX_SESSION` | `3600` | Hard session duration ceiling (seconds) |
+
+noVNC access: `http://localhost:7900` (no password).
 
 Session state files are stored in `browser_sessions/<session_id>.json`.
 

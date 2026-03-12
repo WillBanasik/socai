@@ -114,6 +114,66 @@ def register_resources(mcp: FastMCP) -> None:
         return _json(load_json(path))
 
     # ------------------------------------------------------------------
+    # Rumsfeld Investigation Analysis
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://cases/{case_id}/matrix")
+    def case_matrix(case_id: str) -> str:
+        """Investigation reasoning matrix (Rumsfeld method).
+
+        Contains known_knowns (facts with evidence), known_unknowns
+        (evidence gaps), and hypotheses (testable claims).
+        """
+        _require_scope("investigations:read")
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+
+        path = CASES_DIR / case_id / "artefacts" / "analysis" / "investigation_matrix.json"
+        if not path.exists():
+            return _json({"error": "No investigation matrix found. Run generate_investigation_matrix first."})
+        return _json(load_json(path))
+
+    @mcp.resource("socai://cases/{case_id}/determination")
+    def case_determination(case_id: str) -> str:
+        """Evidence-chain determination analysis."""
+        _require_scope("investigations:read")
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+
+        path = CASES_DIR / case_id / "artefacts" / "analysis" / "determination.json"
+        if not path.exists():
+            return _json({"error": "No determination found. Run run_determination first."})
+        return _json(load_json(path))
+
+    @mcp.resource("socai://cases/{case_id}/quality-gate")
+    def case_quality_gate(case_id: str) -> str:
+        """Report quality gate review results."""
+        _require_scope("investigations:read")
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+
+        path = CASES_DIR / case_id / "artefacts" / "analysis" / "report_review.json"
+        if not path.exists():
+            return _json({"error": "No quality gate review found. Run review_report_quality first."})
+        return _json(load_json(path))
+
+    @mcp.resource("socai://cases/{case_id}/followups")
+    def case_followups(case_id: str) -> str:
+        """Follow-up investigation proposals."""
+        _require_scope("investigations:read")
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+
+        path = CASES_DIR / case_id / "artefacts" / "analysis" / "followup_proposals.json"
+        if not path.exists():
+            return _json({"proposals": [], "message": "No follow-up proposals found."})
+        return _json(load_json(path))
+
+    # ------------------------------------------------------------------
     # Client Registry
     # ------------------------------------------------------------------
 
@@ -370,14 +430,14 @@ def register_resources(mcp: FastMCP) -> None:
                 "Follow the returned plan."
             ),
             "tools": {
-                "total": 50,
+                "total": 60,
                 "categories": {
                     "investigation_and_triage": {
                         "description": "Classify alerts and run automated investigation pipelines",
                         "tools": [
                             "classify_attack", "plan_investigation", "investigate",
                             "quick_investigate_url", "quick_investigate_domain",
-                            "quick_investigate_file",
+                            "quick_investigate_file", "quick_enrich",
                         ],
                     },
                     "case_management": {
@@ -399,11 +459,26 @@ def register_resources(mcp: FastMCP) -> None:
                         "description": "Parse emails, capture URLs, and detect phishing pages",
                         "tools": ["analyse_email", "capture_urls", "detect_phishing"],
                     },
+                    "log_analysis_and_forensics": {
+                        "description": "Parse logs, detect anomalies, correlate Windows event logs, and reconstruct timelines",
+                        "tools": [
+                            "parse_logs", "detect_anomalies", "correlate_evtx",
+                            "reconstruct_timeline",
+                        ],
+                    },
+                    "binary_and_memory_analysis": {
+                        "description": "Static PE analysis, YARA scanning, and process memory dump analysis",
+                        "tools": [
+                            "analyse_pe", "yara_scan",
+                            "memory_dump_guide", "analyse_memory_dump",
+                        ],
+                    },
                     "siem_and_endpoint": {
                         "description": "Query Sentinel, load KQL playbooks, generate hunt queries, ingest endpoint packages",
                         "tools": [
                             "lookup_client", "run_kql", "load_kql_playbook",
-                            "generate_queries", "ingest_velociraptor", "ingest_mde_package",
+                            "generate_sentinel_query", "generate_queries",
+                            "ingest_velociraptor", "ingest_mde_package",
                         ],
                     },
                     "dynamic_analysis": {
@@ -420,7 +495,6 @@ def register_resources(mcp: FastMCP) -> None:
                             "generate_report", "generate_mdr_report", "generate_pup_report",
                             "generate_executive_summary", "generate_weekly",
                             "generate_fp_ticket", "generate_fp_tuning_ticket",
-                            "reconstruct_timeline",
                             "security_arch_review", "response_actions",
                         ],
                     },
@@ -479,8 +553,10 @@ def register_resources(mcp: FastMCP) -> None:
             },
             "common_workflows": {
                 "phishing": "lookup_client → classify_attack → add_evidence → enrich_iocs → capture_urls → detect_phishing → analyse_email → run_kql → generate_mdr_report",
-                "malware": "lookup_client → classify_attack → add_evidence → enrich_iocs → start_sandbox_session → run_kql → generate_mdr_report",
-                "account_compromise": "lookup_client → classify_attack → add_evidence → enrich_iocs → run_kql → generate_mdr_report",
+                "malware": "lookup_client → classify_attack → add_evidence → enrich_iocs → analyse_pe → yara_scan → start_sandbox_session → run_kql → generate_mdr_report",
+                "account_compromise": "lookup_client → classify_attack → add_evidence → enrich_iocs → run_kql → detect_anomalies → correlate_evtx → generate_mdr_report",
+                "endpoint_forensics": "lookup_client → classify_attack → ingest_velociraptor (or ingest_mde_package) → parse_logs → detect_anomalies → correlate_evtx → enrich_iocs → generate_mdr_report",
+                "memory_forensics": "lookup_client → classify_attack → memory_dump_guide → analyse_memory_dump → enrich_iocs → generate_mdr_report",
                 "false_positive": "add_evidence → enrich_iocs → generate_fp_ticket → generate_fp_tuning_ticket (if tuning needed)",
                 "pup_pua": "classify_attack → enrich_iocs → generate_pup_report",
             },

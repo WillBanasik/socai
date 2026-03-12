@@ -13,7 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 FIXTURES = Path(__file__).parent / "fixtures"
-TEST_CASE = "TEST_AUTOMATED_001"
+TEST_CASE = "IV_CASE_000"
 
 
 @pytest.fixture(autouse=True)

@@ -13,6 +13,7 @@ Outputs
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -21,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, DEFAULT_CLIENT, REGISTRY_FILE
 from tools.common import load_json, save_json, utcnow
+
+_RE_CASE_ID = re.compile(r"^IV_CASE_\d{3,}$")
 
 
 def case_create(
@@ -36,6 +39,11 @@ def case_create(
     Create folder structure and registry entry for *case_id*.
     Returns the case metadata dict.
     """
+    if not _RE_CASE_ID.match(case_id):
+        raise ValueError(
+            f"Invalid case ID {case_id!r}. Must match IV_CASE_XXX format "
+            f"(e.g. IV_CASE_001). Omit case_id to auto-generate."
+        )
     case_dir = CASES_DIR / case_id
     if case_dir.exists():
         print(f"[case_create] Case {case_id} already exists at {case_dir}")

@@ -84,14 +84,19 @@ def _glob_logs(log_arg: str | None) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def cmd_investigate(args: argparse.Namespace) -> None:
-    from agents.chief import ChiefAgent
-
     urls      = _read_lines(args.urls) if args.urls else (args.url or [])
     log_paths = _glob_logs(args.logs)
     eml_paths = args.eml or []
 
-    chief = ChiefAgent(args.case)
-    result = chief.run(
+    mode = getattr(args, "mode", "chief")
+    if mode == "rumsfeld":
+        from agents.rumsfeld import RumsfeldAgent
+        agent = RumsfeldAgent(args.case)
+    else:
+        from agents.chief import ChiefAgent
+        agent = ChiefAgent(args.case)
+
+    result = agent.run(
         title              = args.title or f"Investigation {args.case}",
         severity           = args.severity,
         analyst            = args.analyst,
@@ -544,6 +549,125 @@ def _quick_pipeline(case_id: str, title: str, severity: str,
         print(json.dumps(result, indent=2))
 
 
+def cmd_matrix(args: argparse.Namespace) -> None:
+    from tools.investigation_matrix import generate_matrix, get_matrix_summary, load_matrix
+
+    if args.summary:
+        summary = get_matrix_summary(args.case)
+        if summary:
+            print(json.dumps(summary, indent=2, default=str))
+        else:
+            print(f"No matrix found for {args.case}")
+        return
+
+    # Generate or reload matrix
+    matrix = load_matrix(args.case) if not args.regenerate else None
+    if not matrix:
+        matrix = generate_matrix(args.case)
+
+    if matrix and args.json:
+        print(json.dumps(matrix, indent=2, default=str))
+    elif matrix:
+        kk = len(matrix.get("known_knowns", []))
+        ku = len(matrix.get("known_unknowns", []))
+        hyp = len(matrix.get("hypotheses", []))
+        print(f"\nInvestigation Matrix for {args.case}")
+        print(f"  Known:     {kk}")
+        print(f"  Unknown:   {ku}")
+        print(f"  Hypotheses: {hyp}")
+        for ku_item in matrix.get("known_unknowns", []):
+            status = "✓" if ku_item.get("resolution") else "○"
+            print(f"    {status} [{ku_item.get('priority', '?')}] {ku_item.get('question', 'N/A')}")
+    else:
+        print(f"Failed to generate matrix for {args.case}")
+
+
+def cmd_followup(args: argparse.Namespace) -> None:
+    from agents.rumsfeld import execute_followup, list_proposals
+
+    proposals = list_proposals(args.case)
+    if not proposals:
+        print(f"No follow-up proposals for {args.case}")
+        return
+
+    if args.approve:
+        result = execute_followup(args.case, args.approve)
+        print(json.dumps(result, indent=2, default=str))
+    elif args.approve_all:
+        for p in proposals:
+            pid = p.get("id", "")
+            if p.get("status") != "executed":
+                print(f"\nExecuting {pid}: {p.get('action', '')}")
+                result = execute_followup(args.case, pid)
+                status = result.get("status", "unknown")
+                print(f"  → {status}")
+    else:
+        # List proposals
+        print(f"\nFollow-up proposals for {args.case}:")
+        for p in proposals:
+            status = p.get("status", "pending")
+            icon = "✓" if status == "executed" else "○"
+            print(f"  {icon} {p.get('id', '?')} [{p.get('priority', '?')}] "
+                  f"{p.get('action', 'N/A')}")
+            print(f"      Tool: {p.get('tool', 'N/A')} | "
+                  f"Resolves: {p.get('resolves', 'N/A')}")
+            if p.get("reasoning"):
+                print(f"      Reason: {p['reasoning'][:100]}")
+
+
+def cmd_quality_gate(args: argparse.Namespace) -> None:
+    from tools.report_quality_gate import review_report
+
+    result = review_report(args.case)
+    if not result:
+        print(f"No report found for {args.case}")
+        return
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        status = "PASSED" if result.get("passed") else "FAILED"
+        print(f"\nQuality Gate: {status}")
+        print(f"  Errors:   {result.get('error_count', 0)}")
+        print(f"  Warnings: {result.get('warning_count', 0)}")
+        cov = result.get("coverage", {})
+        print(f"  Coverage: {cov.get('known_knowns_addressed', 0)}/"
+              f"{cov.get('known_knowns_total', 0)} knowns addressed")
+        for flag in result.get("flags", []):
+            sev = flag.get("severity", "?").upper()
+            print(f"\n  [{sev}] {flag.get('rule', 'N/A')}")
+            print(f"    {flag.get('finding', '')}")
+            if flag.get("suggestion"):
+                print(f"    → {flag['suggestion']}")
+
+
+def cmd_determination(args: argparse.Namespace) -> None:
+    from tools.determination import llm_determine
+
+    result = llm_determine(args.case)
+    if not result:
+        print(f"Failed to generate determination for {args.case}")
+        return
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(f"\nDetermination for {args.case}")
+        print(f"  Disposition: {result.get('disposition', 'N/A')}")
+        print(f"  Confidence:  {result.get('confidence', 'N/A')}")
+        print(f"  Reasoning:   {result.get('reasoning', 'N/A')}")
+        chain = result.get("evidence_chain", [])
+        if chain:
+            print(f"\n  Evidence chain ({len(chain)} links):")
+            for link in chain:
+                status = link.get("status", "?")
+                icon = "✓" if status == "confirmed" else ("~" if status == "assessed" else "?")
+                print(f"    {icon} {link.get('link', 'N/A')}: {link.get('evidence') or link.get('gap', 'N/A')}")
+        gaps = result.get("gaps", [])
+        if gaps:
+            print(f"\n  Gaps: {', '.join(gaps)}")
+
+
 def cmd_url(args: argparse.Namespace) -> None:
     case_id = args.case or _next_case_id()
     title = f"URL investigation: {args.target}"
@@ -826,16 +950,20 @@ def cmd_velociraptor(args: argparse.Namespace) -> None:
 
 
 def cmd_browser_session(args: argparse.Namespace) -> None:
-    from tools.browser_session import start_session, stop_session
+    from tools.browser_session import (start_session, stop_session,
+                                       _session_done_events, _session_results,
+                                       _load_session_state)
 
-    case_id = args.case or _next_case_id()
+    case_id = args.case or ""
 
-    from config.settings import CASES_DIR
-    if not (CASES_DIR / case_id).exists():
-        from tools.case_create import case_create
-        title = f"Browser session: {args.target}"
-        case_create(case_id, title=title, severity=args.severity,
-                    client=getattr(args, "client", "") or "")
+    # Only create a case if the analyst explicitly passed --case
+    if case_id:
+        from config.settings import CASES_DIR
+        if not (CASES_DIR / case_id).exists():
+            from tools.case_create import case_create
+            title = f"Browser session: {args.target}"
+            case_create(case_id, title=title, severity=args.severity,
+                        client=getattr(args, "client", "") or "")
 
     result = start_session(args.target, case_id)
 
@@ -844,23 +972,36 @@ def cmd_browser_session(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     session_id = result["session_id"]
+    idle_timeout = result.get("idle_timeout", 300)
+    done_event = _session_done_events.get(session_id)
 
-    # Block until Ctrl+C
-    import signal as _signal
+    # Block until idle timeout fires or Ctrl+C
     try:
-        print("Press Ctrl+C to stop the session and collect artefacts...")
-        _signal.pause()
+        if idle_timeout > 0:
+            print(f"Press Ctrl+C to stop, or wait — auto-stops after {int(idle_timeout)}s of network inactivity")
+        else:
+            print("Press Ctrl+C to stop the session and collect artefacts...")
+        if done_event:
+            done_event.wait()
+        else:
+            import signal as _signal
+            _signal.pause()
     except KeyboardInterrupt:
         print("\n")
 
-    stop_result = stop_session(session_id)
+    # Stop session (idempotent — returns early if watchdog already stopped it)
+    state = _load_session_state(session_id)
+    if state and state.get("status") == "completed":
+        stop_result = _session_results.get(session_id, {"status": "ok"})
+    else:
+        stop_result = stop_session(session_id)
 
     if stop_result.get("status") != "ok":
         print(f"[error] {stop_result.get('reason', 'Session stop failed')}")
         sys.exit(1)
 
-    # Optionally run analysis pipeline
-    if not args.no_analyse:
+    # Optionally run analysis pipeline (only when a case exists)
+    if case_id and not args.no_analyse:
         print("\n[browser] Running analysis pipeline...")
         from tools.extract_iocs import extract_iocs
         from tools.enrich import enrich
@@ -1270,6 +1411,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Submit files to sandbox for live detonation")
     p_inv.add_argument("--client", default="",
                        help="Client name (loads playbook from config/clients/<name>.json)")
+    p_inv.add_argument("--mode", default="chief", choices=["chief", "rumsfeld"],
+                       help="Pipeline mode: chief (standard) or rumsfeld (with reasoning layer)")
 
     # report
     p_rep = sub.add_parser("report", help="Re-generate investigation report for a case.")
@@ -1428,6 +1571,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate client-specific response actions for a case.",
     )
     p_ra.add_argument("--case", required=True)
+
+    # matrix — investigation reasoning matrix
+    p_mx = sub.add_parser("matrix", help="Generate or view the investigation reasoning matrix.")
+    p_mx.add_argument("--case", required=True)
+    p_mx.add_argument("--summary", action="store_true", help="Show compact summary only")
+    p_mx.add_argument("--regenerate", action="store_true", help="Force regeneration")
+
+    # followup — review and execute follow-up proposals
+    p_fu = sub.add_parser("followup", help="Review and execute Rumsfeld follow-up proposals.")
+    p_fu.add_argument("--case", required=True)
+    p_fu.add_argument("--approve", metavar="ID", help="Execute a specific proposal (e.g. p_001)")
+    p_fu.add_argument("--approve-all", action="store_true", dest="approve_all",
+                       help="Execute all pending proposals")
+
+    # quality-gate — report quality validation
+    p_qg = sub.add_parser("quality-gate", help="Run analytical standards quality gate on a report.")
+    p_qg.add_argument("--case", required=True)
+
+    # determination — evidence-chain disposition analysis
+    p_det = sub.add_parser("determination", help="Run evidence-chain determination analysis.")
+    p_det.add_argument("--case", required=True)
 
     # fp-ticket
     p_fp = sub.add_parser(
@@ -1689,6 +1853,10 @@ def main() -> None:
         "errors":         cmd_errors,
         "mcp-usage":      cmd_mcp_usage,
         "response-actions": cmd_response_actions,
+        "matrix":         cmd_matrix,
+        "followup":       cmd_followup,
+        "quality-gate":   cmd_quality_gate,
+        "determination":  cmd_determination,
         "fp-ticket":      cmd_fp_ticket,
         "fp-tuning":      cmd_fp_tuning,
         "timeline":       cmd_timeline,

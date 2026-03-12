@@ -82,8 +82,8 @@ SANDBOX_NETWORK_NAME = os.getenv("SOCAI_SANDBOX_NETWORK_NAME", "socai_sandbox_ne
 CONTAINER_PREFIX = "socai_sandbox_"
 SESSIONS_DIR = Path(__file__).resolve().parent.parent / "sandbox_sessions"
 
-# Case ID pattern: C001-style or TEST_AUTOMATED_001-style (alphanumeric + underscore)
-_RE_CASE_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+# Case ID pattern: strictly IV_CASE_XXX (e.g. IV_CASE_001)
+_RE_CASE_ID = re.compile(r"^IV_CASE_\d{3,}$")
 
 # Size caps for artefacts
 STRACE_MAX_BYTES = 50 * 1024 * 1024   # 50 MB

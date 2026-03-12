@@ -28,8 +28,8 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  52 tools, 18 resources │
-│  4 prompts              │
+│  67 tools, 18 resources │
+│  5 prompts              │
 └─────────────────────────┘
     │
     │ Shared filesystem
@@ -58,7 +58,7 @@ Set `SOCAI_MCP_AUTH=entra_id` to validate Azure AD tokens instead. No other code
 |---|---|---|
 | `SOCAI_MCP_PORT` | `8001` | Server port |
 | `SOCAI_MCP_HOST` | `0.0.0.0` | Bind address |
-| `SOCAI_MCP_TRANSPORT` | `sse` | Transport: `sse` or `streamable-http` |
+| `SOCAI_MCP_TRANSPORT` | `sse` | Transport: `sse`, `streamable-http`, or `stdio` |
 | `SOCAI_MCP_AUTH` | `local` | Auth mode: `local` or `entra_id` |
 | `SOCAI_MCP_MOUNT_PATH` | `/` | Mount path for SSE routes |
 
@@ -68,80 +68,95 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 
 | Permission | Grants |
 |---|---|
-| `investigations:read` | list_cases, get_case, read_report, read_case_file, recall_cases, resources |
-| `investigations:submit` | investigate, quick_investigate_*, capture_urls, enrich_iocs, generate_report, all write tools |
+| `investigations:read` | list_cases, get_case, read_report, read_case_file, recall_cases, classify_attack, plan_investigation, resources |
+| `investigations:submit` | investigate, quick_investigate_*, capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, analyse_pe, yara_scan, memory tools, all write tools |
 | `campaigns:read` | campaign_cluster, assess_landscape, search_threat_articles |
 | `sentinel:query` | run_kql, load_kql_playbook, generate_sentinel_query |
 | `admin` | All tools including sandbox, browser, response_actions, merge_cases |
 
-## Tools (52)
+## Tools (67)
 
-### Tier 1 -- Core Investigation (21)
+### Tier 1 -- Core Investigation (25)
 
-| Tool | Permission |
-|---|---|
-| `new_investigation` | `investigations:submit` |
-| `investigate` | `investigations:submit` |
-| `quick_investigate_url` | `investigations:submit` |
-| `quick_investigate_domain` | `investigations:submit` |
-| `quick_investigate_file` | `investigations:submit` |
-| `lookup_client` | `investigations:read` |
-| `list_cases` | `investigations:read` |
-| `get_case` | `investigations:read` |
-| `case_summary` | `investigations:read` |
-| `read_report` | `investigations:read` |
-| `read_case_file` | `investigations:read` |
-| `close_case` | `investigations:submit` |
-| `add_evidence` | `investigations:submit` |
-| `add_finding` | `investigations:submit` |
-| `enrich_iocs` | `investigations:submit` |
-| `generate_report` | `investigations:submit` |
-| `generate_mdr_report` | `investigations:submit` |
-| `generate_pup_report` | `investigations:submit` |
-| `generate_queries` | `investigations:submit` |
-| `classify_attack` | `investigations:read` |
-| `plan_investigation` | `investigations:read` |
+| Tool | Permission | Description |
+|---|---|---|
+| `new_investigation` | — | Reset conversation boundaries for new case/client |
+| `investigate` | `investigations:submit` | Run full investigation pipeline |
+| `quick_investigate_url` | `investigations:submit` | Quick URL investigation (auto-generates case) |
+| `quick_investigate_domain` | `investigations:submit` | Quick domain investigation |
+| `quick_investigate_file` | `investigations:submit` | Quick file investigation |
+| `lookup_client` | `investigations:read` | Confirm client and platform config |
+| `list_cases` | `investigations:read` | List cases from registry |
+| `get_case` | `investigations:read` | Get case status and metadata |
+| `case_summary` | `investigations:read` | Aggregated case view (meta + IOCs + verdicts + enrichment) |
+| `read_report` | `investigations:read` | Read investigation report markdown |
+| `read_case_file` | `investigations:read` | Read any case artefact file |
+| `close_case` | `investigations:submit` | Close case with disposition |
+| `add_evidence` | `investigations:submit` | Add raw evidence (alerts, IOCs, log snippets) |
+| `add_finding` | `investigations:submit` | Record analytical finding/conclusion |
+| `enrich_iocs` | `investigations:submit` | Extract and enrich IOCs |
+| `generate_report` | `investigations:submit` | Generate investigation report |
+| `generate_mdr_report` | `investigations:submit` | Generate MDR client report (auto-closes) |
+| `generate_pup_report` | `investigations:submit` | Generate PUP/PUA report (auto-closes) |
+| `generate_queries` | `investigations:submit` | Generate SIEM hunt queries |
+| `classify_attack` | `investigations:read` | Deterministic attack-type classification |
+| `plan_investigation` | `investigations:read` | Full investigation plan with phases and dependencies |
+| `quick_enrich` | `investigations:read` | Caseless ad-hoc IOC enrichment (no case required) |
+| `query_opencti` | `investigations:read` | Direct OpenCTI queries (IOCs, CVEs, keyword search) |
+| `extract_iocs_from_text` | — | Extract IOCs from raw text (caseless) |
+| `search_confluence` | `investigations:read` | Search/browse/read Confluence pages (docs, policies, published articles) |
 
-### Tier 2 -- Extended Analysis (12)
+### Tier 2 -- Extended Analysis (19)
 
-| Tool | Permission |
-|---|---|
-| `capture_urls` | `investigations:submit` |
-| `detect_phishing` | `investigations:submit` |
-| `analyse_email` | `investigations:submit` |
-| `correlate` | `investigations:submit` |
-| `reconstruct_timeline` | `investigations:read` |
-| `campaign_cluster` | `campaigns:read` |
-| `recall_cases` | `investigations:read` |
-| `assess_landscape` | `campaigns:read` |
-| `search_threat_articles` | `campaigns:read` |
-| `generate_threat_article` | `investigations:submit` |
-| `web_search` | `investigations:submit` |
-| `generate_executive_summary` | `investigations:submit` |
+| Tool | Permission | Description |
+|---|---|---|
+| `capture_urls` | `investigations:submit` | Screenshot and capture web page evidence |
+| `detect_phishing` | `investigations:submit` | Brand impersonation / phishing detection |
+| `analyse_email` | `investigations:submit` | Email header/content analysis |
+| `correlate` | `investigations:submit` | IOC correlation across case artefacts |
+| `reconstruct_timeline` | `investigations:read` | Forensic timeline reconstruction |
+| `campaign_cluster` | `campaigns:read` | Cross-case IOC overlap clustering |
+| `recall_cases` | `investigations:read` | Search prior cases by IOC or keyword |
+| `assess_landscape` | `campaigns:read` | Threat landscape assessment |
+| `search_threat_articles` | `campaigns:read` | Discover threat intel article candidates |
+| `generate_threat_article` | `investigations:submit` | Write up selected threat articles |
+| `web_search` | `investigations:submit` | OSINT web search (Brave/DuckDuckGo) |
+| `generate_executive_summary` | `investigations:submit` | Non-technical leadership briefing |
+| `parse_logs` | `investigations:submit` | Parse CSV/JSON/JSONL logs, extract entities |
+| `detect_anomalies` | `investigations:submit` | Behavioural anomaly detection (6 detectors) |
+| `correlate_evtx` | `investigations:submit` | Windows EVTX attack chain correlation (7 detectors) |
+| `triage_iocs` | `investigations:submit` | Pre-pipeline IOC reputation check |
+| `score_ioc_verdicts` | `investigations:submit` | Composite verdict scoring + IOC index update |
+| `analyse_static_file` | `investigations:submit` | Quick binary file triage (PE headers, entropy, strings) |
+| `sandbox_api_lookup` | `investigations:submit` | API-based sandbox report lookup (Hybrid Analysis, Any.Run, Joe) |
 
-### Tier 3 -- Advanced / Restricted (19)
+### Tier 3 -- Advanced / Restricted (23)
 
-| Tool | Permission |
-|---|---|
-| `run_kql` | `sentinel:query` |
-| `load_kql_playbook` | `sentinel:query` |
-| `generate_sentinel_query` | `sentinel:query` |
-| `security_arch_review` | `investigations:submit` |
-| `contextualise_cves` | `investigations:read` |
-| `ingest_velociraptor` | `investigations:submit` |
-| `ingest_mde_package` | `investigations:submit` |
-| `generate_weekly` | `investigations:read` |
-| `link_cases` | `investigations:submit` |
-| `merge_cases` | `admin` |
-| `response_actions` | `investigations:submit` |
-| `generate_fp_ticket` | `investigations:submit` |
-| `generate_fp_tuning_ticket` | `investigations:submit` |
-| `start_sandbox_session` | `admin` |
-| `stop_sandbox_session` | `admin` |
-| `list_sandbox_sessions` | `admin` |
-| `start_browser_session` | `admin` |
-| `stop_browser_session` | `admin` |
-| `list_browser_sessions` | `admin` |
+| Tool | Permission | Description |
+|---|---|---|
+| `run_kql` | `sentinel:query` | Execute KQL query against Sentinel |
+| `load_kql_playbook` | `sentinel:query` | Load KQL playbook stages |
+| `generate_sentinel_query` | `sentinel:query` | Generate composite Sentinel queries |
+| `security_arch_review` | `investigations:submit` | LLM-powered security architecture review |
+| `contextualise_cves` | `investigations:read` | CVE contextualisation (NVD, EPSS, CISA KEV) |
+| `ingest_velociraptor` | `investigations:submit` | Ingest Velociraptor offline collector data |
+| `ingest_mde_package` | `investigations:submit` | Ingest MDE investigation package |
+| `generate_weekly` | `investigations:read` | Weekly SOC report |
+| `link_cases` | `investigations:submit` | Link related cases |
+| `merge_cases` | `admin` | Merge duplicate cases |
+| `response_actions` | `investigations:submit` | Recommend containment/response actions |
+| `generate_fp_ticket` | `investigations:submit` | FP suppression ticket (auto-closes) |
+| `generate_fp_tuning_ticket` | `investigations:submit` | SIEM tuning ticket (does NOT auto-close) |
+| `start_sandbox_session` | `admin` | Containerised malware detonation |
+| `stop_sandbox_session` | `admin` | Stop sandbox and collect artefacts |
+| `list_sandbox_sessions` | `admin` | List active/recent sandbox sessions |
+| `start_browser_session` | `admin` | Stealth browser session (noVNC + tcpdump, no automation markers) |
+| `stop_browser_session` | `admin` | Stop browser session and collect pcap/entities |
+| `list_browser_sessions` | `admin` | List browser sessions |
+| `analyse_pe` | `investigations:submit` | Deep PE static analysis (entropy, imports, packing) |
+| `yara_scan` | `investigations:submit` | YARA rule scanning (built-in + external + LLM-generated) |
+| `memory_dump_guide` | `investigations:submit` | MDE Live Response dump collection guidance |
+| `analyse_memory_dump` | `investigations:submit` | Process memory dump analysis (strings, IOCs, risk scoring) |
 
 ## Resources (18)
 
@@ -166,7 +181,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `socai://articles` | Threat article index |
 | `socai://landscape` | Threat landscape summary |
 
-## Prompts (4)
+## Prompts (5)
 
 | Prompt | Description |
 |---|---|
@@ -174,6 +189,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `triage_alert` | Guided alert triage workflow |
 | `write_fp_ticket` | FP ticket generation workflow |
 | `kql_investigation` | Unified KQL playbook prompt (select playbook: phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, ioc-hunt) |
+| `user_security_check` | Broad-scope user account security review (identity validation → alerts → sign-in risk → email threats → activity audit → risk assessment) |
 
 ## Conversation Boundary Enforcement
 
@@ -186,11 +202,13 @@ The first client referenced in a conversation (via `lookup_client` or inferred f
 Enforcement points:
 - **`lookup_client`** — calls `_set_client_boundary()` on successful lookup
 - **`run_kql`** — calls `_check_workspace_boundary()` which resolves workspace → client via `client_entities.json`
-- **Case-touching tools** (20 tools) — call `_check_client_boundary(case_id)` which reads the client from `case_meta.json`
+- **Case-touching tools** (all tools accepting `case_id`) — call `_check_client_boundary(case_id)` which reads the client from `case_meta.json`
 
 ### Case Boundary
 
 The first `case_id` used in a conversation locks the session to that case. Attempting to reference a different case raises a `ToolError`.
+
+**One alert = one case.** Every new alert gets its own case, even if the same user, host, or IOCs appeared in a prior case. Cross-case correlation is handled by `recall_cases` (historical IOC/keyword lookup) and `campaign_cluster` (IOC overlap comparison), not by appending to existing cases.
 
 ### Data Hierarchy
 
@@ -233,7 +251,7 @@ Generating a deliverable auto-closes the case — no separate `close_case` call 
 | `generate_pup_report` | `pup_pua` |
 | `generate_fp_ticket` | `false_positive` |
 
-The `close_case` tool still exists for explicit closing (e.g. `true_positive`, `inconclusive`, `resolved`) or when no deliverable is generated.
+The `close_case` tool still exists for explicit closing (e.g. `true_positive`, `benign_positive`, `false_positive`, `inconclusive`, `resolved`) or when no deliverable is generated.
 
 > **Note:** `get_case` includes a `_hint` field that guides the client through the
 > workflow. When `pipeline_complete` is true and status is "open", the hint instructs
@@ -248,9 +266,10 @@ mcp_server/
     server.py       # FastMCP instance, registration, main()
     auth.py         # SocaiTokenVerifier, _require_scope
     config.py       # Env var configuration
-    tools.py        # 52 MCP tool wrappers
+    tools.py        # 67 MCP tool wrappers
     resources.py    # 18 MCP resource implementations
-    prompts.py      # 4 MCP prompt implementations
+    prompts.py      # 5 MCP prompt implementations
+    usage.py        # Tool invocation logging (JSONL + stderr)
 ```
 
 ## Production Deployment

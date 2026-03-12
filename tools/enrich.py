@@ -1665,6 +1665,169 @@ def _hash_needs_deep_enrichment(hash_val: str, fast_results: list[dict]) -> bool
     return False
 
 
+# ---------------------------------------------------------------------------
+# Enrichment director — LLM-advisory tier escalation (opt-in)
+# ---------------------------------------------------------------------------
+
+def _llm_enrichment_review(
+    case_id: str,
+    tier1_results: list[dict],
+    ioc_type: str,
+    candidates: list[str],
+    case_meta: dict | None = None,
+) -> dict:
+    """LLM advisory: suggest additional IOCs to escalate or pivot.
+
+    Returns {"escalate_additional": [...], "pivot_iocs": [...], "reasoning": "..."}.
+    Returns empty dict on any failure — deterministic path unaffected.
+
+    Gated behind SOCAI_ENRICH_DIRECTOR=1.
+    """
+    from config.settings import ANTHROPIC_KEY, SOCAI_ENRICH_DIRECTOR
+    if SOCAI_ENRICH_DIRECTOR != "1":
+        return {}
+    if not ANTHROPIC_KEY:
+        return {}
+
+    try:
+        import anthropic
+    except ImportError:
+        return {}
+
+    from tools.common import get_model
+
+    # Build a concise summary of Tier 1 results for this IOC type
+    type_results = [r for r in tier1_results
+                    if r.get("ioc_type") == ioc_type or r.get("ioc") in candidates]
+    if not type_results:
+        return {}
+
+    # Truncate to avoid token bloat
+    results_summary = []
+    for r in type_results[:30]:
+        results_summary.append({
+            "ioc": r.get("ioc"),
+            "provider": r.get("provider"),
+            "verdict": r.get("verdict"),
+            "status": r.get("status"),
+            "total_reports": r.get("total_reports"),
+            "malware": r.get("malware"),
+            "threat_type": r.get("threat_type"),
+            "newly_registered": r.get("newly_registered"),
+        })
+
+    attack_type = (case_meta or {}).get("attack_type", "unknown")
+
+    user_prompt = (
+        f"IOC type: {ioc_type}\n"
+        f"Attack type: {attack_type}\n"
+        f"Candidates: {candidates[:20]}\n\n"
+        f"Tier 1 results:\n{json.dumps(results_summary, indent=2, default=str)[:3000]}"
+    )
+
+    system_prompt = (
+        "You are a threat intelligence analyst reviewing Tier 1 enrichment results. "
+        "Decide which IOCs should be escalated to Tier 2 deep enrichment.\n\n"
+        "You can ONLY ADD to the escalation list — you cannot skip IOCs that "
+        "the deterministic logic would escalate. Focus on:\n"
+        "- IOCs where Tier 1 data is ambiguous but context suggests risk\n"
+        "- Newly discovered IOCs to pivot to (e.g. domains from WHOIS, related IPs)\n"
+        "- Patterns the deterministic rules miss (structural domain similarity, "
+        "registration timing, ASN clustering)\n\n"
+        "Return JSON: {\"escalate_additional\": [\"ioc1\", ...], "
+        "\"pivot_iocs\": [{\"value\": \"...\", \"type\": \"...\", \"reason\": \"...\"}], "
+        "\"reasoning\": \"...\"}\n"
+        "Return ONLY the JSON. Use UK English."
+    )
+
+    try:
+        severity = (case_meta or {}).get("severity", "medium")
+        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+        model = get_model("enrich_director", severity)
+        message = client.messages.create(
+            model=model,
+            max_tokens=512,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        text = message.content[0].text.strip()
+        tokens_in = message.usage.input_tokens
+        tokens_out = message.usage.output_tokens
+        print(f"[enrich] LLM director ({ioc_type}): {tokens_in}/{tokens_out} tokens")
+
+        # Parse response
+        if text.startswith("```"):
+            lines = text.splitlines()
+            lines = [ln for ln in lines if not ln.strip().startswith("```")]
+            text = "\n".join(lines).strip()
+
+        parsed = json.loads(text)
+        return {
+            "escalate_additional": parsed.get("escalate_additional", []),
+            "pivot_iocs": parsed.get("pivot_iocs", []),
+            "reasoning": parsed.get("reasoning", ""),
+        }
+    except Exception as exc:
+        log_error(case_id, "enrich._llm_enrichment_review", str(exc),
+                  severity="warning", context={"ioc_type": ioc_type})
+        return {}
+
+
+def _save_pivot_iocs(case_id: str, pivots: list[dict]) -> None:
+    """Persist LLM-discovered pivot IOCs for a follow-up enrichment pass."""
+    if not pivots:
+        return
+    pivot_path = CASES_DIR / case_id / "artefacts" / "enrichment" / "pivot_iocs.json"
+    existing: list[dict] = []
+    if pivot_path.exists():
+        try:
+            existing = json.loads(pivot_path.read_text())
+        except Exception:
+            pass
+    # Deduplicate by value
+    seen = {p.get("value") for p in existing}
+    for p in pivots:
+        if p.get("value") and p["value"] not in seen:
+            existing.append({"value": p["value"], "type": p.get("type", ""),
+                             "reason": p.get("reason", ""), "ts": utcnow()})
+            seen.add(p["value"])
+    write_artefact(pivot_path, json.dumps(existing, indent=2))
+    if pivots:
+        print(f"[enrich] Saved {len(pivots)} pivot IOC(s) for follow-up enrichment")
+
+
+def _apply_llm_escalation(
+    case_id: str,
+    escalate_list: list[str],
+    candidate_list: list[str],
+    tier1_results: list[dict],
+    ioc_type: str,
+    case_meta: dict | None = None,
+) -> list[str]:
+    """Run LLM enrichment director and merge additional escalations.
+
+    Returns the (possibly expanded) escalation list. Never removes items.
+    """
+    try:
+        advice = _llm_enrichment_review(
+            case_id, tier1_results, ioc_type, candidate_list, case_meta,
+        )
+        if advice.get("escalate_additional"):
+            added = 0
+            for ioc in advice["escalate_additional"]:
+                if ioc in candidate_list and ioc not in escalate_list:
+                    escalate_list.append(ioc)
+                    added += 1
+            if added:
+                print(f"[enrich] LLM director added {added} {ioc_type}(s) "
+                      f"to Tier 2: {advice.get('reasoning', '')[:100]}")
+        if advice.get("pivot_iocs"):
+            _save_pivot_iocs(case_id, advice["pivot_iocs"])
+    except Exception:
+        pass  # Deterministic path continues unaffected
+    return escalate_list
+
+
 def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = None) -> dict:
     """
     Tiered enrichment pipeline:
@@ -1710,6 +1873,15 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
     iocs_data = load_json(iocs_path)
     enrich_dir = CASES_DIR / case_id / "artefacts" / "enrichment"
     enrich_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Load case metadata for LLM enrichment director ---
+    _case_meta: dict | None = None
+    meta_path = CASES_DIR / case_id / "case_meta.json"
+    if meta_path.exists():
+        try:
+            _case_meta = load_json(meta_path)
+        except Exception:
+            pass
 
     # --- Pre-fetch Intezer token once for all hash lookups ---
     intezer_token: str | None = _intezer_get_token() if INTEZER_KEY else None
@@ -1835,6 +2007,13 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
             # --- Tier 2: Deep providers — only for IPs that need it ---
             escalate_ips = [ip for ip in candidate_ips
                            if _ip_needs_deep_enrichment(ip, tier1_results + all_results)]
+
+            # LLM enrichment director — additive only
+            escalate_ips = _apply_llm_escalation(
+                case_id, escalate_ips, candidate_ips,
+                tier1_results + all_results, "ipv4", _case_meta,
+            )
+
             tier1_only = len(candidate_ips) - len(escalate_ips)
             tiered_stats["tier1_only"] = tier1_only
             tiered_stats["escalated_to_deep"] = len(escalate_ips)
@@ -1914,6 +2093,13 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
             # --- Tier 2: Deep providers — only for domains that need it ---
             escalate_domains = [d for d in filtered_domains
                                 if _domain_needs_deep_enrichment(d, tier1_results + all_results)]
+
+            # LLM enrichment director — additive only
+            escalate_domains = _apply_llm_escalation(
+                case_id, escalate_domains, filtered_domains,
+                tier1_results + all_results, "domain", _case_meta,
+            )
+
             tier1_only = len(filtered_domains) - len(escalate_domains)
             domain_tiered_stats["tier1_only"] = tier1_only
             domain_tiered_stats["escalated_to_deep"] = len(escalate_domains)
@@ -1992,6 +2178,13 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
             # --- Tier 2: Deep providers — only for URLs that need it ---
             escalate_urls = [u for u in filtered_urls
                              if _url_needs_deep_enrichment(u, tier1_results + all_results)]
+
+            # LLM enrichment director — additive only
+            escalate_urls = _apply_llm_escalation(
+                case_id, escalate_urls, filtered_urls,
+                tier1_results + all_results, "url", _case_meta,
+            )
+
             tier1_only = len(filtered_urls) - len(escalate_urls)
             url_tiered_stats["tier1_only"] = tier1_only
             url_tiered_stats["escalated_to_deep"] = len(escalate_urls)
@@ -2080,6 +2273,13 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
         # --- Tier 2: Deep analysis — only for hashes that need it ---
         escalate_hashes = [h for h in hash_list
                            if _hash_needs_deep_enrichment(h, tier1_results + all_results)]
+
+        # LLM enrichment director — additive only
+        escalate_hashes = _apply_llm_escalation(
+            case_id, escalate_hashes, hash_list,
+            tier1_results + all_results, hash_type, _case_meta,
+        )
+
         tier1_only = len(hash_list) - len(escalate_hashes)
         hash_tiered_stats["tier1_only"] += tier1_only
         hash_tiered_stats["escalated_to_deep"] += len(escalate_hashes)
@@ -2187,6 +2387,138 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
         print(f"[enrich] Tiered hash stats: {hash_tiered_stats['tier1_only']} clean after Tier 1, "
               f"{hash_tiered_stats['escalated_to_deep']} escalated to deep OSINT")
     return output
+
+
+# ---------------------------------------------------------------------------
+# Caseless quick enrichment — single IOC, no case required
+# ---------------------------------------------------------------------------
+
+_IOC_TYPE_PATTERNS: list[tuple[str, str]] = [
+    # Order matters — check hashes before domain (hex strings could match loosely)
+    ("sha256", r"^[0-9a-fA-F]{64}$"),
+    ("sha1",   r"^[0-9a-fA-F]{40}$"),
+    ("md5",    r"^[0-9a-fA-F]{32}$"),
+    ("email",  r"^[^@\s]+@[^@\s]+\.[^@\s]+$"),
+    ("ipv4",   r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"),
+    ("url",    r"^https?://"),
+    ("domain", r"^(?![\d.]+$)[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}$"),
+]
+
+import re as _re
+
+_IOC_TYPE_COMPILED = [(name, _re.compile(pat)) for name, pat in _IOC_TYPE_PATTERNS]
+
+
+def _detect_ioc_type(value: str) -> str | None:
+    """Auto-detect IOC type from raw value string."""
+    v = value.strip()
+    for name, regex in _IOC_TYPE_COMPILED:
+        if regex.match(v):
+            return name
+    return None
+
+
+# Provider lists keyed by IOC type — both tiers, for quick_enrich
+_QUICK_PROVIDERS: dict[str, list] = {
+    "ipv4":   PROVIDERS_IP_FAST + PROVIDERS_IP_DEEP,
+    "domain": PROVIDERS_DOMAIN_FAST + PROVIDERS_DOMAIN_DEEP,
+    "url":    PROVIDERS_URL_FAST + PROVIDERS_URL_DEEP,
+    "sha256": PROVIDERS_HASH_FAST + PROVIDERS_HASH_SHA256_DEEP,
+    "sha1":   PROVIDERS_HASH_FAST + PROVIDERS_HASH_SHA1_DEEP,
+    "md5":    PROVIDERS_HASH_FAST + PROVIDERS_HASH_DEEP,
+    "email":  [_emailrep_lookup],
+}
+
+
+def quick_enrich(iocs: list[str], deep: bool = True) -> dict:
+    """Enrich one or more raw IOC values without a case.
+
+    Parameters
+    ----------
+    iocs : list[str]
+        Raw IOC values (IPs, domains, URLs, hashes, emails).
+    deep : bool
+        If True (default) run both fast and deep providers.
+        If False, run fast providers only (quicker).
+
+    Returns
+    -------
+    dict with keys: ``results`` (list of per-provider dicts), ``verdicts``
+    (composite verdict per IOC), ``ioc_count``, ``provider_calls``.
+    """
+    from tools.score_verdicts import _composite_verdict
+
+    cache = _cache_load()
+    tasks: list[tuple] = []
+    skipped: list[dict] = []
+
+    # Classify each IOC and build task list
+    ioc_types: dict[str, str] = {}
+    for raw in iocs:
+        val = raw.strip()
+        if not val:
+            continue
+        ioc_type = _detect_ioc_type(val)
+        if not ioc_type:
+            skipped.append({"ioc": val, "error": "unrecognised_ioc_type"})
+            continue
+        ioc_types[val] = ioc_type
+
+        providers = _QUICK_PROVIDERS.get(ioc_type, [])
+        if not deep:
+            # Fast-only: use just the fast tier
+            fast_map = {
+                "ipv4": PROVIDERS_IP_FAST, "domain": PROVIDERS_DOMAIN_FAST,
+                "url": PROVIDERS_URL_FAST, "sha256": PROVIDERS_HASH_FAST,
+                "sha1": PROVIDERS_HASH_FAST, "md5": PROVIDERS_HASH_FAST,
+                "email": [_emailrep_lookup],
+            }
+            providers = fast_map.get(ioc_type, providers)
+
+        for fn in providers:
+            provider_name = _fn_provider_name(fn)
+            cached = _cache_get(cache, val, provider_name)
+            if cached is not None:
+                cached["ioc_type"] = ioc_type
+                cached["ts"] = cached.get("ts", utcnow())
+                cached["_cached"] = True
+                skipped.append(cached)  # include cached results in output
+            else:
+                tasks.append((fn, val, ioc_type))
+
+    # Run all lookups in parallel (caseless — empty case_id for log_error)
+    results = _run_tasks_parallel("", tasks, cache)
+
+    # Merge cached + live results
+    all_results = [r for r in skipped if "error" not in r or r.get("status") == "ok"] + results
+
+    # Score composite verdicts per IOC
+    verdicts: dict[str, dict] = {}
+    for ioc_val, ioc_type in ioc_types.items():
+        ioc_results = [r for r in all_results
+                       if r.get("ioc") == ioc_val and r.get("status") == "ok"]
+        provider_verdicts = {}
+        for r in ioc_results:
+            v = r.get("verdict")
+            if v:
+                provider_verdicts[r["provider"]] = v
+        composite, confidence = _composite_verdict(provider_verdicts)
+        verdicts[ioc_val] = {
+            "ioc": ioc_val,
+            "ioc_type": ioc_type,
+            "verdict": composite,
+            "confidence": confidence,
+            "providers_checked": len(ioc_results),
+            "provider_verdicts": provider_verdicts,
+        }
+
+    return {
+        "results": all_results,
+        "verdicts": verdicts,
+        "skipped": [s for s in skipped if "error" in s and s.get("status") != "ok"],
+        "ioc_count": len(ioc_types),
+        "provider_calls": len(tasks),
+    }
 
 
 if __name__ == "__main__":

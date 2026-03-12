@@ -62,7 +62,7 @@ Add entries to `config/article_sources.json` with `"type": "rss"` and `"categori
 
 ## MCP Server
 
-`mcp_server/` exposes 52 tools, 18 resources, and 4 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. Long-running tools (investigate) support fire-and-forget with polling or inline-with-progress modes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
+`mcp_server/` exposes 52 tools, 18 resources, and 5 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. Long-running tools (investigate) support fire-and-forget with polling or inline-with-progress modes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
 
 ## Sentinel Composite Query Template
 

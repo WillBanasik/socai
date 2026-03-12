@@ -624,58 +624,58 @@ python3 socai.py memory-analyse /path/to/lsass.dmp --case IV_CASE_001
 
 ## Disposable Browser Sessions
 
-`tools/browser_session.py` provides Docker-based disposable Chrome browser sessions with full CDP (Chrome DevTools Protocol) network monitoring. Designed as a fallback for when automated web capture fails due to Cloudflare challenges, CAPTCHAs, or JS-gated pages.
+`tools/browser_session.py` provides Docker-based disposable Chrome browser sessions with passive tcpdump network capture. Designed for manual phishing page investigation — the analyst drives the browser, not an automation framework. No CDP, no Selenium, no automation markers (`navigator.webdriver === false`).
+
+This avoids analysis-evasion techniques used by sophisticated phishing kits and bot-protection services (Cloudflare Turnstile, DataDome) that detect automated browsers.
 
 ### Architecture
 
-- **Container**: `selenium/standalone-chrome:latest` with `--network=host`
-- **noVNC**: analyst accesses the browser at `http://localhost:7900` (password: `secret`)
-- **Selenium**: WebDriver on port 4444
-- **CDP**: Chrome DevTools Protocol on port 9222
+- **Container**: `socai-browser:latest` (custom image: Debian + Google Chrome + noVNC + tcpdump) with `--network=host`
+- **noVNC**: analyst accesses the browser at `http://localhost:7900` (no password)
+- **Chrome**: vanilla launch — no `--remote-debugging-port`, no automation flags
+- **tcpdump**: passive packet capture on all interfaces
 
-One session at a time (fixed ports due to `--network=host`).
+One session at a time (fixed noVNC port due to `--network=host`). Single-session enforcement: starting a second session gracefully stops the first (preserving telemetry).
 
-### CDP Monitor
+### Network Telemetry
 
-`CDPMonitor` runs a background thread with an asyncio event loop connected to the page-level CDP WebSocket. Captures:
+Telemetry is captured passively via tcpdump inside the container. On session stop, the pcap is copied to the host and parsed into structured data:
 
-- **Network.requestWillBeSent** — all outgoing HTTP requests (method, URL, headers, POST data)
-- **Network.responseReceived** — all responses (status, headers, MIME type, remote IP)
-- **DNS resolutions** — domain → IP mapping built from response `remoteIPAddress` fields; tracks first/last seen and request count per domain
-- **Redirects** — full redirect chain reconstruction
-- **Cookies** — extracted from `Set-Cookie` response headers
-- **Runtime.consoleAPICalled** — browser console output
-- **Security.enable** — TLS/certificate events
+- **DNS queries** — all domain lookups from the browser
+- **TCP connections** — SYN packets (connection initiation targets)
+- **HTTP requests** — plaintext requests on port 80 (method, path, host)
+- **TLS SNI** — Server Name Indication from TLS ClientHello (reveals HTTPS destination domains)
 
-Ready signalling via `threading.Event` ensures CDP monitoring is active before the initial page navigation.
+The DNS + TLS SNI combination provides visibility into which domains the browser connected to, even for HTTPS traffic where payloads are encrypted.
 
-**Cross-process recovery:** The monitor periodically flushes all captured data to `browser_sessions/<session_id>_cdp.json` (every 50 events and on idle). If `stop_session` runs in a different process (e.g. web UI after a server reload), it recovers data from this flush file instead of losing it.
+### Idle Timeout
+
+`_IdleMonitor` polls the pcap file size inside the container every 2 seconds. When the pcap hasn't grown for `SOCAI_BROWSER_IDLE_TIMEOUT` seconds (default 300), the session auto-stops and preserves telemetry. A hard ceiling (`SOCAI_BROWSER_MAX_SESSION`, default 3600s) prevents sessions from running indefinitely.
 
 ### Session Lifecycle
 
-1. `start_session(url, case_id)` — starts Docker container, creates Chrome session, starts CDP monitor, navigates to URL
+1. `start_session(url, case_id)` — starts Docker container with Chrome navigating to URL, starts idle monitor
 2. Analyst browses manually via noVNC at `http://localhost:7900`
-3. `stop_session(session_id)` — captures final screenshot, collects all CDP data, destroys container, writes artefacts
+3. `stop_session(session_id)` — copies pcap and screenshot from container, destroys container, parses pcap, writes artefacts
 
 ### Entity Extraction
 
-`_extract_session_entities()` extracts domains, IPs, URLs, cookies, and POST data fields from all captured traffic.
+`_extract_session_entities()` extracts domains (from DNS + TLS SNI + HTTP), IPs (from TCP connections + TLS SNI), and URLs (from HTTP requests).
 
 ### Output
 
-- `artefacts/browser_session/session_manifest.json` — session summary (includes `dns_resolutions` table)
-- `artefacts/browser_session/network_log.json` — all captured requests/responses
-- `artefacts/browser_session/dns_log.json` — DNS resolution table (domain → resolved IPs, first/last seen, request count)
-- `artefacts/browser_session/redirect_chains.json` — redirect chain reconstruction
-- `artefacts/browser_session/cookies.json` — observed cookies
-- `artefacts/browser_session/console_log.json` — browser console output
-- `artefacts/browser_session/screenshot_final.png` — final browser state
-- `logs/mde_browser_session.parsed.json` — normalised data for downstream pipeline (includes DNS resolution rows)
+- `artefacts/browser_session/session_manifest.json` — session summary (includes DNS queries, TLS SNI)
+- `artefacts/browser_session/capture.pcap` — raw packet capture
+- `artefacts/browser_session/network_log.json` — parsed DNS, TCP, HTTP, TLS SNI
+- `artefacts/browser_session/dns_log.json` — DNS queries observed
+- `artefacts/browser_session/screenshot_final.png` — final browser state (captured on container stop)
+- `logs/mde_browser_session.parsed.json` — normalised data for downstream pipeline (format: `pcap_capture`)
+- `logs/mde_browser_session.entities.json` — extracted entities (IPs, domains, URLs)
 
 ### CLI
 
 ```bash
-# Start a session (blocks until Ctrl+C, then collects artefacts)
+# Start a session (blocks until Ctrl+C or idle timeout, then collects artefacts)
 python3 socai.py browser-session "https://suspicious-site.com" --case IV_CASE_001
 
 # Stop a specific session
@@ -685,15 +685,16 @@ python3 socai.py browser-stop <session-id>
 python3 socai.py browser-list
 ```
 
-### Chat Tools
+### MCP Tools
 
-`start_browser_session`, `stop_browser_session`, `list_browser_sessions` are available in both case-mode and session-mode chat.
+`start_browser_session`, `stop_browser_session`, `list_browser_sessions` — admin-scoped.
 
 ### Requirements
 
 - Docker must be installed and accessible (the current user must be in the `docker` group or have sudo)
-- Ports 4444, 7900, and 9222 must be available
-- `selenium` and `websocket-client` Python packages
+- `socai-browser:latest` image built: `docker build -t socai-browser:latest docker/browser/`
+- Port 7900 must be available
+- `tcpdump` installed on the host (for pcap parsing)
 
 ## Sandbox Detonation
 

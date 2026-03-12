@@ -137,6 +137,14 @@ SOCAI_MODEL_RESPONSE_PRIORITY   = os.getenv("SOCAI_MODEL_RESPONSE_PRIORITY",   "
 SOCAI_MODEL_VERDICT_RECONCILE   = os.getenv("SOCAI_MODEL_VERDICT_RECONCILE",   "fast")
 SOCAI_MODEL_AUTO_CLOSE_REVIEW   = os.getenv("SOCAI_MODEL_AUTO_CLOSE_REVIEW",   "fast")
 
+# Rumsfeld investigation pipeline (tools/investigation_matrix.py, etc.)
+SOCAI_MODEL_MATRIX              = os.getenv("SOCAI_MODEL_MATRIX",              "standard")
+SOCAI_MODEL_QUALITY_GATE        = os.getenv("SOCAI_MODEL_QUALITY_GATE",        "fast")
+SOCAI_MODEL_ENRICH_DIRECTOR     = os.getenv("SOCAI_MODEL_ENRICH_DIRECTOR",     "fast")
+SOCAI_MODEL_DETERMINATION       = os.getenv("SOCAI_MODEL_DETERMINATION",       "standard")
+SOCAI_MODEL_GAP_ANALYSIS        = os.getenv("SOCAI_MODEL_GAP_ANALYSIS",        "standard")
+SOCAI_ENRICH_DIRECTOR           = os.getenv("SOCAI_ENRICH_DIRECTOR",           "0")  # opt-in
+
 # ---------------------------------------------------------------------------
 # Batch API
 # ---------------------------------------------------------------------------

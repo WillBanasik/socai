@@ -3,27 +3,25 @@ tool: browser_session
 ---------------------
 Spin up a disposable Docker-based Chrome browser session for manual
 phishing page investigation.  The analyst gets a live browser via noVNC
-while socai monitors all network activity via Chrome DevTools Protocol.
+and drives it manually — no automation markers, no CDP, no Selenium.
 
-The session captures every HTTP request, response, redirect, and cookie
-— giving full visibility into phishing kit behaviour even when automated
-web capture fails (e.g. Cloudflare challenges, CAPTCHAs, JS-gated pages).
+Network telemetry is captured passively via tcpdump inside the container.
+This avoids analysis-evasion techniques that detect automation frameworks
+(navigator.webdriver, CDP variables, Selenium WebDriver signatures).
 
 Architecture:
-  selenium/standalone-chrome container (--network=host)
-    ├── noVNC on :7900   → analyst opens in their browser
-    ├── Selenium on :4444 → session management
-    └── CDP on :9222      → network monitoring (page-level WebSocket)
+  socai-browser container (--network=host)
+    ├── noVNC on :7900       → analyst opens in their browser
+    ├── Chrome (vanilla)     → no remote-debugging-port, no automation flags
+    └── tcpdump              → passive packet capture (pcap)
 
 Writes:
   cases/<case_id>/artefacts/browser_session/
     ├── session_manifest.json        (metadata + summary)
-    ├── network_log.json             (full request/response log)
-    ├── redirect_chains.json         (all redirect chains observed)
-    ├── cookies.json                 (all cookies set during session)
-    ├── console_log.json             (browser console output)
+    ├── network_log.json             (parsed DNS, TCP, HTTP, TLS SNI)
+    ├── capture.pcap                 (raw packet capture)
+    ├── dns_log.json                 (DNS queries from pcap)
     ├── screenshot_final.png         (screenshot at session close)
-    └── responses/                   (response bodies for HTML pages)
   cases/<case_id>/logs/mde_browser_session.parsed.json
   cases/<case_id>/logs/mde_browser_session.entities.json
 
@@ -38,17 +36,16 @@ Usage (standalone):
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
 import signal
+import struct
 import subprocess
 import sys
 import threading
 import time
 import traceback
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -60,15 +57,12 @@ from tools.common import log_error, save_json, utcnow, write_artefact
 # Configuration
 # ---------------------------------------------------------------------------
 
-DOCKER_IMAGE = "selenium/standalone-chrome:latest"
+DOCKER_IMAGE = os.environ.get("SOCAI_BROWSER_IMAGE", "socai-browser:latest")
 CONTAINER_PREFIX = "socai_browser_"
 SHM_SIZE = "2g"
 
-# Port allocation — use --network=host so all container ports are on localhost
-# We use Selenium to create a session with CDP enabled, then monitor via CDP
-SELENIUM_PORT = 4444
+# noVNC port — only port needed (no Selenium, no CDP)
 NOVNC_PORT = 7900
-CDP_PORT = 9222
 
 # Session state directory
 SESSIONS_DIR = Path(__file__).resolve().parent.parent / "browser_sessions"
@@ -81,6 +75,15 @@ _RE_DOMAIN = re.compile(
     re.IGNORECASE,
 )
 _RE_URL = re.compile(r"https?://[^\s\"'<>]{5,}")
+
+# Idle timeout — auto-stop sessions after N seconds of network inactivity
+IDLE_TIMEOUT_SECS = int(os.environ.get("SOCAI_BROWSER_IDLE_TIMEOUT", "300"))
+
+# Hard ceiling for session duration (default 1 hour)
+MAX_SESSION_SECS = int(os.environ.get("SOCAI_BROWSER_MAX_SESSION", "3600"))
+
+# Interval for polling pcap file size (idle detection)
+_PCAP_POLL_INTERVAL = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -98,27 +101,18 @@ def _is_port_available(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) != 0
 
 
-def _find_available_ports() -> dict:
-    """Check that required ports are available (host networking mode).
-
-    With --network=host, the container uses the host's network stack directly,
-    so ports must be free on the host.
-    """
-    ports = {"novnc": NOVNC_PORT, "selenium": SELENIUM_PORT, "cdp": CDP_PORT}
-    for name, port in ports.items():
-        if not _is_port_available(port):
-            raise RuntimeError(
-                f"Port {port} ({name}) is already in use. "
-                f"Is another browser session running? Check with: python3 socai.py browser-list"
-            )
-    return ports
+def _check_novnc_port() -> int:
+    """Ensure the noVNC port is available."""
+    if not _is_port_available(NOVNC_PORT):
+        raise RuntimeError(
+            f"Port {NOVNC_PORT} (noVNC) is already in use. "
+            f"Is another browser session running? Check with: python3 socai.py browser-list"
+        )
+    return NOVNC_PORT
 
 
-def _start_container(session_id: str, ports: dict) -> str:
-    """Start the Selenium Chrome container with --network=host.
-
-    Uses host networking so CDP (bound to 127.0.0.1 inside the container)
-    is accessible from the host without port forwarding tricks.
+def _start_container(session_id: str, url: str) -> str:
+    """Start the browser container with --network=host.
 
     Returns container ID.
     """
@@ -129,10 +123,10 @@ def _start_container(session_id: str, ports: dict) -> str:
         "--name", name,
         "--shm-size", SHM_SIZE,
         "--network=host",
-        # noVNC password is 'secret' by default — disable it
-        "-e", "SE_VNC_NO_PASSWORD=1",
-        "-e", "SE_SCREEN_WIDTH=1920",
-        "-e", "SE_SCREEN_HEIGHT=1080",
+        "--cap-add=NET_RAW",   # tcpdump needs raw socket access
+        "-e", f"START_URL={url}",
+        "-e", "SCREEN_WIDTH=1920",
+        "-e", "SCREEN_HEIGHT=1080",
         DOCKER_IMAGE,
     ]
 
@@ -143,412 +137,248 @@ def _start_container(session_id: str, ports: dict) -> str:
     return result.stdout.strip()
 
 
-def _create_chrome_session(selenium_port: int, start_url: str = "") -> dict:
-    """Create a Chrome session via Selenium with CDP enabled.
-
-    Returns session info including session_id and debugger address.
-    """
-    payload = {
-        "capabilities": {
-            "alwaysMatch": {
-                "browserName": "chrome",
-                "goog:chromeOptions": {
-                    "args": [
-                        "--no-sandbox",
-                        "--remote-debugging-port=9222",
-                        "--disable-infobars",
-                        "--disable-extensions",
-                        "--disable-dev-shm-usage",
-                        "--window-size=1920,1080",
-                        # Don't restore previous session
-                        "--no-first-run",
-                        "--no-default-browser-check",
-                    ],
-                },
-            },
-        },
-    }
-
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        f"http://localhost:{selenium_port}/session",
-        data=data,
-        headers={"Content-Type": "application/json"},
-    )
-
-    resp = urllib.request.urlopen(req, timeout=30)
-    result = json.loads(resp.read())
-
-    session_data = result["value"]
-    chrome_opts = session_data.get("capabilities", {}).get("goog:chromeOptions", {})
-
-    return {
-        "selenium_session_id": session_data["sessionId"],
-        "debugger_address": chrome_opts.get("debuggerAddress", "localhost:9222"),
-        "browser_version": session_data.get("capabilities", {}).get("browserVersion", ""),
-    }
-
-
-def _navigate_to_url(selenium_port: int, selenium_session_id: str, url: str) -> None:
-    """Navigate the browser to a URL via Selenium."""
-    payload = json.dumps({"url": url}).encode()
-    req = urllib.request.Request(
-        f"http://localhost:{selenium_port}/session/{selenium_session_id}/url",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    urllib.request.urlopen(req, timeout=30)
-
-
-def _take_screenshot(selenium_port: int, selenium_session_id: str) -> bytes | None:
-    """Take a screenshot via Selenium."""
-    try:
-        req = urllib.request.Request(
-            f"http://localhost:{selenium_port}/session/{selenium_session_id}/screenshot",
-        )
-        resp = urllib.request.urlopen(req, timeout=15)
-        data = json.loads(resp.read())
-        import base64
-        return base64.b64decode(data["value"])
-    except Exception:
-        return None
-
-
-def _get_cookies(selenium_port: int, selenium_session_id: str) -> list[dict]:
-    """Get all cookies from the browser session."""
-    try:
-        req = urllib.request.Request(
-            f"http://localhost:{selenium_port}/session/{selenium_session_id}/cookie",
-        )
-        resp = urllib.request.urlopen(req, timeout=10)
-        data = json.loads(resp.read())
-        return data.get("value", [])
-    except Exception:
-        return []
-
-
-def _get_current_url(selenium_port: int, selenium_session_id: str) -> str:
-    """Get the current URL from the browser."""
-    try:
-        req = urllib.request.Request(
-            f"http://localhost:{selenium_port}/session/{selenium_session_id}/url",
-        )
-        resp = urllib.request.urlopen(req, timeout=10)
-        data = json.loads(resp.read())
-        return data.get("value", "")
-    except Exception:
-        return ""
-
-
 def _stop_container(session_id: str) -> None:
     """Stop and remove the container."""
     name = _container_name(session_id)
     subprocess.run(["docker", "stop", name], capture_output=True, timeout=30)
 
 
+def _copy_from_container(session_id: str, src: str, dest: Path) -> bool:
+    """Copy a file from the container to the host."""
+    name = _container_name(session_id)
+    try:
+        result = subprocess.run(
+            ["docker", "cp", f"{name}:{src}", str(dest)],
+            capture_output=True, text=True, timeout=30,
+        )
+        return result.returncode == 0 and dest.exists()
+    except Exception:
+        return False
+
+
+def _get_pcap_size(session_id: str) -> int:
+    """Get the current pcap file size inside the container."""
+    name = _container_name(session_id)
+    try:
+        result = subprocess.run(
+            ["docker", "exec", name, "stat", "-c", "%s", "/telemetry/capture.pcap"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip())
+    except Exception:
+        pass
+    return -1
+
+
 # ---------------------------------------------------------------------------
-# CDP monitoring (runs in background thread)
+# Pcap parsing (host-side, after copying pcap from container)
 # ---------------------------------------------------------------------------
 
-class CDPMonitor:
-    """Background CDP monitor that captures network events, console logs, etc."""
+def _parse_pcap(pcap_path: Path) -> dict:
+    """Parse a pcap file into structured network telemetry.
 
-    def __init__(self, cdp_port: int = CDP_PORT, flush_path: Path | None = None):
-        self.cdp_port = cdp_port
-        self.requests: list[dict] = []
-        self.responses: list[dict] = []
-        self.redirects: list[dict] = []
-        self.cookies_set: list[dict] = []
-        self.console_logs: list[dict] = []
-        self.dns_resolutions: dict[str, dict] = {}  # domain -> {ips, first_seen, last_seen}
-        self.response_bodies: dict[str, str] = {}  # requestId -> body
-        self._running = False
-        self._ready = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._ws_url: str = ""
-        self._flush_path = flush_path  # periodic flush for cross-process recovery
-        self._flush_lock = threading.Lock()
+    Extracts DNS queries, TCP connections, HTTP requests, and TLS SNI.
+    Uses tcpdump for DNS/TCP/HTTP and raw binary parsing for TLS SNI.
+    """
+    if not pcap_path.exists():
+        return {"dns_queries": [], "tcp_connections": [], "http_requests": [],
+                "tls_sni": [], "pcap_stats": {}}
 
-    def start(self) -> None:
-        """Start monitoring in a background thread."""
-        self._running = True
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+    result: dict = {
+        "dns_queries": [],
+        "tcp_connections": [],
+        "http_requests": [],
+        "tls_sni": [],
+    }
 
-    def wait_ready(self, timeout: float = 30) -> bool:
-        """Wait until CDP monitoring is connected and listening."""
-        return self._ready.wait(timeout=timeout)
+    # DNS queries
+    try:
+        out = subprocess.run(
+            ["tcpdump", "-r", str(pcap_path), "-n", "port 53", "-l"],
+            capture_output=True, text=True, timeout=30,
+        )
+        seen_dns: set[str] = set()
+        for line in out.stdout.splitlines():
+            dns_match = re.search(r"(\S+)\s+>\s+\S+:\s+.*\?\s+(\S+)", line)
+            if dns_match:
+                query = dns_match.group(2).rstrip(".")
+                if query not in seen_dns:
+                    seen_dns.add(query)
+                    result["dns_queries"].append({
+                        "query": query,
+                        "src": dns_match.group(1),
+                    })
+    except Exception:
+        pass
 
-    def stop(self) -> None:
-        """Stop monitoring and wait for thread to finish."""
-        self._running = False
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def _run(self) -> None:
-        """Main monitoring loop (runs in thread)."""
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        try:
-            self._loop.run_until_complete(self._monitor())
-        except Exception:
-            pass  # Expected when stopping
-        finally:
-            # Clean up pending tasks to avoid warnings
-            try:
-                pending = asyncio.all_tasks(self._loop)
-                for task in pending:
-                    task.cancel()
-                if pending:
-                    self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                self._loop.close()
-            except Exception:
-                pass
-
-    async def _monitor(self) -> None:
-        """Connect to CDP and listen for events."""
-        import websockets
-
-        # Get page target WebSocket URL
-        retries = 0
-        while self._running and retries < 30:
-            try:
-                data = urllib.request.urlopen(
-                    f"http://localhost:{self.cdp_port}/json", timeout=5
-                ).read()
-                targets = json.loads(data)
-                page_targets = [t for t in targets if t.get("type") == "page"]
-                if page_targets:
-                    self._ws_url = page_targets[0]["webSocketDebuggerUrl"]
-                    break
-            except Exception:
-                retries += 1
-                await asyncio.sleep(1)
-
-        if not self._ws_url:
-            return
-
-        try:
-            async with websockets.connect(
-                self._ws_url, max_size=50 * 1024 * 1024
-            ) as ws:
-                # Enable all the domains we want to monitor
-                msg_id = 1
-                for method in [
-                    "Network.enable",
-                    "Page.enable",
-                    "Runtime.enable",
-                    "Security.enable",
-                ]:
-                    await ws.send(json.dumps({"id": msg_id, "method": method}))
-                    msg_id += 1
-                    try:
-                        await asyncio.wait_for(ws.recv(), timeout=5)
-                    except asyncio.TimeoutError:
-                        pass
-
-                # Signal that monitoring is ready
-                self._ready.set()
-
-                # Listen for events with periodic disk flush
-                _flush_counter = 0
-                while self._running:
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=1)
-                        evt = json.loads(raw)
-                        if "method" in evt:
-                            self._handle_event(evt)
-                            _flush_counter += 1
-                            # Flush to disk every 50 events
-                            if _flush_counter >= 50:
-                                self.flush_to_disk()
-                                _flush_counter = 0
-                    except asyncio.TimeoutError:
-                        # Flush on idle too
-                        if _flush_counter > 0:
-                            self.flush_to_disk()
-                            _flush_counter = 0
-                        continue
-                    except Exception:
-                        if not self._running:
-                            break
-                        await asyncio.sleep(0.5)
-                # Final flush before exit
-                self.flush_to_disk()
-
-        except Exception:
-            pass  # Connection closed
-
-    def _handle_event(self, evt: dict) -> None:
-        """Process a CDP event."""
-        method = evt["method"]
-        params = evt.get("params", {})
-        ts = utcnow()
-
-        if method == "Network.requestWillBeSent":
-            request = params.get("request", {})
-            entry = {
-                "ts": ts,
-                "requestId": params.get("requestId", ""),
-                "method": request.get("method", ""),
-                "url": request.get("url", ""),
-                "headers": request.get("headers", {}),
-                "postData": request.get("postData", ""),
-                "type": params.get("type", ""),
-                "initiator": params.get("initiator", {}).get("type", ""),
-                "redirectResponse": None,
-            }
-
-            # Track redirects
-            redirect_resp = params.get("redirectResponse")
-            if redirect_resp:
-                entry["redirectResponse"] = {
-                    "status": redirect_resp.get("status", 0),
-                    "url": redirect_resp.get("url", ""),
-                    "headers": redirect_resp.get("headers", {}),
-                }
-                self.redirects.append({
-                    "ts": ts,
-                    "from_url": redirect_resp.get("url", ""),
-                    "to_url": request.get("url", ""),
-                    "status": redirect_resp.get("status", 0),
-                })
-
-            self.requests.append(entry)
-
-        elif method == "Network.responseReceived":
-            response = params.get("response", {})
-            entry = {
-                "ts": ts,
-                "requestId": params.get("requestId", ""),
-                "url": response.get("url", ""),
-                "status": response.get("status", 0),
-                "statusText": response.get("statusText", ""),
-                "mimeType": response.get("mimeType", ""),
-                "headers": response.get("headers", {}),
-                "remoteIPAddress": response.get("remoteIPAddress", ""),
-                "remotePort": response.get("remotePort", 0),
-                "protocol": response.get("protocol", ""),
-                "securityState": response.get("securityState", ""),
-            }
-            self.responses.append(entry)
-
-            # Track DNS resolutions (domain → IP mapping)
-            remote_ip = response.get("remoteIPAddress", "")
-            if remote_ip:
-                try:
-                    from urllib.parse import urlparse
-                    parsed = urlparse(response.get("url", ""))
-                    domain = parsed.hostname
-                    if domain and domain != remote_ip:
-                        if domain not in self.dns_resolutions:
-                            self.dns_resolutions[domain] = {
-                                "ips": set(),
-                                "first_seen": ts,
-                                "last_seen": ts,
-                                "request_count": 0,
-                            }
-                        self.dns_resolutions[domain]["ips"].add(remote_ip)
-                        self.dns_resolutions[domain]["last_seen"] = ts
-                        self.dns_resolutions[domain]["request_count"] += 1
-                except Exception:
-                    pass
-
-            # Track cookies from Set-Cookie headers
-            set_cookies = response.get("headers", {}).get("set-cookie", "")
-            if set_cookies:
-                self.cookies_set.append({
-                    "ts": ts,
-                    "url": response.get("url", ""),
-                    "set_cookie": set_cookies,
-                })
-
-        elif method == "Runtime.consoleAPICalled":
-            args = params.get("args", [])
-            text = " ".join(
-                a.get("value", a.get("description", str(a))) for a in args
+    # TCP connections (SYN packets)
+    try:
+        out = subprocess.run(
+            ["tcpdump", "-r", str(pcap_path), "-n",
+             "tcp[tcpflags] & (tcp-syn) != 0 and tcp[tcpflags] & (tcp-ack) == 0"],
+            capture_output=True, text=True, timeout=30,
+        )
+        for line in out.stdout.splitlines():
+            conn_match = re.search(
+                r"(\d+\.\d+\.\d+\.\d+)\.(\d+)\s+>\s+(\d+\.\d+\.\d+\.\d+)\.(\d+)",
+                line,
             )
-            self.console_logs.append({
-                "ts": ts,
-                "type": params.get("type", "log"),
-                "text": text[:2000],
-            })
+            if conn_match:
+                result["tcp_connections"].append({
+                    "src_ip": conn_match.group(1),
+                    "src_port": int(conn_match.group(2)),
+                    "dst_ip": conn_match.group(3),
+                    "dst_port": int(conn_match.group(4)),
+                })
+    except Exception:
+        pass
 
-    def get_summary(self) -> dict:
-        """Return a summary of captured data."""
-        unique_domains = set()
-        unique_ips = set()
-        all_urls = set()
-        methods_seen = set()
+    # HTTP requests (plaintext port 80)
+    try:
+        out = subprocess.run(
+            ["tcpdump", "-r", str(pcap_path), "-n", "-A", "tcp port 80"],
+            capture_output=True, text=True, timeout=30,
+        )
+        seen_http: set[str] = set()
+        for match in re.finditer(
+            r"(GET|POST|PUT|DELETE|HEAD)\s+(\S+)\s+HTTP/\d\.\d\r?\nHost:\s*(\S+)",
+            out.stdout,
+        ):
+            key = f"{match.group(1)} {match.group(3)}{match.group(2)}"
+            if key not in seen_http:
+                seen_http.add(key)
+                result["http_requests"].append({
+                    "method": match.group(1),
+                    "path": match.group(2),
+                    "host": match.group(3),
+                    "url": f"http://{match.group(3)}{match.group(2)}",
+                })
+    except Exception:
+        pass
 
-        for req in self.requests:
-            url = req.get("url", "")
-            all_urls.add(url)
-            methods_seen.add(req.get("method", ""))
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(url)
-                if parsed.hostname:
-                    unique_domains.add(parsed.hostname)
-            except Exception:
-                pass
+    # TLS SNI extraction (Server Name Indication from ClientHello)
+    try:
+        result["tls_sni"] = _extract_tls_sni(pcap_path)
+    except Exception:
+        pass
 
-        for resp in self.responses:
-            ip = resp.get("remoteIPAddress", "")
-            if ip:
-                unique_ips.add(ip)
-
-        return {
-            "total_requests": len(self.requests),
-            "total_responses": len(self.responses),
-            "total_redirects": len(self.redirects),
-            "unique_domains": sorted(unique_domains),
-            "unique_ips": sorted(unique_ips),
-            "unique_urls": sorted(all_urls),
-            "http_methods": sorted(methods_seen),
-            "cookies_set": len(self.cookies_set),
-            "console_entries": len(self.console_logs),
-            "dns_resolutions": len(self.dns_resolutions),
+    # Pcap stats
+    try:
+        stat = pcap_path.stat()
+        result["pcap_stats"] = {
+            "file_size_bytes": stat.st_size,
         }
+    except Exception:
+        result["pcap_stats"] = {}
 
-    def get_dns_log(self) -> list[dict]:
-        """Return DNS resolution table (domain → resolved IPs)."""
-        entries = []
-        for domain, info in sorted(self.dns_resolutions.items()):
-            entries.append({
-                "domain": domain,
-                "resolved_ips": sorted(info["ips"]),
-                "first_seen": info["first_seen"],
-                "last_seen": info["last_seen"],
-                "request_count": info["request_count"],
-            })
-        return entries
+    return result
 
-    def flush_to_disk(self) -> None:
-        """Persist captured data to disk for cross-process recovery."""
-        if not self._flush_path:
-            return
-        with self._flush_lock:
-            data = {
-                "requests": self.requests,
-                "responses": self.responses,
-                "redirects": self.redirects,
-                "cookies_set": self.cookies_set,
-                "console_logs": self.console_logs,
-                "dns_resolutions": {
-                    d: {**info, "ips": sorted(info["ips"])}
-                    for d, info in self.dns_resolutions.items()
-                },
-                "flushed_at": utcnow(),
-            }
+
+def _extract_tls_sni(pcap_path: Path) -> list[dict]:
+    """Extract TLS SNI (Server Name Indication) from ClientHello messages.
+
+    Reads raw pcap and parses TLS handshake records to find the SNI
+    extension (type 0x0000) in ClientHello messages.
+    """
+    sni_entries: list[dict] = []
+    seen: set[str] = set()
+
+    try:
+        # Use tcpdump to dump raw hex of TLS ClientHello packets
+        out = subprocess.run(
+            ["tcpdump", "-r", str(pcap_path), "-n", "-x",
+             "tcp port 443 and (tcp[((tcp[12:1] & 0xf0) >> 2)] = 0x16)"],
+            capture_output=True, text=True, timeout=30,
+        )
+
+        # Parse hex dump for SNI extensions
+        current_hex = ""
+        current_dst = ""
+        for line in out.stdout.splitlines():
+            # tcpdump hex lines start with whitespace + offset
+            hex_match = re.match(r"\s+0x[\da-f]+:\s+([\da-f ]+)", line)
+            if hex_match:
+                current_hex += hex_match.group(1).replace(" ", "")
+            else:
+                # New packet header — extract dst IP
+                if current_hex:
+                    sni = _parse_sni_from_hex(current_hex)
+                    if sni and sni not in seen:
+                        seen.add(sni)
+                        sni_entries.append({"domain": sni, "dst_ip": current_dst})
+                    current_hex = ""
+                ip_match = re.search(
+                    r">\s+(\d+\.\d+\.\d+\.\d+)\.443:", line
+                )
+                if ip_match:
+                    current_dst = ip_match.group(1)
+
+        # Process last packet
+        if current_hex:
+            sni = _parse_sni_from_hex(current_hex)
+            if sni and sni not in seen:
+                seen.add(sni)
+                sni_entries.append({"domain": sni, "dst_ip": current_dst})
+
+    except Exception:
+        pass
+
+    return sni_entries
+
+
+def _parse_sni_from_hex(hex_str: str) -> str | None:
+    """Parse SNI domain from raw TLS ClientHello hex bytes."""
+    try:
+        data = bytes.fromhex(hex_str)
+    except ValueError:
+        return None
+
+    # Find TLS handshake record (content type 0x16, handshake type 0x01 = ClientHello)
+    # Search for the SNI extension (type 0x0000) in the extensions block
+    idx = data.find(b"\x00\x00")  # Extension type: server_name
+    while idx >= 0 and idx < len(data) - 9:
+        # Validate this looks like an SNI extension
+        try:
+            ext_len = struct.unpack("!H", data[idx + 2 : idx + 4])[0]
+            if ext_len < 5 or ext_len > 500:
+                idx = data.find(b"\x00\x00", idx + 1)
+                continue
+
+            # SNI list length
+            list_len = struct.unpack("!H", data[idx + 4 : idx + 6])[0]
+            if list_len < 3 or list_len > ext_len:
+                idx = data.find(b"\x00\x00", idx + 1)
+                continue
+
+            # Name type should be 0x00 (host_name)
+            name_type = data[idx + 6]
+            if name_type != 0:
+                idx = data.find(b"\x00\x00", idx + 1)
+                continue
+
+            # Name length and value
+            name_len = struct.unpack("!H", data[idx + 7 : idx + 9])[0]
+            if name_len < 1 or idx + 9 + name_len > len(data):
+                idx = data.find(b"\x00\x00", idx + 1)
+                continue
+
+            name = data[idx + 9 : idx + 9 + name_len]
             try:
-                self._flush_path.parent.mkdir(parents=True, exist_ok=True)
-                self._flush_path.write_text(json.dumps(data, default=str))
-            except Exception:
+                domain = name.decode("ascii")
+                # Sanity: must look like a domain
+                if "." in domain and all(
+                    c.isalnum() or c in "-." for c in domain
+                ):
+                    return domain
+            except (UnicodeDecodeError, ValueError):
                 pass
+        except (struct.error, IndexError):
+            pass
+
+        idx = data.find(b"\x00\x00", idx + 1)
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -589,56 +419,115 @@ def _list_session_states() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Session lifecycle (in-process monitor registry)
+# Idle timeout monitor (background thread polling pcap size)
 # ---------------------------------------------------------------------------
 
-# Active monitors keyed by session_id — only valid within the current process
-_active_monitors: dict[str, CDPMonitor] = {}
+class _IdleMonitor:
+    """Track network activity by polling the pcap file size inside the container.
+
+    When the pcap hasn't grown for ``idle_timeout`` seconds, fires ``idle_event``.
+    Also enforces a hard session ceiling via ``max_duration``.
+    """
+
+    def __init__(self, session_id: str, *, idle_timeout: float = 0,
+                 max_duration: float = 0):
+        self._session_id = session_id
+        self._idle_timeout = idle_timeout
+        self._max_duration = max_duration
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self.idle_event = threading.Event()
+        self._last_pcap_size: int = 0
+        self._last_change_at: float = time.monotonic()
+        self._started_at: float = time.monotonic()
+
+    def start(self) -> None:
+        self._running = True
+        self._started_at = time.monotonic()
+        self._last_change_at = time.monotonic()
+        self._thread = threading.Thread(target=self._poll, daemon=True,
+                                        name=f"idle-monitor-{self._session_id}")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=5)
+
+    def _poll(self) -> None:
+        while self._running:
+            now = time.monotonic()
+
+            # Hard ceiling
+            if self._max_duration > 0 and now - self._started_at >= self._max_duration:
+                self.idle_event.set()
+                break
+
+            # Check pcap size
+            size = _get_pcap_size(self._session_id)
+            if size >= 0 and size != self._last_pcap_size:
+                self._last_pcap_size = size
+                self._last_change_at = now
+
+            # Idle timeout
+            if (self._idle_timeout > 0
+                    and now - self._last_change_at >= self._idle_timeout):
+                self.idle_event.set()
+                break
+
+            time.sleep(_PCAP_POLL_INTERVAL)
 
 
-def _flush_path_for(session_id: str) -> Path:
-    """Return the disk flush path for a session's CDP data."""
-    return SESSIONS_DIR / f"{session_id}_cdp.json"
+# ---------------------------------------------------------------------------
+# Session lifecycle
+# ---------------------------------------------------------------------------
+
+# Idle-timeout plumbing: done events and cached stop results
+_session_done_events: dict[str, threading.Event] = {}
+_session_results: dict[str, dict] = {}
+_stop_locks: dict[str, threading.Lock] = {}
+_active_monitors: dict[str, _IdleMonitor] = {}
 
 
-def _recover_cdp_data(session_id: str) -> dict | None:
-    """Load CDP data from disk flush file (cross-process recovery)."""
-    path = _flush_path_for(session_id)
-    if not path.exists():
-        return None
+def _idle_watchdog(session_id: str, monitor: _IdleMonitor,
+                   done_event: threading.Event) -> None:
+    """Background thread: auto-stop session when idle timeout fires."""
+    monitor.idle_event.wait()
+    if not monitor._running:
+        return  # Monitor stopped for other reasons (manual stop)
+
+    elapsed = int(time.monotonic() - monitor._started_at)
+    if monitor._max_duration > 0 and elapsed >= monitor._max_duration:
+        reason = "max_duration"
+        print(f"\n[browser] Session {session_id} hit max duration ({elapsed}s) — auto-stopping...")
+    else:
+        reason = "idle_timeout"
+        print(f"\n[browser] Session {session_id} idle for {int(monitor._idle_timeout)}s — auto-stopping...")
+
     try:
-        data = json.loads(path.read_text())
-        # Reconstruct dns_resolutions sets from sorted lists
-        for domain, info in data.get("dns_resolutions", {}).items():
-            if isinstance(info.get("ips"), list):
-                info["ips"] = set(info["ips"])
-        return data
-    except Exception:
-        return None
-
-
-def _cleanup_flush_file(session_id: str) -> None:
-    """Remove the CDP flush file after collection."""
-    path = _flush_path_for(session_id)
-    if path.exists():
-        try:
-            path.unlink()
-        except Exception:
-            pass
+        result = stop_session(session_id, stop_reason=reason)
+        _session_results[session_id] = result
+    except Exception as exc:
+        print(f"[browser] Auto-stop error: {exc}")
+        _session_results[session_id] = {"status": "error", "reason": str(exc)}
+    done_event.set()
 
 
 def start_session(
     url: str,
-    case_id: str,
+    case_id: str = "",
     *,
     session_id: str = "",
+    idle_timeout: float = IDLE_TIMEOUT_SECS,
 ) -> dict:
     """Start a disposable browser session for manual investigation.
 
     Args:
         url: Starting URL to navigate to.
-        case_id: Target case ID.
+        case_id: Optional case ID.  When empty, artefacts are stored under
+                 browser_sessions/<session_id>/artefacts/ (no case created).
         session_id: Optional custom session ID (auto-generated if empty).
+        idle_timeout: Seconds of network inactivity before auto-stop (0 = disabled).
 
     Returns:
         Session manifest with connection details.
@@ -649,45 +538,67 @@ def start_session(
             f"{case_id}:{url}:{time.time()}".encode()
         ).hexdigest()[:12]
 
-    # Check for existing active sessions
+    # Enforce single-session: stop any existing active session before starting
     existing = _list_session_states()
-    active = [s for s in existing if s.get("status") == "active"]
-    if active:
-        # Verify they're actually running
-        for s in active:
-            container = _container_name(s["session_id"])
-            check = subprocess.run(
-                ["docker", "inspect", container, "--format", "{{.State.Running}}"],
-                capture_output=True, text=True,
-            )
-            if check.returncode != 0 or "true" not in check.stdout:
+    for s in [s for s in existing if s.get("status") == "active"]:
+        prev_id = s["session_id"]
+        container = _container_name(prev_id)
+        check = subprocess.run(
+            ["docker", "inspect", container, "--format", "{{.State.Running}}"],
+            capture_output=True, text=True,
+        )
+        if check.returncode != 0 or "true" not in check.stdout:
+            s["status"] = "orphaned"
+            _save_session_state(prev_id, s)
+        else:
+            print(f"[browser] Stopping previous session {prev_id} (case {s.get('case_id', '?')})...")
+            try:
+                stop_session(prev_id, stop_reason="replaced")
+                print(f"[browser] Previous session {prev_id} stopped — telemetry preserved")
+            except Exception as exc:
+                print(f"[browser] Warning: failed to stop previous session {prev_id}: {exc}")
+                _stop_container(prev_id)
                 s["status"] = "orphaned"
-                _save_session_state(s["session_id"], s)
+                _save_session_state(prev_id, s)
 
-    # Find available ports
-    ports = _find_available_ports()
+    # Pre-flight: check Docker image exists
+    img_check = subprocess.run(
+        ["docker", "image", "inspect", DOCKER_IMAGE],
+        capture_output=True, text=True,
+    )
+    if img_check.returncode != 0:
+        return {
+            "status": "error",
+            "reason": (
+                f"Browser image '{DOCKER_IMAGE}' not found. "
+                f"Build it with: docker build -t {DOCKER_IMAGE} docker/browser/  "
+                f"— or use capture_urls for automated (non-interactive) URL capture."
+            ),
+        }
+
+    # Check noVNC port
+    novnc_port = _check_novnc_port()
 
     print(f"[browser] Starting session {session_id}...")
-    print(f"[browser] Ports: noVNC={ports['novnc']}, Selenium={ports['selenium']}")
 
     # Start Docker container
     try:
-        container_id = _start_container(session_id, ports)
+        container_id = _start_container(session_id, url)
     except RuntimeError as exc:
         return {"status": "error", "reason": str(exc)}
 
     print(f"[browser] Container started: {container_id[:12]}")
 
-    # Wait for Selenium to be ready
+    # Wait for noVNC to be ready
     print("[browser] Waiting for Chrome to start...")
     ready = False
     for _ in range(30):
         try:
+            import urllib.request
             resp = urllib.request.urlopen(
-                f"http://localhost:{ports['selenium']}/status", timeout=3
+                f"http://localhost:{novnc_port}/", timeout=3
             )
-            status = json.loads(resp.read())
-            if status.get("value", {}).get("ready"):
+            if resp.status == 200:
                 ready = True
                 break
         except Exception:
@@ -695,40 +606,25 @@ def start_session(
 
     if not ready:
         _stop_container(session_id)
-        return {"status": "error", "reason": "Chrome failed to start within 30 seconds"}
+        return {"status": "error", "reason": "Browser failed to start within 30 seconds"}
 
-    # Create Chrome session with CDP enabled
-    try:
-        chrome_session = _create_chrome_session(ports["selenium"], url)
-    except Exception as exc:
-        _stop_container(session_id)
-        return {"status": "error", "reason": f"Failed to create Chrome session: {exc}"}
+    # Allow initial page load to generate some pcap data
+    time.sleep(2)
 
-    print(f"[browser] Chrome {chrome_session['browser_version']} ready")
-
-    # Start CDP monitor
-    # Parse the CDP port from the debugger address
-    debugger_addr = chrome_session.get("debugger_address", "localhost:9222")
-    cdp_port = int(debugger_addr.split(":")[-1])
-
-    monitor = CDPMonitor(cdp_port=cdp_port, flush_path=_flush_path_for(session_id))
+    # Start idle monitor
+    monitor = _IdleMonitor(session_id, idle_timeout=idle_timeout,
+                           max_duration=MAX_SESSION_SECS)
     monitor.start()
     _active_monitors[session_id] = monitor
 
-    # Wait for CDP monitoring to be connected before navigating
-    if not monitor.wait_ready(timeout=15):
-        print("[browser] Warning: CDP monitor not ready — traffic capture may be incomplete")
-
-    # Navigate to target URL
-    if url:
-        try:
-            _navigate_to_url(ports["selenium"], chrome_session["selenium_session_id"], url)
-            print(f"[browser] Navigated to: {url}")
-        except Exception as exc:
-            print(f"[browser] Navigation warning: {exc}")
-
-    # Allow monitor to capture initial page load
-    time.sleep(2)
+    # Start idle watchdog thread
+    done_event = threading.Event()
+    _session_done_events[session_id] = done_event
+    if idle_timeout > 0 or MAX_SESSION_SECS > 0:
+        threading.Thread(
+            target=_idle_watchdog, args=(session_id, monitor, done_event),
+            daemon=True, name=f"idle-watchdog-{session_id}",
+        ).start()
 
     # Save session state
     state = {
@@ -737,12 +633,11 @@ def start_session(
         "status": "active",
         "start_url": url,
         "container_id": container_id[:12],
-        "ports": ports,
-        "cdp_port": cdp_port,
-        "selenium_session_id": chrome_session["selenium_session_id"],
-        "browser_version": chrome_session["browser_version"],
+        "novnc_port": novnc_port,
         "started_at": utcnow(),
-        "novnc_url": f"http://localhost:{ports['novnc']}",
+        "novnc_url": f"http://localhost:{novnc_port}",
+        "idle_timeout": idle_timeout,
+        "max_duration": MAX_SESSION_SECS,
     }
     _save_session_state(session_id, state)
 
@@ -750,23 +645,31 @@ def start_session(
         "status": "ok",
         "session_id": session_id,
         "case_id": case_id,
-        "novnc_url": f"http://localhost:{ports['novnc']}",
+        "novnc_url": f"http://localhost:{novnc_port}",
         "start_url": url,
-        "browser_version": chrome_session["browser_version"],
         "started_at": state["started_at"],
         "message": (
             f"Browser session started. Open in your browser:\n"
             f"  {state['novnc_url']}\n\n"
-            f"CDP monitoring active — all network traffic is being captured.\n"
-            f"When done, stop the session:\n"
+            f"Passive network capture active — no automation markers.\n"
+            + (f"Idle timeout: {int(idle_timeout)}s — session auto-stops on network inactivity.\n"
+               if idle_timeout > 0 else "")
+            + (f"Max session duration: {MAX_SESSION_SECS}s\n"
+               if MAX_SESSION_SECS > 0 else "")
+            + f"When done, stop the session:\n"
             f"  python3 socai.py browser-stop --session {session_id}"
         ),
+        "idle_timeout": idle_timeout,
     }
 
     print(f"\n[browser] {'='*60}")
     print(f"[browser] Session {session_id} is LIVE")
     print(f"[browser] Open in your browser: {state['novnc_url']}")
-    print(f"[browser] CDP monitoring active — all traffic being captured")
+    print(f"[browser] Passive network capture active — no automation markers")
+    if idle_timeout > 0:
+        print(f"[browser] Idle timeout: {int(idle_timeout)}s (auto-stop on network inactivity)")
+    if MAX_SESSION_SECS > 0:
+        print(f"[browser] Max duration: {MAX_SESSION_SECS}s")
     print(f"[browser] {'='*60}\n")
 
     return manifest
@@ -775,204 +678,108 @@ def start_session(
 def stop_session(
     session_id: str,
     *,
-    take_screenshot: bool = True,
+    stop_reason: str = "manual",
 ) -> dict:
     """Stop a browser session, collect all captured data, and tear down.
 
     Args:
         session_id: Session ID to stop.
-        take_screenshot: Whether to capture a final screenshot before stopping.
+        stop_reason: Why the session is stopping ("manual", "idle_timeout",
+                     "max_duration", "replaced").
 
     Returns:
         Session results manifest.
     """
+    lock = _stop_locks.setdefault(session_id, threading.Lock())
+    acquired = lock.acquire(timeout=30)
+    if not acquired:
+        return {"status": "error", "reason": "Session stop already in progress"}
+
+    try:
+        return _stop_session_inner(session_id, stop_reason=stop_reason)
+    finally:
+        lock.release()
+
+
+def _stop_session_inner(
+    session_id: str,
+    *,
+    stop_reason: str = "manual",
+) -> dict:
     state = _load_session_state(session_id)
     if not state:
         return {"status": "error", "reason": f"Session not found: {session_id}"}
 
-    case_id = state["case_id"]
-    ports = state.get("ports", {})
-    selenium_session_id = state.get("selenium_session_id", "")
-    selenium_port = ports.get("selenium", SELENIUM_PORT)
+    if state.get("status") == "completed":
+        return {"status": "ok", "reason": "Session already stopped",
+                "session_id": session_id}
+
+    case_id = state.get("case_id", "")
 
     print(f"[browser] Stopping session {session_id}...")
 
-    # Get final URL
-    final_url = _get_current_url(selenium_port, selenium_session_id)
-
-    # Take final screenshot
-    screenshot_bytes = None
-    if take_screenshot:
-        screenshot_bytes = _take_screenshot(selenium_port, selenium_session_id)
-        if screenshot_bytes:
-            print(f"[browser] Final screenshot captured ({len(screenshot_bytes)} bytes)")
-
-    # Get cookies
-    cookies = _get_cookies(selenium_port, selenium_session_id)
-
-    # Stop CDP monitor and collect data
+    # Stop idle monitor
     monitor = _active_monitors.pop(session_id, None)
-    dns_log = []
     if monitor:
         monitor.stop()
-        network_summary = monitor.get_summary()
-        requests_log = monitor.requests
-        responses_log = monitor.responses
-        redirects = monitor.redirects
-        cookies_from_headers = monitor.cookies_set
-        console_logs = monitor.console_logs
-        dns_log = monitor.get_dns_log()
-    else:
-        # Monitor not in this process — recover from disk flush
-        recovered = _recover_cdp_data(session_id)
-        if recovered:
-            print("[browser] Recovered CDP data from disk flush")
-            requests_log = recovered.get("requests", [])
-            responses_log = recovered.get("responses", [])
-            redirects = recovered.get("redirects", [])
-            cookies_from_headers = recovered.get("cookies_set", [])
-            console_logs = recovered.get("console_logs", [])
-            # Rebuild DNS log from recovered data
-            dns_res = recovered.get("dns_resolutions", {})
-            dns_log = [
-                {
-                    "domain": d,
-                    "resolved_ips": sorted(info["ips"]) if isinstance(info["ips"], set) else info["ips"],
-                    "first_seen": info.get("first_seen", ""),
-                    "last_seen": info.get("last_seen", ""),
-                    "request_count": info.get("request_count", 0),
-                }
-                for d, info in sorted(dns_res.items())
-            ]
-            # Build summary from recovered data
-            unique_domains = set()
-            unique_ips = set()
-            for req in requests_log:
-                try:
-                    from urllib.parse import urlparse
-                    parsed = urlparse(req.get("url", ""))
-                    if parsed.hostname:
-                        unique_domains.add(parsed.hostname)
-                except Exception:
-                    pass
-            for resp in responses_log:
-                ip = resp.get("remoteIPAddress", "")
-                if ip:
-                    unique_ips.add(ip)
-            network_summary = {
-                "total_requests": len(requests_log),
-                "total_responses": len(responses_log),
-                "total_redirects": len(redirects),
-                "unique_domains": sorted(unique_domains),
-                "unique_ips": sorted(unique_ips),
-                "cookies_set": len(cookies_from_headers),
-                "console_entries": len(console_logs),
-                "dns_resolutions": len(dns_log),
-                "recovered_from_disk": True,
-            }
-        else:
-            print("[browser] Warning: no CDP monitor and no flush file — network data lost")
-            network_summary = {}
-            requests_log = []
-            responses_log = []
-            redirects = []
-            cookies_from_headers = []
-            console_logs = []
 
-    _cleanup_flush_file(session_id)
+    # Determine output directory
+    if case_id:
+        out_dir = CASES_DIR / case_id / "artefacts" / "browser_session"
+        logs_dir = CASES_DIR / case_id / "logs"
+    else:
+        session_artefacts = SESSIONS_DIR / session_id / "artefacts"
+        out_dir = session_artefacts
+        logs_dir = session_artefacts
+    out_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy artefacts from container BEFORE stopping it
+    pcap_path = out_dir / "capture.pcap"
+    screenshot_path = out_dir / "screenshot_final.png"
+    pcap_ok = _copy_from_container(session_id, "/telemetry/capture.pcap", pcap_path)
+    screenshot_ok = _copy_from_container(session_id, "/telemetry/screenshot_final.png",
+                                          screenshot_path)
+
+    if pcap_ok:
+        print(f"[browser] Pcap captured ({pcap_path.stat().st_size:,} bytes)")
+    else:
+        print("[browser] Warning: no pcap captured")
+
+    if screenshot_ok:
+        print(f"[browser] Final screenshot captured")
 
     # Stop container
     _stop_container(session_id)
     print("[browser] Container destroyed")
 
-    # Write artefacts
-    out_dir = CASES_DIR / case_id / "artefacts" / "browser_session"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    logs_dir = CASES_DIR / case_id / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
-    # Network log
-    write_artefact(
-        out_dir / "network_log.json",
-        json.dumps({"requests": requests_log, "responses": responses_log}, indent=2, default=str),
-    )
-
-    # Redirect chains
-    write_artefact(
-        out_dir / "redirect_chains.json",
-        json.dumps(redirects, indent=2, default=str),
-    )
-
-    # Cookies (merged from Selenium + CDP)
-    all_cookies = {
-        "selenium_cookies": cookies,
-        "set_cookie_headers": cookies_from_headers,
-    }
-    write_artefact(
-        out_dir / "cookies.json",
-        json.dumps(all_cookies, indent=2, default=str),
-    )
-
-    # Console log
-    if console_logs:
+    # Parse pcap into structured data
+    network_data: dict = {}
+    if pcap_ok:
+        network_data = _parse_pcap(pcap_path)
         write_artefact(
-            out_dir / "console_log.json",
-            json.dumps(console_logs, indent=2, default=str),
+            out_dir / "network_log.json",
+            json.dumps(network_data, indent=2, default=str),
         )
 
-    # DNS resolution log
-    if dns_log:
+    # Write DNS log
+    dns_queries = network_data.get("dns_queries", [])
+    if dns_queries:
         write_artefact(
             out_dir / "dns_log.json",
-            json.dumps(dns_log, indent=2, default=str),
+            json.dumps(dns_queries, indent=2, default=str),
         )
 
-    # Screenshot
-    if screenshot_bytes:
-        write_artefact(out_dir / "screenshot_final.png", screenshot_bytes)
-
     # Extract entities for downstream tools
-    entities = _extract_session_entities(requests_log, responses_log, redirects, cookies)
+    entities = _extract_session_entities(network_data)
 
-    # Write normalised log for downstream pipeline
-    log_rows = []
-    for req in requests_log:
-        log_rows.append({
-            "TimeCreated": req.get("ts", ""),
-            "Method": req.get("method", ""),
-            "URL": req.get("url", ""),
-            "Type": req.get("type", ""),
-            "Initiator": req.get("initiator", ""),
-            "PostData": (req.get("postData", "") or "")[:500],
-            "_source": "browser_session",
-            "_artefact": "network_request",
-        })
-    for resp in responses_log:
-        log_rows.append({
-            "TimeCreated": resp.get("ts", ""),
-            "URL": resp.get("url", ""),
-            "Status": resp.get("status", ""),
-            "MimeType": resp.get("mimeType", ""),
-            "RemoteIP": resp.get("remoteIPAddress", ""),
-            "RemotePort": resp.get("remotePort", ""),
-            "Protocol": resp.get("protocol", ""),
-            "_source": "browser_session",
-            "_artefact": "network_response",
-        })
-    for dns_entry in dns_log:
-        log_rows.append({
-            "TimeCreated": dns_entry.get("first_seen", ""),
-            "Domain": dns_entry.get("domain", ""),
-            "ResolvedIPs": ", ".join(dns_entry.get("resolved_ips", [])),
-            "RequestCount": dns_entry.get("request_count", 0),
-            "_source": "browser_session",
-            "_artefact": "dns_resolution",
-        })
+    # Build normalised log rows for downstream pipeline
+    log_rows = _build_log_rows(network_data)
 
     log_result = {
         "source_file": f"browser_session:{session_id}",
         "case_id": case_id,
-        "format": "cdp_capture",
+        "format": "pcap_capture",
         "ts": utcnow(),
         "row_count": len(log_rows),
         "entities": entities,
@@ -989,7 +796,10 @@ def stop_session(
         json.dumps(entities, indent=2),
     )
 
-    # Build session manifest
+    # Build network summary
+    network_summary = _build_network_summary(network_data)
+
+    # Compute duration
     duration_sec = 0
     try:
         from datetime import datetime, timezone
@@ -1003,24 +813,19 @@ def stop_session(
         "session_id": session_id,
         "case_id": case_id,
         "start_url": state.get("start_url", ""),
-        "final_url": final_url,
         "started_at": state.get("started_at", ""),
         "stopped_at": utcnow(),
+        "stop_reason": stop_reason,
         "duration_seconds": duration_sec,
-        "browser_version": state.get("browser_version", ""),
         "network_summary": network_summary,
-        "cookies_count": len(cookies),
-        "console_entries": len(console_logs),
-        "redirect_count": len(redirects),
         "entities": {k: len(v) for k, v in entities.items()},
-        "dns_resolutions": dns_log,
+        "dns_queries": dns_queries,
+        "tls_sni": network_data.get("tls_sni", []),
         "artefacts": {
-            "network_log": str(out_dir / "network_log.json"),
-            "redirect_chains": str(out_dir / "redirect_chains.json"),
-            "cookies": str(out_dir / "cookies.json"),
-            "dns_log": str(out_dir / "dns_log.json") if dns_log else None,
-            "screenshot": str(out_dir / "screenshot_final.png") if screenshot_bytes else None,
-            "console_log": str(out_dir / "console_log.json") if console_logs else None,
+            "capture_pcap": str(pcap_path) if pcap_ok else None,
+            "network_log": str(out_dir / "network_log.json") if network_data else None,
+            "dns_log": str(out_dir / "dns_log.json") if dns_queries else None,
+            "screenshot": str(screenshot_path) if screenshot_ok else None,
         },
     }
 
@@ -1029,31 +834,31 @@ def stop_session(
     # Update session state
     state["status"] = "completed"
     state["stopped_at"] = utcnow()
+    state["stop_reason"] = stop_reason
     _save_session_state(session_id, state)
+    _session_done_events.pop(session_id, None)
 
     # Print summary
     print(f"\n[browser] {'='*60}")
     print(f"[browser] Session {session_id} COMPLETE")
-    print(f"[browser] Duration: {duration_sec}s")
+    print(f"[browser] Duration: {duration_sec}s | Stop reason: {stop_reason}")
     print(f"[browser] Start URL: {state.get('start_url', 'N/A')}")
-    print(f"[browser] Final URL: {final_url}")
     if network_summary:
-        print(f"[browser] Requests: {network_summary.get('total_requests', 0)}")
-        print(f"[browser] Responses: {network_summary.get('total_responses', 0)}")
-        print(f"[browser] Redirects: {network_summary.get('total_redirects', 0)}")
-        print(f"[browser] Domains: {len(network_summary.get('unique_domains', []))}")
-        print(f"[browser] IPs: {len(network_summary.get('unique_ips', []))}")
-        print(f"[browser] Cookies: {len(cookies)}")
-    if dns_log:
-        print(f"[browser] DNS resolutions: {len(dns_log)}")
-        for entry in dns_log:
-            ips = ", ".join(entry["resolved_ips"])
-            print(f"  {entry['domain']} → {ips}  ({entry['request_count']} reqs)")
-    if redirects:
-        print(f"[browser] Redirect chain:")
-        for r in redirects:
-            print(f"  {r['status']} {r['from_url']}")
-            print(f"    → {r['to_url']}")
+        print(f"[browser] DNS queries: {network_summary.get('dns_queries', 0)}")
+        print(f"[browser] TCP connections: {network_summary.get('tcp_connections', 0)}")
+        print(f"[browser] HTTP requests: {network_summary.get('http_requests', 0)}")
+        print(f"[browser] TLS SNI domains: {network_summary.get('tls_sni_domains', 0)}")
+        print(f"[browser] Unique domains: {len(network_summary.get('unique_domains', []))}")
+        print(f"[browser] Unique IPs: {len(network_summary.get('unique_ips', []))}")
+    if dns_queries:
+        print(f"[browser] DNS queries observed:")
+        for entry in dns_queries[:20]:
+            print(f"  {entry['query']}")
+    tls_sni = network_data.get("tls_sni", [])
+    if tls_sni:
+        print(f"[browser] TLS connections (SNI):")
+        for entry in tls_sni[:20]:
+            print(f"  {entry['domain']} → {entry.get('dst_ip', '?')}")
     print(f"[browser] Artefacts: {out_dir}")
     print(f"[browser] {'='*60}\n")
 
@@ -1093,71 +898,131 @@ def cleanup_orphaned() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Entity extraction
+# Entity extraction & log building
 # ---------------------------------------------------------------------------
 
-def _extract_session_entities(
-    requests_log: list[dict],
-    responses_log: list[dict],
-    redirects: list[dict],
-    cookies: list[dict],
-) -> dict:
-    """Extract IOC entities from the session data."""
-    from urllib.parse import urlparse
-
+def _extract_session_entities(network_data: dict) -> dict:
+    """Extract IOC entities from parsed pcap data."""
     entities: dict[str, set] = {
         "ips": set(),
         "domains": set(),
         "urls": set(),
-        "users": set(),
-        "cookies": set(),
-        "post_data_fields": set(),
     }
 
-    for req in requests_log:
+    # From TCP connections
+    for conn in network_data.get("tcp_connections", []):
+        dst_ip = conn.get("dst_ip", "")
+        if dst_ip and not dst_ip.startswith("127."):
+            entities["ips"].add(dst_ip)
+
+    # From DNS queries
+    for dns in network_data.get("dns_queries", []):
+        query = dns.get("query", "")
+        if query:
+            entities["domains"].add(query)
+
+    # From HTTP requests
+    for req in network_data.get("http_requests", []):
         url = req.get("url", "")
         if url:
             entities["urls"].add(url)
-            try:
-                parsed = urlparse(url)
-                if parsed.hostname:
-                    entities["domains"].add(parsed.hostname)
-            except Exception:
-                pass
+        host = req.get("host", "")
+        if host:
+            entities["domains"].add(host)
 
-        # Extract form field names from POST data (credential harvesting indicator)
-        post_data = req.get("postData", "")
-        if post_data:
-            # URL-encoded form data
-            for field in re.findall(r"([a-zA-Z_][\w]*)=", post_data):
-                entities["post_data_fields"].add(field.lower())
-
-    for resp in responses_log:
-        ip = resp.get("remoteIPAddress", "")
-        if ip:
-            entities["ips"].add(ip)
-        url = resp.get("url", "")
-        if url:
-            entities["urls"].add(url)
-            try:
-                parsed = urlparse(url)
-                if parsed.hostname:
-                    entities["domains"].add(parsed.hostname)
-            except Exception:
-                pass
-
-    for r in redirects:
-        for key in ("from_url", "to_url"):
-            url = r.get(key, "")
-            if url:
-                entities["urls"].add(url)
-
-    for cookie in cookies:
-        name = cookie.get("name", "")
-        if name:
-            entities["cookies"].add(name)
+    # From TLS SNI
+    for sni in network_data.get("tls_sni", []):
+        domain = sni.get("domain", "")
+        if domain:
+            entities["domains"].add(domain)
+        dst_ip = sni.get("dst_ip", "")
+        if dst_ip:
+            entities["ips"].add(dst_ip)
 
     return {k: sorted(v) for k, v in entities.items()}
+
+
+def _build_log_rows(network_data: dict) -> list[dict]:
+    """Build normalised log rows for the downstream pipeline."""
+    rows: list[dict] = []
+
+    for dns in network_data.get("dns_queries", []):
+        rows.append({
+            "TimeCreated": "",
+            "Domain": dns.get("query", ""),
+            "_source": "browser_session",
+            "_artefact": "dns_query",
+        })
+
+    for conn in network_data.get("tcp_connections", []):
+        rows.append({
+            "TimeCreated": "",
+            "SrcIP": conn.get("src_ip", ""),
+            "DstIP": conn.get("dst_ip", ""),
+            "DstPort": conn.get("dst_port", ""),
+            "_source": "browser_session",
+            "_artefact": "tcp_connection",
+        })
+
+    for req in network_data.get("http_requests", []):
+        rows.append({
+            "TimeCreated": "",
+            "Method": req.get("method", ""),
+            "URL": req.get("url", ""),
+            "Host": req.get("host", ""),
+            "_source": "browser_session",
+            "_artefact": "http_request",
+        })
+
+    for sni in network_data.get("tls_sni", []):
+        rows.append({
+            "TimeCreated": "",
+            "Domain": sni.get("domain", ""),
+            "DstIP": sni.get("dst_ip", ""),
+            "_source": "browser_session",
+            "_artefact": "tls_sni",
+        })
+
+    return rows
+
+
+def _build_network_summary(network_data: dict) -> dict:
+    """Build a summary dict from parsed network data."""
+    unique_domains: set[str] = set()
+    unique_ips: set[str] = set()
+
+    for dns in network_data.get("dns_queries", []):
+        q = dns.get("query", "")
+        if q:
+            unique_domains.add(q)
+
+    for conn in network_data.get("tcp_connections", []):
+        ip = conn.get("dst_ip", "")
+        if ip and not ip.startswith("127."):
+            unique_ips.add(ip)
+
+    for sni in network_data.get("tls_sni", []):
+        d = sni.get("domain", "")
+        if d:
+            unique_domains.add(d)
+        ip = sni.get("dst_ip", "")
+        if ip:
+            unique_ips.add(ip)
+
+    for req in network_data.get("http_requests", []):
+        h = req.get("host", "")
+        if h:
+            unique_domains.add(h)
+
+    return {
+        "dns_queries": len(network_data.get("dns_queries", [])),
+        "tcp_connections": len(network_data.get("tcp_connections", [])),
+        "http_requests": len(network_data.get("http_requests", [])),
+        "tls_sni_domains": len(network_data.get("tls_sni", [])),
+        "unique_domains": sorted(unique_domains),
+        "unique_ips": sorted(unique_ips),
+        "pcap_stats": network_data.get("pcap_stats", {}),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1172,7 +1037,8 @@ if __name__ == "__main__":
 
     p_start = sub.add_parser("start", help="Start a browser session.")
     p_start.add_argument("url", help="Starting URL")
-    p_start.add_argument("--case", required=True, dest="case_id")
+    p_start.add_argument("--case", default="", dest="case_id",
+                         help="Optional case ID (no case created if omitted)")
 
     p_stop = sub.add_parser("stop", help="Stop a browser session.")
     p_stop.add_argument("--session", required=True, dest="session_id")
@@ -1182,17 +1048,30 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     if args.mode == "start":
-        result = start_session(args.url, args.case_id)
+        result = start_session(args.url, args.case_id or "")
         if result["status"] == "ok":
-            print(f"\nSession ID: {result['session_id']}")
-            # Block until Ctrl+C
+            session_id = result["session_id"]
+            idle_timeout = result.get("idle_timeout", 300)
+            done_event = _session_done_events.get(session_id)
+            print(f"\nSession ID: {session_id}")
             try:
-                print("Press Ctrl+C to stop the session and collect artefacts...")
-                signal.pause()
+                if idle_timeout > 0:
+                    print(f"Press Ctrl+C to stop, or wait — auto-stops after {int(idle_timeout)}s of network inactivity")
+                else:
+                    print("Press Ctrl+C to stop the session and collect artefacts...")
+                if done_event:
+                    done_event.wait()
+                else:
+                    signal.pause()
             except KeyboardInterrupt:
                 print("\n")
-                stop_result = stop_session(result["session_id"])
-                print(json.dumps(stop_result, indent=2, default=str))
+            # Stop (idempotent if watchdog already handled it)
+            state = _load_session_state(session_id)
+            if state and state.get("status") == "completed":
+                stop_result = _session_results.get(session_id, {"status": "ok"})
+            else:
+                stop_result = stop_session(session_id)
+            print(json.dumps(stop_result, indent=2, default=str))
         else:
             print(f"Error: {result['reason']}")
             sys.exit(1)

@@ -125,6 +125,42 @@ Where applicable, consider:
 
 ---
 
+## Microsoft Sentinel Incident Classification
+
+When closing incidents in Microsoft Sentinel, use **one** of the three mutually
+exclusive classifications below. These are not combinable — "True Positive
+Benign Positive" is not a valid classification.
+
+### Decision Guide
+
+```
+Did the detection logic fire correctly on real activity?
+├─ NO  → False Positive (FP)
+└─ YES → Was that activity malicious?
+         ├─ YES → True Positive (TP)
+         └─ NO  → Benign Positive (BP)
+```
+
+- **True Positive (TP)** — the alert correctly detected genuinely malicious
+  activity. An actual threat actor, malware, or unauthorised action was present.
+- **Benign Positive (BP)** — the alert correctly fired on real activity that
+  matches the detection logic, but that activity is expected, authorised, or
+  non-threatening. Common: new service account from unfamiliar infrastructure,
+  authorised pen-testing, security tooling triggering behavioural detections,
+  legitimate bulk file operations, real user travel triggering impossible-travel.
+  Sub-classifications: *suspicious but expected*, *suspicious but not malicious*.
+- **False Positive (FP)** — the alert misfired. The detection logic was wrong —
+  the activity it flagged either didn't happen as described or doesn't match
+  what the rule was designed to detect.
+
+### Language Discipline
+- Never write "True Positive — Benign" or "TP BP" — contradictory.
+- If the alert was accurate but the activity was authorised → **Benign Positive**.
+- State the classification cleanly: "**Verdict: Benign Positive — Suspicious
+  but expected**" with the sub-classification where applicable.
+
+---
+
 ## Confidence Modifiers
 
 Increase confidence when:
