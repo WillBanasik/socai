@@ -194,22 +194,9 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `kql_investigation` | Unified KQL playbook prompt (select playbook: phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, ioc-hunt) |
 | `user_security_check` | Broad-scope user account security review (identity validation → alerts → sign-in risk → email threats → activity audit → risk assessment) |
 
-## Conversation Boundary Enforcement
+## Access Control
 
-The MCP server enforces per-conversation client and case isolation to prevent cross-contamination when analysts work across multiple clients.
-
-### Client Boundary
-
-The first client referenced in a conversation (via `lookup_client` or inferred from a `run_kql` workspace) locks the session to that client. Subsequent references to a different client raise a `ToolError` instructing the analyst to start a new chat session.
-
-Enforcement points:
-- **`lookup_client`** — calls `_set_client_boundary()` on successful lookup
-- **`run_kql`** — calls `_check_workspace_boundary()` which resolves workspace → client via `client_entities.json`
-- **Case-touching tools** (all tools accepting `case_id`) — call `_check_client_boundary(case_id)` which reads the client from `case_meta.json`
-
-### Case Boundary
-
-The first `case_id` used in a conversation locks the session to that case. Attempting to reference a different case raises a `ToolError`.
+Access control is handled by RBAC (per-tool scopes via JWT claims) and filesystem isolation (`cases/<ID>/`). There are no in-process conversation boundaries — analysts can freely work across multiple cases and clients in a single session.
 
 **One alert = one case.** Every new alert gets its own case, even if the same user, host, or IOCs appeared in a prior case. Cross-case correlation is handled by `recall_cases` (historical IOC/keyword lookup) and `campaign_cluster` (IOC overlap comparison), not by appending to existing cases.
 

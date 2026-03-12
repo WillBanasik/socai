@@ -349,14 +349,6 @@ def _install_connection_logging(server: FastMCP) -> None:
                 if "/sse" in path:
                     t0 = time.monotonic()
 
-                    # Reset case/client boundaries — new SSE connection = new conversation
-                    caller = _extract_caller_from_headers(headers)
-                    if caller:
-                        from mcp_server.tools import _reset_boundaries
-                        _reset_boundaries(caller)
-                        mcp_log("session_reset", ip=ip, caller=caller,
-                                reason="new SSE connection")
-
                     mcp_log("sse_connect", ip=ip, user_agent=ua[:200], path=path)
                     try:
                         await self.app(scope, receive, send)
