@@ -405,7 +405,7 @@ def generate_pup_report(case_id: str) -> dict:
     if not context.strip():
         return {
             "status":  "skipped",
-            "reason":  "No case artefacts found — run investigate or enrich first.",
+            "reason":  "No case artefacts found — run enrich_iocs or add_evidence first.",
             "case_id": case_id,
             "ts":      utcnow(),
         }

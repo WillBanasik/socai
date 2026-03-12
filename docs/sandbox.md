@@ -49,26 +49,18 @@ python3 socai.py sandbox-stop --session <session-id>
 python3 socai.py sandbox-list
 ```
 
-### Web UI
+### MCP Tools
 
-Four tools available in the chat interface:
+Four tools available via MCP:
 
 - **start_sandbox_session** — start detonation (auto-selects Linux or Wine image)
 - **stop_sandbox_session** — stop session, collect artefacts
 - **list_sandbox_sessions** — list active/completed sessions
 - **sandbox_exec** — execute a command inside a running sandbox (interactive mode only)
 
-### Pipeline Integration
+### Investigation Integration
 
-When `--detonate` is passed to `investigate`, the pipeline will:
-1. Run cloud sandbox lookups (Hybrid Analysis, Any.Run, Joe Sandbox) as step 6
-2. If no definitive cloud results, execute local detonation as step 6b
-3. Collected telemetry feeds into enrichment, correlation, and reporting
-
-```bash
-python3 socai.py investigate --case IV_CASE_001 --title "Suspicious binary" \
-    --zip sample.zip --zip-pass infected --detonate
-```
+Cloud sandbox lookups (Hybrid Analysis, Any.Run, Joe Sandbox) run via `sandbox_api_lookup`. If no definitive cloud results, the analyst can start a local detonation session. Collected telemetry feeds into enrichment, correlation, and reporting.
 
 ## Network Modes
 

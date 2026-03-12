@@ -9,8 +9,6 @@ All settings in `config/settings.py`; secrets in `.env` (git-ignored, auto-loade
 | `SOCAI_BROWSER` | `playwright` | `playwright` or `requests` |
 | `SOCAI_CAPTURE_TIMEOUT` | `20` | Web capture timeout (seconds) |
 | `SOCAI_SPA_DWELL` | `5000` | Extra wait (ms) after `networkidle` if page text is empty |
-| `SOCAI_CRAWL_DEPTH` | `3` | Max recursive URL capture depth |
-| `SOCAI_CRAWL_MAX_URLS` | `30` | Max new URLs captured per depth level |
 | `SOCAI_STRINGS_MIN` | `6` | Min string length for static analysis |
 | `SOCAI_LLM_MODEL` | `claude-sonnet-4-6` | Claude model for LLM steps (legacy fallback) |
 | `SOCAI_ENRICH_CACHE_TTL` | `24` | Enrichment cache TTL (hours); `0` = disabled |
@@ -31,6 +29,8 @@ All settings in `config/settings.py`; secrets in `.env` (git-ignored, auto-loade
 | `SOCAI_COMPACTION_ENABLED` | `1` | Enable API-side context compaction for long chats (Opus models) |
 | `SOCAI_BATCH_POLL_INTERVAL` | `30` | Seconds between batch status polls |
 | `SOCAI_BATCH_TIMEOUT` | `3600` | Seconds before batch polling timeout |
+| `SOCAI_BROWSER_POOL_MAX_USES` | `50` | Playwright browser recycle threshold (prevents memory leaks) |
+| `SOCAI_BROWSER_POOL_IDLE_SECS` | `300` | Auto-close pooled Playwright browser after N seconds of inactivity |
 | `ANTHROPIC_API_KEY` | `""` | Required for LLM-assisted steps and `client-query` |
 
 ## Model Tiering
@@ -89,15 +89,7 @@ Hosting providers (Linode/Akamai hosting, DigitalOcean, OCI) are deliberately **
 
 ## MCP Server
 
-| Env var | Default | Effect |
-|---------|---------|--------|
-| `SOCAI_MCP_PORT` | `8001` | Server port |
-| `SOCAI_MCP_HOST` | `0.0.0.0` | Bind address |
-| `SOCAI_MCP_TRANSPORT` | `sse` | Transport: `sse`, `streamable-http`, or `stdio` |
-| `SOCAI_MCP_AUTH` | `local` | Auth mode: `local` (JWT) or `entra_id` (future) |
-| `SOCAI_MCP_MOUNT_PATH` | `/` | Mount path for SSE routes |
-
-SSE/streamable-http modes require JWT auth (same tokens as web UI). stdio mode skips auth for local Claude Desktop use. See `docs/mcp-server.md` for full RBAC details.
+See `docs/mcp-server.md` for env vars, RBAC, tools, resources, prompts, and deployment.
 
 ## Client Playbooks
 
@@ -108,7 +100,7 @@ Client-specific response playbooks are stored in `config/clients/<client_name>.j
 | `CLIENT_PLAYBOOKS_DIR` | `config/clients/` |
 | `SOCAI_DEFAULT_CLIENT` | Env var; sets default client when `--client` is not passed |
 
-**CLI flags:** `--client <name>` on `investigate`, `url`, `domain`, `file` subcommands. Falls back to `SOCAI_DEFAULT_CLIENT`.
+**CLI flags:** `--client <name>` on applicable subcommands. Falls back to `SOCAI_DEFAULT_CLIENT`.
 
 **Schema:** See `config/client_playbook.example.json` for documented fields: `client_name`, `response[]`, `crown_jewels`, `contacts[]`, `escalation_matrix[]`.
 
@@ -141,7 +133,7 @@ Config: `config/client_entities.json` (git-ignored) — unified `clients` list. 
 }
 ```
 
-The `platforms` object determines which security platforms are available for investigation of that client's incidents. Used by `lookup_client` (MCP tool), `socai://clients` (resource), workspace resolution in `run_kql`, and the `investigate_incident` prompt (Phase 0 client gate).
+The `platforms` object determines which security platforms are available for investigation of that client's incidents. Used by `lookup_client` (MCP tool), `socai://clients` (resource), workspace resolution in `run_kql`, and the `hitl_investigation` prompt (Phase 0 client gate).
 
 **Root vs exact:** `root: true` does prefix matching. Exact names do whole-word replacement.
 
@@ -188,35 +180,15 @@ Disposable browser sessions require Docker installed and accessible.
 | `SOCAI_BROWSER_IMAGE` | `socai-browser:latest` | Docker image for browser sessions |
 | `SOCAI_BROWSER_IDLE_TIMEOUT` | `300` | Seconds of network inactivity before auto-stop |
 | `SOCAI_BROWSER_MAX_SESSION` | `3600` | Hard session duration ceiling (seconds) |
+| `SOCAI_BROWSER_DISCONNECT_GRACE` | `15` | Seconds after last noVNC viewer disconnects before auto-stop (0 = disabled) |
 
-noVNC access: `http://localhost:7900` (no password).
+noVNC access: `http://127.0.0.1:7900` (no password).
 
 Session state files are stored in `browser_sessions/<session_id>.json`.
 
 ## Sandbox Detonation (Docker)
 
-Malware sandbox detonation requires Docker and pre-built sandbox images.
-
-| Variable | Default | Description |
-|---|---|---|
-| `SOCAI_SANDBOX_IMAGE` | `socai-sandbox:latest` | Linux sandbox Docker image |
-| `SOCAI_SANDBOX_WINE_IMAGE` | `socai-sandbox-wine:latest` | Wine sandbox Docker image |
-| `SOCAI_SANDBOX_TIMEOUT_LOCAL` | `120` | Default execution timeout (seconds) |
-| `SOCAI_SANDBOX_MAX_TIMEOUT` | `600` | Maximum allowed timeout |
-| `SOCAI_SANDBOX_MEMORY` | `512m` | Container memory limit |
-| `SOCAI_SANDBOX_CPUS` | `1.0` | Container CPU limit |
-| `SOCAI_SANDBOX_NETWORK` | `monitor` | Default network mode (`monitor` or `isolate`) |
-| `SOCAI_SANDBOX_NETWORK_NAME` | `socai_sandbox_net` | Docker bridge network name |
-
-Build images:
-```bash
-docker build -t socai-sandbox:latest -f docker/sandbox/Dockerfile docker/sandbox/
-docker build -t socai-sandbox-wine:latest -f docker/sandbox/Dockerfile.wine docker/sandbox/
-```
-
-Session state files are stored in `sandbox_sessions/<session_id>.json`.
-
-See `docs/sandbox.md` for full setup guide, network modes, and safety details.
+See `docs/sandbox.md` for env vars, Docker setup, network modes, and safety details.
 
 ## Secret Config Files
 

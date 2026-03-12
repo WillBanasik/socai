@@ -468,8 +468,8 @@ def slide_ioc_collection(prs):
                  "HOW IT WORKS", font_size=Pt(12), bold=True, color=BLUE_LIGHT)
 
     code = (
-        "python3 socai.py investigate --case IV_CASE_003 --title \"Suspicious PowerShell\" "
-        "--severity high --zip sample.zip --zip-pass infected --url \"https://simpludelicios.md/vcapcha.ps1\""
+        "python3 socai.py enrich --case IV_CASE_003  # Re-run IOC enrichment\n"
+        "python3 socai.py mdr-report --case IV_CASE_003  # Generate MDR report"
     )
     _code_block(sl, Inches(0.5), Inches(5.1), Inches(12.2), Inches(0.5),
                 code, font_size=Pt(9))

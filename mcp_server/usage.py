@@ -18,7 +18,7 @@ from typing import Any, Sequence
 
 from mcp.server.fastmcp import FastMCP
 
-from config.settings import MCP_USAGE_LOG
+from config.settings import MCP_USAGE_LOG, MCP_LOG_RESULTS, MCP_LOG_MAX_RESULT
 from tools.common import utcnow
 
 _usage_lock = threading.Lock()
@@ -38,6 +38,17 @@ def _sanitise_params(params: dict[str, Any] | None) -> dict[str, Any]:
         else:
             out[k] = v
     return out
+
+
+def _truncate_result(result: Any, max_len: int = MCP_LOG_MAX_RESULT) -> str:
+    """Serialise and truncate a tool result for logging."""
+    try:
+        text = json.dumps(result, default=str)
+    except (TypeError, ValueError):
+        text = str(result)
+    if len(text) > max_len:
+        return text[:max_len] + f"... [truncated, {len(text)} chars total]"
+    return text
 
 
 def log_mcp_call(
@@ -84,6 +95,8 @@ def install_usage_watcher(server: FastMCP) -> None:
     ``server._tool_manager.call_tool``, bypassing ``FastMCP.call_tool``.
     We patch at the ToolManager level so the watcher actually fires.
     """
+    from mcp_server.logging_config import mcp_log
+
     tm = server._tool_manager
     original = tm.call_tool
 
@@ -93,18 +106,39 @@ def install_usage_watcher(server: FastMCP) -> None:
         detail = f"case_id={case_id}" if case_id else ""
         _emit_live("CALL", name, caller, detail)
 
+        # Structured log: tool call start
+        mcp_log("tool_call", tool=name, caller=caller,
+                params=_sanitise_params(arguments),
+                case_id=case_id or None)
+
         t0 = time.monotonic()
         try:
             result = await original(name, arguments, **kwargs)
             duration_ms = int((time.monotonic() - t0) * 1000)
             log_mcp_call(caller, name, arguments, duration_ms, True, None)
             _emit_live("OK  ", name, caller, duration_ms=duration_ms)
+
+            # Structured log: tool result
+            log_fields: dict[str, Any] = {
+                "tool": name, "caller": caller,
+                "duration_ms": duration_ms, "success": True,
+                "case_id": case_id or None,
+            }
+            if MCP_LOG_RESULTS:
+                log_fields["result_preview"] = _truncate_result(result)
+            mcp_log("tool_result", **log_fields)
+
             return result
         except Exception as exc:
             duration_ms = int((time.monotonic() - t0) * 1000)
             err_msg = str(exc)[:500]
             log_mcp_call(caller, name, arguments, duration_ms, False, err_msg)
             _emit_live("ERR ", name, caller, err_msg[:120], duration_ms)
+
+            # Structured log: tool error
+            mcp_log("tool_error", tool=name, caller=caller,
+                    duration_ms=duration_ms, error=err_msg,
+                    case_id=case_id or None)
             raise
 
     tm.call_tool = _watched  # type: ignore[assignment]

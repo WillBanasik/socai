@@ -28,8 +28,8 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  67 tools, 18 resources │
-│  5 prompts              │
+│  72 tools, 18 resources │
+│  5 prompts, JSONL logs  │
 └─────────────────────────┘
     │
     │ Shared filesystem
@@ -61,6 +61,9 @@ Set `SOCAI_MCP_AUTH=entra_id` to validate Azure AD tokens instead. No other code
 | `SOCAI_MCP_TRANSPORT` | `sse` | Transport: `sse`, `streamable-http`, or `stdio` |
 | `SOCAI_MCP_AUTH` | `local` | Auth mode: `local` or `entra_id` |
 | `SOCAI_MCP_MOUNT_PATH` | `/` | Mount path for SSE routes |
+| `SOCAI_MCP_LOG_LEVEL` | `INFO` | Structured log level |
+| `SOCAI_MCP_LOG_RESULTS` | `1` | Log tool result previews (`0` to disable) |
+| `SOCAI_MCP_LOG_MAX_RESULT` | `2000` | Max chars per result preview in logs |
 
 ## RBAC Permissions
 
@@ -69,24 +72,23 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | Permission | Grants |
 |---|---|
 | `investigations:read` | list_cases, get_case, read_report, read_case_file, recall_cases, classify_attack, plan_investigation, resources |
-| `investigations:submit` | investigate, quick_investigate_*, capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, analyse_pe, yara_scan, memory tools, all write tools |
+| `investigations:submit` | capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, analyse_pe, yara_scan, memory tools, all write tools |
 | `campaigns:read` | campaign_cluster, assess_landscape, search_threat_articles |
-| `sentinel:query` | run_kql, load_kql_playbook, generate_sentinel_query |
+| `sentinel:query` | run_kql, load_kql_playbook, generate_sentinel_query, run_kql_batch |
 | `admin` | All tools including sandbox, browser, response_actions, merge_cases |
 
-## Tools (67)
+## Tools (72)
 
-### Tier 1 -- Core Investigation (25)
+### Tier 1 -- Core Investigation (24)
 
 | Tool | Permission | Description |
 |---|---|---|
 | `new_investigation` | — | Reset conversation boundaries for new case/client |
-| `investigate` | `investigations:submit` | Run full investigation pipeline |
-| `quick_investigate_url` | `investigations:submit` | Quick URL investigation (auto-generates case) |
-| `quick_investigate_domain` | `investigations:submit` | Quick domain investigation |
-| `quick_investigate_file` | `investigations:submit` | Quick file investigation |
 | `lookup_client` | `investigations:read` | Confirm client and platform config |
-| `list_cases` | `investigations:read` | List cases from registry |
+| `create_case` | `investigations:submit` | Create new case in triage status (auto-generates ID) |
+| `promote_case` | `investigations:submit` | Promote case from triage to active |
+| `discard_case` | `investigations:submit` | Discard triage case (false alarm) |
+| `list_cases` | `investigations:read` | List cases from registry (filterable by status) |
 | `get_case` | `investigations:read` | Get case status and metadata |
 | `case_summary` | `investigations:read` | Aggregated case view (meta + IOCs + verdicts + enrichment) |
 | `read_report` | `investigations:read` | Read investigation report markdown |
@@ -130,13 +132,14 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `analyse_static_file` | `investigations:submit` | Quick binary file triage (PE headers, entropy, strings) |
 | `sandbox_api_lookup` | `investigations:submit` | API-based sandbox report lookup (Hybrid Analysis, Any.Run, Joe) |
 
-### Tier 3 -- Advanced / Restricted (23)
+### Tier 3 -- Advanced / Restricted (24)
 
 | Tool | Permission | Description |
 |---|---|---|
 | `run_kql` | `sentinel:query` | Execute KQL query against Sentinel |
 | `load_kql_playbook` | `sentinel:query` | Load KQL playbook stages |
 | `generate_sentinel_query` | `sentinel:query` | Generate composite Sentinel queries |
+| `run_kql_batch` | `sentinel:query` | Execute multiple KQL queries concurrently (max 4 workers) |
 | `security_arch_review` | `investigations:submit` | LLM-powered security architecture review |
 | `contextualise_cves` | `investigations:read` | CVE contextualisation (NVD, EPSS, CISA KEV) |
 | `ingest_velociraptor` | `investigations:submit` | Ingest Velociraptor offline collector data |
@@ -185,7 +188,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 
 | Prompt | Description |
 |---|---|
-| `investigate_incident` | End-to-end investigation orchestrator (client gate → intake → playbook → disposition → output) |
+| `hitl_investigation` | Guided step-by-step investigation (client gate → intake → playbook → disposition → output) |
 | `triage_alert` | Guided alert triage workflow |
 | `write_fp_ticket` | FP ticket generation workflow |
 | `kql_investigation` | Unified KQL playbook prompt (select playbook: phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, ioc-hunt) |
@@ -224,52 +227,55 @@ Classification is determined by `tools/ioc_classify.py` and stored in the IOC in
 
 ## Investigation Workflow
 
-The `quick_investigate_*` and `investigate` tools are long-running (2-10 min). Two modes:
+See `docs/pipeline.md` for the full HITL workflow, tool sequence, auto-close rules, and attack-type classification.
 
-- **Fire-and-forget** (default): Returns `{"status": "submitted", "case_id": "..."}` immediately.
-- **Inline** (`wait=True`): Blocks until pipeline completes.
-
-### Expected tool-call sequence (fire-and-forget)
-
-```
-quick_investigate_url(url)              → {"case_id": "IV_CASE_042", "status": "submitted"}
-case_summary("IV_CASE_042")             → full case overview (IOCs, verdicts, enrichment, response actions)
-get_case("IV_CASE_042")                 → {"pipeline_complete": false, "_hint": "...poll again..."}
-  ... wait 30s, repeat ...
-get_case("IV_CASE_042")                 → {"pipeline_complete": true, "status": "open", "_hint": "...read report, then close..."}
-read_report("IV_CASE_042")              → full investigation report (Markdown)
-generate_mdr_report("IV_CASE_042")      → MDR report generated, case auto-closed
-```
-
-### Auto-close on deliverable collection
-
-Generating a deliverable auto-closes the case — no separate `close_case` call needed:
-
-| Tool | Disposition set |
-|---|---|
-| `generate_mdr_report` | Preserves existing |
-| `generate_pup_report` | `pup_pua` |
-| `generate_fp_ticket` | `false_positive` |
-
-The `close_case` tool still exists for explicit closing (e.g. `true_positive`, `benign_positive`, `false_positive`, `inconclusive`, `resolved`) or when no deliverable is generated.
-
-> **Note:** `get_case` includes a `_hint` field that guides the client through the
-> workflow. When `pipeline_complete` is true and status is "open", the hint instructs
-> the client to read the report, summarise findings, and generate the appropriate deliverable.
+**Speculative enrichment:** When `classify_attack` or `add_evidence` is called, the server fires a background thread that calls `quick_enrich(iocs, deep=False)` on extracted IOCs (capped at 20, fast providers only). Results go to the enrichment cache so subsequent calls get cache hits.
 
 ## File Structure
 
 ```
 mcp_server/
-    __init__.py     # Package marker
-    __main__.py     # python -m mcp_server entry point
-    server.py       # FastMCP instance, registration, main()
-    auth.py         # SocaiTokenVerifier, _require_scope
-    config.py       # Env var configuration
-    tools.py        # 67 MCP tool wrappers
-    resources.py    # 18 MCP resource implementations
-    prompts.py      # 5 MCP prompt implementations
-    usage.py        # Tool invocation logging (JSONL + stderr)
+    __init__.py        # Package marker
+    __main__.py        # python -m mcp_server entry point
+    server.py          # FastMCP instance, registration, main()
+                       #   PID file (crash recovery), signal handlers (SIGTERM/SIGINT),
+                       #   unhandled exception hook, SSE connection lifecycle middleware
+    auth.py            # SocaiTokenVerifier, _require_scope
+    config.py          # Env var configuration
+    tools.py           # 72 MCP tool wrappers
+    resources.py       # 18 MCP resource implementations
+    prompts.py         # 5 MCP prompt implementations
+    usage.py           # Tool invocation logging (JSONL + stderr); emits tool_call,
+                       #   tool_result, tool_error events with result previews
+    logging_config.py  # Structured JSONL logger (RotatingFileHandler, 10 MB × 3 backups)
+                       #   setup_mcp_logger() + mcp_log(event, **fields)
+                       #   Output: registry/mcp_server.jsonl + stderr
+```
+
+## Logging & Observability
+
+The MCP server writes structured JSONL events to `registry/mcp_server.jsonl` (10 MB rotation, 3 backups) and mirrors to stderr for live tailing.
+
+**Event types:**
+
+| Event | When | Key fields |
+|---|---|---|
+| `server_start` | Server boots | transport, host, port, pid, tool_count |
+| `server_stop` | Clean shutdown | reason, pid, uptime_s |
+| `server_signal` | SIGTERM/SIGINT received | signal, pid, uptime_s |
+| `server_crash` | Unhandled exception | error, traceback (truncated 4 KB) |
+| `server_recovery` | Stale PID detected on startup | stale_pid, note |
+| `sse_connect` | SSE client connects | ip, user_agent, path |
+| `sse_disconnect` | SSE client disconnects | ip, duration_s |
+| `tool_call` | Tool invoked | tool, args (summarised) |
+| `tool_result` | Tool returns | tool, duration_ms, result_preview |
+| `tool_error` | Tool raises | tool, error, duration_ms |
+
+**PID file:** `registry/mcp_server.pid` — written on startup, removed on clean shutdown. On next startup, `_check_stale_pid()` detects unclean shutdowns and logs a recovery event.
+
+**Tailing logs:**
+```bash
+tail -f registry/mcp_server.jsonl | python3 -m json.tool
 ```
 
 ## Production Deployment
@@ -290,24 +296,18 @@ location / {
 
 ### WSL2 (Windows host, socai in WSL)
 
-The `env` block in Claude Desktop config is **not** forwarded into WSL processes,
-so environment variables must be set inline in the bash command:
+The `env` block in Claude Desktop config is **not** forwarded into WSL processes, so environment variables must be set inline:
 
 ```json
 {
   "mcpServers": {
     "socai": {
       "command": "wsl",
-      "args": [
-        "bash", "-c",
-        "cd /home/<user>/socai && SOCAI_MCP_TRANSPORT=stdio ANTHROPIC_API_KEY=sk-... SOCAI_VT_KEY=... python3 -m mcp_server"
-      ]
+      "args": ["bash", "-c", "cd /home/<user>/socai && SOCAI_MCP_TRANSPORT=stdio ANTHROPIC_API_KEY=sk-... python3 -m mcp_server"]
     }
   }
 }
 ```
-
-Config file location: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ### Native Linux / macOS
 
@@ -318,21 +318,14 @@ Config file location: `%APPDATA%\Claude\claude_desktop_config.json`
       "command": "python3",
       "args": ["-m", "mcp_server"],
       "cwd": "/path/to/socai",
-      "env": {
-        "SOCAI_MCP_TRANSPORT": "stdio",
-        "ANTHROPIC_API_KEY": "...",
-        "SOCAI_VT_KEY": "..."
-      }
+      "env": { "SOCAI_MCP_TRANSPORT": "stdio", "ANTHROPIC_API_KEY": "..." }
     }
   }
 }
 ```
 
-### SSE transport (remote use)
+**stdio auth:** All RBAC scope checks are bypassed (local trust model) — no JWT needed. Caller is `"local"` with `["admin"]` scopes.
 
-Configure the MCP client to connect to `http://host:8001/sse` with a Bearer token.
+**SSE transport (remote):** Connect MCP client to `http://host:8001/sse` with a Bearer token.
 
-### stdio auth model
-
-In stdio mode all RBAC scope checks are bypassed (local trust model) — no JWT
-needed. The caller is identified as `"local"` with `["admin"]` scopes.
+**Project instructions:** `docs/claude-desktop-instructions.md` — loaded via Claude Desktop `.claude_project`.

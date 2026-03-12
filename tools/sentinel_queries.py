@@ -119,6 +119,44 @@ def render_query(
     }
 
 
+def render_queries_parallel(
+    scenario_ids: list[str],
+    *,
+    upn: str,
+    ip: str = "",
+    object_id: str = "",
+    mailbox_id: str = "",
+    additional_upns: str = "",
+    lookback_hours: int = 24,
+    max_workers: int = 4,
+) -> list[dict]:
+    """Render multiple composite Sentinel queries concurrently.
+
+    Returns a list of rendered query dicts (same format as ``render_query``).
+    Errors for individual scenarios are returned inline as ``{error: ...}``.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: list[dict] = []
+    common = dict(
+        upn=upn, ip=ip, object_id=object_id, mailbox_id=mailbox_id,
+        additional_upns=additional_upns, lookback_hours=lookback_hours,
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_id = {
+            executor.submit(render_query, sid, **common): sid
+            for sid in scenario_ids
+        }
+        for future in as_completed(future_to_id):
+            sid = future_to_id[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                results.append({"scenario": sid, "error": str(exc)})
+    return results
+
+
 def _extract_query_body(text: str) -> str:
     """Extract the KQL body after the closing frontmatter delimiter."""
     lines = text.split("\n")

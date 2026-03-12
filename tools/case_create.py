@@ -12,6 +12,7 @@ Outputs
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import re
 import sys
@@ -20,10 +21,33 @@ from pathlib import Path
 # allow running as script
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import CASES_DIR, DEFAULT_CLIENT, REGISTRY_FILE
+from config.settings import BASE_DIR, CASES_DIR, DEFAULT_CLIENT, REGISTRY_FILE
 from tools.common import load_json, save_json, utcnow
 
 _RE_CASE_ID = re.compile(r"^IV_CASE_\d{3,}$")
+_LOCK_FILE = BASE_DIR / "registry" / ".case_id.lock"
+
+
+def next_case_id() -> str:
+    """Generate the next sequential case ID from the registry (file-locked)."""
+    _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(_LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        max_num = 0
+        if REGISTRY_FILE.exists():
+            try:
+                registry = load_json(REGISTRY_FILE)
+                for cid in registry.get("cases", {}):
+                    m = re.search(r"(\d+)$", cid)
+                    if m:
+                        max_num = max(max_num, int(m.group(1)))
+            except Exception:
+                pass
+        return f"IV_CASE_{max_num + 1:03d}"
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
 
 
 def case_create(
@@ -34,6 +58,7 @@ def case_create(
     tags: list[str] | None = None,
     client: str = "",
     reference_id: str = "",
+    status: str = "triage",
 ) -> dict:
     """
     Create folder structure and registry entry for *case_id*.
@@ -62,7 +87,7 @@ def case_create(
         "attack_type": None,
         "attack_type_confidence": None,
         "reference_id": reference_id or None,
-        "status": "open",
+        "status": status,
         "created_at": utcnow(),
         "updated_at": utcnow(),
         "artefacts": [],
@@ -81,7 +106,7 @@ def case_create(
     registry["cases"][case_id] = {
         "title": meta["title"],
         "severity": severity,
-        "status": "open",
+        "status": status,
         "created_at": meta["created_at"],
         "updated_at": meta["updated_at"],
         "case_dir": str(case_dir),

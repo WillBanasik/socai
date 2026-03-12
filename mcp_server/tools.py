@@ -183,7 +183,7 @@ def _pop_message(result: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Tier 1 — Core Investigation (25 tools)
+# Tier 1 — Core Investigation tools
 # ---------------------------------------------------------------------------
 
 def _register_tier1(mcp: FastMCP) -> None:
@@ -211,342 +211,6 @@ def _register_tier1(mcp: FastMCP) -> None:
         return _json({
             "status": "ok",
             "message": "Ready for a new investigation.",
-        })
-
-    @mcp.tool(title="Run Full Investigation", annotations={"openWorldHint": True})
-    async def investigate(
-        case_id: str,
-        title: str = "",
-        severity: str = "medium",
-        analyst: str = "unassigned",
-        urls: list[str] | None = None,
-        zip_path: str | None = None,
-        zip_pass: str | None = None,
-        log_paths: list[str] | None = None,
-        eml_paths: list[str] | None = None,
-        tags: list[str] | None = None,
-        close_case: bool = False,
-        include_private_ips: bool = False,
-        detonate: bool = False,
-        analyst_notes: str | None = None,
-        wait: bool = False,
-        ctx: Context | None = None,
-    ) -> str:
-        """Use when the analyst says "investigate this case", "run the full pipeline",
-        or provides a case ID with alert details, URLs, files, or logs to analyse.
-
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
-
-        Runs the complete investigation pipeline: IOC extraction, enrichment,
-        correlation, phishing detection, report generation, and response actions.
-        This is the heavyweight option — takes 2-10 minutes. For a quick look at
-        a single URL, domain, or file, prefer the ``quick_investigate_*`` tools instead.
-
-        By default runs in the background (fire-and-forget) and returns a case_id
-        immediately. Poll progress with ``get_case`` every 30 seconds until
-        ``pipeline_complete`` is true, then call ``read_report`` to retrieve findings.
-        Set ``wait=True`` to block until the pipeline finishes (useful for scripted flows).
-
-        Parameters
-        ----------
-        case_id : str
-            Unique case identifier, e.g. "IV_CASE_001". Omit to auto-generate.
-            **Always create a new case for each new alert** — never reuse an
-            existing case ID to append new alert data. Use ``recall_cases``
-            for cross-case historical context instead.
-        title : str
-            Human-readable case title.
-        severity : str
-            One of: low, medium, high, critical.
-        analyst : str
-            Analyst name or ID.
-        urls : list[str]
-            URLs to capture and investigate.
-        zip_path : str
-            Absolute path to a ZIP archive.
-        zip_pass : str
-            Password for the ZIP archive.
-        log_paths : list[str]
-            Absolute paths to log files.
-        eml_paths : list[str]
-            Absolute paths to .eml files.
-        tags : list[str]
-            Free-form tags for the case.
-        close_case : bool
-            Mark the case as closed after pipeline completes.
-        include_private_ips : bool
-            Include RFC-1918 IPs in IOC extraction.
-        detonate : bool
-            Submit file hashes to sandbox for live detonation.
-        analyst_notes : str
-            Freeform analyst context, observations, or IOCs to attach to the
-            case. Saved to ``notes/analyst_input.md`` before the pipeline runs
-            so downstream tools (report generation, security architecture
-            review) can reference it.
-        wait : bool
-            If True, block until pipeline completes (with progress). Default
-            is False (fire-and-forget, returns job_id immediately).
-        """
-        _require_scope("investigations:submit")
-
-        # Strict case ID format enforcement
-        import re as _re
-        if case_id and not _re.match(r"^IV_CASE_\d{3,}$", case_id):
-            return _json({"error": f"Invalid case_id {case_id!r}. Must match IV_CASE_XXX (e.g. IV_CASE_219). Omit case_id to auto-generate."})
-
-        # Auto-reset boundaries when creating a brand-new case so that
-        # a new conversation isn't blocked by stale state from a prior one.
-        from config.settings import CASES_DIR
-        if not (CASES_DIR / case_id).exists():
-            _reset_boundaries()
-
-        _check_client_boundary(case_id)
-
-        from agents.chief import ChiefAgent
-
-        kwargs = dict(
-            title=title or f"Investigation {case_id}",
-            severity=severity,
-            analyst=analyst,
-            tags=tags or [],
-            urls=urls or [],
-            zip_path=zip_path,
-            zip_pass=zip_pass,
-            log_paths=log_paths or [],
-            eml_paths=eml_paths or [],
-            close_case=close_case,
-            include_private_ips=include_private_ips,
-            detonate=detonate,
-            analyst_notes=analyst_notes,
-        )
-
-        if wait:
-            # Inline — run in thread pool so we don't block the event loop
-            result = await asyncio.to_thread(
-                lambda: ChiefAgent(case_id).run(**kwargs)
-            )
-            return _json(result)
-
-        # Fire-and-forget — schedule in background, return immediately
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, lambda: ChiefAgent(case_id).run(**kwargs))
-        return _json({
-            "status": "submitted",
-            "case_id": case_id,
-            "message": f"Investigation {case_id} submitted. Poll get_case for status.",
-        })
-
-    @mcp.tool(title="Quick Investigate URL", annotations={"openWorldHint": True})
-    async def quick_investigate_url(
-        url: str,
-        severity: str = "medium",
-        analyst: str = "unassigned",
-        tags: list[str] | None = None,
-        wait: bool = False,
-    ) -> str:
-        """Use when the analyst says "check this URL", "investigate this link",
-        or pastes a URL to analyse. Auto-generates a case ID and runs the full
-        investigation pipeline — no need to create a case first.
-
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
-
-        This is the quick-run entry point for URL-based investigations (phishing
-        links, suspicious redirects, credential harvesting pages, etc.).
-        For domain-only investigations (no specific URL path), use
-        ``quick_investigate_domain`` instead.
-
-        Takes 2-10 minutes. Returns the case_id immediately by default.
-        **After calling this tool:**
-        1. Poll ``get_case(case_id)`` every 30s until ``pipeline_complete`` is true
-        2. Call ``read_report(case_id)`` to retrieve the investigation narrative
-        3. Summarise the findings for the analyst
-        4. Call ``close_case(case_id, disposition)`` to close the investigation
-
-        Parameters
-        ----------
-        url : str
-            The URL to investigate.
-        severity : str
-            One of: low, medium, high, critical.
-        analyst : str
-            Analyst name or ID.
-        tags : list[str]
-            Free-form tags.
-        wait : bool
-            If True, block until pipeline completes. Default False (fire-and-forget).
-        """
-        _require_scope("investigations:submit")
-        _reset_boundaries()  # always a new case
-
-        from api.jobs import JobManager
-        from agents.chief import ChiefAgent
-
-        case_id = JobManager.next_case_id()
-        _active_case[_get_caller_email()] = case_id
-
-        def _run():
-            return ChiefAgent(case_id).run(
-                title=f"URL investigation: {url}",
-                severity=severity,
-                analyst=analyst,
-                tags=tags or [],
-                urls=[url],
-            )
-
-        if wait:
-            result = await asyncio.to_thread(_run)
-            return _json({"case_id": case_id, **result})
-
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, _run)
-        return _json({
-            "status": "submitted",
-            "case_id": case_id,
-            "message": f"Investigation {case_id} submitted. Use get_case('{case_id}') to poll for results.",
-        })
-
-    @mcp.tool(title="Quick Investigate Domain", annotations={"openWorldHint": True})
-    async def quick_investigate_domain(
-        domain: str,
-        severity: str = "medium",
-        analyst: str = "unassigned",
-        tags: list[str] | None = None,
-        wait: bool = False,
-    ) -> str:
-        """Use when the analyst says "look up this domain", "investigate this domain",
-        or provides a bare domain name (no URL path). Auto-generates a case ID and
-        runs the full investigation pipeline.
-
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
-
-        This is the quick-run entry point for domain-based investigations. The domain
-        is automatically prefixed with ``https://`` for web capture. If the analyst
-        provides a full URL with a path, use ``quick_investigate_url`` instead.
-
-        Takes 2-10 minutes. Returns the case_id immediately by default.
-        **After calling this tool:**
-        1. Poll ``get_case(case_id)`` every 30s until ``pipeline_complete`` is true
-        2. Call ``read_report(case_id)`` to retrieve the investigation narrative
-        3. Summarise the findings for the analyst
-        4. Call ``close_case(case_id, disposition)`` to close the investigation
-
-        Parameters
-        ----------
-        domain : str
-            Domain to investigate (e.g. "evil-domain.com").
-        severity : str
-            One of: low, medium, high, critical.
-        analyst : str
-            Analyst name or ID.
-        tags : list[str]
-            Free-form tags.
-        wait : bool
-            If True, block until pipeline completes. Default False (fire-and-forget).
-        """
-        _require_scope("investigations:submit")
-        _reset_boundaries()  # always a new case
-
-        from api.jobs import JobManager
-        from agents.chief import ChiefAgent
-
-        case_id = JobManager.next_case_id()
-        _active_case[_get_caller_email()] = case_id
-        url = f"https://{domain}" if not domain.startswith("http") else domain
-
-        def _run():
-            return ChiefAgent(case_id).run(
-                title=f"Domain investigation: {domain}",
-                severity=severity,
-                analyst=analyst,
-                tags=tags or [],
-                urls=[url],
-            )
-
-        if wait:
-            result = await asyncio.to_thread(_run)
-            return _json({"case_id": case_id, **result})
-
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, _run)
-        return _json({
-            "status": "submitted",
-            "case_id": case_id,
-            "message": f"Investigation {case_id} submitted. Use get_case('{case_id}') to poll for results.",
-        })
-
-    @mcp.tool(title="Quick Investigate File", annotations={"openWorldHint": True})
-    async def quick_investigate_file(
-        file_path: str,
-        severity: str = "medium",
-        analyst: str = "unassigned",
-        zip_pass: str | None = None,
-        tags: list[str] | None = None,
-        wait: bool = False,
-    ) -> str:
-        """Use when the analyst says "analyse this file", "check this sample",
-        "investigate this attachment", or provides a file path (ZIP, EXE, DLL,
-        script, etc.). Auto-generates a case ID and runs the full investigation
-        pipeline — no need to create a case first.
-
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
-
-        This is the quick-run entry point for file/malware-based investigations.
-        Supports password-protected ZIP archives (provide ``zip_pass``).
-        For URL- or domain-based investigations, use the corresponding
-        ``quick_investigate_url`` or ``quick_investigate_domain`` tools instead.
-
-        Takes 2-10 minutes. Returns the case_id immediately by default.
-        **After calling this tool:**
-        1. Poll ``get_case(case_id)`` every 30s until ``pipeline_complete`` is true
-        2. Call ``read_report(case_id)`` to retrieve the investigation narrative
-        3. Summarise the findings for the analyst
-        4. Call ``close_case(case_id, disposition)`` to close the investigation
-
-        Parameters
-        ----------
-        file_path : str
-            Absolute path to the file or ZIP archive.
-        severity : str
-            One of: low, medium, high, critical.
-        analyst : str
-            Analyst name or ID.
-        zip_pass : str
-            Password for the ZIP archive.
-        tags : list[str]
-            Free-form tags.
-        wait : bool
-            If True, block until pipeline completes. Default False (fire-and-forget).
-        """
-        _require_scope("investigations:submit")
-        _reset_boundaries()  # always a new case
-
-        from api.jobs import JobManager
-        from agents.chief import ChiefAgent
-
-        case_id = JobManager.next_case_id()
-        _active_case[_get_caller_email()] = case_id
-        fname = Path(file_path).name
-
-        def _run():
-            return ChiefAgent(case_id).run(
-                title=f"File investigation: {fname}",
-                severity=severity,
-                analyst=analyst,
-                tags=tags or [],
-                zip_path=file_path,
-                zip_pass=zip_pass,
-            )
-
-        if wait:
-            result = await asyncio.to_thread(_run)
-            return _json({"case_id": case_id, **result})
-
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, _run)
-        return _json({
-            "status": "submitted",
-            "case_id": case_id,
-            "message": f"Investigation {case_id} submitted. Use get_case('{case_id}') to poll for results.",
         })
 
     @mcp.tool(title="Look Up Client", annotations={"readOnlyHint": True})
@@ -615,17 +279,26 @@ def _register_tier1(mcp: FastMCP) -> None:
         return _json(result)
 
     @mcp.tool(title="List Cases", annotations={"readOnlyHint": True})
-    def list_cases() -> str:
+    def list_cases(status: str = "active,closed") -> str:
         """Use when the analyst asks "show me recent cases", "what's open?",
         "list my cases", or "what investigations do we have?".
 
-        Returns all cases from the registry with their status, severity, and
-        disposition. When the analyst asks for "recent" or "current" cases,
-        prefer filtering the results to show **open cases** unless they
-        explicitly ask for all or closed cases.
+        Returns cases from the registry filtered by status, with their severity
+        and disposition. When the analyst asks for "recent" or "current" cases,
+        use the default filter (active + closed). Pass ``status="triage"`` for
+        triage queue, ``status="all"`` for everything, or any comma-separated
+        combination (e.g. ``"triage,active"``).
 
         For searching prior cases by IOC, email, or keyword, use ``recall_cases``
-        instead."""
+        instead.
+
+        Parameters
+        ----------
+        status : str
+            Comma-separated status filter. Default "active,closed".
+            Use "all" or "" to return everything.
+            Valid values: triage, active, discarded, closed, open (legacy).
+        """
         _require_scope("investigations:read")
 
         from config.settings import REGISTRY_FILE
@@ -633,22 +306,34 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         if not REGISTRY_FILE.exists():
             return _json({"cases": {}, "message": "No registry found."})
-        return _json(load_json(REGISTRY_FILE))
+
+        registry = load_json(REGISTRY_FILE)
+
+        # Filter by status
+        if status and status.strip().lower() not in ("all", ""):
+            allowed = {s.strip().lower() for s in status.split(",")}
+            # Map legacy "open" to "active" for filtering
+            if "open" in allowed:
+                allowed.add("active")
+            filtered = {}
+            for cid, entry in registry.get("cases", {}).items():
+                case_status = (entry.get("status") or "").lower()
+                # Legacy "open" cases match "active" filter
+                if case_status == "open" and "active" in allowed:
+                    filtered[cid] = entry
+                elif case_status in allowed:
+                    filtered[cid] = entry
+            registry = {**registry, "cases": filtered}
+
+        return _json(registry)
 
     @mcp.tool(title="Get Case Status", annotations={"readOnlyHint": True})
     def get_case(case_id: str) -> str:
-        """Use to check on a running investigation or retrieve basic case metadata.
-        This is the lightweight polling tool — call it every 30 seconds after
-        submitting an investigation until ``pipeline_complete`` is true.
+        """Retrieve basic case metadata (title, severity, status, disposition,
+        timestamps, attack type).
 
-        Returns case metadata (title, severity, status, disposition, timestamps).
-        Does NOT include IOCs, verdicts, or enrichment data — for a complete
-        picture, use ``case_summary`` instead.
-
-        **Polling workflow:** after ``investigate`` or ``quick_investigate_*``,
-        poll this tool every 30s. When ``pipeline_complete`` is true, call
-        ``read_report`` to get findings, summarise for the analyst, then
-        ``close_case`` to close.
+        Returns case metadata only. Does NOT include IOCs, verdicts, or
+        enrichment data — for a complete picture, use ``case_summary`` instead.
 
         Parameters
         ----------
@@ -663,20 +348,8 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         meta_path = CASES_DIR / case_id / "case_meta.json"
         if not meta_path.exists():
-            return _json({"error": f"Case {case_id!r} not found. Investigation may still be initialising — retry in 15 seconds."})
+            return _json({"error": f"Case {case_id!r} not found."})
         meta = load_json(meta_path)
-
-        # Add pipeline_complete flag for polling clients
-        report_exists = (CASES_DIR / case_id / "reports" / "investigation_report.md").exists()
-        meta["pipeline_complete"] = report_exists
-        if not report_exists:
-            meta["_hint"] = "Pipeline still running. Call get_case again in 30 seconds."
-        elif meta.get("status") == "open":
-            meta["_hint"] = (
-                "Pipeline complete. Read the report with read_report "
-                "and summarise the findings for the user. "
-                "The case will be auto-closed when you read the report."
-            )
 
         return _json(meta)
 
@@ -691,9 +364,8 @@ def _register_tier1(mcp: FastMCP) -> None:
         timeline event count, and any errors. This is the go-to tool for getting
         a full picture of a case without calling multiple tools.
 
-        **Prefer this over ``get_case``** unless you are only polling for pipeline
-        completion. ``get_case`` returns metadata only; this returns the full
-        investigative context.
+        **Prefer this over ``get_case``** when you need the full investigative
+        context. ``get_case`` returns metadata only; this returns everything.
 
         Parameters
         ----------
@@ -731,10 +403,6 @@ def _register_tier1(mcp: FastMCP) -> None:
                 return None
 
         meta = load_json(meta_path)
-
-        # Pipeline status
-        report_exists = (case_dir / "reports" / "investigation_report.md").exists()
-        meta["pipeline_complete"] = report_exists
 
         # IOCs
         iocs_data = _load("iocs/iocs.json")
@@ -839,7 +507,7 @@ def _register_tier1(mcp: FastMCP) -> None:
                 "analyst": meta.get("analyst"),
                 "created_at": meta.get("created_at"),
                 "updated_at": meta.get("updated_at"),
-                "pipeline_complete": meta.get("pipeline_complete"),
+                "report_exists": (case_dir / "reports" / "investigation_report.md").exists(),
             },
             "iocs": ioc_summary,
             "verdicts": verdict_highlights,
@@ -885,13 +553,14 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         report_path = CASES_DIR / case_id / "reports" / "investigation_report.md"
         if not report_path.exists():
-            return f"No report found for case {case_id!r}. Run investigate or generate_report first."
+            return f"No report found for case {case_id!r}. Run generate_report first."
 
-        # Auto-close: if the report exists and case is still open, close it
+        # Auto-close: if the report exists and case is active (or legacy open), close it
+        # Triage cases are not auto-closed — they must be promoted first.
         meta_path = CASES_DIR / case_id / "case_meta.json"
         if meta_path.exists():
             meta = load_json(meta_path)
-            if meta.get("status") == "open":
+            if meta.get("status") in ("open", "active"):
                 from tools.index_case import index_case
                 index_case(case_id, status="closed", disposition="resolved")
 
@@ -972,6 +641,134 @@ def _register_tier1(mcp: FastMCP) -> None:
         except Exception as exc:
             return _json({"error": f"Error reading {file_path}: {exc}"})
 
+    @mcp.tool(title="Create Case")
+    async def create_case(
+        title: str,
+        severity: str = "medium",
+        analyst: str = "unassigned",
+        tags: list[str] | None = None,
+        client: str = "",
+        classification: str = "",
+        plan: str = "",
+    ) -> str:
+        """Use when the analyst says "create a case", "new case", "start an investigation",
+        or after classify_attack when you need to formally create a case for the alert.
+
+        Auto-generates a case ID (IV_CASE_XXX format). The case starts in **triage**
+        status — call ``promote_case`` after evidence review to transition to active,
+        or ``discard_case`` if the alert is not worth investigating.
+
+        Parameters
+        ----------
+        title : str
+            Human-readable case title (e.g. "Phishing — credential harvest on login.example.com").
+        severity : str
+            One of: low, medium, high, critical.
+        analyst : str
+            Analyst name or ID.
+        tags : list[str]
+            Free-form tags (e.g. ["phishing", "credential-harvest"]).
+        client : str
+            Client name (must match client registry).
+        classification : str
+            Attack type from classify_attack (e.g. "phishing", "malware").
+        plan : str
+            Investigation plan text to save as analyst notes.
+        """
+        _require_scope("investigations:submit")
+
+        if client:
+            _set_client_boundary(client)
+        _reset_boundaries()  # new case = fresh boundaries
+
+        from tools.case_create import case_create as _create, next_case_id
+        case_id = next_case_id()
+        _active_case[_get_caller_email()] = case_id
+
+        result = _create(
+            case_id, title=title, severity=severity,
+            analyst=analyst, tags=tags or [], client=client,
+        )
+
+        # Save classification and plan as notes
+        if classification:
+            result["attack_type"] = classification
+            from config.settings import CASES_DIR
+            from tools.common import save_json, load_json
+            meta_path = CASES_DIR / case_id / "case_meta.json"
+            meta = load_json(meta_path)
+            meta["attack_type"] = classification
+            save_json(meta_path, meta)
+
+        if plan:
+            from config.settings import CASES_DIR
+            notes_dir = CASES_DIR / case_id / "notes"
+            notes_dir.mkdir(parents=True, exist_ok=True)
+            (notes_dir / "analyst_input.md").write_text(f"## Investigation Plan\n\n{plan}\n")
+
+        if client:
+            _set_client_boundary(client)
+
+        return _json(result)
+
+    @mcp.tool(title="Promote Case")
+    def promote_case(
+        case_id: str,
+        title: str | None = None,
+        severity: str | None = None,
+        disposition: str | None = None,
+        tags: list[str] | None = None,
+    ) -> str:
+        """Use after evidence review confirms the alert is worth a full investigation.
+        Transitions the case from **triage** to **active** status.
+
+        Only triage cases can be promoted. Active and closed cases are rejected.
+        Optionally update title, severity, disposition, or tags at promotion time.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        title : str
+            Updated case title (optional).
+        severity : str
+            Updated severity (optional).
+        disposition : str
+            Initial disposition hint (optional).
+        tags : list[str]
+            Updated tags (optional).
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from tools.index_case import promote_case as _promote
+        return _json(_promote(case_id, title=title, severity=severity,
+                              disposition=disposition, tags=tags))
+
+    @mcp.tool(title="Discard Case")
+    def discard_case(
+        case_id: str,
+        reason: str = "",
+    ) -> str:
+        """Use when triage determines the alert is not worth investigating — e.g.
+        known false positive pattern, duplicate of an existing case, or out of scope.
+
+        Only triage cases can be discarded. Active and closed cases must use
+        ``close_case`` instead.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        reason : str
+            Why the case was discarded (saved to case metadata).
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from tools.index_case import discard_case as _discard
+        return _json(_discard(case_id, reason=reason))
+
     @mcp.tool(title="Close Case")
     def close_case(
         case_id: str,
@@ -981,13 +778,14 @@ def _register_tier1(mcp: FastMCP) -> None:
         "this is a true positive", or after you have summarised the findings and
         the investigation is complete.
 
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+        Note that ``read_report`` auto-closes with disposition "resolved", so
+        you only need this tool explicitly when the analyst wants a specific
+        disposition (e.g. "false_positive", "true_positive", "benign_positive",
+        "benign", "inconclusive").
 
-        This is the final step of the standard workflow: investigate -> poll ->
-        read_report -> summarise -> **close_case**. Note that ``read_report``
-        auto-closes with disposition "resolved", so you only need this tool
-        explicitly when the analyst wants a specific disposition (e.g. "false_positive",
-        "true_positive", "benign_positive", "benign", "inconclusive").
+        Only **active** cases can be closed. If the case is still in triage,
+        use ``promote_case`` to move it to active first, or ``discard_case`` to
+        triage it out.
 
         Parameters
         ----------
@@ -1000,7 +798,20 @@ def _register_tier1(mcp: FastMCP) -> None:
             but that activity was authorised/non-threatening (not "true_positive").
         """
         _require_scope("investigations:submit")
-        _check_client_boundary(case_id)
+        # No boundary check — close_case is administrative (bulk close across cases)
+
+        # Guard: only active (or legacy open) cases can be closed
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+        meta_path = CASES_DIR / case_id / "case_meta.json"
+        if meta_path.exists():
+            meta = load_json(meta_path)
+            status = meta.get("status", "")
+            if status == "triage":
+                raise ToolError(
+                    f"Case {case_id} is in triage. Promote it to active with "
+                    f"promote_case first, or use discard_case to triage it out."
+                )
 
         from tools.index_case import index_case
         return _json(index_case(case_id, status="closed", disposition=disposition))
@@ -1047,6 +858,28 @@ def _register_tier1(mcp: FastMCP) -> None:
         result = await asyncio.to_thread(
             lambda: actions.add_evidence(case_id, text)
         )
+
+        # Speculative enrichment — pre-warm cache with IOCs from evidence text
+        try:
+            from tools.extract_iocs import _extract_from_text
+            extracted = _extract_from_text(text)
+            raw_iocs: list[str] = []
+            for ioc_type in ("ipv4", "domain", "url", "sha256", "sha1", "md5"):
+                raw_iocs.extend(extracted.get(ioc_type, set()))
+            raw_iocs = list(dict.fromkeys(raw_iocs))[:20]
+            if raw_iocs:
+                import threading as _thr
+                def _bg_enrich():
+                    try:
+                        from tools.enrich import quick_enrich
+                        quick_enrich(raw_iocs, deep=False)
+                    except Exception:
+                        pass
+                _thr.Thread(target=_bg_enrich, daemon=True,
+                            name=f"spec_enrich_evidence_{case_id}").start()
+        except Exception:
+            pass  # advisory — never block add_evidence
+
         return _json(_pop_message(result))
 
     @mcp.tool(title="Record Analytical Finding")
@@ -1088,9 +921,20 @@ def _register_tier1(mcp: FastMCP) -> None:
         _check_client_boundary(case_id)
 
         from config.settings import CASES_DIR
-        from tools.common import utcnow
+        from tools.common import load_json, utcnow
 
         case_dir = CASES_DIR / case_id
+
+        # Auto-promote triage → active on first finding
+        promoted = False
+        meta_path = case_dir / "case_meta.json"
+        if meta_path.exists():
+            meta = load_json(meta_path)
+            if meta.get("status") in ("triage", "open"):
+                from tools.index_case import promote_case
+                promote_case(case_id)
+                promoted = True
+
         notes_dir = case_dir / "notes"
         notes_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1104,12 +948,15 @@ def _register_tier1(mcp: FastMCP) -> None:
             entry += f"\n\n{detail}"
         write_artefact(notes_path, existing + entry + "\n")
 
-        return _json({
+        result = {
             "case_id": case_id,
             "finding_type": finding_type,
             "summary": summary,
             "recorded_at": utcnow(),
-        })
+        }
+        if promoted:
+            result["auto_promoted"] = "triage → active"
+        return _json(result)
 
     @mcp.tool(title="Enrich IOCs")
     async def enrich_iocs(case_id: str, include_private: bool = False) -> str:
@@ -1177,6 +1024,20 @@ def _register_tier1(mcp: FastMCP) -> None:
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
+        # Guard: if close_case=True, require active status
+        if close_case:
+            from config.settings import CASES_DIR
+            from tools.common import load_json
+            meta_path = CASES_DIR / case_id / "case_meta.json"
+            if meta_path.exists():
+                meta = load_json(meta_path)
+                status = meta.get("status", "")
+                if status == "triage":
+                    raise ToolError(
+                        f"Case {case_id} is in triage. Promote it to active with "
+                        f"promote_case before generating a closing report."
+                    )
+
         from api import actions
         result = await asyncio.to_thread(
             lambda: actions.generate_report(case_id, close_case=close_case)
@@ -1213,6 +1074,18 @@ def _register_tier1(mcp: FastMCP) -> None:
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
+        # Guard: case must be active (not triage)
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+        meta_path = CASES_DIR / case_id / "case_meta.json"
+        if meta_path.exists():
+            meta = load_json(meta_path)
+            if meta.get("status") == "triage":
+                raise ToolError(
+                    f"Case {case_id} is in triage. Promote it to active with "
+                    f"promote_case before generating the MDR report."
+                )
+
         from tools.generate_mdr_report import generate_mdr_report as _mdr
         result = await asyncio.to_thread(lambda: _mdr(case_id))
         return _json(result)
@@ -1244,6 +1117,18 @@ def _register_tier1(mcp: FastMCP) -> None:
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
+
+        # Guard: case must be active (not triage)
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+        meta_path = CASES_DIR / case_id / "case_meta.json"
+        if meta_path.exists():
+            meta = load_json(meta_path)
+            if meta.get("status") == "triage":
+                raise ToolError(
+                    f"Case {case_id} is in triage. Promote it to active with "
+                    f"promote_case before generating the PUP report."
+                )
 
         from tools.generate_pup_report import generate_pup_report as _pup
         result = await asyncio.to_thread(lambda: _pup(case_id))
@@ -1532,6 +1417,30 @@ def _register_tier1(mcp: FastMCP) -> None:
             "description": profile.get("description", ""),
         }
 
+        # Speculative enrichment — pre-warm cache with IOCs from alert text
+        try:
+            from tools.extract_iocs import _extract_from_text
+            text_to_scan = f"{title}\n{notes}"
+            extracted = _extract_from_text(text_to_scan)
+            raw_iocs: list[str] = []
+            for ioc_type in ("ipv4", "domain", "url", "sha256", "sha1", "md5"):
+                raw_iocs.extend(extracted.get(ioc_type, set()))
+            if urls:
+                raw_iocs.extend(urls)
+            raw_iocs = list(dict.fromkeys(raw_iocs))[:20]  # dedup, cap at 20
+            if raw_iocs:
+                import threading as _thr
+                def _bg_enrich():
+                    try:
+                        from tools.enrich import quick_enrich
+                        quick_enrich(raw_iocs, deep=False)
+                    except Exception:
+                        pass  # advisory — silent failure
+                _thr.Thread(target=_bg_enrich, daemon=True,
+                            name="spec_enrich_classify").start()
+        except Exception:
+            pass  # advisory — never block classify_attack
+
         return _json(result)
 
     @mcp.tool(title="Plan Investigation", annotations={"readOnlyHint": True})
@@ -1561,8 +1470,6 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         Does NOT execute anything — purely advisory.  Present the plan to the
         analyst, then execute the steps by calling the individual tools.
-
-        For automated end-to-end execution, use ``investigate`` instead.
 
         Parameters
         ----------
@@ -1804,8 +1711,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             "plan": plan_steps,
             "skipped_steps": skipped,
             "profile_description": profile.get("description", ""),
-            "note": "This plan is advisory. Execute each step by calling the listed tool. "
-                    "For fully automated execution, use the `investigate` tool instead.",
+            "note": "This plan is advisory. Execute each step by calling the listed tool.",
         })
 
     @mcp.tool(title="Quick IOC Enrichment", annotations={"readOnlyHint": True})
@@ -3048,6 +2954,84 @@ def _register_tier3(mcp: FastMCP) -> None:
         )
         return _json(result)
 
+    @mcp.tool(title="Run KQL Batch", annotations={"openWorldHint": True})
+    async def run_kql_batch(
+        queries: list[str],
+        workspace: str = "",
+        case_id: str = "",
+        max_rows: int = 1000,
+    ) -> str:
+        """Use when you need to execute **multiple KQL queries concurrently**
+        against a Sentinel workspace.  Returns all results together, completing
+        in roughly the time of the slowest single query.
+
+        Trigger phrases: "run all these queries", "batch KQL", "execute
+        all composite queries".
+
+        **Typical workflow:**
+        1. Call ``generate_sentinel_query`` for each scenario you need
+        2. Collect the rendered queries
+        3. Pass them all to ``run_kql_batch`` for concurrent execution
+
+        Parameters
+        ----------
+        queries : list[str]
+            List of KQL query strings to execute.
+        workspace : str
+            Workspace name or GUID.  Auto-resolved from case client if omitted.
+        case_id : str
+            Optional case ID for workspace resolution and audit.
+        max_rows : int
+            Maximum rows per query (default 1000).
+        """
+        _require_scope("sentinel:query")
+        if case_id:
+            _check_client_boundary(case_id)
+
+        from tools.sentinel_queries import resolve_kql_workspace
+
+        ws_id = resolve_kql_workspace(workspace, case_id=case_id or None)
+        if not ws_id:
+            return _json({"error": "Could not resolve workspace. Provide workspace name/GUID or set SOCAI_SENTINEL_WORKSPACE."})
+
+        if case_id:
+            _check_workspace_boundary(ws_id)
+
+        if not queries:
+            return _json({"error": "No queries provided."})
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _run_one(query: str) -> dict:
+            try:
+                from scripts.run_kql import run_kql
+                rows = run_kql(ws_id, query, max_rows=max_rows)
+                return {"query": query[:200], "row_count": len(rows), "rows": rows}
+            except Exception as exc:
+                return {"query": query[:200], "error": str(exc), "row_count": 0, "rows": []}
+
+        results = []
+        max_workers = min(4, len(queries))
+        loop = asyncio.get_running_loop()
+
+        def _batch():
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futs = {executor.submit(_run_one, q): i for i, q in enumerate(queries)}
+                ordered = [None] * len(queries)
+                for fut in as_completed(futs):
+                    idx = futs[fut]
+                    ordered[idx] = fut.result()
+                return ordered
+
+        results = await loop.run_in_executor(None, _batch)
+        total_rows = sum(r["row_count"] for r in results if r)
+        return _json({
+            "workspace": ws_id,
+            "query_count": len(queries),
+            "total_rows": total_rows,
+            "results": results,
+        })
+
     @mcp.tool(title="Security Architecture Review")
     async def security_arch_review(case_id: str) -> str:
         """Use when the analyst says "what security gaps does this reveal?",
@@ -3341,6 +3325,18 @@ def _register_tier3(mcp: FastMCP) -> None:
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
+
+        # Guard: case must be active (not triage)
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+        meta_path = CASES_DIR / case_id / "case_meta.json"
+        if meta_path.exists():
+            meta = load_json(meta_path)
+            if meta.get("status") == "triage":
+                raise ToolError(
+                    f"Case {case_id} is in triage. Promote it to active with "
+                    f"promote_case before generating an FP ticket."
+                )
 
         from api import actions
         result = await asyncio.to_thread(

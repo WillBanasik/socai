@@ -29,6 +29,7 @@ update_ioc_index(case_id)
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -36,6 +37,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config.settings import CASES_DIR, IOC_INDEX_FILE
 from tools.common import load_json, log_error, save_json, utcnow
 from tools.ioc_classify import classify_ioc, get_case_client
+
+# Thread-safety: protects the read-modify-write cycle on ioc_index.json
+# when concurrent investigations both call update_ioc_index().
+_ioc_index_lock = threading.Lock()
 
 # Provider statuses that carry a meaningful verdict
 _OK_STATUSES = {"ok"}
@@ -197,18 +202,6 @@ def update_ioc_index(case_id: str) -> dict:
     verdict_data = load_json(verdict_path)
     ioc_scores   = verdict_data.get("iocs", {})
 
-    # Load existing index
-    index: dict = {}
-    if IOC_INDEX_FILE.exists():
-        try:
-            index = load_json(IOC_INDEX_FILE)
-        except FileNotFoundError:
-            index = {}
-        except Exception as exc:
-            log_error(case_id, "score_verdicts.load_ioc_index", str(exc),
-                      severity="warning", context={"path": str(IOC_INDEX_FILE)})
-            index = {}
-
     now           = utcnow()
     new_iocs:       list[str] = []
     recurring_iocs: list[str] = []
@@ -216,43 +209,56 @@ def update_ioc_index(case_id: str) -> dict:
     # Resolve the client that owns this case (for cross-client boundary)
     case_client = get_case_client(case_id)
 
-    for ioc, score in ioc_scores.items():
-        tier = classify_ioc(score["ioc_type"], ioc)
+    # Locked section: load-modify-save of the shared IOC index file
+    with _ioc_index_lock:
+        index: dict = {}
+        if IOC_INDEX_FILE.exists():
+            try:
+                index = load_json(IOC_INDEX_FILE)
+            except FileNotFoundError:
+                index = {}
+            except Exception as exc:
+                log_error(case_id, "score_verdicts.load_ioc_index", str(exc),
+                          severity="warning", context={"path": str(IOC_INDEX_FILE)})
+                index = {}
 
-        if ioc in index:
-            entry = index[ioc]
-            if case_id not in entry.get("cases", []):
-                entry.setdefault("cases", []).append(case_id)
-                recurring_iocs.append(ioc)
-            # Always refresh verdict and timestamps from the latest run
-            entry["last_seen"]  = now
-            entry["verdict"]    = score["verdict"]
-            entry["malicious"]  = score["malicious"]
-            entry["suspicious"] = score["suspicious"]
-            entry["clean"]      = score["clean"]
-            entry["tier"]       = tier
-            # Track which client each case belongs to
-            if case_client:
-                entry.setdefault("case_clients", {})[case_id] = case_client
-        else:
-            entry = {
-                "ioc_type":   score["ioc_type"],
-                "tier":       tier,
-                "first_seen": now,
-                "last_seen":  now,
-                "cases":      [case_id],
-                "verdict":    score["verdict"],
-                "malicious":  score["malicious"],
-                "suspicious": score["suspicious"],
-                "clean":      score["clean"],
-            }
-            if case_client:
-                entry["case_clients"] = {case_id: case_client}
-            index[ioc] = entry
-            new_iocs.append(ioc)
+        for ioc, score in ioc_scores.items():
+            tier = classify_ioc(score["ioc_type"], ioc)
 
-    IOC_INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
-    save_json(IOC_INDEX_FILE, index)
+            if ioc in index:
+                entry = index[ioc]
+                if case_id not in entry.get("cases", []):
+                    entry.setdefault("cases", []).append(case_id)
+                    recurring_iocs.append(ioc)
+                # Always refresh verdict and timestamps from the latest run
+                entry["last_seen"]  = now
+                entry["verdict"]    = score["verdict"]
+                entry["malicious"]  = score["malicious"]
+                entry["suspicious"] = score["suspicious"]
+                entry["clean"]      = score["clean"]
+                entry["tier"]       = tier
+                # Track which client each case belongs to
+                if case_client:
+                    entry.setdefault("case_clients", {})[case_id] = case_client
+            else:
+                entry = {
+                    "ioc_type":   score["ioc_type"],
+                    "tier":       tier,
+                    "first_seen": now,
+                    "last_seen":  now,
+                    "cases":      [case_id],
+                    "verdict":    score["verdict"],
+                    "malicious":  score["malicious"],
+                    "suspicious": score["suspicious"],
+                    "clean":      score["clean"],
+                }
+                if case_client:
+                    entry["case_clients"] = {case_id: case_client}
+                index[ioc] = entry
+                new_iocs.append(ioc)
+
+        IOC_INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
+        save_json(IOC_INDEX_FILE, index)
 
     if recurring_iocs:
         print(

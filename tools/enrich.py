@@ -1928,6 +1928,7 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
         cache = _cache_load()
 
     all_results: list[dict] = []
+    _results_lock = threading.Lock()
     cache_hits = 0
     live_calls = 0
     tiered_stats = {"infra_skipped": 0, "tier1_only": 0, "escalated_to_deep": 0}
@@ -1936,12 +1937,25 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
     hash_tiered_stats = {"tier1_only": 0, "escalated_to_deep": 0}
 
     # =====================================================================
-    # IPv4 — Tiered enrichment
+    # Cross-type parallel enrichment
     # =====================================================================
-    ip_list = iocs_data.get("iocs", {}).get("ipv4", [])
-    if ip_list:
-        # Filter known-clean domains (for IPs this is a no-op, but keep consistent)
-        filtered_ips = [i for i in ip_list if not _is_known_clean(i, "ipv4")]
+    # Each IOC type (IP, domain, URL, hash) runs its full Tier 1 → 2 chain
+    # concurrently with the others via ThreadPoolExecutor.  Within each type
+    # the tier sequence remains sequential (Tier 1 informs Tier 2 escalation).
+    # =====================================================================
+
+    def _enrich_ips() -> tuple[list[dict], int, int, dict]:
+        """Enrich all IPv4 IOCs through Tier 0 → 1 → 2. Returns (results, hits, calls, stats)."""
+        results: list[dict] = []
+        hits = 0
+        calls = 0
+        stats = {"infra_skipped": 0, "tier1_only": 0, "escalated_to_deep": 0}
+
+        ip_list_inner = iocs_data.get("iocs", {}).get("ipv4", [])
+        if not ip_list_inner:
+            return results, hits, calls, stats
+
+        filtered_ips = [i for i in ip_list_inner if not _is_known_clean(i, "ipv4")]
         if skip_iocs:
             filtered_ips = [i for i in filtered_ips if i not in skip_iocs]
         if len(filtered_ips) > max_per_type:
@@ -1961,8 +1975,7 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
                 owner = _classify_ip_infra(ip, info)
                 if owner:
                     infra_ips.append(ip)
-                    # Record as infra_clean result (no API calls spent)
-                    all_results.append({
+                    results.append({
                         "provider": "asn_prescreen", "status": "infra_clean",
                         "ioc": ip, "ioc_type": "ipv4",
                         "verdict": "infra_clean", "owner": owner,
@@ -1973,50 +1986,49 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
             candidate_ips.append(ip)
 
         if infra_ips:
-            tiered_stats["infra_skipped"] = len(infra_ips)
+            stats["infra_skipped"] = len(infra_ips)
             print(f"[enrich] Tier 0: Skipped {len(infra_ips)} IP(s) "
                   f"belonging to known infrastructure (MS/AWS/Google/CF/etc.).")
 
-        # --- Tier 1: Fast providers (AbuseIPDB, URLhaus, ThreatFox, OpenCTI) ---
+        # --- Tier 1: Fast providers ---
         if candidate_ips:
             print(f"[enrich] Tier 1: Fast enrichment for {len(candidate_ips)} IP(s) "
                   f"across {len(local_ip_fast)} provider(s)...")
+            with _cache_lock:
+                lcache = _cache_load()
             tier1_tasks: list[tuple] = []
             for ip in candidate_ips:
                 for fn in local_ip_fast:
                     provider_name = _fn_provider_name(fn)
-                    cached = _cache_get(cache, ip, provider_name)
+                    cached = _cache_get(lcache, ip, provider_name)
                     if cached is not None:
                         entry = dict(cached)
                         entry["from_cache"] = True
                         entry["ioc_type"] = "ipv4"
                         entry["ts"] = utcnow()
-                        all_results.append(entry)
-                        cache_hits += 1
+                        results.append(entry)
+                        hits += 1
                     else:
                         tier1_tasks.append((fn, ip, "ipv4"))
 
-            tier1_results = _run_tasks_parallel(case_id, tier1_tasks, cache)
-            all_results.extend(tier1_results)
-            live_calls += len(tier1_tasks)
+            tier1_results = _run_tasks_parallel(case_id, tier1_tasks, lcache)
+            results.extend(tier1_results)
+            calls += len(tier1_tasks)
 
-            # Reload cache after tier1 writes
             with _cache_lock:
-                cache = _cache_load()
+                lcache = _cache_load()
 
-            # --- Tier 2: Deep providers — only for IPs that need it ---
+            # --- Tier 2: Deep providers ---
             escalate_ips = [ip for ip in candidate_ips
-                           if _ip_needs_deep_enrichment(ip, tier1_results + all_results)]
-
-            # LLM enrichment director — additive only
+                           if _ip_needs_deep_enrichment(ip, tier1_results + results)]
             escalate_ips = _apply_llm_escalation(
                 case_id, escalate_ips, candidate_ips,
-                tier1_results + all_results, "ipv4", _case_meta,
+                tier1_results + results, "ipv4", _case_meta,
             )
 
             tier1_only = len(candidate_ips) - len(escalate_ips)
-            tiered_stats["tier1_only"] = tier1_only
-            tiered_stats["escalated_to_deep"] = len(escalate_ips)
+            stats["tier1_only"] = tier1_only
+            stats["escalated_to_deep"] = len(escalate_ips)
 
             if tier1_only:
                 print(f"[enrich] Tier 1: {tier1_only} IP(s) clean — skipping deep enrichment.")
@@ -2028,26 +2040,34 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
                 for ip in escalate_ips:
                     for fn in local_ip_deep:
                         provider_name = _fn_provider_name(fn)
-                        cached = _cache_get(cache, ip, provider_name)
+                        cached = _cache_get(lcache, ip, provider_name)
                         if cached is not None:
                             entry = dict(cached)
                             entry["from_cache"] = True
                             entry["ioc_type"] = "ipv4"
                             entry["ts"] = utcnow()
-                            all_results.append(entry)
-                            cache_hits += 1
+                            results.append(entry)
+                            hits += 1
                         else:
                             tier2_tasks.append((fn, ip, "ipv4"))
 
-                tier2_results = _run_tasks_parallel(case_id, tier2_tasks, cache)
-                all_results.extend(tier2_results)
-                live_calls += len(tier2_tasks)
+                tier2_results = _run_tasks_parallel(case_id, tier2_tasks, lcache)
+                results.extend(tier2_results)
+                calls += len(tier2_tasks)
 
-    # =====================================================================
-    # Domains — Tiered enrichment
-    # =====================================================================
-    domain_list = iocs_data.get("iocs", {}).get("domain", [])
-    if domain_list:
+        return results, hits, calls, stats
+
+    def _enrich_domains() -> tuple[list[dict], int, int, dict]:
+        """Enrich all domain IOCs through Tier 1 → 2."""
+        results: list[dict] = []
+        hits = 0
+        calls = 0
+        stats = {"tier1_only": 0, "escalated_to_deep": 0}
+
+        domain_list = iocs_data.get("iocs", {}).get("domain", [])
+        if not domain_list:
+            return results, hits, calls, stats
+
         filtered_domains = [d for d in domain_list if not _is_known_clean(d, "domain")]
         skipped_clean = len(domain_list) - len(filtered_domains)
         if skipped_clean:
@@ -2063,77 +2083,86 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
                   f"enriching first {max_per_type}, skipping {len(filtered_domains) - max_per_type}.")
         filtered_domains = filtered_domains[:max_per_type]
 
-        if filtered_domains:
-            # --- Tier 1: Fast providers (URLhaus, ThreatFox, OpenCTI, WhoisXML) ---
-            print(f"[enrich] Domain Tier 1: Fast enrichment for {len(filtered_domains)} domain(s) "
-                  f"across {len(local_domain_fast)} provider(s)...")
-            tier1_tasks: list[tuple] = []
-            for domain in filtered_domains:
-                for fn in local_domain_fast:
+        if not filtered_domains:
+            return results, hits, calls, stats
+
+        # --- Tier 1 ---
+        print(f"[enrich] Domain Tier 1: Fast enrichment for {len(filtered_domains)} domain(s) "
+              f"across {len(local_domain_fast)} provider(s)...")
+        with _cache_lock:
+            lcache = _cache_load()
+        tier1_tasks: list[tuple] = []
+        for domain in filtered_domains:
+            for fn in local_domain_fast:
+                provider_name = _fn_provider_name(fn)
+                cached_entry = _cache_get(lcache, domain, provider_name)
+                if cached_entry is not None:
+                    entry = dict(cached_entry)
+                    entry["from_cache"] = True
+                    entry["ioc_type"] = "domain"
+                    entry["ts"] = utcnow()
+                    results.append(entry)
+                    hits += 1
+                else:
+                    tier1_tasks.append((fn, domain, "domain"))
+
+        tier1_results = _run_tasks_parallel(case_id, tier1_tasks, lcache)
+        results.extend(tier1_results)
+        calls += len(tier1_tasks)
+
+        with _cache_lock:
+            lcache = _cache_load()
+
+        # --- Tier 2 ---
+        escalate_domains = [d for d in filtered_domains
+                            if _domain_needs_deep_enrichment(d, tier1_results + results)]
+        escalate_domains = _apply_llm_escalation(
+            case_id, escalate_domains, filtered_domains,
+            tier1_results + results, "domain", _case_meta,
+        )
+
+        tier1_only = len(filtered_domains) - len(escalate_domains)
+        stats["tier1_only"] = tier1_only
+        stats["escalated_to_deep"] = len(escalate_domains)
+
+        if tier1_only:
+            print(f"[enrich] Domain Tier 1: {tier1_only} domain(s) clean — skipping deep enrichment.")
+
+        if escalate_domains:
+            print(f"[enrich] Domain Tier 2: Deep enrichment for {len(escalate_domains)} domain(s) "
+                  f"across {len(local_domain_deep)} provider(s)...")
+            tier2_tasks: list[tuple] = []
+            for domain in escalate_domains:
+                for fn in local_domain_deep:
                     provider_name = _fn_provider_name(fn)
-                    cached_entry = _cache_get(cache, domain, provider_name)
+                    cached_entry = _cache_get(lcache, domain, provider_name)
                     if cached_entry is not None:
                         entry = dict(cached_entry)
                         entry["from_cache"] = True
                         entry["ioc_type"] = "domain"
                         entry["ts"] = utcnow()
-                        all_results.append(entry)
-                        cache_hits += 1
+                        results.append(entry)
+                        hits += 1
                     else:
-                        tier1_tasks.append((fn, domain, "domain"))
+                        tier2_tasks.append((fn, domain, "domain"))
 
-            tier1_results = _run_tasks_parallel(case_id, tier1_tasks, cache)
-            all_results.extend(tier1_results)
-            live_calls += len(tier1_tasks)
+            tier2_results = _run_tasks_parallel(case_id, tier2_tasks, lcache)
+            results.extend(tier2_results)
+            calls += len(tier2_tasks)
 
-            # Reload cache after tier1 writes
-            with _cache_lock:
-                cache = _cache_load()
+        return results, hits, calls, stats
 
-            # --- Tier 2: Deep providers — only for domains that need it ---
-            escalate_domains = [d for d in filtered_domains
-                                if _domain_needs_deep_enrichment(d, tier1_results + all_results)]
+    def _enrich_urls() -> tuple[list[dict], int, int, dict]:
+        """Enrich all URL IOCs through Tier 1 → 2."""
+        results: list[dict] = []
+        hits = 0
+        calls = 0
+        stats = {"tier1_only": 0, "escalated_to_deep": 0}
 
-            # LLM enrichment director — additive only
-            escalate_domains = _apply_llm_escalation(
-                case_id, escalate_domains, filtered_domains,
-                tier1_results + all_results, "domain", _case_meta,
-            )
+        url_list = iocs_data.get("iocs", {}).get("url", [])
+        if not url_list:
+            return results, hits, calls, stats
 
-            tier1_only = len(filtered_domains) - len(escalate_domains)
-            domain_tiered_stats["tier1_only"] = tier1_only
-            domain_tiered_stats["escalated_to_deep"] = len(escalate_domains)
-
-            if tier1_only:
-                print(f"[enrich] Domain Tier 1: {tier1_only} domain(s) clean — skipping deep enrichment.")
-
-            if escalate_domains:
-                print(f"[enrich] Domain Tier 2: Deep enrichment for {len(escalate_domains)} domain(s) "
-                      f"across {len(local_domain_deep)} provider(s)...")
-                tier2_tasks: list[tuple] = []
-                for domain in escalate_domains:
-                    for fn in local_domain_deep:
-                        provider_name = _fn_provider_name(fn)
-                        cached_entry = _cache_get(cache, domain, provider_name)
-                        if cached_entry is not None:
-                            entry = dict(cached_entry)
-                            entry["from_cache"] = True
-                            entry["ioc_type"] = "domain"
-                            entry["ts"] = utcnow()
-                            all_results.append(entry)
-                            cache_hits += 1
-                        else:
-                            tier2_tasks.append((fn, domain, "domain"))
-
-                tier2_results = _run_tasks_parallel(case_id, tier2_tasks, cache)
-                all_results.extend(tier2_results)
-                live_calls += len(tier2_tasks)
-
-    # =====================================================================
-    # URLs — Tiered enrichment
-    # =====================================================================
-    url_list = iocs_data.get("iocs", {}).get("url", [])
-    if url_list:
         filtered_urls = [u for u in url_list if not _is_known_clean(u, "url")]
         skipped_clean = len(url_list) - len(filtered_urls)
         if skipped_clean:
@@ -2149,170 +2178,214 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
                   f"enriching first {max_per_type}, skipping {len(filtered_urls) - max_per_type}.")
         filtered_urls = filtered_urls[:max_per_type]
 
-        if filtered_urls:
-            # --- Tier 1: Fast providers (URLhaus, ThreatFox, OpenCTI) ---
-            print(f"[enrich] URL Tier 1: Fast enrichment for {len(filtered_urls)} URL(s) "
-                  f"across {len(local_url_fast)} provider(s)...")
-            tier1_tasks: list[tuple] = []
-            for url in filtered_urls:
-                for fn in local_url_fast:
+        if not filtered_urls:
+            return results, hits, calls, stats
+
+        # --- Tier 1 ---
+        print(f"[enrich] URL Tier 1: Fast enrichment for {len(filtered_urls)} URL(s) "
+              f"across {len(local_url_fast)} provider(s)...")
+        with _cache_lock:
+            lcache = _cache_load()
+        tier1_tasks: list[tuple] = []
+        for url in filtered_urls:
+            for fn in local_url_fast:
+                provider_name = _fn_provider_name(fn)
+                cached_entry = _cache_get(lcache, url, provider_name)
+                if cached_entry is not None:
+                    entry = dict(cached_entry)
+                    entry["from_cache"] = True
+                    entry["ioc_type"] = "url"
+                    entry["ts"] = utcnow()
+                    results.append(entry)
+                    hits += 1
+                else:
+                    tier1_tasks.append((fn, url, "url"))
+
+        tier1_results = _run_tasks_parallel(case_id, tier1_tasks, lcache)
+        results.extend(tier1_results)
+        calls += len(tier1_tasks)
+
+        with _cache_lock:
+            lcache = _cache_load()
+
+        # --- Tier 2 ---
+        escalate_urls = [u for u in filtered_urls
+                         if _url_needs_deep_enrichment(u, tier1_results + results)]
+        escalate_urls = _apply_llm_escalation(
+            case_id, escalate_urls, filtered_urls,
+            tier1_results + results, "url", _case_meta,
+        )
+
+        tier1_only = len(filtered_urls) - len(escalate_urls)
+        stats["tier1_only"] = tier1_only
+        stats["escalated_to_deep"] = len(escalate_urls)
+
+        if tier1_only:
+            print(f"[enrich] URL Tier 1: {tier1_only} URL(s) clean — skipping deep enrichment.")
+
+        if escalate_urls:
+            print(f"[enrich] URL Tier 2: Deep enrichment for {len(escalate_urls)} URL(s) "
+                  f"across {len(local_url_deep)} provider(s)...")
+            tier2_tasks: list[tuple] = []
+            for url in escalate_urls:
+                for fn in local_url_deep:
                     provider_name = _fn_provider_name(fn)
-                    cached_entry = _cache_get(cache, url, provider_name)
+                    cached_entry = _cache_get(lcache, url, provider_name)
                     if cached_entry is not None:
                         entry = dict(cached_entry)
                         entry["from_cache"] = True
                         entry["ioc_type"] = "url"
                         entry["ts"] = utcnow()
-                        all_results.append(entry)
-                        cache_hits += 1
+                        results.append(entry)
+                        hits += 1
                     else:
-                        tier1_tasks.append((fn, url, "url"))
+                        tier2_tasks.append((fn, url, "url"))
 
-            tier1_results = _run_tasks_parallel(case_id, tier1_tasks, cache)
-            all_results.extend(tier1_results)
-            live_calls += len(tier1_tasks)
+            tier2_results = _run_tasks_parallel(case_id, tier2_tasks, lcache)
+            results.extend(tier2_results)
+            calls += len(tier2_tasks)
 
+        return results, hits, calls, stats
+
+    def _enrich_hashes() -> tuple[list[dict], int, int, dict]:
+        """Enrich all hash IOCs (MD5, SHA1, SHA256) through Tier 1 → 2."""
+        results: list[dict] = []
+        hits = 0
+        calls = 0
+        stats = {"tier1_only": 0, "escalated_to_deep": 0}
+
+        _HASH_TYPES = ("md5", "sha1", "sha256")
+        for hash_type in _HASH_TYPES:
+            hash_list = iocs_data.get("iocs", {}).get(hash_type, [])
+            if not hash_list:
+                continue
+            if skip_iocs:
+                pre_skip = len(hash_list)
+                hash_list = [h for h in hash_list if h not in skip_iocs]
+                triage_skipped = pre_skip - len(hash_list)
+                if triage_skipped:
+                    print(f"[enrich] Skipping {triage_skipped} {hash_type} IOC(s) per triage (cached).")
+            if len(hash_list) > max_per_type:
+                print(f"[enrich] WARNING: {hash_type} has {len(hash_list)} IOCs; "
+                      f"enriching first {max_per_type}, skipping {len(hash_list) - max_per_type}.")
+            hash_list = hash_list[:max_per_type]
+
+            if not hash_list:
+                continue
+
+            if hash_type == "sha256":
+                deep_providers = local_hash_sha256_deep
+            elif hash_type == "sha1":
+                deep_providers = local_hash_sha1_deep
+            else:
+                deep_providers = local_hash_deep
+
+            # --- Tier 1 ---
+            print(f"[enrich] Hash Tier 1: Fast enrichment for {len(hash_list)} {hash_type}(s) "
+                  f"across {len(local_hash_fast)} provider(s)...")
             with _cache_lock:
-                cache = _cache_load()
-
-            # --- Tier 2: Deep providers — only for URLs that need it ---
-            escalate_urls = [u for u in filtered_urls
-                             if _url_needs_deep_enrichment(u, tier1_results + all_results)]
-
-            # LLM enrichment director — additive only
-            escalate_urls = _apply_llm_escalation(
-                case_id, escalate_urls, filtered_urls,
-                tier1_results + all_results, "url", _case_meta,
-            )
-
-            tier1_only = len(filtered_urls) - len(escalate_urls)
-            url_tiered_stats["tier1_only"] = tier1_only
-            url_tiered_stats["escalated_to_deep"] = len(escalate_urls)
-
-            if tier1_only:
-                print(f"[enrich] URL Tier 1: {tier1_only} URL(s) clean — skipping deep enrichment.")
-
-            if escalate_urls:
-                print(f"[enrich] URL Tier 2: Deep enrichment for {len(escalate_urls)} URL(s) "
-                      f"across {len(local_url_deep)} provider(s)...")
-                tier2_tasks: list[tuple] = []
-                for url in escalate_urls:
-                    for fn in local_url_deep:
-                        provider_name = _fn_provider_name(fn)
-                        cached_entry = _cache_get(cache, url, provider_name)
-                        if cached_entry is not None:
-                            entry = dict(cached_entry)
-                            entry["from_cache"] = True
-                            entry["ioc_type"] = "url"
-                            entry["ts"] = utcnow()
-                            all_results.append(entry)
-                            cache_hits += 1
-                        else:
-                            tier2_tasks.append((fn, url, "url"))
-
-                tier2_results = _run_tasks_parallel(case_id, tier2_tasks, cache)
-                all_results.extend(tier2_results)
-                live_calls += len(tier2_tasks)
-
-    # =====================================================================
-    # Hashes (MD5, SHA1, SHA256) — Tiered enrichment
-    # =====================================================================
-    _HASH_TYPES = ("md5", "sha1", "sha256")
-    for hash_type in _HASH_TYPES:
-        hash_list = iocs_data.get("iocs", {}).get(hash_type, [])
-        if not hash_list:
-            continue
-        if skip_iocs:
-            pre_skip = len(hash_list)
-            hash_list = [h for h in hash_list if h not in skip_iocs]
-            triage_skipped = pre_skip - len(hash_list)
-            if triage_skipped:
-                print(f"[enrich] Skipping {triage_skipped} {hash_type} IOC(s) per triage (cached).")
-        if len(hash_list) > max_per_type:
-            print(f"[enrich] WARNING: {hash_type} has {len(hash_list)} IOCs; "
-                  f"enriching first {max_per_type}, skipping {len(hash_list) - max_per_type}.")
-        hash_list = hash_list[:max_per_type]
-
-        if not hash_list:
-            continue
-
-        # Select the appropriate deep provider list per hash type
-        if hash_type == "sha256":
-            deep_providers = local_hash_sha256_deep
-        elif hash_type == "sha1":
-            deep_providers = local_hash_sha1_deep
-        else:
-            deep_providers = local_hash_deep
-
-        # --- Tier 1: Fast malware DBs (MalwareBazaar, ThreatFox, OpenCTI) ---
-        # MalwareBazaar only supports MD5/SHA256, but the function handles skipping internally
-        print(f"[enrich] Hash Tier 1: Fast enrichment for {len(hash_list)} {hash_type}(s) "
-              f"across {len(local_hash_fast)} provider(s)...")
-        tier1_tasks = []
-        for h in hash_list:
-            for fn in local_hash_fast:
-                provider_name = _fn_provider_name(fn)
-                cached_entry = _cache_get(cache, h, provider_name)
-                if cached_entry is not None:
-                    entry = dict(cached_entry)
-                    entry["from_cache"] = True
-                    entry["ioc_type"] = hash_type
-                    entry["ts"] = utcnow()
-                    all_results.append(entry)
-                    cache_hits += 1
-                else:
-                    tier1_tasks.append((fn, h, hash_type))
-
-        tier1_results = _run_tasks_parallel(case_id, tier1_tasks, cache)
-        all_results.extend(tier1_results)
-        live_calls += len(tier1_tasks)
-
-        with _cache_lock:
-            cache = _cache_load()
-
-        # --- Tier 2: Deep analysis — only for hashes that need it ---
-        escalate_hashes = [h for h in hash_list
-                           if _hash_needs_deep_enrichment(h, tier1_results + all_results)]
-
-        # LLM enrichment director — additive only
-        escalate_hashes = _apply_llm_escalation(
-            case_id, escalate_hashes, hash_list,
-            tier1_results + all_results, hash_type, _case_meta,
-        )
-
-        tier1_only = len(hash_list) - len(escalate_hashes)
-        hash_tiered_stats["tier1_only"] += tier1_only
-        hash_tiered_stats["escalated_to_deep"] += len(escalate_hashes)
-
-        if tier1_only:
-            print(f"[enrich] Hash Tier 1: {tier1_only} {hash_type}(s) clean — skipping deep enrichment.")
-
-        if escalate_hashes:
-            print(f"[enrich] Hash Tier 2: Deep enrichment for {len(escalate_hashes)} {hash_type}(s) "
-                  f"across {len(deep_providers)} provider(s)...")
-            tier2_tasks = []
-            for h in escalate_hashes:
-                for fn in deep_providers:
+                lcache = _cache_load()
+            tier1_tasks = []
+            for h in hash_list:
+                for fn in local_hash_fast:
                     provider_name = _fn_provider_name(fn)
-                    cached_entry = _cache_get(cache, h, provider_name)
+                    cached_entry = _cache_get(lcache, h, provider_name)
                     if cached_entry is not None:
                         entry = dict(cached_entry)
                         entry["from_cache"] = True
                         entry["ioc_type"] = hash_type
                         entry["ts"] = utcnow()
-                        all_results.append(entry)
-                        cache_hits += 1
+                        results.append(entry)
+                        hits += 1
                     else:
-                        tier2_tasks.append((fn, h, hash_type))
+                        tier1_tasks.append((fn, h, hash_type))
 
-            tier2_results = _run_tasks_parallel(case_id, tier2_tasks, cache)
-            all_results.extend(tier2_results)
-            live_calls += len(tier2_tasks)
+            tier1_results = _run_tasks_parallel(case_id, tier1_tasks, lcache)
+            results.extend(tier1_results)
+            calls += len(tier1_tasks)
+
+            with _cache_lock:
+                lcache = _cache_load()
+
+            # --- Tier 2 ---
+            escalate_hashes = [h for h in hash_list
+                               if _hash_needs_deep_enrichment(h, tier1_results + results)]
+            escalate_hashes = _apply_llm_escalation(
+                case_id, escalate_hashes, hash_list,
+                tier1_results + results, hash_type, _case_meta,
+            )
+
+            tier1_only = len(hash_list) - len(escalate_hashes)
+            stats["tier1_only"] += tier1_only
+            stats["escalated_to_deep"] += len(escalate_hashes)
+
+            if tier1_only:
+                print(f"[enrich] Hash Tier 1: {tier1_only} {hash_type}(s) clean — skipping deep enrichment.")
+
+            if escalate_hashes:
+                print(f"[enrich] Hash Tier 2: Deep enrichment for {len(escalate_hashes)} {hash_type}(s) "
+                      f"across {len(deep_providers)} provider(s)...")
+                tier2_tasks = []
+                for h in escalate_hashes:
+                    for fn in deep_providers:
+                        provider_name = _fn_provider_name(fn)
+                        cached_entry = _cache_get(lcache, h, provider_name)
+                        if cached_entry is not None:
+                            entry = dict(cached_entry)
+                            entry["from_cache"] = True
+                            entry["ioc_type"] = hash_type
+                            entry["ts"] = utcnow()
+                            results.append(entry)
+                            hits += 1
+                        else:
+                            tier2_tasks.append((fn, h, hash_type))
+
+                tier2_results = _run_tasks_parallel(case_id, tier2_tasks, lcache)
+                results.extend(tier2_results)
+                calls += len(tier2_tasks)
+
+        return results, hits, calls, stats
+
+    # --- Run all IOC types concurrently ---
+    print("[enrich] Running IP/domain/URL/hash enrichment in parallel...")
+    with ThreadPoolExecutor(max_workers=4) as type_executor:
+        f_ips = type_executor.submit(_enrich_ips)
+        f_domains = type_executor.submit(_enrich_domains)
+        f_urls = type_executor.submit(_enrich_urls)
+        f_hashes = type_executor.submit(_enrich_hashes)
+
+        for label, future, stats_target in [
+            ("ipv4", f_ips, "ip"),
+            ("domain", f_domains, "domain"),
+            ("url", f_urls, "url"),
+            ("hash", f_hashes, "hash"),
+        ]:
+            try:
+                results, hits, calls, stats = future.result(timeout=600)
+                all_results.extend(results)
+                cache_hits += hits
+                live_calls += calls
+                if label == "ipv4":
+                    tiered_stats.update(stats)
+                elif label == "domain":
+                    domain_tiered_stats.update(stats)
+                elif label == "url":
+                    url_tiered_stats.update(stats)
+                elif label == "hash":
+                    hash_tiered_stats.update(stats)
+            except Exception as exc:
+                log_error(case_id, f"enrich.{label}", str(exc),
+                          severity="error", traceback=str(exc))
+
+    # Reload cache after parallel enrichment so remaining types see fresh entries
+    with _cache_lock:
+        cache = _cache_load()
 
     # =====================================================================
     # All other IOC types — standard enrichment (email, CVE)
     # =====================================================================
-    _TIERED_TYPES = {"ipv4", "domain", "url"} | set(_HASH_TYPES)
+    _HASH_TYPES_OUTER = ("md5", "sha1", "sha256")
+    _TIERED_TYPES = {"ipv4", "domain", "url"} | set(_HASH_TYPES_OUTER)
     for ioc_type, ioc_list in iocs_data.get("iocs", {}).items():
         if ioc_type in _TIERED_TYPES:
             continue  # Already handled above

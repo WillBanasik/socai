@@ -33,7 +33,7 @@ class TestLogMcpCall:
     def test_writes_jsonl(self):
         from mcp_server.usage import log_mcp_call
 
-        log_mcp_call("local", "investigate", {"case_id": "IV_CASE_001"},
+        log_mcp_call("local", "enrich_iocs", {"case_id": "IV_CASE_001"},
                       duration_ms=1234, success=True, error=None)
 
         assert MCP_USAGE_LOG.exists()
@@ -42,7 +42,7 @@ class TestLogMcpCall:
 
         rec = json.loads(lines[0])
         assert rec["caller"] == "local"
-        assert rec["tool"] == "investigate"
+        assert rec["tool"] == "enrich_iocs"
         assert rec["params"]["case_id"] == "IV_CASE_001"
         assert rec["duration_ms"] == 1234
         assert rec["success"] is True
@@ -52,7 +52,7 @@ class TestLogMcpCall:
     def test_sanitises_secrets(self):
         from mcp_server.usage import log_mcp_call
 
-        log_mcp_call("local", "investigate",
+        log_mcp_call("local", "enrich_iocs",
                       {"case_id": "IV_CASE_001", "zip_pass": "infected",
                        "password": "hunter2", "normal": "ok"},
                       duration_ms=100, success=True, error=None)
@@ -89,11 +89,11 @@ class TestAssessMcpUsage:
         from tools.mcp_usage import assess_mcp_usage
 
         # Write synthetic records
-        log_mcp_call("local", "investigate", {"case_id": "C001"},
+        log_mcp_call("local", "enrich_iocs", {"case_id": "C001"},
                       200, True, None)
-        log_mcp_call("local", "investigate", {"case_id": "C002"},
+        log_mcp_call("local", "enrich_iocs", {"case_id": "C002"},
                       300, True, None)
-        log_mcp_call("local", "investigate", {"case_id": "C003"},
+        log_mcp_call("local", "enrich_iocs", {"case_id": "C003"},
                       100, False, "Case not found")
         log_mcp_call("remote", "get_case", {"case_id": "C001"},
                       50, True, None)
@@ -108,9 +108,9 @@ class TestAssessMcpUsage:
         assert result["unique_tools"] == 2
         assert result["unique_callers"] == 2
 
-        # investigate should be first (3 calls)
+        # enrich_iocs should be first (3 calls)
         top = result["top_tools"]
-        assert top[0]["tool"] == "investigate"
+        assert top[0]["tool"] == "enrich_iocs"
         assert top[0]["calls"] == 3
         assert top[0]["failure"] == 1
 
@@ -118,7 +118,7 @@ class TestAssessMcpUsage:
         from mcp_server.usage import log_mcp_call
         from tools.mcp_usage import assess_mcp_usage
 
-        log_mcp_call("local", "investigate", {}, 100, True, None)
+        log_mcp_call("local", "enrich_iocs", {}, 100, True, None)
         log_mcp_call("remote", "get_case", {}, 50, True, None)
 
         result = assess_mcp_usage(caller_filter="remote", json_output=True)
@@ -129,7 +129,7 @@ class TestAssessMcpUsage:
         from mcp_server.usage import log_mcp_call
         from tools.mcp_usage import assess_mcp_usage
 
-        log_mcp_call("local", "investigate", {}, 100, True, None)
+        log_mcp_call("local", "enrich_iocs", {}, 100, True, None)
         log_mcp_call("local", "get_case", {}, 50, True, None)
 
         result = assess_mcp_usage(tool_filter="get_case", json_output=True)
@@ -145,7 +145,7 @@ class TestClearUsageLog:
         from mcp_server.usage import log_mcp_call
         from tools.mcp_usage import clear_mcp_usage_log
 
-        log_mcp_call("local", "investigate", {}, 100, True, None)
+        log_mcp_call("local", "enrich_iocs", {}, 100, True, None)
         log_mcp_call("local", "get_case", {}, 50, True, None)
 
         result = clear_mcp_usage_log()
@@ -205,9 +205,9 @@ class TestInstallWatcher:
         install_usage_watcher(server)
 
         with pytest.raises(ValueError, match="boom"):
-            asyncio.run(server._tool_manager.call_tool("investigate", {"case_id": "C001"}))
+            asyncio.run(server._tool_manager.call_tool("enrich_iocs", {"case_id": "C001"}))
 
         rec = json.loads(MCP_USAGE_LOG.read_text().strip())
-        assert rec["tool"] == "investigate"
+        assert rec["tool"] == "enrich_iocs"
         assert rec["success"] is False
         assert "boom" in rec["error"]

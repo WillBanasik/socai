@@ -4,7 +4,7 @@
 
 ### Context
 
-The current data model is flat: each investigation is a **case**. Cases can be linked (duplicate, related, parent) via `tools/case_links.py` and grouped into clusters via `tools/campaign_cluster.py`. The dashboard shows these clusters visually.
+The current data model is flat: each investigation is a **case**. Cases can be linked (duplicate, related, parent) via `tools/case_links.py` and grouped into clusters via `tools/campaign_cluster.py`.
 
 The goal is a hierarchical model mirroring SOAR platforms:
 
@@ -36,9 +36,8 @@ One incident may contain multiple investigations, run sequentially or in paralle
 |-----------|----------|------|
 | Case links (`parent` type) | `tools/case_links.py` | Parent case = incident container, children = investigations |
 | Campaign clusters | `tools/campaign_cluster.py` | Groups cases sharing IOCs — natural incident candidates |
-| Landscape clusters | `tools/case_landscape.py` | Cross-case cluster view for dashboard |
+| Landscape clusters | `tools/case_landscape.py` | Cross-case cluster view |
 | Timeline reconstruction | `tools/timeline_reconstruct.py` | Per-case forensic timeline; extend to multi-case |
-| Dashboard (future) | Web UI dashboard planned for case browsing + cluster view | Paused — MCP-first phase |
 
 ### Implementation plan (when SOAR/Zoho integration begins)
 

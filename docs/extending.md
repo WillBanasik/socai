@@ -10,11 +10,7 @@ To add a new infrastructure ASN for Tier 0 pre-screening, add to `KNOWN_INFRA_AS
 
 ## New Tool
 
-Accept `case_id`, use `write_artefact()` / `save_json()` for all outputs, return a manifest dict. Register in `agents/chief.py` and optionally add a CLI sub-command in `socai.py`.
-
-## New Agent
-
-Inherit `BaseAgent`, implement `run(**kwargs) -> dict`, call tool functions only. Register in `agents/chief.py`.
+Accept `case_id`, use `write_artefact()` / `save_json()` for all outputs, return a manifest dict. Add a CLI sub-command in `socai.py` if needed.
 
 ## New IOC TLD
 
@@ -62,7 +58,7 @@ Add entries to `config/article_sources.json` with `"type": "rss"` and `"categori
 
 ## MCP Server
 
-`mcp_server/` exposes 52 tools, 18 resources, and 5 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. Long-running tools (investigate) support fire-and-forget with polling or inline-with-progress modes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
+`mcp_server/` exposes 72 tools, 18 resources, and 5 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
 
 ## Sentinel Composite Query Template
 

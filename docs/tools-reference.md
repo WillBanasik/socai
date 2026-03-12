@@ -3,10 +3,12 @@
 ## Web Capture
 
 `tools/web_capture.py` exposes two public functions:
-- `web_capture(url, case_id)` — single URL; launches and closes its own browser
-- `web_capture_batch(urls, case_id)` — multiple URLs sharing one Playwright browser session (one browser launch, N page tabs); falls back to serial `web_capture()` if Playwright is unavailable
+- `web_capture(url, case_id)` — single URL; uses the persistent browser pool
+- `web_capture_batch(urls, case_id)` — multiple URLs with concurrent page loads. Tries async Playwright first (up to 4 pages loading concurrently via `asyncio.gather` with semaphore), falls back to sync Playwright (sequential tabs via browser pool), then to serial `web_capture()` if Playwright is unavailable entirely. Handles both CLI (new event loop) and MCP server (existing event loop) contexts.
 
-`DomainInvestigatorAgent` uses `web_capture_batch` automatically when `len(urls) > 1` and the Playwright backend is active.
+**Browser pool:** A module-level `_BrowserPool` singleton keeps a sync Playwright browser alive across captures. Each call gets a fresh browser *context* (isolated cookies/storage) from the shared browser. The browser is recycled after `SOCAI_BROWSER_POOL_MAX_USES` (default 50) context creations to prevent memory leaks. This eliminates the 2-3s Playwright startup cost per capture. The pool is thread-safe and cleaned up via `atexit`. The async path (`_async_web_capture_batch`) keeps its own browser lifecycle since async Playwright contexts are tied to their event loop.
+
+`web_capture_batch` is used automatically when `len(urls) > 1` and the Playwright backend is active.
 
 Each capture produces: `page.html`, `page.txt`, `screenshot.png`, `redirect_chain.json`, `capture_manifest.json`. The manifest includes a `tls_certificate` object (for HTTPS URLs) with `subject_cn`, `issuer_cn`, `issuer_org`, `san`, `not_before`, `not_after`, `cert_age_days`, `days_remaining`, `self_signed`. Additional outputs when present:
 - `xhr_responses.json` — JSON/text API responses intercepted during page load (useful for SPAs that fetch content via XHR; skips analytics/font/image noise)
@@ -86,7 +88,7 @@ To add a brand: append to `_BRANDS` in `detect_phishing_page.py` with `name`, `p
 
 ## Enrichment Pipeline
 
-`tools/enrich.py` uses a **tiered enrichment model** for IPv4 addresses to minimise API calls. All other IOC types use standard parallel enrichment via `ThreadPoolExecutor` (default 10 workers, `SOCAI_ENRICH_WORKERS`). Provider functions have the signature `(ioc: str, ioc_type: str) -> dict`. Results with `status: "ok"` are cached in `registry/enrichment_cache.json` with a configurable TTL (default 24 hours, `SOCAI_ENRICH_CACHE_TTL`; set to `0` to disable).
+`tools/enrich.py` uses a **tiered enrichment model** with **cross-type parallelism**. All four IOC type groups (IPv4, domain, URL, hash) run concurrently via `ThreadPoolExecutor(max_workers=4)`. Within each type group, the tier sequence remains sequential (Tier 1 results inform Tier 2 escalation decisions). Within each tier, individual provider calls run concurrently via a second `ThreadPoolExecutor` (default 10 workers, `SOCAI_ENRICH_WORKERS`). Provider functions have the signature `(ioc: str, ioc_type: str) -> dict`. Results with `status: "ok"` are cached in `registry/enrichment_cache.json` with a configurable TTL (default 24 hours, `SOCAI_ENRICH_CACHE_TTL`; set to `0` to disable).
 
 ### IPv4 Tiered Enrichment
 
@@ -100,9 +102,13 @@ To add a brand: append to `_BRANDS` in `detect_phishing_page.py` with `name`, `p
 
 **Infrastructure ASNs:** Defined in `KNOWN_INFRA_ASNS` (ASN → owner name) with keyword fallback via `_INFRA_ORG_KEYWORDS`. Hosting providers (Linode/Akamai hosting, DigitalOcean, OCI) are deliberately **not** skipped since attackers use them — only CDN-specific Akamai ASNs are filtered.
 
+### Domain / URL / Hash Tiered Enrichment
+
+Domains, URLs, and hashes (MD5, SHA1, SHA256) each follow the same Tier 1 → Tier 2 escalation pattern as IPv4 (without the ASN pre-screen). Tier 1 fast providers run first; only IOCs that show signal are escalated to Tier 2 deep providers. All three types run concurrently with IPv4 via the cross-type `ThreadPoolExecutor`.
+
 ### Other IOC Types
 
-Domains, URLs, hashes, emails, and CVEs use standard parallel enrichment — all registered providers for that type run concurrently.
+Emails and CVEs use standard parallel enrichment — all registered providers for that type run concurrently. These run after the cross-type parallel block completes.
 
 ### General
 
@@ -429,7 +435,7 @@ Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 - `tools/security_arch_review.py` → `prepare_secarch_batch(case_id)`
 
 **CLI subcommands:**
-- `socai.py batch-submit --cases IV_CASE_001 IV_CASE_002 --tools mdr-report exec-summary` — prepare and submit
+- `socai.py batch-submit --cases IV_CASE_001 IV_CASE_002 --tools mdr-report exec-summary` — prepare (concurrently via `ThreadPoolExecutor`) and submit
 - `socai.py batch-status --batch-id <id>` / `batch-status --list` — check progress
 - `socai.py batch-collect --batch-id <id>` — retrieve results and write artefacts
 
@@ -631,7 +637,7 @@ This avoids analysis-evasion techniques used by sophisticated phishing kits and 
 ### Architecture
 
 - **Container**: `socai-browser:latest` (custom image: Debian + Google Chrome + noVNC + tcpdump) with `--network=host`
-- **noVNC**: analyst accesses the browser at `http://localhost:7900` (no password)
+- **noVNC**: analyst accesses the browser at `http://127.0.0.1:7900` (no password)
 - **Chrome**: vanilla launch — no `--remote-debugging-port`, no automation flags
 - **tcpdump**: passive packet capture on all interfaces
 
@@ -648,15 +654,24 @@ Telemetry is captured passively via tcpdump inside the container. On session sto
 
 The DNS + TLS SNI combination provides visibility into which domains the browser connected to, even for HTTPS traffic where payloads are encrypted.
 
-### Idle Timeout
+### Auto-Stop Triggers
 
-`_IdleMonitor` polls the pcap file size inside the container every 2 seconds. When the pcap hasn't grown for `SOCAI_BROWSER_IDLE_TIMEOUT` seconds (default 300), the session auto-stops and preserves telemetry. A hard ceiling (`SOCAI_BROWSER_MAX_SESSION`, default 3600s) prevents sessions from running indefinitely.
+The `_IdleMonitor` runs a background thread that polls every 2 seconds and fires auto-stop on any of three conditions:
+
+| Trigger | Env Var | Default | Description |
+|---------|---------|---------|-------------|
+| **Network idle** | `SOCAI_BROWSER_IDLE_TIMEOUT` | `300` | Pcap file hasn't grown for N seconds |
+| **Viewer disconnected** | `SOCAI_BROWSER_DISCONNECT_GRACE` | `15` | All noVNC tabs closed for N seconds (grace period allows reconnects) |
+| **Max duration** | `SOCAI_BROWSER_MAX_SESSION` | `3600` | Hard session ceiling |
+
+The disconnect detection is fail-open: if the check errors, the session stays alive. The grace timer only starts after at least one viewer has connected then disconnected.
 
 ### Session Lifecycle
 
 1. `start_session(url, case_id)` — starts Docker container with Chrome navigating to URL, starts idle monitor
-2. Analyst browses manually via noVNC at `http://localhost:7900`
-3. `stop_session(session_id)` — copies pcap and screenshot from container, destroys container, parses pcap, writes artefacts
+2. Analyst browses manually via noVNC at `http://127.0.0.1:7900`
+3. Session ends via: closing the noVNC tab (auto-stop after grace period), idle timeout, max duration, or manual `stop_session(session_id)`
+4. On stop: copies pcap and screenshot from container, destroys container, parses pcap, writes artefacts
 
 ### Entity Extraction
 

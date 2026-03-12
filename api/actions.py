@@ -8,7 +8,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api import timeline
-from api.jobs import JobManager
 from config.settings import CASES_DIR
 from tools.common import md_file_note
 
@@ -609,31 +608,6 @@ def generate_exec_summary(case_id: str) -> dict:
     return _run_action(case_id, "executive_summary", _do)
 
 
-def run_full_pipeline(case_id: str, kwargs: dict) -> dict:
-    """Run the full ChiefAgent pipeline."""
-    def _do():
-        from agents.chief import ChiefAgent
-        result = ChiefAgent(case_id).run(**kwargs)
-
-        ok = sum(1 for s in result.get("steps", []) if s.get("status") == "ok")
-        errors = len(result.get("errors", []))
-        report = result.get("report", {})
-        report_path = report.get("report_path", "") if report else ""
-
-        lines = [f"Full pipeline complete — {ok} step(s) succeeded, {errors} error(s)."]
-        if report_path:
-            lines.append(f"Report: {report_path}")
-        if errors:
-            lines.append("\nErrors:")
-            for e in result.get("errors", [])[:5]:
-                lines.append(f"  {e.get('step', '?')}: {e.get('error', '?')}")
-
-        result["_message"] = "\n".join(lines)
-        return result
-
-    return _run_action(case_id, "full_pipeline", _do)
-
-
 def ingest_velociraptor(case_id: str, run_analysis: bool = True) -> dict:
     """Ingest Velociraptor collection results from case uploads directory."""
     def _do():
@@ -1020,20 +994,13 @@ def get_matrix_summary(case_id: str) -> dict:
 
 def list_followup_proposals(case_id: str) -> dict:
     """List follow-up proposals for a case."""
-    from agents.rumsfeld import list_proposals
+    from tools.followup import list_proposals
     proposals = list_proposals(case_id)
     return {"case_id": case_id, "proposals": proposals, "count": len(proposals)}
 
 
 def execute_followup_proposal(case_id: str, proposal_id: str) -> dict:
     """Execute a single approved follow-up proposal."""
-    from agents.rumsfeld import execute_followup
+    from tools.followup import execute_followup
     return _run_action(case_id, f"followup.{proposal_id}",
                        lambda: execute_followup(case_id, proposal_id))
-
-
-def run_full_rumsfeld_pipeline(case_id: str, **kwargs) -> dict:
-    """Run the full Rumsfeld investigation pipeline."""
-    from agents.rumsfeld import RumsfeldAgent
-    return _run_action(case_id, "rumsfeld_pipeline",
-                       lambda: RumsfeldAgent(case_id).run(**kwargs))

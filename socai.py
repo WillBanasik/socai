@@ -5,14 +5,6 @@ SOC-AI  –  Local Multi-Agent SOC Automation
 
 Usage examples:
 
-  # Full investigation
-  python socai.py investigate --case IV_CASE_001 --title "Phishing lure" --severity high \
-      --urls urls.txt --logs ./logs --zip sample.zip --zip-pass infected
-
-  # Full investigation with email input
-  python socai.py investigate --case IV_CASE_001 --title "Phishing email" --severity high \
-      --eml phish.eml --url "https://example.com"
-
   # Just generate a weekly report
   python socai.py weekly --year 2026 --week 08 --include-open
 
@@ -28,6 +20,8 @@ Usage examples:
   # Ad-hoc client query — no case created, stdout only
   python socai.py client-query --prompt "Was folder 2026 created on AFGRICENTFNP03?"
   python socai.py client-query --prompt "..." --platforms kql --tables DeviceFileEvents DeviceEvents
+
+  # All subcommands: python socai.py --help
 """
 from __future__ import annotations
 
@@ -82,38 +76,6 @@ def _glob_logs(log_arg: str | None) -> list[str]:
 # ---------------------------------------------------------------------------
 # Sub-commands
 # ---------------------------------------------------------------------------
-
-def cmd_investigate(args: argparse.Namespace) -> None:
-    urls      = _read_lines(args.urls) if args.urls else (args.url or [])
-    log_paths = _glob_logs(args.logs)
-    eml_paths = args.eml or []
-
-    mode = getattr(args, "mode", "chief")
-    if mode == "rumsfeld":
-        from agents.rumsfeld import RumsfeldAgent
-        agent = RumsfeldAgent(args.case)
-    else:
-        from agents.chief import ChiefAgent
-        agent = ChiefAgent(args.case)
-
-    result = agent.run(
-        title              = args.title or f"Investigation {args.case}",
-        severity           = args.severity,
-        analyst            = args.analyst,
-        tags               = args.tags or [],
-        urls               = urls,
-        zip_path           = args.zip,
-        zip_pass           = args.zip_pass,
-        log_paths          = log_paths,
-        eml_paths          = eml_paths if eml_paths else None,
-        close_case         = args.close,
-        include_private_ips= args.include_private,
-        detonate           = args.detonate,
-        client             = getattr(args, "client", "") or "",
-    )
-    if args.json:
-        print(json.dumps(result, indent=2, default=str))
-
 
 def cmd_report(args: argparse.Namespace) -> None:
     from tools.generate_report import generate_report
@@ -459,94 +421,10 @@ def cmd_fp_tuning(args: argparse.Namespace) -> None:
             print(json.dumps(result, indent=2, default=str))
 
 
-# ---------------------------------------------------------------------------
-# Quick-run helpers (auto-create case, run mini pipeline, report)
-# ---------------------------------------------------------------------------
-
 def _next_case_id() -> str:
     """Generate the next sequential case ID from the registry."""
-    from tools.common import load_json
-    import re
-    max_num = 0
-    if REGISTRY_FILE.exists():
-        try:
-            registry = load_json(REGISTRY_FILE)
-            for cid in registry.get("cases", {}):
-                m = re.search(r"(\d+)$", cid)
-                if m:
-                    max_num = max(max_num, int(m.group(1)))
-        except Exception as exc:
-            from tools.common import log_error
-            log_error("", "socai.next_case_id", str(exc), severity="warning",
-                      context={"registry": str(REGISTRY_FILE)})
-    return f"IV_CASE_{max_num + 1:03d}"
-
-
-def _quick_pipeline(case_id: str, title: str, severity: str,
-                    urls: list[str] | None = None,
-                    file_path: str | None = None,
-                    zip_path: str | None = None,
-                    zip_pass: str | None = None,
-                    json_output: bool = False,
-                    client: str = "") -> None:
-    """Run a focused mini-pipeline: case_create → capture/analyse → enrich → report."""
-    from tools.case_create import case_create
-    from tools.extract_iocs import extract_iocs
-    from tools.enrich import enrich
-    from tools.score_verdicts import score_verdicts, update_ioc_index
-    from tools.correlate import correlate
-    from tools.generate_report import generate_report
-
-    case_create(case_id, title=title, severity=severity, client=client)
-
-    if urls:
-        from tools.web_capture import web_capture, web_capture_batch
-        if len(urls) == 1:
-            web_capture(urls[0], case_id)
-        else:
-            web_capture_batch(urls, case_id)
-        # Phishing detection
-        from tools.detect_phishing_page import detect_phishing_page
-        try:
-            detect_phishing_page(case_id)
-        except Exception as exc:
-            from tools.common import log_error
-            log_error(case_id, "quick_pipeline.phishing_detect", str(exc), severity="warning")
-
-    if zip_path:
-        from tools.extract_zip import extract_zip
-        from tools.static_file_analyse import static_file_analyse
-        from config.settings import CASES_DIR
-        extract_zip(zip_path, case_id, password=zip_pass)
-        # Run static analysis on each extracted file
-        zip_dir = CASES_DIR / case_id / "artefacts" / "zip"
-        if zip_dir.exists():
-            for f in zip_dir.rglob("*"):
-                if f.is_file() and f.suffix not in (".json", ".txt"):
-                    try:
-                        static_file_analyse(str(f), case_id)
-                    except Exception as exc:
-                        from tools.common import log_error
-                        log_error(case_id, "quick_pipeline.static_analyse", str(exc),
-                                  severity="warning", context={"file": str(f)})
-
-    if file_path:
-        from tools.static_file_analyse import static_file_analyse
-        static_file_analyse(file_path, case_id)
-
-    # Enrichment pipeline
-    extract_iocs(case_id)
-    enrich(case_id)
-    score_verdicts(case_id)
-    update_ioc_index(case_id)
-    correlate(case_id)
-
-    # Report
-    result = generate_report(case_id)
-    print(f"\nReport: {result['report_path']}")
-
-    if json_output:
-        print(json.dumps(result, indent=2))
+    from tools.case_create import next_case_id
+    return next_case_id()
 
 
 def cmd_matrix(args: argparse.Namespace) -> None:
@@ -583,7 +461,7 @@ def cmd_matrix(args: argparse.Namespace) -> None:
 
 
 def cmd_followup(args: argparse.Namespace) -> None:
-    from agents.rumsfeld import execute_followup, list_proposals
+    from tools.followup import execute_followup, list_proposals
 
     proposals = list_proposals(args.case)
     if not proposals:
@@ -666,26 +544,6 @@ def cmd_determination(args: argparse.Namespace) -> None:
         gaps = result.get("gaps", [])
         if gaps:
             print(f"\n  Gaps: {', '.join(gaps)}")
-
-
-def cmd_url(args: argparse.Namespace) -> None:
-    case_id = args.case or _next_case_id()
-    title = f"URL investigation: {args.target}"
-    _quick_pipeline(case_id, title, args.severity,
-                    urls=[args.target], json_output=args.json,
-                    client=getattr(args, "client", "") or "")
-
-
-def cmd_domain(args: argparse.Namespace) -> None:
-    case_id = args.case or _next_case_id()
-    target = args.target
-    # Ensure it's a full URL for web capture
-    if not target.startswith(("http://", "https://")):
-        target = f"https://{target}"
-    title = f"Domain investigation: {args.target}"
-    _quick_pipeline(case_id, title, args.severity,
-                    urls=[target], json_output=args.json,
-                    client=getattr(args, "client", "") or "")
 
 
 def cmd_articles(args: argparse.Namespace) -> None:
@@ -804,18 +662,35 @@ def cmd_batch_submit(args: argparse.Namespace) -> None:
         "secarch": prepare_secarch_batch,
     }
 
-    requests = []
+    # Build (preparer, case_id, tool_name) work items, filtering bad tool names
+    work_items = []
     for case_id in args.cases:
         for tool_name in args.tools:
             preparer = _TOOL_PREPARERS.get(tool_name)
             if not preparer:
                 print(f"[warn] Unknown batch tool: {tool_name}")
                 continue
-            req = preparer(case_id)
-            if req:
-                requests.append(req)
-            else:
-                print(f"[warn] Could not prepare {tool_name} for {case_id} (no data?)")
+            work_items.append((preparer, case_id, tool_name))
+
+    # Prepare all batch requests concurrently (I/O-bound disk reads)
+    from concurrent.futures import ThreadPoolExecutor
+
+    requests = []
+    with ThreadPoolExecutor(max_workers=min(len(work_items), 8)) as executor:
+        futures = {
+            executor.submit(fn, cid): (cid, tname)
+            for fn, cid, tname in work_items
+        }
+        for future in futures:
+            cid, tname = futures[future]
+            try:
+                req = future.result()
+                if req:
+                    requests.append(req)
+                else:
+                    print(f"[warn] Could not prepare {tname} for {cid} (no data?)")
+            except Exception as exc:
+                print(f"[warn] Failed to prepare {tname} for {cid}: {exc}")
 
     if not requests:
         print("[batch-submit] No valid requests to submit.")
@@ -1318,58 +1193,6 @@ def cmd_memory_analyse(args: argparse.Namespace) -> None:
         print(json.dumps(result, indent=2, default=str))
 
 
-def cmd_file(args: argparse.Namespace) -> None:
-    p = Path(args.target)
-    if not p.exists():
-        print(f"[error] File not found: {args.target}")
-        sys.exit(1)
-    case_id = args.case or _next_case_id()
-    title = f"File analysis: {p.name}"
-
-    # Detect ZIP files and auto-extract with known passwords
-    if p.suffix.lower() == ".zip":
-        import zipfile
-        zip_pass = None
-        try:
-            with zipfile.ZipFile(p) as zf:
-                # Test if encrypted by trying to read first file
-                first = zf.namelist()[0] if zf.namelist() else None
-                if first:
-                    try:
-                        zf.read(first)
-                        # No password needed
-                    except RuntimeError:
-                        # Encrypted — try known passwords
-                        for pw in ("infected", "password"):
-                            try:
-                                zf.read(first, pwd=pw.encode())
-                                zip_pass = pw
-                                print(f"[file] ZIP password: {pw}")
-                                break
-                            except RuntimeError:
-                                continue
-                        if zip_pass is None:
-                            print("[error] ZIP is encrypted and neither 'infected' nor 'password' worked")
-                            sys.exit(1)
-        except zipfile.BadZipFile as exc:
-            from tools.common import log_error
-            log_error(case_id, "cmd_file.bad_zip", str(exc), severity="warning",
-                      context={"file": str(p)})
-            print(f"[error] {p} is not a valid ZIP file: {exc}")
-            sys.exit(1)
-
-        if zip_pass is not None or p.suffix.lower() == ".zip":
-            _quick_pipeline(case_id, title, args.severity,
-                            zip_path=str(p), zip_pass=zip_pass,
-                            json_output=args.json,
-                            client=getattr(args, "client", "") or "")
-            return
-
-    _quick_pipeline(case_id, title, args.severity,
-                    file_path=str(p), json_output=args.json,
-                    client=getattr(args, "client", "") or "")
-
-
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -1382,37 +1205,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--json", action="store_true", help="Output JSON summary.")
     sub = parser.add_subparsers(dest="command", required=True)
-
-    # investigate
-    p_inv = sub.add_parser("investigate", help="Run full investigation pipeline.")
-    p_inv.add_argument("--case",    required=True, help="Case ID (e.g. IV_CASE_001)")
-    p_inv.add_argument("--title",   default="", help="Human-readable case title")
-    p_inv.add_argument("--severity",default="medium",
-                       choices=["low","medium","high","critical"])
-    p_inv.add_argument("--analyst", default="unassigned")
-    p_inv.add_argument("--tags",    nargs="*", default=[])
-    p_inv.add_argument("--urls",    metavar="FILE",
-                       help="Path to a file containing one URL per line")
-    p_inv.add_argument("--url",     nargs="*", metavar="URL",
-                       help="URL(s) passed directly on the command line")
-    p_inv.add_argument("--logs",    metavar="DIR_OR_FILE",
-                       help="Directory or file with log files (CSV/JSON)")
-    p_inv.add_argument("--zip",     metavar="FILE", help="Path to ZIP archive")
-    p_inv.add_argument("--zip-pass",metavar="PASS", default=None,
-                       dest="zip_pass", help="ZIP password")
-    p_inv.add_argument("--eml",     nargs="*", metavar="FILE",
-                       help="Path(s) to .eml file(s) for email analysis")
-    p_inv.add_argument("--close",   action="store_true",
-                       help="Mark case as closed after pipeline completes")
-    p_inv.add_argument("--include-private", action="store_true",
-                       dest="include_private",
-                       help="Include RFC-1918 IPs in IOC extraction")
-    p_inv.add_argument("--detonate", action="store_true",
-                       help="Submit files to sandbox for live detonation")
-    p_inv.add_argument("--client", default="",
-                       help="Client name (loads playbook from config/clients/<name>.json)")
-    p_inv.add_argument("--mode", default="chief", choices=["chief", "rumsfeld"],
-                       help="Pipeline mode: chief (standard) or rumsfeld (with reasoning layer)")
 
     # report
     p_rep = sub.add_parser("report", help="Re-generate investigation report for a case.")
@@ -1742,33 +1534,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_ma.add_argument("--client", default="",
                        help="Client name (loads playbook from config/clients/<name>.json)")
 
-    # Quick-run: url
-    p_url = sub.add_parser("url", help="Quick-run: capture + enrich + report for a single URL.")
-    p_url.add_argument("target", help="URL to investigate (e.g. https://example.com)")
-    p_url.add_argument("--case", default=None, help="Case ID (auto-generated if omitted)")
-    p_url.add_argument("--severity", default="medium",
-                       choices=["low", "medium", "high", "critical"])
-    p_url.add_argument("--client", default="",
-                       help="Client name (loads playbook from config/clients/<name>.json)")
-
-    # Quick-run: domain
-    p_dom = sub.add_parser("domain", help="Quick-run: capture + enrich + report for a domain.")
-    p_dom.add_argument("target", help="Domain to investigate (e.g. evil.example.com)")
-    p_dom.add_argument("--case", default=None, help="Case ID (auto-generated if omitted)")
-    p_dom.add_argument("--severity", default="medium",
-                       choices=["low", "medium", "high", "critical"])
-    p_dom.add_argument("--client", default="",
-                       help="Client name (loads playbook from config/clients/<name>.json)")
-
-    # Quick-run: file
-    p_file = sub.add_parser("file", help="Quick-run: static analysis + enrich + report for a file.")
-    p_file.add_argument("target", help="Path to file to analyse")
-    p_file.add_argument("--case", default=None, help="Case ID (auto-generated if omitted)")
-    p_file.add_argument("--severity", default="medium",
-                        choices=["low", "medium", "high", "critical"])
-    p_file.add_argument("--client", default="",
-                        help="Client name (loads playbook from config/clients/<name>.json)")
-
     # articles (interactive discovery)
     p_art = sub.add_parser(
         "articles",
@@ -1833,7 +1598,6 @@ def main() -> None:
     _setup_logging(args.verbose)
 
     dispatch = {
-        "investigate":    cmd_investigate,
         "report":         cmd_report,
         "weekly":         cmd_weekly,
         "close":          cmd_close,
@@ -1875,15 +1639,12 @@ def main() -> None:
         "mde-package":    cmd_mde_package,
         "memory-guide":   cmd_memory_guide,
         "memory-analyse": cmd_memory_analyse,
-        "url":            cmd_url,
-        "domain":         cmd_domain,
-        "file":           cmd_file,
         "articles":       cmd_articles,
         "articles-list":  cmd_articles_list,
         "articles-generate": cmd_articles_generate,
-        "batch-submit":   cmd_batch_submit,
-        "batch-status":   cmd_batch_status,
-        "batch-collect":  cmd_batch_collect,
+        "batch-submit":       cmd_batch_submit,
+        "batch-status":       cmd_batch_status,
+        "batch-collect":      cmd_batch_collect,
     }
     fn = dispatch.get(args.command)
     if fn:

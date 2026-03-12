@@ -18,6 +18,13 @@ REGISTRY_FILE    = BASE_DIR / "registry" / "case_index.json"
 AUDIT_LOG        = BASE_DIR / "registry" / "audit.log"
 ERROR_LOG        = BASE_DIR / "registry" / "error_log.jsonl"
 MCP_USAGE_LOG    = BASE_DIR / "registry" / "mcp_usage.jsonl"
+MCP_SERVER_LOG   = BASE_DIR / "registry" / "mcp_server.jsonl"
+MCP_SERVER_PID   = BASE_DIR / "registry" / "mcp_server.pid"
+
+# MCP server logging
+MCP_LOG_LEVEL    = os.getenv("SOCAI_MCP_LOG_LEVEL", "INFO")
+MCP_LOG_RESULTS  = os.getenv("SOCAI_MCP_LOG_RESULTS", "1") == "1"
+MCP_LOG_MAX_RESULT = int(os.getenv("SOCAI_MCP_LOG_MAX_RESULT", "2000"))
 
 # Web capture
 CAPTURE_TIMEOUT  = int(os.getenv("SOCAI_CAPTURE_TIMEOUT", "20"))      # seconds
@@ -62,10 +69,6 @@ BRAVE_SEARCH_KEY = os.getenv("SOCAI_BRAVE_SEARCH_KEY", "")
 ENRICH_CACHE_FILE = BASE_DIR / "registry" / "enrichment_cache.json"
 ENRICH_CACHE_TTL  = int(os.getenv("SOCAI_ENRICH_CACHE_TTL", "24"))   # hours; 0 to disable
 ENRICH_WORKERS    = int(os.getenv("SOCAI_ENRICH_WORKERS", "10"))      # thread pool size
-
-# Recursive URL capture
-CRAWL_DEPTH      = int(os.getenv("SOCAI_CRAWL_DEPTH",    "3"))   # max link-follow depth
-CRAWL_MAX_URLS   = int(os.getenv("SOCAI_CRAWL_MAX_URLS", "30"))  # cap per depth level
 
 # Cross-case IOC index
 IOC_INDEX_FILE    = BASE_DIR / "registry" / "ioc_index.json"
@@ -167,4 +170,11 @@ CONFLUENCE_CLOUD_ID  = os.getenv("CONFLUENCE_CLOUD_ID", "")
 CONFLUENCE_EMAIL     = os.getenv("CONFLUENCE_EMAIL", "")
 CONFLUENCE_API_TOKEN = os.getenv("CONFLUENCE_API_TOKEN", "")
 CONFLUENCE_SPACE_KEY = os.getenv("CONFLUENCE_SPACE_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Browser pool (Playwright reuse)
+# ---------------------------------------------------------------------------
+SOCAI_BROWSER_POOL_MAX_USES = int(os.getenv("SOCAI_BROWSER_POOL_MAX_USES", "50"))
+# Auto-close pooled browser after N seconds of inactivity (default 5 min)
+SOCAI_BROWSER_POOL_IDLE_SECS = int(os.getenv("SOCAI_BROWSER_POOL_IDLE_SECS", "300"))
 

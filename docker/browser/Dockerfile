@@ -34,7 +34,8 @@ RUN useradd -m -u 1000 -s /bin/bash analyst
 RUN mkdir -p /telemetry && chown analyst:analyst /telemetry
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh \
+    && ln -s vnc.html /usr/share/novnc/index.html
 
 EXPOSE 7900
 

@@ -2,23 +2,16 @@
 
 ## Overview
 
-SOC-AI is a single-process, multi-agent Python application.  Agents are
-plain Python classes that delegate work to tool wrapper functions.  All
-persistent state lives in the local filesystem.
+SOC-AI is a single-process Python application.  Investigation logic lives
+in stateless tool functions.  The MCP server and CLI both call these directly.
+All persistent state lives in the local filesystem.
 
 ```
 CLI (socai.py)
-    └── ChiefAgent
-          ├── PlannerAgent          → task plan
-          ├── DomainInvestigatorAgent → web_capture × N
-          ├── FileAnalystAgent       → extract_zip + static_file_analyse
-          ├── LogCorrelatorAgent     → parse_logs × N + correlate
-          ├── EnrichmentAgent        → extract_iocs + enrich
-          └── ReportWriterAgent      → generate_report + index_case
+    └── Tool functions (HITL — analyst drives each step via MCP or CLI)
 
 Shared API (api/)
     ├── auth.py              → JWT constants + user store (shared with MCP)
-    ├── jobs.py              → background job manager (thread pool, case ID gen)
     ├── actions.py           → tool orchestration wrappers (16+ pipeline actions)
     ├── timeline.py          → case timeline event log
     └── parse_input.py       → freeform analyst input → structured IOC extraction
@@ -26,13 +19,14 @@ Shared API (api/)
 MCP Server (mcp_server/)
     ├── HTTPS SSE transport  → port 8001, separate process
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
-    ├── 52 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
+    ├── 72 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
     ├── 18 resources         → case data, clients, IOC index, playbooks, sentinel queries, articles, landscape
     ├── 5 prompts            → investigation orchestrator, KQL investigation, triage, FP workflows, user security check
     ├── Boundary enforcement → per-conversation client + case isolation (prevents cross-contamination)
     ├── Data hierarchy       → global (cross-client IOCs) / client (internal) / case (details)
+    ├── Structured logging   → JSONL (registry/mcp_server.jsonl), PID file, signal handlers
     ├── stdio fallback       → Claude Desktop backward compat (no auth)
-    └── Fire-and-forget      → long-running investigate returns job_id for polling
+    └── Speculative enrich   → classify_attack / add_evidence fire background quick_enrich (fast providers, ≤20 IOCs)
 
 Batch API (tools/batch.py)
     └── Bulk LLM processing  → submit / poll / collect pattern
@@ -116,19 +110,6 @@ articles/YYYY-MM/         ← threat article summaries (ET/EV)
 | **Batch API** | `tools/batch.py` for bulk report generation |
 | **Structured outputs** | `tools/threat_articles.py` article generation via `ArticleSummary` schema |
 
-## Agent Responsibilities
-
-| Agent | Responsibility |
-|-------|----------------|
-| Chief | Orchestrates the pipeline; catches per-step errors |
-| Planner | Inspects inputs and returns an ordered step list |
-| DomainInvestigator | Web capture per URL (Playwright / requests) |
-| FileAnalyst | ZIP extraction + static analysis of extracted files |
-| LogCorrelator | Log parsing (CSV/JSON) + IOC-vs-entity correlation |
-| Enrichment | IOC regex extraction + tiered provider lookups (ASN pre-screen → fast → deep OSINT) |
-| ReportWriter | Markdown investigation report generation |
-| WeeklyReportWriter | Weekly rollup from registry |
-
 ## Tool Contracts
 
 Every tool wrapper:
@@ -137,17 +118,4 @@ Every tool wrapper:
 3. Records a SHA-256 and timestamp in `registry/audit.log`.
 4. Returns a dict that can be serialised to JSON.
 
-## Extending the System
-
-### Adding a new tool
-1. Create `tools/my_tool.py` following the pattern in `tools/extract_iocs.py`.
-2. Register it in `agents/chief.py` as a new pipeline step.
-3. Add a CLI sub-command in `socai.py` if needed.
-4. For MCP tools: add a `@mcp.tool()` handler in `mcp_server/tools.py` in the appropriate tier. Add an orchestration wrapper in `api/actions.py` if needed.
-
-### Adding a new enrichment provider
-See `tools/enrich.py` – implement a function and add it to the `PROVIDERS` and `_PROVIDER_NAMES` dicts. For IPv4 providers, also add to `PROVIDERS_IP_FAST` or `PROVIDERS_IP_DEEP`.
-
-### Replacing the headless browser
-Set `SOCAI_BROWSER=requests` to skip Playwright, or implement a new backend
-in `tools/web_capture.py` following the `_capture_with_*` pattern.
+See `docs/extending.md` for how to add new tools, providers, and brands.

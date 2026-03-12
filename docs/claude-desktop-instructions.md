@@ -29,7 +29,7 @@ When you need a full picture of an existing case, prefer `case_summary` over `ge
 
 The MCP server provides pre-built workflow prompts. Select them from the prompt picker when they match the task:
 
-- **investigate_incident** — full end-to-end investigation (Phase 0 through closure)
+- **hitl_investigation** — guided step-by-step investigation (Phase 0 through closure)
 - **triage_alert** — structured alert triage with verdict criteria
 - **write_fp_ticket** — false-positive analysis and suppression/tuning tickets
 - **kql_investigation** — multi-stage KQL playbook (phishing, account-compromise, malware, etc.)

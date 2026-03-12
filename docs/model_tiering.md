@@ -96,13 +96,6 @@ All called indirectly through `_call_llm()` which resolves `get_model(task, seve
 | `tools/correlate.py` | `correlation_insight` | When correlation hits exist |
 | `tools/response_actions.py` | `response_priority` | After response plan resolved |
 | `tools/score_verdicts.py` | `verdict_reconcile` | When providers disagree on verdict |
-| `agents/chief.py` | `auto_close_review` | Before auto-closing benign cases |
-
-### Not using `get_model()` (agent layer)
-
-| Area | Status |
-|------|--------|
-| `agents/*.py` | No direct LLM calls — all go through tool functions |
 
 ## Override Examples
 

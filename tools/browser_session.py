@@ -82,6 +82,10 @@ IDLE_TIMEOUT_SECS = int(os.environ.get("SOCAI_BROWSER_IDLE_TIMEOUT", "300"))
 # Hard ceiling for session duration (default 1 hour)
 MAX_SESSION_SECS = int(os.environ.get("SOCAI_BROWSER_MAX_SESSION", "3600"))
 
+# Grace period after last noVNC client disconnects before auto-stop (seconds)
+# Allows for brief tab refreshes / reconnects without killing the session
+DISCONNECT_GRACE_SECS = int(os.environ.get("SOCAI_BROWSER_DISCONNECT_GRACE", "15"))
+
 # Interval for polling pcap file size (idle detection)
 _PCAP_POLL_INTERVAL = 2.0
 
@@ -124,6 +128,7 @@ def _start_container(session_id: str, url: str) -> str:
         "--shm-size", SHM_SIZE,
         "--network=host",
         "--cap-add=NET_RAW",   # tcpdump needs raw socket access
+        "--cap-add=SYS_ADMIN", # Chrome sandbox needs user namespaces
         "-e", f"START_URL={url}",
         "-e", "SCREEN_WIDTH=1920",
         "-e", "SCREEN_HEIGHT=1080",
@@ -169,6 +174,29 @@ def _get_pcap_size(session_id: str) -> int:
     except Exception:
         pass
     return -1
+
+
+def _has_vnc_clients(session_id: str) -> bool:
+    """Check if any noVNC WebSocket clients are connected to the container.
+
+    Uses ss inside the container to count ESTABLISHED connections on the
+    noVNC port.  Returns True if at least one viewer is connected.
+    Returns True on errors (fail-open: don't kill session on check failure).
+    """
+    name = _container_name(session_id)
+    try:
+        result = subprocess.run(
+            ["docker", "exec", name, "ss", "-t", "state", "established",
+             f"sport = :{NOVNC_PORT}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return True  # fail-open
+        # ss prints a header line + one line per connection
+        lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
+        return len(lines) > 1  # more than just the header
+    except Exception:
+        return True  # fail-open
 
 
 # ---------------------------------------------------------------------------
@@ -423,23 +451,35 @@ def _list_session_states() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 class _IdleMonitor:
-    """Track network activity by polling the pcap file size inside the container.
+    """Track session activity by polling pcap size and noVNC client connections.
 
-    When the pcap hasn't grown for ``idle_timeout`` seconds, fires ``idle_event``.
-    Also enforces a hard session ceiling via ``max_duration``.
+    Fires ``idle_event`` when any of these conditions are met:
+    - pcap hasn't grown for ``idle_timeout`` seconds (network inactivity)
+    - all noVNC clients disconnected for ``disconnect_grace`` seconds (tab closed)
+    - hard ``max_duration`` ceiling reached
+
+    The disconnect detection is fail-open: if the check errors, the session
+    stays alive (we don't kill a session because of a transient docker exec
+    failure).
     """
 
+    # Which condition triggered the event
+    stop_reason: str = ""
+
     def __init__(self, session_id: str, *, idle_timeout: float = 0,
-                 max_duration: float = 0):
+                 max_duration: float = 0, disconnect_grace: float = 0):
         self._session_id = session_id
         self._idle_timeout = idle_timeout
         self._max_duration = max_duration
+        self._disconnect_grace = disconnect_grace
         self._running = False
         self._thread: threading.Thread | None = None
         self.idle_event = threading.Event()
         self._last_pcap_size: int = 0
         self._last_change_at: float = time.monotonic()
         self._started_at: float = time.monotonic()
+        self._disconnected_since: float | None = None
+        self._had_client: bool = False  # True once at least one client connected
 
     def start(self) -> None:
         self._running = True
@@ -460,6 +500,7 @@ class _IdleMonitor:
 
             # Hard ceiling
             if self._max_duration > 0 and now - self._started_at >= self._max_duration:
+                self.stop_reason = "max_duration"
                 self.idle_event.set()
                 break
 
@@ -469,11 +510,30 @@ class _IdleMonitor:
                 self._last_pcap_size = size
                 self._last_change_at = now
 
-            # Idle timeout
+            # Idle timeout (network inactivity)
             if (self._idle_timeout > 0
                     and now - self._last_change_at >= self._idle_timeout):
+                self.stop_reason = "idle_timeout"
                 self.idle_event.set()
                 break
+
+            # noVNC client disconnect detection
+            if self._disconnect_grace > 0:
+                has_clients = _has_vnc_clients(self._session_id)
+                if has_clients:
+                    self._had_client = True
+                    self._disconnected_since = None
+                elif self._had_client:
+                    # Only start grace timer after we've had at least one client
+                    if self._disconnected_since is None:
+                        self._disconnected_since = now
+                        print(f"[browser] No viewers connected — "
+                              f"auto-stop in {int(self._disconnect_grace)}s "
+                              f"unless tab is reopened")
+                    elif now - self._disconnected_since >= self._disconnect_grace:
+                        self.stop_reason = "viewer_disconnected"
+                        self.idle_event.set()
+                        break
 
             time.sleep(_PCAP_POLL_INTERVAL)
 
@@ -497,12 +557,14 @@ def _idle_watchdog(session_id: str, monitor: _IdleMonitor,
         return  # Monitor stopped for other reasons (manual stop)
 
     elapsed = int(time.monotonic() - monitor._started_at)
-    if monitor._max_duration > 0 and elapsed >= monitor._max_duration:
-        reason = "max_duration"
-        print(f"\n[browser] Session {session_id} hit max duration ({elapsed}s) — auto-stopping...")
-    else:
-        reason = "idle_timeout"
-        print(f"\n[browser] Session {session_id} idle for {int(monitor._idle_timeout)}s — auto-stopping...")
+    reason = monitor.stop_reason or "idle_timeout"
+
+    _reason_messages = {
+        "max_duration": f"Session {session_id} hit max duration ({elapsed}s) — auto-stopping...",
+        "idle_timeout": f"Session {session_id} idle for {int(monitor._idle_timeout)}s — auto-stopping...",
+        "viewer_disconnected": f"Session {session_id} — all viewers disconnected — auto-stopping...",
+    }
+    print(f"\n[browser] {_reason_messages.get(reason, f'Session {session_id} — {reason}')}")
 
     try:
         result = stop_session(session_id, stop_reason=reason)
@@ -596,7 +658,7 @@ def start_session(
         try:
             import urllib.request
             resp = urllib.request.urlopen(
-                f"http://localhost:{novnc_port}/", timeout=3
+                f"http://127.0.0.1:{novnc_port}/", timeout=3
             )
             if resp.status == 200:
                 ready = True
@@ -613,14 +675,15 @@ def start_session(
 
     # Start idle monitor
     monitor = _IdleMonitor(session_id, idle_timeout=idle_timeout,
-                           max_duration=MAX_SESSION_SECS)
+                           max_duration=MAX_SESSION_SECS,
+                           disconnect_grace=DISCONNECT_GRACE_SECS)
     monitor.start()
     _active_monitors[session_id] = monitor
 
     # Start idle watchdog thread
     done_event = threading.Event()
     _session_done_events[session_id] = done_event
-    if idle_timeout > 0 or MAX_SESSION_SECS > 0:
+    if idle_timeout > 0 or MAX_SESSION_SECS > 0 or DISCONNECT_GRACE_SECS > 0:
         threading.Thread(
             target=_idle_watchdog, args=(session_id, monitor, done_event),
             daemon=True, name=f"idle-watchdog-{session_id}",
@@ -635,7 +698,7 @@ def start_session(
         "container_id": container_id[:12],
         "novnc_port": novnc_port,
         "started_at": utcnow(),
-        "novnc_url": f"http://localhost:{novnc_port}",
+        "novnc_url": f"http://127.0.0.1:{novnc_port}",
         "idle_timeout": idle_timeout,
         "max_duration": MAX_SESSION_SECS,
     }
@@ -645,7 +708,7 @@ def start_session(
         "status": "ok",
         "session_id": session_id,
         "case_id": case_id,
-        "novnc_url": f"http://localhost:{novnc_port}",
+        "novnc_url": f"http://127.0.0.1:{novnc_port}",
         "start_url": url,
         "started_at": state["started_at"],
         "message": (
@@ -656,7 +719,9 @@ def start_session(
                if idle_timeout > 0 else "")
             + (f"Max session duration: {MAX_SESSION_SECS}s\n"
                if MAX_SESSION_SECS > 0 else "")
-            + f"When done, stop the session:\n"
+            + (f"Close the noVNC tab to end the session (clean stop after {DISCONNECT_GRACE_SECS}s grace period).\n"
+               if DISCONNECT_GRACE_SECS > 0 else "")
+            + f"Or stop manually:\n"
             f"  python3 socai.py browser-stop --session {session_id}"
         ),
         "idle_timeout": idle_timeout,
@@ -668,6 +733,8 @@ def start_session(
     print(f"[browser] Passive network capture active — no automation markers")
     if idle_timeout > 0:
         print(f"[browser] Idle timeout: {int(idle_timeout)}s (auto-stop on network inactivity)")
+    if DISCONNECT_GRACE_SECS > 0:
+        print(f"[browser] Close tab to stop: {DISCONNECT_GRACE_SECS}s grace period before clean shutdown")
     if MAX_SESSION_SECS > 0:
         print(f"[browser] Max duration: {MAX_SESSION_SECS}s")
     print(f"[browser] {'='*60}\n")

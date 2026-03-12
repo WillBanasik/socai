@@ -433,11 +433,11 @@ def register_resources(mcp: FastMCP) -> None:
                 "total": 60,
                 "categories": {
                     "investigation_and_triage": {
-                        "description": "Classify alerts and run automated investigation pipelines",
+                        "description": "Classify alerts and plan investigations",
                         "tools": [
-                            "classify_attack", "plan_investigation", "investigate",
-                            "quick_investigate_url", "quick_investigate_domain",
-                            "quick_investigate_file", "quick_enrich",
+                            "classify_attack", "plan_investigation",
+                            "create_case", "promote_case", "discard_case",
+                            "quick_enrich",
                         ],
                     },
                     "case_management": {
@@ -508,11 +508,11 @@ def register_resources(mcp: FastMCP) -> None:
                 },
             },
             "prompts": {
-                "total": 4,
+                "total": 5,
                 "items": [
                     {
-                        "name": "investigate_incident",
-                        "description": "End-to-end incident investigation — from raw alert to MDR report or FP closure. The primary guided workflow.",
+                        "name": "hitl_investigation",
+                        "description": "HITL investigation workflow — analyst-controlled checkpoints from intake to delivery.",
                     },
                     {
                         "name": "triage_alert",
@@ -525,6 +525,10 @@ def register_resources(mcp: FastMCP) -> None:
                     {
                         "name": "kql_investigation",
                         "description": "Unified KQL playbook prompt. Select a playbook: phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, or ioc-hunt.",
+                    },
+                    {
+                        "name": "user_security_check",
+                        "description": "Broad-scope security review of a specific user account.",
                     },
                 ],
             },

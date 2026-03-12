@@ -216,7 +216,7 @@ def executive_summary(case_id: str) -> dict:
     if not context_text.strip():
         return {
             "status": "skipped",
-            "reason": "No case artefacts found — run investigate first.",
+            "reason": "No case artefacts found — run enrich_iocs or add_evidence first.",
             "case_id": case_id,
             "ts": utcnow(),
         }

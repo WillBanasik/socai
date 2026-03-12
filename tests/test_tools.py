@@ -46,7 +46,7 @@ def test_case_create():
 
     meta = case_create(TEST_CASE, title="Unit test case", severity="low")
     assert meta["case_id"] == TEST_CASE
-    assert meta["status"] == "open"
+    assert meta["status"] == "triage"
     assert (CASES_DIR / TEST_CASE / "case_meta.json").exists()
 
 
