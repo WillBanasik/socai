@@ -28,7 +28,7 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  77 tools, 25 resources │
+│  77 tools, 26 resources │
 │  16 prompts, JSONL logs │
 └─────────────────────────┘
     │
@@ -85,6 +85,31 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `campaigns:read` | campaign_cluster, assess_landscape, search_threat_articles |
 | `sentinel:query` | run_kql, load_kql_playbook, generate_sentinel_query, run_kql_batch |
 | `admin` | All tools including sandbox, browser, response_actions, merge_cases |
+
+## Analyst Roles
+
+Roles control **how** the platform talks to the analyst — tone, explanation depth, severity routing, and response authority. All roles access the same tools; the difference is in the assistant's behaviour. Defined in `config/roles.json`.
+
+| Role | Severity Ceiling | Response Authority | Tone |
+|---|---|---|---|
+| `junior_mdr` | Medium | Observe & escalate | Educational — explains tools, verdicts, MITRE techniques; walks through evidence chains; flags high/critical for escalation |
+| `mdr_analyst` | Critical | Containment | Professional — concise, presents findings directly, suggests next steps when multiple paths exist |
+| `senior_analyst` | Critical | Full IR | Peer — terse, granular technical detail, supports deep IR and threat hunting, surfaces disconfirming evidence |
+
+Admin access is via direct server SSH (stdio transport), not a role.
+
+The `socai://role` resource returns the current analyst's role, guidance flags, and behavioural instructions. The assistant reads this at session start to adapt.
+
+### Token Generation
+
+```bash
+# Create token with role-resolved permissions
+python3 -c "from api.auth import create_token_for_role; print(create_token_for_role('alice@soc.com', 'junior_mdr'))"
+python3 -c "from api.auth import create_token_for_role; print(create_token_for_role('bob@soc.com', 'mdr_analyst'))"
+python3 -c "from api.auth import create_token_for_role; print(create_token_for_role('charlie@soc.com', 'senior_analyst'))"
+```
+
+When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg-soc-analyst`, `sg-soc-senior`) to these role names in the auth config.
 
 ## Tools (77)
 
@@ -177,7 +202,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `memory_dump_guide` | `investigations:submit` | MDE Live Response dump collection guidance |
 | `analyse_memory_dump` | `investigations:submit` | Process memory dump analysis (strings, IOCs, risk scoring) |
 
-## Resources (25)
+## Resources (26)
 
 | URI | Description |
 |---|---|
@@ -206,6 +231,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `socai://pipeline-profiles` | Attack-type routing profiles |
 | `socai://articles` | Threat article index |
 | `socai://landscape` | Threat landscape summary |
+| `socai://role` | Current analyst role, permissions, and behavioural instructions |
 
 ## Prompts (16)
 
@@ -278,7 +304,7 @@ mcp_server/
     auth.py            # SocaiTokenVerifier, _require_scope
     config.py          # Env var configuration
     tools.py           # 77 MCP tool wrappers
-    resources.py       # 25 MCP resource implementations
+    resources.py       # 26 MCP resource implementations
     prompts.py         # 16 MCP prompt implementations
     usage.py           # Tool invocation logging (JSONL + stderr); emits tool_call,
                        #   tool_result, tool_error events with result previews

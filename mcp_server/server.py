@@ -71,7 +71,7 @@ def _build_auth_settings():
 
 _SERVER_INSTRUCTIONS = """\
 SOCAI — SOC Investigation Platform
-77 tools · 25 resources · 16 prompts for security operations.
+77 tools · 26 resources · 16 prompts for security operations.
 
 ## Start Here
 
@@ -167,6 +167,20 @@ Every workflow starts with classification. The `classify_attack` result includes
 - **Account Compromise:** lookup_client → classify_attack → add_evidence → enrich_iocs → generate_sentinel_query (suspicious-signin / mailbox-permission-change) → run_kql → generate_mdr_report
 - **False Positive:** add_evidence → enrich_iocs → generate_fp_ticket → generate_fp_tuning_ticket (if tuning needed)
 - **PUP/PUA:** classify_attack → enrich_iocs → generate_pup_report
+
+## Analyst Role Adaptation
+
+Read `socai://role` at the start of every session. It returns the analyst's role,
+experience level, and behavioural instructions. Adapt your tone, explanation depth,
+and response style accordingly:
+
+- **junior_mdr** — explain tools, verdicts, and techniques in plain language. Walk through
+  evidence chains step by step. Suggest next steps proactively. Flag high/critical alerts
+  for escalation. This analyst is learning.
+- **mdr_analyst** — be concise and professional. Don't explain what tools do. Present
+  findings directly. Suggest next steps when multiple paths exist.
+- **senior_analyst** — treat as a peer. Be terse. Provide granular technical detail.
+  Surface disconfirming evidence. Support deep IR and threat hunting.
 
 ## Do NOT
 

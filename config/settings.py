@@ -100,6 +100,7 @@ ALIAS_ENABLED     = os.getenv("SOCAI_ALIAS", "0") == "1"
 ALIAS_MAP_FILE    = BASE_DIR / "registry" / "alias_map.json"
 CLIENT_ENTITIES   = BASE_DIR / "config" / "client_entities.json"
 CLIENT_PLAYBOOKS_DIR = BASE_DIR / "config" / "clients"
+ROLES_FILE           = BASE_DIR / "config" / "roles.json"
 DEFAULT_CLIENT    = os.getenv("SOCAI_DEFAULT_CLIENT", "")
 
 # Claude model for LLM-assisted steps (optional, not required for core)

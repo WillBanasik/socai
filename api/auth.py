@@ -60,6 +60,22 @@ def create_access_token(email: str, role: str, permissions: list[str]) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
+def create_token_for_role(email: str, role: str) -> str:
+    """Create a JWT with permissions resolved from config/roles.json.
+
+    Usage::
+
+        python3 -c "from api.auth import create_token_for_role; print(create_token_for_role('alice@example.com', 'junior_mdr'))"
+    """
+    perms = resolve_role_permissions(role)
+    if not perms:
+        raise ValueError(
+            f"Unknown role {role!r}. "
+            f"Valid roles: {', '.join(load_roles().keys())}"
+        )
+    return create_access_token(email, role, perms)
+
+
 def _resolve_permissions(user_data: dict) -> list[str]:
     """Expand the 'admin' shorthand into all concrete permissions."""
     perms = user_data.get("permissions", [])
@@ -73,3 +89,57 @@ def _resolve_permissions(user_data: dict) -> list[str]:
             "sentinel:query",
         ]
     return perms
+
+
+# ---------------------------------------------------------------------------
+# Role resolution
+# ---------------------------------------------------------------------------
+
+def load_roles() -> dict:
+    """Load role definitions from config/roles.json."""
+    from config.settings import ROLES_FILE
+    if not ROLES_FILE.exists():
+        return {}
+    with open(ROLES_FILE) as f:
+        return json.load(f).get("roles", {})
+
+
+def get_role(role_name: str) -> dict | None:
+    """Return a single role definition, or None if not found."""
+    return load_roles().get(role_name)
+
+
+def resolve_role_permissions(role_name: str) -> list[str]:
+    """Resolve a role name to its permission list.
+
+    Falls back to empty list if the role doesn't exist.
+    """
+    role = get_role(role_name)
+    if not role:
+        return []
+    return role.get("permissions", [])
+
+
+def get_role_instructions(role_name: str) -> str:
+    """Return the analyst-facing instructions for a role.
+
+    These get injected into the MCP server system prompt so that the
+    assistant adapts its tone, depth, and behaviour to the analyst's
+    experience level.
+    """
+    role = get_role(role_name)
+    if not role:
+        return ""
+    return role.get("instructions", "")
+
+
+def get_role_guidance(role_name: str) -> dict:
+    """Return the analyst_guidance flags for a role.
+
+    Used by prompts and tools to decide whether to include educational
+    context, suggest next steps, auto-escalate, etc.
+    """
+    role = get_role(role_name)
+    if not role:
+        return {}
+    return role.get("analyst_guidance", {})

@@ -1,0 +1,72 @@
+{
+  "roles": {
+    "junior_mdr": {
+      "title": "Junior MDR Analyst",
+      "description": "Entry-level MDR analyst working supervised triage and low/medium severity alerts.",
+      "permissions": [
+        "investigations:read",
+        "investigations:submit",
+        "campaigns:read"
+      ],
+      "severity_ceiling": "medium",
+      "response_authority": "observe_and_escalate",
+      "analyst_guidance": {
+        "tone": "educational",
+        "explain_tools": true,
+        "explain_verdicts": true,
+        "show_reasoning_steps": true,
+        "suggest_next_steps": true,
+        "warn_before_destructive": true,
+        "auto_escalate_severity": ["high", "critical"]
+      },
+      "instructions": "This analyst is learning. Explain what each tool does and why you are calling it. When presenting enrichment results, explain what the verdicts mean (e.g. what makes an IP malicious, why a domain is suspicious). Walk through the evidence chain step by step. If the alert is high or critical severity, advise the analyst to escalate to a senior analyst before taking response actions. Always explain MITRE ATT&CK techniques in plain language. When generating reports, guide the analyst through each section and explain what belongs where. Flag common junior mistakes: jumping to conclusions without evidence, confusing correlation with causation, missing obvious IOCs in raw data. Suggest learning resources when relevant (e.g. 'this is a T1566.001 spearphishing attachment — the key indicators to look for are...')."
+    },
+    "mdr_analyst": {
+      "title": "MDR Analyst",
+      "description": "Standard MDR analyst handling all severity levels with full investigation capability.",
+      "permissions": [
+        "investigations:read",
+        "investigations:submit",
+        "campaigns:read",
+        "sentinel:query",
+        "ioc_index:read"
+      ],
+      "severity_ceiling": "critical",
+      "response_authority": "containment",
+      "analyst_guidance": {
+        "tone": "professional",
+        "explain_tools": false,
+        "explain_verdicts": false,
+        "show_reasoning_steps": false,
+        "suggest_next_steps": true,
+        "warn_before_destructive": true,
+        "auto_escalate_severity": []
+      },
+      "instructions": "Standard analyst mode. Be concise and direct — this analyst knows the tools and workflow. Present findings efficiently without explaining what each tool does. Focus on the evidence and let the analyst drive decisions. Suggest next investigative steps when there are multiple viable paths, but don't over-explain. For response actions, present options with trade-offs rather than step-by-step walkthroughs. Use precise technical language (IOC types, MITRE IDs, KQL operators) without defining them."
+    },
+    "senior_analyst": {
+      "title": "Senior Analyst / Incident Responder",
+      "description": "Senior analyst handling complex incidents, IR engagements, and threat hunting with deep forensic capability.",
+      "permissions": [
+        "investigations:read",
+        "investigations:submit",
+        "campaigns:read",
+        "sentinel:query",
+        "ioc_index:read"
+      ],
+      "severity_ceiling": "critical",
+      "response_authority": "full_ir",
+      "analyst_guidance": {
+        "tone": "peer",
+        "explain_tools": false,
+        "explain_verdicts": false,
+        "show_reasoning_steps": false,
+        "suggest_next_steps": false,
+        "warn_before_destructive": false,
+        "auto_escalate_severity": []
+      },
+      "instructions": "This is a senior analyst or incident responder. Treat as a peer. Be terse — skip preamble and present raw findings. Provide granular technical detail: full process trees, registry key paths, exact KQL clauses, memory offsets, PE section entropy values. When asked for analysis, go deep: correlate across multiple data sources, identify gaps in detection coverage, suggest hypothesis-driven hunting queries. For IR, provide structured containment/eradication/recovery phases with specific commands and verification steps. Proactively surface disconfirming evidence and alternative hypotheses. When reviewing reports, apply rigorous analytical standards — flag any claim that isn't directly evidenced. Support threat hunting with custom KQL, YARA rules, and Sigma-to-KQL conversions on request."
+    }
+  },
+  "default_role": "mdr_analyst"
+}

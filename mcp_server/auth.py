@@ -109,3 +109,66 @@ def _get_caller_scopes() -> list[str]:
     if access_token is None:
         return []
     return list(access_token.scopes)
+
+
+def _get_caller_role() -> str:
+    """Return the role name of the current authenticated caller.
+
+    Reads the ``role`` claim from the JWT. Falls back to the default
+    role from ``config/roles.json``, or ``"mdr_analyst"`` if no config.
+
+    In stdio transport mode, returns ``"senior_analyst"`` (local trust).
+    """
+    from mcp_server.config import MCP_TRANSPORT
+
+    if MCP_TRANSPORT == "stdio":
+        return "senior_analyst"
+
+    access_token = get_access_token()
+    if access_token is None:
+        return _default_role()
+
+    # The role is stored in the JWT payload — we need to decode it again
+    # since AccessToken doesn't expose arbitrary claims.
+    try:
+        payload = jwt.decode(
+            access_token.token, JWT_SECRET, algorithms=[JWT_ALGORITHM]
+        )
+        role = payload.get("role", "")
+    except JWTError:
+        role = ""
+
+    if role:
+        return role
+    return _default_role()
+
+
+def _default_role() -> str:
+    """Return the default role from roles.json, or 'mdr_analyst'."""
+    try:
+        import json
+        from config.settings import ROLES_FILE
+        if ROLES_FILE.exists():
+            with open(ROLES_FILE) as f:
+                return json.load(f).get("default_role", "mdr_analyst")
+    except Exception:
+        pass
+    return "mdr_analyst"
+
+
+def _get_role_instructions() -> str:
+    """Return the system prompt instructions for the current caller's role.
+
+    Used by the MCP server to inject role-appropriate behaviour guidance
+    into the session.
+    """
+    role = _get_caller_role()
+    from api.auth import get_role_instructions
+    return get_role_instructions(role)
+
+
+def _get_role_guidance() -> dict:
+    """Return the analyst_guidance flags for the current caller's role."""
+    role = _get_caller_role()
+    from api.auth import get_role_guidance
+    return get_role_guidance(role)

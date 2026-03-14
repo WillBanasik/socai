@@ -449,6 +449,39 @@ def register_resources(mcp: FastMCP) -> None:
         return _json(assess_landscape())
 
     # ------------------------------------------------------------------
+    # Analyst Role
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://role")
+    def analyst_role() -> str:
+        """Current analyst's role, permissions, and behavioural instructions.
+
+        Read this resource at session start to adapt tone, explanation depth,
+        and response style to the analyst's experience level.
+
+        Roles: junior_mdr (learning, needs guidance), mdr_analyst (standard),
+        senior_analyst (peer-level, deep IR).
+        """
+        from mcp_server.auth import (
+            _get_caller_email, _get_caller_role,
+            _get_role_instructions, _get_role_guidance,
+        )
+        from api.auth import get_role
+
+        role_name = _get_caller_role()
+        role_def = get_role(role_name) or {}
+
+        return _json({
+            "analyst": _get_caller_email(),
+            "role": role_name,
+            "title": role_def.get("title", role_name),
+            "severity_ceiling": role_def.get("severity_ceiling", "critical"),
+            "response_authority": role_def.get("response_authority", "containment"),
+            "guidance": _get_role_guidance(),
+            "instructions": _get_role_instructions(),
+        })
+
+    # ------------------------------------------------------------------
     # Capabilities overview
     # ------------------------------------------------------------------
 
@@ -614,9 +647,10 @@ def register_resources(mcp: FastMCP) -> None:
                 ],
             },
             "resources": {
-                "total": 25,
+                "total": 26,
                 "uris": [
                     {"uri": "socai://capabilities", "description": "This overview"},
+                    {"uri": "socai://role", "description": "Current analyst role, permissions, and behavioural instructions"},
                     {"uri": "socai://cases", "description": "Full case registry"},
                     {"uri": "socai://cases/{case_id}/meta", "description": "Case metadata"},
                     {"uri": "socai://cases/{case_id}/report", "description": "Investigation report markdown"},
