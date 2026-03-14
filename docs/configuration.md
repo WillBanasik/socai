@@ -159,6 +159,17 @@ Read-only integration with Confluence Cloud for checking existing articles and (
 
 **Usage:** `tools/confluence_read.py` provides `list_pages()`, `get_page()`, `search_pages()`, `get_page_by_title()`. Used by `tools/threat_articles.py` for dedup against recently published articles in the MDR1 space.
 
+## Cyberint (Read-Only CTI Alerts)
+
+Read-only integration with the Cyberint threat intelligence platform for browsing and searching CTI alerts.
+
+| Env var | Purpose |
+|---------|---------|
+| `CYBERINT_API_KEY` | `access_token` cookie value from an authenticated Cyberint session |
+| `CYBERINT_API_URL` | API base URL (default `https://cyberint.example.com`) |
+
+**Usage:** `tools/cyberint_read.py` provides `list_alerts()`, `get_alert()`, `get_alert_metadata()`, `get_alert_attachment()`, `get_alert_indicator()`, `get_alert_analysis_report()`, `get_risk_scores()`. MCP tools: `query_cyberint_alerts`, `cyberint_alert_artefact`, `cyberint_metadata`. CLI: `socai.py cyberint`, `socai.py cyberint-metadata`, `socai.py cyberint-risk`.
+
 ## Threat Article Sources
 
 `config/article_sources.json` — configurable list of RSS feeds for threat article discovery. Default: 10 feeds (BleepingComputer, The Hacker News, Krebs, CISA, Dark Reading, The Record, Mandiant, Unit 42, Microsoft Security, SecurityWeek). Add new sources with `"type": "rss"` and `"categories": ["ET", "EV"]`.

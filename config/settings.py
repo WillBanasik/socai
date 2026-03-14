@@ -172,6 +172,12 @@ CONFLUENCE_API_TOKEN = os.getenv("CONFLUENCE_API_TOKEN", "")
 CONFLUENCE_SPACE_KEY = os.getenv("CONFLUENCE_SPACE_KEY", "")
 
 # ---------------------------------------------------------------------------
+# Cyberint (read-only alert query)
+# ---------------------------------------------------------------------------
+CYBERINT_API_KEY = os.getenv("CYBERINT_API_KEY", "")
+CYBERINT_API_URL = os.getenv("CYBERINT_API_URL", "https://cyberint.example.com")
+
+# ---------------------------------------------------------------------------
 # Browser pool (Playwright reuse)
 # ---------------------------------------------------------------------------
 SOCAI_BROWSER_POOL_MAX_USES = int(os.getenv("SOCAI_BROWSER_POOL_MAX_USES", "50"))

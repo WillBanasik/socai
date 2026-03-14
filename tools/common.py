@@ -81,11 +81,55 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 from config.settings import ALIAS_ENABLED, ALIAS_MAP_FILE, AUDIT_LOG, CLIENT_ENTITIES, ERROR_LOG
 
 # Thread-safe lock for audit log appends (used when parallel agents write concurrently)
 _audit_lock = threading.Lock()
 _error_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Pooled HTTP session factory (per-thread, with connection reuse & retry)
+# ---------------------------------------------------------------------------
+
+_thread_local = threading.local()
+
+_RETRY_STRATEGY = Retry(
+    total=3,
+    backoff_factor=0.5,
+    status_forcelist=[502, 503, 504],
+    allowed_methods=["GET", "HEAD", "OPTIONS"],
+    raise_on_status=False,
+)
+
+_POOL_CONNECTIONS = 20  # max host pools kept alive
+_POOL_MAXSIZE = 20      # max connections per host pool
+
+
+def get_session() -> requests.Session:
+    """Return a per-thread ``requests.Session`` with connection pooling and retry.
+
+    Sessions are cached on ``threading.local()`` so each thread reuses its own
+    session across calls — no cookie/header leakage between threads.  Retries
+    are limited to GET/HEAD/OPTIONS to avoid duplicating non-idempotent POSTs.
+    """
+    session: requests.Session | None = getattr(_thread_local, "session", None)
+    if session is not None:
+        return session
+    session = requests.Session()
+    adapter = HTTPAdapter(
+        max_retries=_RETRY_STRATEGY,
+        pool_connections=_POOL_CONNECTIONS,
+        pool_maxsize=_POOL_MAXSIZE,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    _thread_local.session = session
+    return session
 
 
 # ---------------------------------------------------------------------------
@@ -108,15 +152,354 @@ def defang_ioc(value: str) -> str:
 
 
 def md_file_note(file_path) -> str:
-    """Return a footer note pointing the analyst to the raw markdown file.
+    """Return a footer note pointing the analyst to the HTML report file.
 
-    Appended to report responses so the analyst can open the file in a text
-    editor and copy clean markdown without HTML formatting bloat.
+    Appended to report responses so the analyst can open the file in a browser
+    and copy formatted content directly.
     """
+    html_path = str(file_path).replace(".md", ".html") if str(file_path).endswith(".md") else file_path
     return (
-        f"\n\n---\n*Markdown file: `{file_path}` — "
-        f"open in a text editor to copy without formatting.*"
+        f"\n\n---\n*HTML report: `{html_path}` — "
+        f"open in a browser to copy with formatting.*"
     )
+
+
+# ---------------------------------------------------------------------------
+# Markdown → HTML conversion for report deliverables
+# ---------------------------------------------------------------------------
+
+_REPORT_CSS = """\
+body {
+    font-family: Arial, sans-serif;
+    font-size: 16px;
+    margin: 40px;
+    line-height: 1.6;
+    background: #0d1117;
+    color: #e6edf3;
+}
+h1, h2, h3 {
+    color: #58a6ff;
+}
+h1 {
+    margin-bottom: 16px;
+}
+.meta {
+    background: #161b22;
+    padding: 14px;
+    border-left: 4px solid #58a6ff;
+    margin-bottom: 24px;
+    border-radius: 6px;
+    color: #c9d1d9;
+}
+.section {
+    margin-bottom: 28px;
+    background: #11161c;
+    padding: 18px;
+    border-radius: 8px;
+    box-shadow: 0 0 0 1px #21262d;
+}
+ul, ol {
+    padding-left: 22px;
+}
+li {
+    margin-bottom: 8px;
+}
+code {
+    background: #21262d;
+    color: #f0883e;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: Consolas, monospace;
+}
+pre {
+    background: #161b22;
+    padding: 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 12px 0;
+    border: 1px solid #21262d;
+}
+pre code {
+    background: none;
+    color: #e6edf3;
+    padding: 0;
+}
+strong {
+    color: #ffffff;
+}
+em {
+    color: #8b949e;
+}
+blockquote {
+    border-left: 4px solid #58a6ff;
+    padding: 10px 16px;
+    margin: 12px 0;
+    background: #161b22;
+    color: #c9d1d9;
+    border-radius: 0 6px 6px 0;
+}
+hr {
+    border: none;
+    border-top: 1px solid #21262d;
+    margin: 24px 0;
+}
+a {
+    color: #58a6ff;
+    text-decoration: none;
+}
+a:hover {
+    text-decoration: underline;
+}
+"""
+
+
+_KV_HEADERS = {"field", "key", "property", "attribute", "name", "parameter",
+               "value", "result", "detail", "details", "description", "setting"}
+
+
+def _tables_to_bullets(md_text: str) -> str:
+    """Convert markdown tables to bullet-point lists for cleaner HTML output.
+
+    Rendering rules (2-column tables):
+    - Generic key-value headers (Field/Value):  ``- **Case ID:** IV_CASE_002``
+    - Label + description (first col is the key): ``- **Email logs** — confirms delivery``
+
+    Multi-column tables:
+    - ``- **Col A:** foo — **Col B:** bar``
+    """
+    lines = md_text.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        # Detect table: line starts with | and has at least two |
+        if stripped.startswith("|") and stripped.count("|") >= 3:
+            # Collect the full table block
+            table_lines: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i].strip())
+                i += 1
+            # Parse header row
+            headers: list[str] = [
+                c.strip() for c in table_lines[0].split("|")[1:-1]
+            ]
+            # Skip separator row (---|---), then process data rows
+            data_start = 1
+            if len(table_lines) > 1 and _re.match(
+                r"^\|[\s\-:|]+\|$", table_lines[1]
+            ):
+                data_start = 2
+
+            # Detect key-value pattern: exactly 2 columns with generic headers
+            is_kv = (
+                len(headers) == 2
+                and headers[0].lower() in _KV_HEADERS
+                and headers[1].lower() in _KV_HEADERS
+            )
+
+            # Two-column tables always render as label–description pairs
+            is_two_col = len(headers) == 2
+
+            for row_line in table_lines[data_start:]:
+                cells = [c.strip() for c in row_line.split("|")[1:-1]]
+
+                if is_kv and len(cells) >= 2 and cells[0]:
+                    # Generic key-value: **CellA:** CellB
+                    out.append(f"- **{cells[0]}:** {cells[1]}")
+                elif is_two_col and len(cells) >= 2 and cells[0]:
+                    # Label + description: **CellA** — CellB
+                    out.append(f"- **{cells[0]}** — {cells[1]}")
+                else:
+                    parts: list[str] = []
+                    for j, cell in enumerate(cells):
+                        if not cell or cell == "—":
+                            continue
+                        hdr = headers[j] if j < len(headers) else ""
+                        if hdr and hdr.lower() not in _KV_HEADERS and hdr != cell:
+                            parts.append(f"**{hdr}:** {cell}")
+                        else:
+                            parts.append(cell)
+                    if parts:
+                        out.append(f"- {' — '.join(parts)}")
+            out.append("")  # blank line after list
+        else:
+            out.append(line)
+            i += 1
+    return "\n".join(out)
+
+
+def _wrap_sections(html_body: str) -> str:
+    """Post-process converted HTML to wrap content in structured divs.
+
+    - Detects metadata paragraphs (lines with **Key:** Value near the top)
+      and wraps them in ``<div class="meta">``
+    - Wraps each h2 section and its following content in ``<div class="section">``
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html_body, "html.parser")
+
+    # --- 1. Detect and wrap metadata block ---
+    # Metadata is typically the first <p> after <h1> that contains multiple
+    # <strong>Key:</strong> Value patterns (or an italic/em generation line)
+    h1 = soup.find("h1")
+    meta_candidates: list = []
+    if h1:
+        sib = h1.next_sibling
+        while sib:
+            # Skip bare strings / whitespace NavigableStrings
+            if isinstance(sib, str):
+                sib = sib.next_sibling
+                continue
+            tag_name = getattr(sib, "name", None)
+            # Stop collecting at first heading
+            if tag_name in ("h1", "h2", "h3"):
+                break
+            # Metadata paragraphs: contain <strong> with colon, OR are <em>/_
+            if tag_name == "p":
+                strongs = sib.find_all("strong")
+                has_kv = any(":" in (s.get_text() or "") for s in strongs)
+                is_italic = sib.find("em") and not strongs
+                if has_kv or is_italic:
+                    meta_candidates.append(sib)
+                else:
+                    break
+            elif tag_name == "hr":
+                meta_candidates.append(sib)
+                # hr after metadata → include it then stop
+                sib = sib.next_sibling
+                break
+            else:
+                break
+            sib = sib.next_sibling
+
+    if meta_candidates:
+        meta_div = soup.new_tag("div", attrs={"class": "meta"})
+        # Insert meta div before the first candidate
+        meta_candidates[0].insert_before(meta_div)
+        for el in meta_candidates:
+            # Convert **Key:** Value <p> tags to Key: Value <br> lines
+            if getattr(el, "name", None) == "p":
+                strongs = el.find_all("strong")
+                if any(":" in (s.get_text() or "") for s in strongs):
+                    # Rebuild as br-separated lines inside the meta div
+                    from bs4 import NavigableString
+                    for child in list(el.children):
+                        meta_div.append(child.extract() if hasattr(child, "extract") else NavigableString(str(child)))
+                    meta_div.append(soup.new_tag("br"))
+                    el.decompose()
+                else:
+                    meta_div.append(el.extract())
+            elif getattr(el, "name", None) == "hr":
+                el.decompose()  # drop the hr, the meta div replaces it
+            else:
+                meta_div.append(el.extract())
+        # Clean trailing <br> in meta div
+        last = meta_div.contents[-1] if meta_div.contents else None
+        if last and getattr(last, "name", None) == "br":
+            last.decompose()
+
+    # --- 2. Wrap h2 sections in <div class="section"> ---
+    h2_tags = soup.find_all("h2")
+    for h2 in h2_tags:
+        section_div = soup.new_tag("div", attrs={"class": "section"})
+        h2.insert_before(section_div)
+        section_div.append(h2.extract())
+        # Collect siblings until the next h1/h2 or end
+        while True:
+            sib = section_div.next_sibling
+            if sib is None:
+                break
+            if isinstance(sib, str):
+                if sib.strip():
+                    section_div.append(sib.extract())
+                else:
+                    sib.extract()
+                continue
+            tag_name = getattr(sib, "name", None)
+            if tag_name in ("h1", "h2"):
+                break
+            if tag_name == "div" and "section" in (sib.get("class") or []):
+                break
+            section_div.append(sib.extract())
+
+    # --- 3. Wrap loose content after every h1 in a section div ---
+    # This catches body text between h1 headings and the next h2/section.
+    for h1_tag in soup.find_all("h1"):
+        loose: list = []
+        sib = h1_tag.next_sibling
+        while sib:
+            if isinstance(sib, str):
+                if sib.strip():
+                    loose.append(sib)
+                sib = sib.next_sibling
+                continue
+            tag_name = getattr(sib, "name", None)
+            if tag_name in ("h1", "h2") or (
+                tag_name == "div" and ("section" in (sib.get("class") or [])
+                                       or "meta" in (sib.get("class") or []))
+            ):
+                break
+            loose.append(sib)
+            sib = sib.next_sibling
+        if loose:
+            intro_div = soup.new_tag("div", attrs={"class": "section"})
+            loose[0].insert_before(intro_div)
+            for el in loose:
+                intro_div.append(el.extract())
+
+    return str(soup)
+
+
+def markdown_to_html(md_text: str, title: str = "Report") -> str:
+    """Convert markdown text to a styled HTML document.
+
+    Tables are converted to bullet-point lists. The output uses a dark theme
+    with structured ``<div class="meta">`` and ``<div class="section">``
+    wrappers for clean copy/paste into email, ticketing, or wiki systems.
+    """
+    md_text = _tables_to_bullets(md_text)
+    try:
+        import markdown as _markdown
+        body = _markdown.markdown(
+            md_text,
+            extensions=["fenced_code", "codehilite", "toc"],
+            extension_configs={"codehilite": {"noclasses": True, "pygments_style": "monokai"}},
+        )
+    except ImportError:
+        from html import escape
+        body = f"<pre>{escape(md_text)}</pre>"
+
+    body = _wrap_sections(body)
+
+    return (
+        "<!DOCTYPE html>\n"
+        "<html lang=\"en\">\n<head>\n"
+        "<meta charset=\"UTF-8\">\n"
+        f"<title>{title}</title>\n"
+        f"<style>\n{_REPORT_CSS}</style>\n"
+        "</head>\n\n<body>\n\n"
+        f"{body}\n\n"
+        "</body>\n</html>\n"
+    )
+
+
+def write_report(dest: Path, md_text: str, title: str = "Report") -> dict:
+    """Write a markdown report AND its HTML companion.
+
+    Writes:
+      - ``dest``                  — raw markdown (for internal LLM consumption)
+      - ``dest.with_suffix('.html')`` — styled HTML (analyst deliverable)
+
+    Returns the standard manifest dict with an extra ``html_path`` key.
+    """
+    manifest = write_artefact(dest, md_text)
+    html_text = markdown_to_html(md_text, title=title)
+    html_dest = dest.with_suffix(".html")
+    write_artefact(html_dest, html_text)
+    manifest["html_path"] = str(html_dest)
+    return manifest
 
 
 def defang_report(text: str, malicious_iocs: set[str] | None = None) -> str:

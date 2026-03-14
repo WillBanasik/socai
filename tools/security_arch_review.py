@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import ANTHROPIC_KEY, CASES_DIR, IOC_INDEX_FILE
-from tools.common import get_alias_map, get_model, load_json, log_error, save_json, utcnow, write_artefact
+from tools.common import get_alias_map, get_model, load_json, log_error, save_json, utcnow, write_artefact, write_report
 
 # ---------------------------------------------------------------------------
 # Analytical guidelines — loaded from config/analytical_guidelines.md
@@ -606,7 +606,7 @@ def security_arch_review(case_id: str) -> dict:
         + (f" | Thinking: enabled" if use_thinking else "")
         + f"_\n\n---\n\n"
     )
-    write_artefact(out_path, header + review_text)
+    write_report(out_path, header + review_text, title=f"Security Architecture Review — {case_id}")
 
     # Structured sidecar
     if structured_data:

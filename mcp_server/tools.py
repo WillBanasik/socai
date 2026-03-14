@@ -2248,12 +2248,72 @@ def _register_tier2(mcp: FastMCP) -> None:
             _check_client_boundary(case_id)
 
         from tools.threat_articles import generate_articles
-        # Build candidate dicts from URLs
-        candidates = [{"url": u, "title": u, "id": u} for u in candidate_urls]
+        from urllib.parse import urlparse
+        # Build candidate dicts from URLs with keys generate_articles expects
+        candidates = [
+            {
+                "id": u,
+                "title": u,
+                "category": "ET",
+                "source_name": urlparse(u).netloc or "unknown",
+                "source_url": u,
+                "summary": "",
+                "already_covered": False,
+            }
+            for u in candidate_urls
+        ]
         result = await asyncio.to_thread(
             lambda: generate_articles(candidates, analyst=analyst, case_id=case_id)
         )
         return _json({"articles": result, "count": len(result) if result else 0})
+
+    @mcp.tool(title="Save Threat Article")
+    async def save_threat_article(
+        article_text: str,
+        title: str,
+        category: str = "ET",
+        source_urls: list[str] | None = None,
+        analyst: str = "mcp",
+        case_id: str | None = None,
+    ) -> str:
+        """Use after generating a threat article locally with the
+        ``write_threat_article`` prompt. Persists the article to disk,
+        updates the article index, and optionally links to a case.
+
+        **Workflow:** Select ``write_threat_article`` prompt → research and
+        write the article locally → call this tool to save it.
+
+        Parameters
+        ----------
+        article_text : str
+            Full article markdown (title, body, recommendations, indicators).
+        title : str
+            Article title.
+        category : str
+            "ET" (Emerging Threat) or "EV" (Emerging Vulnerability).
+        source_urls : list[str]
+            URLs of source material used.
+        analyst : str
+            Analyst name for attribution.
+        case_id : str
+            Optional case ID to associate with.
+        """
+        _require_scope("investigations:submit")
+        if case_id:
+            _check_client_boundary(case_id)
+
+        from tools.threat_articles import save_article
+        result = await asyncio.to_thread(
+            lambda: save_article(
+                article_text=article_text,
+                title=title,
+                category=category,
+                source_urls=source_urls or [],
+                analyst=analyst,
+                case_id=case_id,
+            )
+        )
+        return _json(result)
 
     @mcp.tool(title="Web Search (OSINT)", annotations={"readOnlyHint": True})
     def web_search(query: str, max_results: int = 10) -> str:
@@ -2517,6 +2577,202 @@ def _register_tier2(mcp: FastMCP) -> None:
         from tools.sandbox_analyse import sandbox_analyse
         result = await asyncio.to_thread(lambda: sandbox_analyse(case_id))
         return _json(result)
+
+    # -- Cyberint CTI (read-only) ------------------------------------------
+
+    @mcp.tool(title="Query Cyberint Alerts", annotations={"readOnlyHint": True, "openWorldHint": True})
+    async def query_cyberint_alerts(
+        alert_ref_id: str = "",
+        severity: str = "",
+        status: str = "",
+        category: str = "",
+        environment: str = "",
+        created_from: str = "",
+        created_to: str = "",
+        page: int = 1,
+        size: int = 10,
+    ) -> str:
+        """Use when the analyst says "check Cyberint", "any Cyberint alerts?",
+        "search Cyberint for X", "show me Cyberint alert <ID>", or asks about
+        CTI alerts from the Cyberint platform.
+
+        Cyberint is an external cyber threat intelligence platform that tracks
+        alerts about brand impersonation, data leaks, phishing kits, credential
+        exposure, and other external threats.
+
+        Modes:
+        - **Single alert** (alert_ref_id provided): returns full alert detail
+        - **Filtered list** (no alert_ref_id): paginated list with optional filters
+
+        Parameters
+        ----------
+        alert_ref_id : str
+            Specific alert reference ID to retrieve. Overrides all filters.
+        severity : str
+            Filter by severity (e.g. "very_high", "high", "medium", "low").
+        status : str
+            Filter by status (e.g. "open", "acknowledged", "closed").
+        category : str
+            Filter by category (e.g. "phishing", "data_leak", "brand_security").
+        environment : str
+            Filter by environment/client name.
+        created_from : str
+            ISO date string — only alerts created after this date.
+        created_to : str
+            ISO date string — only alerts created before this date.
+        page : int
+            Page number for pagination (default 1).
+        size : int
+            Results per page (default 10, max 100).
+        """
+        _require_scope("investigations:read")
+
+        from tools.cyberint_read import _is_configured, get_alert, list_alerts
+
+        if not _is_configured():
+            raise ToolError(
+                "Cyberint not configured. Set CYBERINT_API_KEY and "
+                "CYBERINT_API_URL in .env."
+            )
+
+        # Single alert mode
+        if alert_ref_id:
+            result = await asyncio.to_thread(get_alert, alert_ref_id)
+            if not result:
+                raise ToolError(f"Alert {alert_ref_id} not found or not accessible.")
+            return _json({"status": "ok", "mode": "detail", "alert": result})
+
+        # Filtered list mode
+        result = await asyncio.to_thread(
+            lambda: list_alerts(
+                page=page, size=size,
+                severity=severity or None,
+                status=status or None,
+                category=category or None,
+                environment=environment or None,
+                created_from=created_from or None,
+                created_to=created_to or None,
+            )
+        )
+        if not result:
+            raise ToolError("Cyberint alert query failed — check logs.")
+        return _json({
+            "status": "ok",
+            "mode": "list",
+            "total": result.get("total", 0),
+            "page": page,
+            "size": size,
+            "alerts": result.get("alerts", []),
+        })
+
+    @mcp.tool(title="Cyberint Alert Artefact", annotations={"readOnlyHint": True, "openWorldHint": True})
+    async def cyberint_alert_artefact(
+        alert_ref_id: str,
+        attachment_id: str = "",
+        indicator_id: str = "",
+        analysis_report: bool = False,
+        risk_environment: str = "",
+    ) -> str:
+        """Use when the analyst asks for a Cyberint alert attachment, indicator
+        detail, analysis report, or risk scores.
+
+        Exactly one mode at a time:
+        - **attachment_id**: get a temporary download URL for an attachment
+        - **indicator_id**: get indicator detail from an alert
+        - **analysis_report=True**: get a temporary URL for the analysis report
+        - **risk_environment**: get current risk scores for an environment (alert_ref_id ignored)
+
+        Parameters
+        ----------
+        alert_ref_id : str
+            Alert reference ID (required for attachment, indicator, and report modes).
+        attachment_id : str
+            Attachment ID to retrieve download URL for.
+        indicator_id : str
+            Indicator ID to retrieve details for.
+        analysis_report : bool
+            Set True to get the analysis report URL.
+        risk_environment : str
+            Environment name to get risk scores for (ignores alert_ref_id).
+        """
+        _require_scope("investigations:read")
+
+        from tools.cyberint_read import (
+            _is_configured,
+            get_alert_analysis_report,
+            get_alert_attachment,
+            get_alert_indicator,
+            get_risk_scores,
+        )
+
+        if not _is_configured():
+            raise ToolError(
+                "Cyberint not configured. Set CYBERINT_API_KEY and "
+                "CYBERINT_API_URL in .env."
+            )
+
+        # Risk scores mode (no alert_ref_id needed)
+        if risk_environment:
+            result = await asyncio.to_thread(get_risk_scores, risk_environment)
+            if not result:
+                raise ToolError(f"Risk scores for '{risk_environment}' not found.")
+            return _json({"status": "ok", "mode": "risk_scores",
+                          "environment": risk_environment, "scores": result})
+
+        if not alert_ref_id:
+            raise ToolError("alert_ref_id is required for attachment, indicator, and report modes.")
+
+        if attachment_id:
+            url = await asyncio.to_thread(
+                get_alert_attachment, alert_ref_id, attachment_id)
+            if not url:
+                raise ToolError(f"Attachment {attachment_id} not found on alert {alert_ref_id}.")
+            return _json({"status": "ok", "mode": "attachment",
+                          "download_url": url})
+
+        if indicator_id:
+            result = await asyncio.to_thread(
+                get_alert_indicator, alert_ref_id, indicator_id)
+            if not result:
+                raise ToolError(f"Indicator {indicator_id} not found on alert {alert_ref_id}.")
+            return _json({"status": "ok", "mode": "indicator",
+                          "indicator": result})
+
+        if analysis_report:
+            url = await asyncio.to_thread(
+                get_alert_analysis_report, alert_ref_id)
+            if not url:
+                raise ToolError(f"Analysis report not found for alert {alert_ref_id}.")
+            return _json({"status": "ok", "mode": "analysis_report",
+                          "report_url": url})
+
+        raise ToolError(
+            "Specify exactly one of: attachment_id, indicator_id, "
+            "analysis_report=True, or risk_environment."
+        )
+
+    @mcp.tool(title="Cyberint Metadata", annotations={"readOnlyHint": True, "openWorldHint": True})
+    async def cyberint_metadata() -> str:
+        """Use when the analyst asks "what categories does Cyberint have?",
+        "show me Cyberint metadata", or needs to understand the available
+        alert types, severities, statuses, or categories before querying.
+
+        Returns the Cyberint alert catalog metadata — no parameters needed.
+        """
+        _require_scope("investigations:read")
+
+        from tools.cyberint_read import _is_configured, get_alert_metadata
+
+        if not _is_configured():
+            raise ToolError(
+                "Cyberint not configured. Set CYBERINT_API_KEY and "
+                "CYBERINT_API_URL in .env."
+            )
+
+        result = await asyncio.to_thread(get_alert_metadata)
+        if not result:
+            raise ToolError("Failed to retrieve Cyberint metadata — check logs.")
+        return _json({"status": "ok", "metadata": result})
 
 
 # ---------------------------------------------------------------------------
@@ -3050,6 +3306,55 @@ def _register_tier3(mcp: FastMCP) -> None:
         from tools.generate_weekly_report import generate_weekly_report
         result = await asyncio.to_thread(
             lambda: generate_weekly_report(year=year, week=week, include_open=include_open)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Save Report")
+    async def save_report(
+        case_id: str,
+        report_type: str,
+        report_text: str,
+        disposition: str | None = None,
+    ) -> str:
+        """Use after selecting a report prompt (write_mdr_report, write_pup_report,
+        write_fp_closure, write_fp_tuning, write_executive_summary,
+        write_security_arch_review) and generating the report content locally.
+
+        Persists a locally-generated report to disk with defanging, HTML
+        conversion, auto-close logic, and audit trail. No LLM call — all
+        the thinking was done by your local session.
+
+        **Report types and auto-close behaviour:**
+        - ``mdr_report`` — auto-closes case (preserves existing disposition)
+        - ``pup_report`` — auto-closes case (disposition: pup_pua)
+        - ``fp_ticket`` — auto-closes case (disposition: false_positive)
+        - ``fp_tuning_ticket`` — does NOT auto-close
+        - ``executive_summary`` — does NOT auto-close
+        - ``security_arch_review`` — does NOT auto-close
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        report_type : str
+            One of: mdr_report, pup_report, fp_ticket, fp_tuning_ticket,
+            executive_summary, security_arch_review.
+        report_text : str
+            Full report markdown as generated by your local session.
+        disposition : str
+            Optional disposition override for auto-close.
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from tools.save_report import save_report_to_case
+        result = await asyncio.to_thread(
+            lambda: save_report_to_case(
+                case_id=case_id,
+                report_type=report_type,
+                report_text=report_text,
+                disposition=disposition,
+            )
         )
         return _json(result)
 

@@ -113,6 +113,43 @@ def register_resources(mcp: FastMCP) -> None:
             return _json({"error": "No timeline data found."})
         return _json(load_json(path))
 
+    @mcp.resource("socai://cases/{case_id}/notes")
+    def case_notes(case_id: str) -> str:
+        """Analyst notes (free-text investigation context)."""
+        _require_scope("investigations:read")
+
+        from config.settings import CASES_DIR
+
+        path = CASES_DIR / case_id / "notes" / "analyst_input.md"
+        if not path.exists():
+            return f"No analyst notes found for case {case_id!r}."
+        return path.read_text(encoding="utf-8")
+
+    @mcp.resource("socai://cases/{case_id}/response-actions")
+    def case_response_actions(case_id: str) -> str:
+        """Response actions JSON (client-specific containment/remediation plan)."""
+        _require_scope("investigations:read")
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+
+        path = CASES_DIR / case_id / "artefacts" / "response_actions" / "response_actions.json"
+        if not path.exists():
+            return _json({"error": "No response actions found."})
+        return _json(load_json(path))
+
+    @mcp.resource("socai://cases/{case_id}/fp-ticket")
+    def case_fp_ticket(case_id: str) -> str:
+        """Existing FP closure comment (if generated)."""
+        _require_scope("investigations:read")
+
+        from config.settings import CASES_DIR
+
+        path = CASES_DIR / case_id / "artefacts" / "fp_comms" / "fp_ticket.md"
+        if not path.exists():
+            return f"No FP ticket found for case {case_id!r}."
+        return path.read_text(encoding="utf-8")
+
     # ------------------------------------------------------------------
     # Rumsfeld Investigation Analysis
     # ------------------------------------------------------------------
@@ -430,7 +467,7 @@ def register_resources(mcp: FastMCP) -> None:
                 "Follow the returned plan."
             ),
             "tools": {
-                "total": 60,
+                "total": 77,
                 "categories": {
                     "investigation_and_triage": {
                         "description": "Classify alerts and plan investigations",
@@ -508,7 +545,7 @@ def register_resources(mcp: FastMCP) -> None:
                 },
             },
             "prompts": {
-                "total": 5,
+                "total": 16,
                 "items": [
                     {
                         "name": "hitl_investigation",
@@ -530,10 +567,54 @@ def register_resources(mcp: FastMCP) -> None:
                         "name": "user_security_check",
                         "description": "Broad-scope security review of a specific user account.",
                     },
+                    {
+                        "name": "write_mdr_report",
+                        "description": "Client-side MDR report generation — loads Gold Analyst Instruction Set + case data into local session.",
+                    },
+                    {
+                        "name": "write_pup_report",
+                        "description": "Client-side PUP/PUA report generation.",
+                    },
+                    {
+                        "name": "write_fp_closure",
+                        "description": "Client-side FP closure comment generation.",
+                    },
+                    {
+                        "name": "write_fp_tuning",
+                        "description": "Client-side SIEM engineering tuning ticket generation.",
+                    },
+                    {
+                        "name": "write_executive_summary",
+                        "description": "Client-side executive summary generation (RAG rated, non-technical).",
+                    },
+                    {
+                        "name": "write_security_arch_review",
+                        "description": "Client-side security architecture review generation.",
+                    },
+                    {
+                        "name": "write_threat_article",
+                        "description": "Client-side threat article generation — local web search, research, and writing.",
+                    },
+                    {
+                        "name": "write_response_plan",
+                        "description": "Client-side containment/response plan from client playbook.",
+                    },
+                    {
+                        "name": "run_determination",
+                        "description": "Client-side evidence-chain disposition analysis (TP/BP/FP determination).",
+                    },
+                    {
+                        "name": "build_investigation_matrix",
+                        "description": "Client-side Rumsfeld investigation matrix (known knowns, known unknowns, hypotheses).",
+                    },
+                    {
+                        "name": "review_report",
+                        "description": "Client-side report quality gate review (unconfirmed claims, speculation, gaps).",
+                    },
                 ],
             },
             "resources": {
-                "total": 18,
+                "total": 25,
                 "uris": [
                     {"uri": "socai://capabilities", "description": "This overview"},
                     {"uri": "socai://cases", "description": "Full case registry"},
@@ -543,6 +624,13 @@ def register_resources(mcp: FastMCP) -> None:
                     {"uri": "socai://cases/{case_id}/verdicts", "description": "Verdict summary"},
                     {"uri": "socai://cases/{case_id}/enrichment", "description": "Enrichment data"},
                     {"uri": "socai://cases/{case_id}/timeline", "description": "Timeline events"},
+                    {"uri": "socai://cases/{case_id}/notes", "description": "Analyst notes"},
+                    {"uri": "socai://cases/{case_id}/response-actions", "description": "Client response actions and containment plan"},
+                    {"uri": "socai://cases/{case_id}/fp-ticket", "description": "Existing FP closure comment"},
+                    {"uri": "socai://cases/{case_id}/matrix", "description": "Investigation reasoning matrix (Rumsfeld method)"},
+                    {"uri": "socai://cases/{case_id}/determination", "description": "Evidence-chain determination analysis"},
+                    {"uri": "socai://cases/{case_id}/quality-gate", "description": "Report quality gate review results"},
+                    {"uri": "socai://cases/{case_id}/followups", "description": "Follow-up investigation proposals"},
                     {"uri": "socai://clients", "description": "Client registry with platform scope"},
                     {"uri": "socai://clients/{name}", "description": "Full client configuration"},
                     {"uri": "socai://clients/{name}/playbook", "description": "Client response playbook"},

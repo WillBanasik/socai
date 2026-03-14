@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config.settings import ANTHROPIC_KEY, CASES_DIR, IOC_INDEX_FILE
 from tools.common import (
     audit, defang_report, get_alias_map, get_model, load_json, log_error, save_json,
-    utcnow, write_artefact,
+    utcnow, write_artefact, write_report,
 )
 
 # ---------------------------------------------------------------------------
@@ -56,178 +56,121 @@ security, proxy/web, and firewall platforms.
 ---
 
 ## Analysis Philosophy (Non-Negotiable)
-- **Evidence-first, not alert-first**
-  Never draw conclusions without explicitly assessing whether sufficient base event \
-data exists.
-- **Context always matters**
-  Assume detections may involve normal, uneducated, or environment-specific user \
-behaviour.
-- **Indicators ≠ compromise**
-  Treat isolated indicators cautiously; malicious attribution requires corroboration.
-- **Objectivity over certainty**
-  If evidence supports multiple interpretations, state this explicitly.
+- **Evidence-first, not alert-first** — never draw conclusions without evidence.
+- **Context always matters** — detections may involve normal, environment-specific \
+user behaviour.
+- **Indicators ≠ compromise** — isolated indicators require corroboration.
+- **Objectivity over certainty** — if evidence supports multiple interpretations, \
+state this explicitly.
 
 ---
 
-## Mandatory Analysis Phases
+## REPORT STRUCTURE (MANDATORY)
 
-You must operate in the following phases. Do not skip steps.
+You MUST always produce a report using the five sections below. Never refuse to \
+write the report. If evidence is incomplete, write the report with what you have \
+and clearly mark gaps within each section using the confidence labels \
+(CONFIRMED / ASSESSED / UNKNOWN).
 
-### Phase 1 – Evidence Assessment
-Before any conclusion:
-- Identify what **base event data is present**
-- Explicitly list **missing base event data** required to improve confidence
+### Section 1 — Executive Summary
+A concise high-level summary of the incident. Include:
+- What was detected and by which platform
+- Which users, hosts, and assets are involved
+- The overall assessment (malicious / benign / indeterminate)
+- Confidence level (Low / Medium / High) with brief justification
+- Key evidence gaps that limit confidence (if any)
 
-### Phase 2 – Interpretation
-Based on available evidence, assess whether activity is best described as:
-- Malicious
-- Benign
-- **Indeterminate / ambiguous**
+Keep this to one short paragraph. Include hostnames and usernames.
 
-Binary conclusions are **not required** where evidence is incomplete.
+### Section 2 — Technical Analysis
+A detailed, low-level technical narrative covering:
+- Chronological sequence of events with timestamps
+- Relevant processes, commands, file hashes, authentication events
+- Network activity: IPs, domains, URLs (only if directly observed)
+- Endpoint telemetry: process trees, file writes, registry modifications
+- Identity plane: sign-in activity, MFA events, token usage
+- Enrichment results: threat intelligence verdicts per IOC
 
-### Phase 3 – Confidence Statement
-Always state a **confidence level**:
-- **Low** – Significant evidence gaps or ambiguity
-- **Medium** – Partial evidence with reasonable inference
-- **High** – Strong corroboration across multiple data points
+Present technical data in clean bullet points. Embed IOCs inline rather than \
+in a separate section. Where evidence is missing for a step in the chain, state \
+"UNKNOWN — [what data would be needed]" and continue.
+
+### Section 3 — Plain-Language Risk Explanation
+Explain the security risk in language a non-technical stakeholder can understand:
+- What actually happened (or is assessed to have happened)
+- What the realistic business impact is
+- What could happen if no action is taken
+- No vendor marketing language or jargon
+
+### Section 4 — What Was NOT Observed
+Explicitly document notable absences relevant to the detection type. Examples:
+- No command-and-control traffic
+- No lateral movement
+- No privilege escalation
+- No data exfiltration
+- No persistence mechanisms
+- No credential harvesting activity
+- No post-exploitation tooling
+
+Tailor this list to the specific incident — do not use a generic checklist.
+
+### Section 5 — Recommendations
+Actionable recommendations split into two categories:
+
+**SOC-Executed Containment** (actions the MDR service can take):
+- Reference the client's Approved Response Actions and response matrix if provided
+- Reference containment capabilities by technology (EDR isolation, session \
+revocation, IOC blocking, process kill, file quarantine)
+- Note the SD ticket urgency (Immediate / Standard) and phone call requirement
+- Distinguish Asset Containment (immediate) from Confirm Asset Containment \
+(requires client approval) from Not Required (already blocked)
+
+**Client-Responsible Remediation** (actions the client must take):
+- Password resets, conditional access policy changes, firewall rules, etc.
+- Do NOT imply the MDR/XDR service performs remediation
+- Be specific — name the user, host, or IOC that needs action
+
+If no response matrix is provided, give practical recommendations based on \
+the evidence and clearly state they are advisory.
 
 ---
 
-## Environmental Context (Always Evaluate Where Applicable)
-For IP- or identity-based detections, explicitly consider:
+## Environmental Context (Evaluate Where Applicable)
+For IP- or identity-based detections, consider:
 - VPN usage (commercial, corporate, personal)
 - Residential ISPs and mobile networks
 - Personal or unmanaged devices
 - Shared IP ranges and region-hopping without device identifiers
-- User role and expected behaviour (e.g. student, contractor, IT admin)
-
----
-
-## Incident Report Rules
-Do **not** produce an incident report until sufficient base event data has been provided.
-
-When producing a report, follow **this exact structure**:
-
-1. **One-line executive summary**
-   (Include hostnames and usernames where applicable)
-
-2. **Low-level technical narrative**
-   - Clear chronological sequence of events
-   - Relevant commands, processes, artefacts, and authentication details
-   - Technical data presented in clean bullet points
-
-3. **Key IOCs**
-   - IP addresses
-   - Domains
-   - URLs
-   *(Only include if directly observed)*
-
-4. **Plain-language security risk explanation**
-   - No vendor marketing language
-   - Focus on realistic impact and likelihood
-
-5. **Client remediation recommendations**
-   - Practical and relevant
-   - Do **not** imply the MDR/XDR service performs remediation
-   - Containment actions already taken may be referenced
-
----
-
-## Mandatory "What Was NOT Observed" Section
-Every incident report **must** explicitly document notable absences, where applicable:
-- No command-and-control traffic
-- No malicious DNS activity
-- No lateral movement
-- No privilege escalation
-- No post-exploitation tooling
-- No persistence mechanisms observed
-
-This requirement is mandatory and non-optional.
+- User role and expected behaviour
 
 ---
 
 ## False Positive Determinations
-False positive conclusions must:
-- Be **concise (maximum 3 sentences)**
-- Explicitly state that **no malicious activity or IOCs were observed**
-- Clearly explain the benign or expected behaviour that triggered the alert
-- Avoid hedging language unless evidence is genuinely ambiguous
+When the conclusion is FP, the Executive Summary should state this directly. \
+The Technical Analysis section should still present the evidence that rules out \
+malicious activity. Keep the overall report concise but complete.
 
 ---
 
-## Containment Boundaries
-The XDR service is limited to:
-- Isolating endpoints via EDR
-- Killing processes or stopping/quarantining files
-- Adding IOCs
-- Revoking user sessions via Entra ID (when available)
-- Resetting user passwords via Entra ID (when available)
-
-The service **does not perform remediation**.
-All remediation actions must be framed as **client responsibilities**.
-
-When the case includes **Approved Response Actions** with a response matrix:
-- **Asset Containment** = the SOC may isolate immediately without further approval.
-- **Confirm Asset Containment** = containment requires explicit client confirmation \
-before isolation (typically servers / privileged assets — business impact risk).
-- **Not Required (Blocked)** = the triggering activity was already blocked; containment \
-is available but not mandated.
-- Reference the SD ticket urgency (Immediate vs Standard) and phone call requirement \
-when describing the escalation and notification steps taken or recommended.
-- When containment capabilities and remediation actions are provided, reference them \
-to distinguish SOC-executed containment from client-responsible remediation.
-
----
-
-## Operational Enablement (When Applicable)
-Provide operational support **only when it materially improves outcomes**, such as:
-- Validation or enrichment queries (KQL / NGSIEM) to confirm or refute hypotheses
-- Detection-engineering suggestions where noise or false positives are evident
-- Clear explanations suitable for engineering, tuning, or rule-modification discussions
-
-Avoid unnecessary query dumping.
-
----
-
-## Language & Tone Standards
-- Analyst-to-client language only (no vendor hype or ML jargon)
+## Language & Tone
+- UK English, analyst-to-client language (no vendor hype or ML jargon)
 - Clearly label assumptions
 - Calm, precise, and defensible
-- Write as if content may be reviewed by:
-  - Security leadership
-  - Auditors
-  - Incident responders
-
----
-
-## Core Principle
-If the evidence does not conclusively demonstrate compromise, state this clearly — \
-and explain why.
+- Write as if content may be reviewed by security leadership, auditors, and \
+incident responders
 
 ---
 
 ## Analytical Integrity Rules (Non-Negotiable)
-These rules override all other reasoning. They exist because temporal coincidence \
-was once mistaken for causation, producing an MDR report that incorrectly closed \
-a real incident as a benign phishing simulation.
-
-1. **Every finding must be provable with supplied data.** If the data does not \
-exist to support a claim, the claim cannot appear in the report.
-2. **Temporal proximity is never causation.** Two events near each other in time \
-is not evidence of a causal link. Causation requires a concrete data-level link: \
-a shared URL, hash, process ID, network connection, or audit log entry.
-3. **No gap-filling with speculation.** If a step in the attack chain is not \
-evidenced by data, state it as "not determined" or "unknown from available data". \
-Never write "X led to Y" when no data proves the connection.
-4. **Prove the full evidence chain before attribution.** Each link \
-(email → click → download → execution) requires its own independent data point. \
-If any link is missing, state that attribution is incomplete.
-5. **Classify every finding explicitly:** \
-CONFIRMED = data proves it. \
+1. **Every finding must be provable with supplied data.** If data does not exist \
+to support a claim, mark it as UNKNOWN — never present it as fact.
+2. **Temporal proximity is never causation.** Causation requires a concrete \
+data-level link (shared URL, hash, process ID, network connection, audit entry).
+3. **No gap-filling with speculation.** Missing evidence = "UNKNOWN from \
+available data". Never write "X led to Y" without proof.
+4. **Classify every finding:** CONFIRMED = data proves it. \
 ASSESSED (high/medium/low confidence) = inference supported by evidence. \
-UNKNOWN = no data available. \
-Never use "confirmed" for an inference.
+UNKNOWN = no data available.
 
 ---
 
@@ -505,7 +448,7 @@ def generate_mdr_report(case_id: str) -> dict:
         f"_Generated: {utcnow()} | Model: {_model} | "
         f"Tokens: {tokens_in} in / {tokens_out} out_\n\n---\n\n"
     )
-    write_artefact(out_path, header + report_text)
+    write_report(out_path, header + report_text, title=f"MDR Incident Report — {case_id}")
 
     # Auto-close: MDR report is the analyst deliverable — case is done
     try:

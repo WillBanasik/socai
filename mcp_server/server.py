@@ -71,7 +71,7 @@ def _build_auth_settings():
 
 _SERVER_INSTRUCTIONS = """\
 SOCAI — SOC Investigation Platform
-48 tools · 18 resources · 5 prompts for security operations.
+77 tools · 25 resources · 16 prompts for security operations.
 
 ## Start Here
 
@@ -82,6 +82,36 @@ by calling tools step by step. There is no autonomous pipeline.
 2. Follow the returned plan. It tells you which tools to call, in what order, and what to skip.
 3. Execute each step, present findings to the analyst, and proceed on their direction.
 
+## Report Generation (Client-Side)
+
+Reports can be generated **locally in Claude Desktop** using MCP prompts — no
+server-side LLM call needed. This gives you full conversation context for
+better reports, at zero server-side API cost.
+
+**Workflow:** Select a report prompt → generate the report locally → call
+`save_report` to persist it (handles defanging, HTML, auto-close, audit).
+
+Available report prompts:
+- `write_mdr_report` — MDR incident report (Gold Analyst Instruction Set)
+- `write_pup_report` — PUP/PUA report
+- `write_fp_closure` — FP closure comment (2-sentence)
+- `write_fp_tuning` — SIEM engineering tuning ticket
+- `write_executive_summary` — Non-technical executive summary (RAG rated)
+- `write_security_arch_review` — Security architecture review
+- `write_threat_article` — Threat intelligence article (local web search + writing)
+- `write_response_plan` — Containment/response plan from client playbook
+
+The server-side `generate_mdr_report`, `generate_pup_report`, etc. tools still
+work for CLI usage or when you prefer server-side generation.
+
+## Analytical Prompts (Client-Side)
+
+Local Claude does the analytical reasoning using case data loaded by prompts:
+
+- `run_determination` — Evidence-chain disposition analysis (TP/BP/FP determination)
+- `build_investigation_matrix` — Rumsfeld matrix: known knowns, known unknowns, hypotheses
+- `review_report` — Report quality gate review (unconfirmed claims, speculation, coverage gaps)
+
 ## Guided Workflows (Prompts)
 
 Analysts select these from the Claude Desktop prompt picker for structured workflows:
@@ -90,6 +120,7 @@ Analysts select these from the Claude Desktop prompt picker for structured workf
 - `triage_alert` — structured alert triage (classify → enrich → verdict → next steps).
 - `write_fp_ticket` — false-positive analysis and suppression ticket generation.
 - `kql_investigation` — unified KQL playbook prompt. Select a playbook ID: `phishing`, `account-compromise`, `malware-execution`, `privilege-escalation`, `data-exfiltration`, `lateral-movement`, or `ioc-hunt`.
+- `user_security_check` — broad-scope user account security review.
 
 ## Tool Categories
 
@@ -109,7 +140,7 @@ Analysts select these from the Claude Desktop prompt picker for structured workf
 Read case data, client config, playbooks, and threat intel without invoking tools:
 
 - `socai://cases` — full case registry
-- `socai://cases/{case_id}/meta`, `/report`, `/iocs`, `/verdicts`, `/enrichment`, `/timeline`
+- `socai://cases/{case_id}/meta`, `/report`, `/iocs`, `/verdicts`, `/enrichment`, `/timeline`, `/notes`, `/response-actions`, `/fp-ticket`, `/matrix`, `/determination`, `/quality-gate`, `/followups`
 - `socai://clients` — client registry; `socai://clients/{name}` — full config; `socai://clients/{name}/playbook` — response playbook
 - `socai://playbooks` — KQL playbook index; `socai://playbooks/{id}` — full playbook
 - `socai://sentinel-queries` — Sentinel composite query scenarios (single-execution full-picture queries)

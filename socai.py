@@ -1194,6 +1194,93 @@ def cmd_memory_analyse(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cyberint CLI handlers
+# ---------------------------------------------------------------------------
+
+def cmd_cyberint(args: argparse.Namespace) -> None:
+    from tools.cyberint_read import _is_configured, get_alert, list_alerts
+    if not _is_configured():
+        print("[error] Cyberint not configured — set CYBERINT_API_KEY in .env")
+        return
+
+    if args.ref_id:
+        result = get_alert(args.ref_id)
+        if not result:
+            print(f"[error] Alert {args.ref_id} not found or not accessible.")
+            return
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_cyberint_alert(result)
+        return
+
+    result = list_alerts(
+        page=args.page, size=args.size,
+        severity=args.severity,
+        status=args.status,
+        category=args.category,
+        environment=args.environment,
+        created_from=args.created_from,
+        created_to=args.created_to,
+    )
+    if not result:
+        print("[error] Cyberint alert query failed — check logs.")
+        return
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        alerts = result.get("alerts", [])
+        total = result.get("total", 0)
+        print(f"Cyberint alerts: {len(alerts)} shown / {total} total\n")
+        for a in alerts:
+            ref = a.get("ref_id", a.get("id", "?"))
+            sev = a.get("severity", "?")
+            title = a.get("title", a.get("description", ""))[:80]
+            status = a.get("status", "?")
+            created = a.get("created_date", a.get("created_at", ""))
+            print(f"  [{sev:>9}] {ref}  {status:<14} {created[:10]}  {title}")
+
+
+def _print_cyberint_alert(alert: dict) -> None:
+    """Pretty-print a single Cyberint alert."""
+    for key in ("ref_id", "id", "title", "description", "severity", "status",
+                "category", "type", "environment", "created_date",
+                "modification_date", "closure_reason"):
+        val = alert.get(key)
+        if val:
+            print(f"  {key}: {val}")
+    # Print nested fields if present
+    for section in ("iocs", "indicators", "attachments", "impacts"):
+        items = alert.get(section)
+        if items:
+            print(f"  {section}: {json.dumps(items, indent=4, default=str)}")
+
+
+def cmd_cyberint_metadata(args: argparse.Namespace) -> None:
+    from tools.cyberint_read import _is_configured, get_alert_metadata
+    if not _is_configured():
+        print("[error] Cyberint not configured — set CYBERINT_API_KEY in .env")
+        return
+    result = get_alert_metadata()
+    if not result:
+        print("[error] Failed to retrieve Cyberint metadata.")
+        return
+    print(json.dumps(result, indent=2, default=str))
+
+
+def cmd_cyberint_risk(args: argparse.Namespace) -> None:
+    from tools.cyberint_read import _is_configured, get_risk_scores
+    if not _is_configured():
+        print("[error] Cyberint not configured — set CYBERINT_API_KEY in .env")
+        return
+    result = get_risk_scores(args.environment)
+    if not result:
+        print(f"[error] Risk scores for '{args.environment}' not found.")
+        return
+    print(json.dumps(result, indent=2, default=str))
+
+
+# ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
@@ -1589,6 +1676,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_bc.add_argument("--batch-id", required=True, dest="batch_id",
                       help="Batch ID to collect results for")
 
+    # cyberint — query/list Cyberint CTI alerts
+    p_ci = sub.add_parser("cyberint", help="Query Cyberint CTI alerts (read-only).")
+    p_ci.add_argument("--ref-id", default=None, dest="ref_id",
+                      help="Specific alert reference ID for detail view")
+    p_ci.add_argument("--severity", default=None, help="Filter by severity")
+    p_ci.add_argument("--status", default=None, help="Filter by status")
+    p_ci.add_argument("--category", default=None, help="Filter by category")
+    p_ci.add_argument("--environment", default=None, help="Filter by environment")
+    p_ci.add_argument("--created-from", default=None, dest="created_from",
+                      help="ISO date — alerts created after this date")
+    p_ci.add_argument("--created-to", default=None, dest="created_to",
+                      help="ISO date — alerts created before this date")
+    p_ci.add_argument("--page", type=int, default=1, help="Page number (default 1)")
+    p_ci.add_argument("--size", type=int, default=10, help="Results per page (default 10)")
+
+    # cyberint-metadata — print alert catalog metadata
+    sub.add_parser("cyberint-metadata", help="Print Cyberint alert catalog metadata.")
+
+    # cyberint-risk — print current risk scores
+    p_cr = sub.add_parser("cyberint-risk", help="Print Cyberint risk scores for an environment.")
+    p_cr.add_argument("--environment", required=True, help="Environment name")
+
     return parser
 
 
@@ -1645,6 +1754,9 @@ def main() -> None:
         "batch-submit":       cmd_batch_submit,
         "batch-status":       cmd_batch_status,
         "batch-collect":      cmd_batch_collect,
+        "cyberint":           cmd_cyberint,
+        "cyberint-metadata":  cmd_cyberint_metadata,
+        "cyberint-risk":      cmd_cyberint_risk,
     }
     fn = dispatch.get(args.command)
     if fn:

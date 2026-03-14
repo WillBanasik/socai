@@ -22,12 +22,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import requests as _requests
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import ANTHROPIC_KEY, CASES_DIR, OPENCTI_KEY, OPENCTI_URL
-from tools.common import get_model, load_json, log_error, save_json, utcnow
+from tools.common import get_model, get_session, load_json, log_error, save_json, utcnow
 
 # ---------------------------------------------------------------------------
 # CVE regex
@@ -128,7 +126,7 @@ def _nvd_lookup(cve_id: str, case_id: str) -> dict:
     """Fetch CVE data from NVD API v2.0."""
     try:
         time.sleep(6)  # Rate limiting: 5 requests per 30 seconds without API key
-        resp = _requests.get(
+        resp = get_session().get(
             "https://services.nvd.nist.gov/rest/json/cves/2.0",
             params={"cveId": cve_id},
             timeout=30,
@@ -206,7 +204,7 @@ def _nvd_lookup(cve_id: str, case_id: str) -> dict:
 def _epss_lookup(cve_id: str, case_id: str) -> dict:
     """Fetch EPSS score from FIRST API."""
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             "https://api.first.org/data/v1/epss",
             params={"cve": cve_id},
             timeout=15,
@@ -255,7 +253,7 @@ def _load_kev_catalog(case_id: str) -> list[dict]:
 
     # Fetch fresh catalog
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             "https://www.cisa.gov/sites/default/files/feeds/known-exploited-vulnerabilities.json",
             timeout=30,
         )
@@ -323,7 +321,7 @@ def _opencti_lookup(cve_id: str, case_id: str) -> dict | None:
     """
 
     try:
-        resp = _requests.post(
+        resp = get_session().post(
             f"{OPENCTI_URL}/graphql",
             headers={
                 "Authorization": f"Bearer {OPENCTI_KEY}",

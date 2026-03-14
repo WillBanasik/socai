@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_alias_map, get_model, load_json, log_error, save_json, utcnow, write_artefact
+from tools.common import get_alias_map, get_model, load_json, log_error, save_json, utcnow, write_artefact, write_report
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -314,7 +314,7 @@ def executive_summary(case_id: str) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     summary_path = out_dir / "executive_summary.md"
-    write_artefact(summary_path, summary_text)
+    write_report(summary_path, summary_text, title=f"Executive Summary — {case_id}")
 
     word_count = len(summary_text.split())
 

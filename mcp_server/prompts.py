@@ -14,6 +14,15 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 
+def _get_alias_map_safe():
+    """Load alias map if aliasing is active, or None."""
+    try:
+        from tools.common import get_alias_map
+        return get_alias_map()
+    except Exception:
+        return None
+
+
 # Valid KQL playbook IDs and their human-readable names
 _KQL_PLAYBOOKS = {
     "phishing": "Phishing",
@@ -537,6 +546,660 @@ def register_prompts(mcp: FastMCP) -> None:
         ])
 
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Analysis prompts (client-side — replace server LLM calls)
+    # ------------------------------------------------------------------
+
+    @mcp.prompt()
+    def run_determination(case_id: str) -> str:
+        """Run evidence-chain disposition analysis locally in Claude Desktop.
+
+        Evaluates all case evidence and proposes a disposition (TP/BP/FP/inconclusive)
+        with an evidence chain, confidence level, and gap analysis.
+
+        When done, call ``add_finding`` with the disposition and reasoning,
+        or proceed to report generation.
+
+        Parameters
+        ----------
+        case_id : str
+            Case to analyse.
+        """
+        from tools.determination import _DETERMINATION_SYSTEM_PROMPT as prompt
+
+        # Build the same context the server-side tool would
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+        import json
+
+        case_dir = CASES_DIR / case_id
+        parts = [f"# Case: {case_id}\n"]
+
+        for label, path in [
+            ("Case Metadata", case_dir / "case_meta.json"),
+            ("Verdict Summary", case_dir / "artefacts" / "enrichment" / "verdict_summary.json"),
+            ("Enrichment", case_dir / "artefacts" / "enrichment" / "enrichment.json"),
+            ("Anomalies", case_dir / "artefacts" / "anomalies" / "anomaly_report.json"),
+            ("Correlation", case_dir / "artefacts" / "correlation" / "correlation.json"),
+            ("Investigation Matrix", case_dir / "artefacts" / "analysis" / "investigation_matrix.json"),
+            ("Email Analysis", case_dir / "artefacts" / "email" / "email_analysis.json"),
+        ]:
+            if path.exists():
+                try:
+                    data = load_json(path)
+                    text = json.dumps(data, indent=2, default=str)
+                    if len(text) > 3000:
+                        text = text[:3000] + "\n[...truncated...]"
+                    parts.append(f"## {label}\n{text}\n")
+                except Exception:
+                    pass
+
+        # Web captures
+        web_dir = case_dir / "artefacts" / "web"
+        if web_dir.is_dir():
+            captures = []
+            for sub in sorted(web_dir.iterdir()):
+                mp = sub / "capture_manifest.json" if sub.is_dir() else None
+                if mp and mp.exists():
+                    try:
+                        m = load_json(mp)
+                        captures.append(
+                            f"- {sub.name}: title=\"{m.get('title', 'N/A')}\" "
+                            f"status={m.get('status_code', 'N/A')} "
+                            f"final_url={m.get('final_url', 'N/A')}"
+                        )
+                    except Exception:
+                        pass
+            if captures:
+                parts.append(f"## Web Captures\n" + "\n".join(captures) + "\n")
+
+        # Analyst notes
+        notes_path = case_dir / "notes" / "analyst_input.md"
+        if notes_path.exists():
+            parts.append(f"## Analyst Notes\n{notes_path.read_text(encoding='utf-8')[:2000]}\n")
+
+        context = "\n".join(parts)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            f"# Evidence-Chain Disposition Analysis — Instructions\n\n"
+            f"{prompt}\n\n"
+            f"---\n\n"
+            f"# Case Evidence\n\n"
+            f"{context}\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Analyse the evidence for case **{case_id}** and produce a structured "
+            f"disposition proposal. Include:\n"
+            f"- **Disposition:** true_positive / benign_positive / false_positive / inconclusive\n"
+            f"- **Confidence:** high / medium / low\n"
+            f"- **Evidence chain:** each link with status (confirmed/assessed/unknown)\n"
+            f"- **Gaps:** what evidence is missing\n"
+            f"- **Disconfirming checks:** what you looked for that could disprove your conclusion\n"
+            f"- **Reasoning:** narrative justification\n\n"
+            f"Present your analysis, then call `add_finding` with your conclusion.\n"
+        )
+
+    @mcp.prompt()
+    def build_investigation_matrix(case_id: str) -> str:
+        """Build an investigation reasoning matrix locally in Claude Desktop.
+
+        Produces a Rumsfeld-style matrix: known_knowns (facts with evidence),
+        known_unknowns (gaps), and hypotheses (testable claims with
+        disconfirming checks).
+
+        Parameters
+        ----------
+        case_id : str
+            Case to analyse.
+        """
+        from tools.investigation_matrix import _MATRIX_SYSTEM_PROMPT as prompt
+        from tools.investigation_matrix import _build_query_context
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+        import json
+
+        case_dir = CASES_DIR / case_id
+        parts = [f"# Case: {case_id}\n"]
+
+        # Load case metadata for attack type
+        try:
+            meta = load_json(case_dir / "case_meta.json")
+            attack_type = meta.get("attack_type", "generic")
+            parts.append(f"## Case Metadata\n{json.dumps(meta, indent=2, default=str)}\n")
+        except Exception:
+            attack_type = "generic"
+
+        for label, path in [
+            ("Verdict Summary", case_dir / "artefacts" / "enrichment" / "verdict_summary.json"),
+            ("Enrichment", case_dir / "artefacts" / "enrichment" / "enrichment.json"),
+            ("Anomalies", case_dir / "artefacts" / "anomalies" / "anomaly_report.json"),
+            ("Correlation", case_dir / "artefacts" / "correlation" / "correlation.json"),
+            ("Email Analysis", case_dir / "artefacts" / "email" / "email_analysis.json"),
+        ]:
+            if path.exists():
+                try:
+                    data = load_json(path)
+                    text = json.dumps(data, indent=2, default=str)
+                    if len(text) > 3000:
+                        text = text[:3000] + "\n[...truncated...]"
+                    parts.append(f"## {label}\n{text}\n")
+                except Exception:
+                    pass
+
+        # Query context (attack-type specific guidance)
+        query_ctx = _build_query_context(attack_type)
+        full_prompt = prompt
+        if query_ctx:
+            full_prompt += f"\n\n{query_ctx}"
+
+        context = "\n".join(parts)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            f"# Investigation Matrix — Instructions\n\n"
+            f"{full_prompt}\n\n"
+            f"---\n\n"
+            f"# Case Evidence\n\n"
+            f"{context}\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Build an investigation reasoning matrix for case **{case_id}**.\n\n"
+            f"Structure your output as:\n"
+            f"1. **Known Knowns** — facts proved by data (cite specific evidence)\n"
+            f"2. **Known Unknowns** — evidence gaps (what data would close each gap)\n"
+            f"3. **Hypotheses** — testable claims with disconfirming checks\n"
+        )
+
+    @mcp.prompt()
+    def review_report(case_id: str) -> str:
+        """Review a case report for quality locally in Claude Desktop.
+
+        Checks: unconfirmed claims labelled as confirmed, causal language
+        without evidence, speculation, matrix coverage gaps, and analytical
+        standard violations.
+
+        Parameters
+        ----------
+        case_id : str
+            Case whose report to review.
+        """
+        from config.settings import CASES_DIR
+
+        case_dir = CASES_DIR / case_id
+
+        # Load report text
+        report_text = ""
+        for candidate in [
+            case_dir / "reports" / "mdr_report.md",
+            case_dir / "reports" / "investigation_report.md",
+            case_dir / "reports" / "pup_report.md",
+        ]:
+            if candidate.exists():
+                report_text = candidate.read_text(encoding="utf-8")
+                break
+
+        if not report_text:
+            return f"No report found for case {case_id}."
+
+        if len(report_text) > 8000:
+            report_text = report_text[:8000] + "\n\n[...truncated...]"
+
+        # Load matrix if available
+        matrix_text = ""
+        matrix_path = case_dir / "artefacts" / "analysis" / "investigation_matrix.json"
+        if matrix_path.exists():
+            import json
+            from tools.common import load_json
+            try:
+                matrix = load_json(matrix_path)
+                matrix_text = json.dumps(matrix, indent=2, default=str)
+                if len(matrix_text) > 3000:
+                    matrix_text = matrix_text[:3000] + "\n[...truncated...]"
+            except Exception:
+                pass
+
+        return (
+            f"# Report Quality Review — Instructions\n\n"
+            f"Review the following report for analytical quality issues.\n\n"
+            f"## Check for:\n"
+            f"1. **Unconfirmed claims** — findings labelled 'confirmed' without direct data proof\n"
+            f"2. **Causal language** — 'led to', 'caused', 'resulted in' without evidence of causation\n"
+            f"3. **Speculation** — gap-filling, assumptions presented as findings\n"
+            f"4. **Matrix coverage** — if a matrix exists, check all known_unknowns are addressed\n"
+            f"5. **Missing sections** — all mandatory report sections present\n"
+            f"6. **IOC accuracy** — IOCs in report match enrichment verdicts\n\n"
+            f"Rate each issue as: critical (must fix), warning (should fix), info (minor).\n\n"
+            f"---\n\n"
+            f"## Report\n\n{report_text}\n\n"
+            + (f"---\n\n## Investigation Matrix\n\n{matrix_text}\n\n" if matrix_text else "")
+            + f"---\n\n"
+            f"# Task\n\n"
+            f"Review the report for case **{case_id}** and list all quality issues found.\n"
+        )
+
+    # ------------------------------------------------------------------
+    # Response plan prompt (client-side)
+    # ------------------------------------------------------------------
+
+    @mcp.prompt()
+    def write_response_plan(
+        case_id: str,
+        client: str = "",
+    ) -> str:
+        """Generate a containment and response plan locally in Claude Desktop.
+
+        Loads the client's response playbook (escalation matrix, containment
+        capabilities, remediation actions, crown jewels) and case data, then
+        lets your local session produce the response plan.
+
+        The ``response_actions`` tool already does this deterministically on
+        the server — use this prompt when you want richer, contextualised
+        recommendations that account for the full investigation narrative.
+
+        Parameters
+        ----------
+        case_id : str
+            Case to generate the response plan for.
+        client : str
+            Client name (used to load playbook). Auto-detected from case if blank.
+        """
+        from config.settings import CASES_DIR, CLIENT_PLAYBOOKS_DIR
+        from tools.common import load_json
+
+        # Load case metadata for context
+        case_dir = CASES_DIR / case_id
+        try:
+            meta = load_json(case_dir / "case_meta.json")
+        except Exception:
+            meta = {}
+
+        # Auto-detect client from case
+        if not client:
+            client = meta.get("client", "")
+
+        # Load client playbook
+        playbook_text = "No client playbook found."
+        if client:
+            for candidate in [
+                CLIENT_PLAYBOOKS_DIR / f"{client}.json",
+                CLIENT_PLAYBOOKS_DIR / f"{client.lower().replace(' ', '_')}.json",
+            ]:
+                if candidate.exists():
+                    try:
+                        pb = load_json(candidate)
+                        import json
+                        playbook_text = json.dumps(pb, indent=2, default=str)
+                    except Exception:
+                        pass
+                    break
+
+        # Build case context (reuse MDR context builder — it's the most comprehensive)
+        from tools.generate_mdr_report import _build_context
+        context = _build_context(case_id)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            "# Response Plan Generation — Instructions\n\n"
+            "You are a senior MDR analyst generating a containment and response "
+            "plan for a security investigation. Use UK English, professional SOC tone.\n\n"
+            "## Response Matrix Rules\n\n"
+            "The client playbook below defines what actions the SOC can take vs "
+            "what the client must do. Follow it exactly:\n"
+            "- **Asset Containment** — SOC executes immediately (e.g. EDR isolate, "
+            "session revoke, IOC block)\n"
+            "- **Confirm Asset Containment** — SOC recommends, client approves first\n"
+            "- **Not Required** — activity already blocked by platform\n\n"
+            "Split recommendations into:\n"
+            "1. **SOC-Executed Containment** — actions within SOC authority per playbook\n"
+            "2. **Client-Responsible Remediation** — actions only the client can perform "
+            "(password resets, policy changes, user briefings)\n\n"
+            "Reference specific technologies, users, hosts, and IOCs from the case data.\n\n"
+            "---\n\n"
+            f"## Client Playbook\n\n```json\n{playbook_text}\n```\n\n"
+            "---\n\n"
+            f"## Case Data\n\n{context}\n\n"
+            "---\n\n"
+            f"# Task\n\n"
+            f"Produce a containment and response plan for case **{case_id}**.\n"
+        )
+
+    # ------------------------------------------------------------------
+    # Threat article generation prompt (client-side)
+    # ------------------------------------------------------------------
+
+    @mcp.prompt()
+    def write_threat_article(
+        category: str = "ET",
+        topic: str = "",
+    ) -> str:
+        """Generate a threat intelligence article locally in Claude Desktop.
+
+        You search the web, gather source material, and write the article
+        yourself. Use ``search_threat_articles`` first to check what's already
+        been covered. When done, call ``save_threat_article`` to persist it.
+
+        Parameters
+        ----------
+        category : str
+            "ET" (Emerging Threat) or "EV" (Emerging Vulnerability).
+        topic : str
+            Topic hint — e.g. a CVE ID, malware name, or campaign name.
+            Leave blank for general discovery.
+        """
+        from config.article_prompts import ARTICLE_SYSTEM_PROMPT, ARTICLE_USER_TEMPLATE
+
+        lines = [
+            "# Threat Article Generation — Instructions\n",
+            ARTICLE_SYSTEM_PROMPT,
+            "",
+            "---",
+            "",
+            "## Output Structure",
+            "",
+            ARTICLE_USER_TEMPLATE.replace("{category}", category)
+                .replace("{title}", "(you decide the title)")
+                .replace("{sources}", "(you gather the sources — see workflow below)"),
+            "",
+            "---",
+            "",
+            "## Workflow",
+            "",
+            "1. **Check prior coverage** — call `search_threat_articles` to see what's already written.",
+            "   Do not duplicate existing articles.",
+        ]
+
+        if topic:
+            lines.extend([
+                f"2. **Research the topic** — search the web for recent coverage of: **{topic}**",
+                "   Read at least 2 sources. Prefer vendor advisories and reputable security outlets.",
+            ])
+        else:
+            lines.extend([
+                "2. **Discover recent threats** — search the web for notable cybersecurity news",
+                "   from the past 7 days. Focus on enterprise-relevant threats, major CVEs,",
+                "   active campaigns, or significant vulnerabilities.",
+            ])
+
+        lines.extend([
+            "3. **Write the article** following the structure above:",
+            "   - Title, Body (~150-180 words, paragraph format), Recommendations (bullet points),",
+            "     Indicators (defanged IOCs — use [.] for dots, hxxps:// for URLs)",
+            "4. **Save** — call `save_threat_article` with the article markdown, title, category,",
+            f"   and source URLs.",
+            "",
+            f"**Category:** {category}",
+        ])
+
+        if topic:
+            lines.append(f"**Topic:** {topic}")
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Report generation prompts (client-side — no server LLM call)
+    # ------------------------------------------------------------------
+
+    @mcp.prompt()
+    def write_mdr_report(case_id: str) -> str:
+        """Generate an MDR-style incident report locally in Claude Desktop.
+
+        Loads the Gold MDR/XDR Analyst Instruction Set and all case data,
+        then lets your local Claude session produce the report. When done,
+        call ``save_report`` with report_type="mdr_report" to persist it.
+
+        Parameters
+        ----------
+        case_id : str
+            Case to generate the report for.
+        """
+        from tools.generate_mdr_report import _SYSTEM_PROMPT as prompt
+        from tools.generate_mdr_report import _build_context
+        context = _build_context(case_id)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            f"# MDR Report Generation — Instructions\n\n"
+            f"{prompt}\n\n"
+            f"---\n\n"
+            f"# Case Data\n\n"
+            f"{context}\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Produce an MDR-style incident report for case **{case_id}** following "
+            f"the Gold MDR/XDR Analyst Instruction Set above exactly.\n\n"
+            f"When the report is complete, call `save_report` with:\n"
+            f"- `case_id`: \"{case_id}\"\n"
+            f"- `report_type`: \"mdr_report\"\n"
+            f"- `report_text`: the full report markdown\n"
+        )
+
+    @mcp.prompt()
+    def write_pup_report(case_id: str) -> str:
+        """Generate a PUP/PUA report locally in Claude Desktop.
+
+        Loads the PUP/PUA Analyst Instruction Set and all case data.
+        When done, call ``save_report`` with report_type="pup_report".
+
+        Parameters
+        ----------
+        case_id : str
+            Case to generate the report for.
+        """
+        from tools.generate_pup_report import _SYSTEM_PROMPT as prompt
+        from tools.generate_pup_report import _build_context
+        context = _build_context(case_id)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            f"# PUP/PUA Report Generation — Instructions\n\n"
+            f"{prompt}\n\n"
+            f"---\n\n"
+            f"# Case Data\n\n"
+            f"{context}\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Produce a PUP/PUA report for case **{case_id}** following the "
+            f"PUP/PUA Analyst Instruction Set above exactly.\n\n"
+            f"When the report is complete, call `save_report` with:\n"
+            f"- `case_id`: \"{case_id}\"\n"
+            f"- `report_type`: \"pup_report\"\n"
+            f"- `report_text`: the full report markdown\n"
+        )
+
+    @mcp.prompt()
+    def write_fp_closure(
+        case_id: str,
+        alert_data: str = "",
+        platform: str = "",
+        query_text: str = "",
+    ) -> str:
+        """Generate an FP closure comment locally in Claude Desktop.
+
+        Loads the FP ticket system prompt, case context, and alert data.
+        When done, call ``save_report`` with report_type="fp_ticket".
+
+        Parameters
+        ----------
+        case_id : str
+            Case to generate the ticket for.
+        alert_data : str
+            Raw alert JSON or text.
+        platform : str
+            Detection platform override (sentinel, crowdstrike, defender, etc.).
+        query_text : str
+            Original detection query (KQL/SPL).
+        """
+        from tools.fp_ticket import _SYSTEM_PROMPT as prompt
+        from tools.fp_ticket import _build_context
+        context = _build_context(case_id)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+            if alert_data:
+                alert_data = alias_map.alias_text(alert_data)
+
+        parts = [
+            f"# FP Closure Comment — Instructions\n\n",
+            f"{prompt}\n\n",
+            f"---\n\n",
+            f"# Case Context\n\n{context}\n\n",
+        ]
+        if platform:
+            parts.append(f"**Platform override:** {platform}\n\n")
+        if alert_data:
+            parts.append(f"## Alert Data\n\n```\n{alert_data}\n```\n\n")
+        if query_text:
+            parts.append(f"## Original Detection Query\n\n```kql\n{query_text}\n```\n\n")
+        parts.append(
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Write a two-sentence FP closure comment for case **{case_id}**.\n\n"
+            f"When done, call `save_report` with:\n"
+            f"- `case_id`: \"{case_id}\"\n"
+            f"- `report_type`: \"fp_ticket\"\n"
+            f"- `report_text`: the closure comment\n"
+        )
+        return "".join(parts)
+
+    @mcp.prompt()
+    def write_fp_tuning(
+        case_id: str,
+        alert_data: str = "",
+        platform: str = "",
+        query_text: str = "",
+    ) -> str:
+        """Generate an FP tuning ticket locally in Claude Desktop.
+
+        Loads the SIEM engineering tuning ticket prompt, case context,
+        and alert data. When done, call ``save_report`` with
+        report_type="fp_tuning_ticket".
+
+        Parameters
+        ----------
+        case_id : str
+            Case to generate the ticket for.
+        alert_data : str
+            Raw alert JSON or text.
+        platform : str
+            Detection platform override.
+        query_text : str
+            Original detection query (KQL/SPL).
+        """
+        from tools.fp_tuning_ticket import _SYSTEM_PROMPT as prompt
+        from tools.fp_tuning_ticket import _build_context
+        context = _build_context(case_id)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+            if alert_data:
+                alert_data = alias_map.alias_text(alert_data)
+
+        parts = [
+            f"# SIEM Tuning Ticket — Instructions\n\n",
+            f"{prompt}\n\n",
+            f"---\n\n",
+            f"# Case Context\n\n{context}\n\n",
+        ]
+        if platform:
+            parts.append(f"**Platform override:** {platform}\n\n")
+        if alert_data:
+            parts.append(f"## Alert Data\n\n```\n{alert_data}\n```\n\n")
+        if query_text:
+            parts.append(f"## Original Detection Query\n\n```kql\n{query_text}\n```\n\n")
+        parts.append(
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Write a structured SIEM tuning ticket for case **{case_id}**.\n\n"
+            f"When done, call `save_report` with:\n"
+            f"- `case_id`: \"{case_id}\"\n"
+            f"- `report_type`: \"fp_tuning_ticket\"\n"
+            f"- `report_text`: the full tuning ticket markdown\n"
+        )
+        return "".join(parts)
+
+    @mcp.prompt()
+    def write_executive_summary(case_id: str) -> str:
+        """Generate an executive summary locally in Claude Desktop.
+
+        Loads the executive summary system prompt and case data.
+        When done, call ``save_report`` with report_type="executive_summary".
+
+        Parameters
+        ----------
+        case_id : str
+            Case to generate the summary for.
+        """
+        from tools.executive_summary import _SYSTEM_PROMPT as prompt
+        from tools.executive_summary import _build_context
+        context = _build_context(case_id)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            f"# Executive Summary — Instructions\n\n"
+            f"{prompt}\n\n"
+            f"---\n\n"
+            f"# Case Data\n\n"
+            f"{context}\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Produce an executive summary for case **{case_id}** following the "
+            f"instructions above. Target audience: non-technical business leadership. "
+            f"Maximum 500 words. Use RAG (Red/Amber/Green) risk rating.\n\n"
+            f"When the summary is complete, call `save_report` with:\n"
+            f"- `case_id`: \"{case_id}\"\n"
+            f"- `report_type`: \"executive_summary\"\n"
+            f"- `report_text`: the full summary markdown\n"
+        )
+
+    @mcp.prompt()
+    def write_security_arch_review(case_id: str) -> str:
+        """Generate a security architecture review locally in Claude Desktop.
+
+        Loads the security architecture system prompt and case data.
+        When done, call ``save_report`` with report_type="security_arch_review".
+
+        Parameters
+        ----------
+        case_id : str
+            Case to generate the review for.
+        """
+        from tools.security_arch_review import _SYSTEM_PROMPT as prompt
+        from tools.security_arch_review import _build_context
+        context = _build_context(case_id)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            f"# Security Architecture Review — Instructions\n\n"
+            f"{prompt}\n\n"
+            f"---\n\n"
+            f"# Case Data\n\n"
+            f"{context}\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Produce a security architecture review for case **{case_id}** "
+            f"following the instructions above exactly.\n\n"
+            f"When the review is complete, call `save_report` with:\n"
+            f"- `case_id`: \"{case_id}\"\n"
+            f"- `report_type`: \"security_arch_review\"\n"
+            f"- `report_text`: the full review markdown\n"
+        )
 
     # ------------------------------------------------------------------
     # User security check prompt

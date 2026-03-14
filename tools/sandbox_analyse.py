@@ -21,12 +21,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import requests as _requests
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, HYBRID_KEY
-from tools.common import load_json, log_error, save_json, utcnow
+from tools.common import get_session, load_json, log_error, save_json, utcnow
 
 ANYRUN_KEY = os.getenv("ANYRUN_API_KEY", "")
 JOESANDBOX_KEY = os.getenv("JOESANDBOX_API_KEY", "")
@@ -45,7 +43,7 @@ def _anyrun_lookup(sha256: str) -> dict:
         return {"provider": "anyrun", "status": "no_api_key", "sha256": sha256}
 
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             "https://api.any.run/v1/analysis/",
             params={"hash": sha256},
             headers={"Authorization": f"API-Key {ANYRUN_KEY}"},
@@ -97,7 +95,7 @@ def _joesandbox_lookup(sha256: str) -> dict:
         return {"provider": "joesandbox", "status": "no_api_key", "sha256": sha256}
 
     try:
-        resp = _requests.post(
+        resp = get_session().post(
             "https://jbxcloud.joesecurity.org/api/v2/analysis/search",
             data={"q": sha256, "apikey": JOESANDBOX_KEY},
             timeout=15,
@@ -135,7 +133,7 @@ def _hybrid_analysis_lookup(sha256: str) -> dict:
         return {"provider": "hybrid_analysis", "status": "no_api_key", "sha256": sha256}
 
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             f"https://www.hybrid-analysis.com/api/v2/overview/{sha256}",
             headers={
                 "api-key": HYBRID_KEY,

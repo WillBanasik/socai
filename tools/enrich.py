@@ -34,8 +34,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import requests as _requests
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import (
@@ -44,7 +42,7 @@ from config.settings import (
     HYBRID_KEY, INTEZER_KEY, OPENCTI_KEY, OPENCTI_URL, OTX_KEY,
     PROXYCHECK_KEY, SHODAN_KEY, URLSCAN_KEY, VIRUSTOTAL_KEY, WHOISXML_KEY,
 )
-from tools.common import KNOWN_CLEAN_DOMAINS, load_json, log_error, utcnow, write_artefact
+from tools.common import KNOWN_CLEAN_DOMAINS, get_session, load_json, log_error, utcnow, write_artefact
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +162,7 @@ def _asn_lookup_bulk(ips: list[str]) -> dict[str, dict]:
         # Fallback: use ipinfo.io (no key needed for <1000/day)
         for ip in ips:
             try:
-                resp = _requests.get(f"https://ipinfo.io/{ip}/json", timeout=5)
+                resp = get_session().get(f"https://ipinfo.io/{ip}/json", timeout=5)
                 if resp.status_code == 200:
                     data = resp.json()
                     org = data.get("org", "")
@@ -225,7 +223,7 @@ def _vt_lookup(ioc: str, ioc_type: str) -> dict:
         return {"provider": "virustotal", "status": "unsupported_type", "ioc": ioc}
 
     try:
-        resp = _requests.get(url, headers=headers, timeout=15)
+        resp = get_session().get(url, headers=headers, timeout=15)
     except Exception as exc:
         return {"provider": "virustotal", "status": "error", "ioc": ioc, "error": str(exc)}
 
@@ -284,7 +282,7 @@ def _abuseipdb_lookup(ioc: str, ioc_type: str) -> dict:
         return {"provider": "abuseipdb", "status": "no_api_key", "ioc": ioc}
 
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             "https://api.abuseipdb.com/api/v2/check",
             headers={"Key": ABUSEIPDB_KEY, "Accept": "application/json"},
             params={"ipAddress": ioc, "maxAgeInDays": 90},
@@ -327,7 +325,7 @@ def _shodan_lookup(ioc: str, ioc_type: str) -> dict:
         return {"provider": "shodan", "status": "no_api_key", "ioc": ioc}
 
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             f"https://api.shodan.io/shodan/host/{ioc}",
             params={"key": SHODAN_KEY},
             timeout=15,
@@ -386,7 +384,7 @@ def _greynoise_lookup(ioc: str, ioc_type: str) -> dict:
 
     # --- RIOT (benign business services: CDNs, scanners, etc.) ---
     try:
-        riot_resp = _requests.get(
+        riot_resp = get_session().get(
             f"https://api.greynoise.io/v2/riot/{ioc}",
             headers=headers, timeout=15,
         )
@@ -405,7 +403,7 @@ def _greynoise_lookup(ioc: str, ioc_type: str) -> dict:
 
     # --- Noise context: try enterprise v2 first, fall back to community v3 ---
     try:
-        ctx_resp = _requests.get(
+        ctx_resp = get_session().get(
             f"https://api.greynoise.io/v2/noise/context/{ioc}",
             headers=headers, timeout=15,
         )
@@ -417,7 +415,7 @@ def _greynoise_lookup(ioc: str, ioc_type: str) -> dict:
     # Enterprise endpoint rejected — fall back to community API
     if ctx_resp.status_code in (401, 403):
         try:
-            com_resp = _requests.get(
+            com_resp = get_session().get(
                 f"https://api.greynoise.io/v3/community/{ioc}",
                 headers=headers, timeout=15,
             )
@@ -484,7 +482,7 @@ def _intezer_get_token() -> str | None:
     if not INTEZER_KEY:
         return None
     try:
-        tok_resp = _requests.post(
+        tok_resp = get_session().post(
             "https://analyze.intezer.com/api/v2-0/get-access-token",
             json={"api_key": INTEZER_KEY},
             timeout=15,
@@ -511,7 +509,7 @@ def _intezer_lookup(ioc: str, ioc_type: str, _token: str | None = None) -> dict:
     if not token:
         # Fallback: fetch token now (standalone call or test)
         try:
-            tok_resp = _requests.post(
+            tok_resp = get_session().post(
                 "https://analyze.intezer.com/api/v2-0/get-access-token",
                 json={"api_key": INTEZER_KEY},
                 timeout=15,
@@ -529,7 +527,7 @@ def _intezer_lookup(ioc: str, ioc_type: str, _token: str | None = None) -> dict:
 
     # Hash lookup — returns the latest analysis for this hash if it exists
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             f"https://analyze.intezer.com/api/v2-0/files/{ioc}",
             headers=headers,
             timeout=15,
@@ -577,7 +575,7 @@ def _urlscan_lookup(ioc: str, ioc_type: str) -> dict:
         return {"provider": "urlscan", "status": "skipped", "ioc": ioc}
 
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             "https://urlscan.io/api/v1/search/",
             headers=headers,
             params={"q": query, "size": 5},
@@ -635,7 +633,7 @@ def _proxycheck_lookup(ioc: str, ioc_type: str) -> dict:
         return {"provider": "proxycheck", "status": "no_api_key", "ioc": ioc}
 
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             f"https://proxycheck.io/v2/{ioc}",
             params={"key": PROXYCHECK_KEY, "vpn": 1, "risk": 1},
             timeout=15,
@@ -717,7 +715,7 @@ def _opencti_lookup(ioc: str, ioc_type: str) -> dict:
         }
         """ % ioc
         try:
-            resp = _requests.post(graphql_url, headers=headers, json={"query": query}, timeout=15)
+            resp = get_session().post(graphql_url, headers=headers, json={"query": query}, timeout=15)
             resp.raise_for_status()
         except Exception as exc:
             return {"provider": "opencti", "status": "error", "ioc": ioc, "error": str(exc)}
@@ -805,7 +803,7 @@ def _opencti_lookup(ioc: str, ioc_type: str) -> dict:
     """ % (search_arg, filter_block)
 
     try:
-        resp = _requests.post(graphql_url, headers=headers, json={"query": query}, timeout=15)
+        resp = get_session().post(graphql_url, headers=headers, json={"query": query}, timeout=15)
         resp.raise_for_status()
     except Exception as exc:
         return {"provider": "opencti", "status": "error", "ioc": ioc, "error": str(exc)}
@@ -889,7 +887,7 @@ def _urlhaus_lookup(ioc: str, ioc_type: str) -> dict:
     headers = {"Auth-Key": ABUSECH_KEY}
     try:
         if ioc_type == "url":
-            resp = _requests.post(
+            resp = get_session().post(
                 "https://urlhaus-api.abuse.ch/v1/url/",
                 headers=headers,
                 data={"url": ioc},
@@ -897,7 +895,7 @@ def _urlhaus_lookup(ioc: str, ioc_type: str) -> dict:
             )
         else:
             # domain or ipv4 → host lookup
-            resp = _requests.post(
+            resp = get_session().post(
                 "https://urlhaus-api.abuse.ch/v1/host/",
                 headers=headers,
                 data={"host": ioc},
@@ -958,7 +956,7 @@ def _threatfox_lookup(ioc: str, ioc_type: str) -> dict:
         return {"provider": "threatfox", "status": "no_api_key", "ioc": ioc}
 
     try:
-        resp = _requests.post(
+        resp = get_session().post(
             "https://threatfox-api.abuse.ch/api/v1/",
             headers={"Auth-Key": ABUSECH_KEY},
             json={"query": "search_ioc", "search_term": ioc},
@@ -1009,7 +1007,7 @@ def _malwarebazaar_lookup(ioc: str, ioc_type: str) -> dict:
         return {"provider": "malwarebazaar", "status": "no_api_key", "ioc": ioc}
 
     try:
-        resp = _requests.post(
+        resp = get_session().post(
             "https://mb-api.abuse.ch/api/v1/",
             headers={"Auth-Key": ABUSECH_KEY},
             data={"query": "get_info", "hash": ioc},
@@ -1068,7 +1066,7 @@ def _otx_lookup(ioc: str, ioc_type: str) -> dict:
     base = f"https://otx.alienvault.com/api/v1/indicators/{otx_type}/{ioc}"
 
     try:
-        general = _requests.get(f"{base}/general", headers=headers, timeout=15).json()
+        general = get_session().get(f"{base}/general", headers=headers, timeout=15).json()
     except Exception as exc:
         return {"provider": "otx", "status": "error", "ioc": ioc, "error": str(exc)}
 
@@ -1099,7 +1097,7 @@ def _otx_lookup(ioc: str, ioc_type: str) -> dict:
     # For IPs/domains also pull passive DNS
     if ioc_type in ("ipv4", "domain"):
         try:
-            pdns = _requests.get(f"{base}/passive_dns", headers=headers, timeout=15).json()
+            pdns = get_session().get(f"{base}/passive_dns", headers=headers, timeout=15).json()
             records = pdns.get("passive_dns", [])
             result["passive_dns_count"] = len(records)
             result["passive_dns_sample"] = [
@@ -1126,7 +1124,7 @@ def _hybrid_lookup(ioc: str, ioc_type: str) -> dict:
     headers = {"api-key": HYBRID_KEY, "User-Agent": "Falcon Sandbox"}
 
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             f"https://www.hybrid-analysis.com/api/v2/overview/{ioc}",
             headers=headers,
             timeout=20,
@@ -1174,7 +1172,7 @@ def _whoisxml_lookup(ioc: str, ioc_type: str) -> dict:
         return {"provider": "whoisxml", "status": "no_api_key", "ioc": ioc}
 
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             "https://www.whoisxmlapi.com/whoisserver/WhoisService",
             params={
                 "apiKey": WHOISXML_KEY,
@@ -1250,14 +1248,14 @@ def _censys_lookup(ioc: str, ioc_type: str) -> dict:
 
     try:
         if ioc_type == "ipv4":
-            resp = _requests.get(
+            resp = get_session().get(
                 f"{base}/asset/host/{ioc}",
                 headers=headers,
                 timeout=15,
             )
         else:
             # Domain → search hosts with matching cert SANs
-            resp = _requests.get(
+            resp = get_session().get(
                 f"{base}/asset/host/search",
                 headers=headers,
                 params={"q": f"dns.reverse_dns.reverse_dns: {ioc}", "per_page": 5},
@@ -1333,7 +1331,7 @@ def _emailrep_lookup(ioc: str, ioc_type: str) -> dict:
         headers["Key"] = EMAILREP_KEY
 
     try:
-        resp = _requests.get(
+        resp = get_session().get(
             f"https://emailrep.io/{ioc}",
             headers=headers,
             timeout=15,

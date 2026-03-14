@@ -9,7 +9,9 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-import requests
+from requests.exceptions import HTTPError
+
+from tools.common import get_session
 
 from config.settings import (
     CONFLUENCE_API_TOKEN,
@@ -51,10 +53,10 @@ def _get(path: str, params: dict | None = None) -> dict | list | None:
         return None
     url = f"{_base_url()}{path}"
     try:
-        resp = requests.get(url, headers=_auth_header(), params=params, timeout=_TIMEOUT)
+        resp = get_session().get(url, headers=_auth_header(), params=params, timeout=_TIMEOUT)
         resp.raise_for_status()
         return resp.json()
-    except requests.HTTPError as exc:
+    except HTTPError as exc:
         log_error("", "confluence_read.get", f"HTTP {exc.response.status_code}: {exc.response.text[:500]}",
                   severity="error", context={"url": url})
         return None

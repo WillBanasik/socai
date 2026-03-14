@@ -26,7 +26,7 @@ from textwrap import fill
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, CONF_HIGH, CONF_MED, IOC_INDEX_FILE
-from tools.common import defang_report, load_json, log_error, utcnow, write_artefact
+from tools.common import defang_report, load_json, log_error, utcnow, write_artefact, write_report
 from tools.index_case import index_case
 
 
@@ -954,7 +954,7 @@ def generate_report(case_id: str) -> dict:
             report_text = defang_report(report_text, mal_iocs)
 
     report_path = reports_dir / "investigation_report.md"
-    write_artefact(report_path, report_text)
+    write_report(report_path, report_text, title=f"Investigation Report – {case_id}")
 
     # Update registry
     index_case(case_id, report_path=str(report_path))

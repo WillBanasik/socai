@@ -298,11 +298,11 @@ def _capture_with_requests(url: str) -> dict:
     No screenshot. Detects meta-refresh in final page and flags it in the chain.
     Returns capture dict.
     """
-    import requests
     from bs4 import BeautifulSoup  # type: ignore
+    from tools.common import get_session
 
     headers = {"User-Agent": CAPTURE_UA}
-    resp = requests.get(
+    resp = get_session().get(
         url,
         headers=headers,
         timeout=CAPTURE_TIMEOUT,
@@ -558,13 +558,13 @@ def _try_pdf_download(final_url: str, html: str, out_dir: Path) -> dict | None:
         return None
 
     try:
-        import requests as _req
+        from tools.common import get_session
         headers = {
             "User-Agent": CAPTURE_UA,
             "Referer": final_url,
             "Accept": "application/pdf,*/*",
         }
-        resp = _req.get(pdf_url, headers=headers, timeout=30, allow_redirects=True)
+        resp = get_session().get(pdf_url, headers=headers, timeout=30, allow_redirects=True)
         if resp.status_code != 200:
             return None
         ct = resp.headers.get("content-type", "")

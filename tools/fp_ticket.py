@@ -34,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_alias_map, get_model, load_json, log_error, save_json, utcnow, write_artefact
+from tools.common import get_alias_map, get_model, load_json, log_error, save_json, utcnow, write_artefact, write_report
 
 # ---------------------------------------------------------------------------
 # Workspace resolution helpers
@@ -577,7 +577,7 @@ def fp_ticket(
         + (f" | Cache read: {tokens_cache_read}" if tokens_cache_read else "")
         + "\n\n---\n\n"
     )
-    write_artefact(out_path, header + ticket_text)
+    write_report(out_path, header + ticket_text, title=f"FP Closure — {case_id}")
 
     # Auto-close: FP ticket is the analyst deliverable — case is done
     try:

@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config.settings import ANTHROPIC_KEY, CASES_DIR, IOC_INDEX_FILE
 from tools.common import (
     audit, defang_report, get_alias_map, get_model, load_json, log_error,
-    save_json, utcnow, write_artefact,
+    save_json, utcnow, write_artefact, write_report,
 )
 
 # ---------------------------------------------------------------------------
@@ -455,7 +455,7 @@ def generate_pup_report(case_id: str) -> dict:
         f"_Generated: {utcnow()} | Model: {_model} | "
         f"Tokens: {tokens_in} in / {tokens_out} out_\n\n---\n\n"
     )
-    write_artefact(out_path, header + report_text)
+    write_report(out_path, header + report_text, title=f"PUP/PUA Report — {case_id}")
 
     # Auto-close: PUP report is the analyst deliverable — case is done
     try:

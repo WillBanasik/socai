@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, REGISTRY_FILE, WEEKLY_REPORTS
-from tools.common import load_json, log_error, utcnow, write_artefact
+from tools.common import load_json, log_error, utcnow, write_artefact, write_report
 
 
 def _week_bounds(year: int, week: int) -> tuple[datetime, datetime]:
@@ -162,7 +162,7 @@ def generate_weekly_report(
 
     report_text = "\n".join(lines)
     report_path = WEEKLY_REPORTS / f"weekly_{week_label}.md"
-    write_artefact(report_path, report_text)
+    write_report(report_path, report_text, title=f"Weekly Report — {week_label}")
     print(f"[generate_weekly_report] Report written to {report_path} "
           f"({len(included)} case(s))")
     return {

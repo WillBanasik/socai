@@ -28,14 +28,23 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  72 tools, 18 resources │
-│  5 prompts, JSONL logs  │
+│  77 tools, 25 resources │
+│  16 prompts, JSONL logs │
 └─────────────────────────┘
     │
     │ Shared filesystem
     ▼
 cases/ + registry/ + articles/
 ```
+
+### Design Principle: Local Thinking, Server Weapons
+
+The MCP server provides two modes for report and analysis work:
+
+- **Tools** — do real work: API calls (enrichment, Sentinel, sandbox), file I/O (case management), external integrations (Confluence, OpenCTI), deterministic logic (classification, response matrix). These stay server-side.
+- **Prompts** — load instructions + case data into the analyst's local Claude Desktop session for report generation, analytical reasoning, and quality review. The local session has the full conversation context and produces better output than a cold server-side API call.
+
+**Workflow:** Select prompt → local Claude generates → call `save_report` / `save_threat_article` to persist (handles defanging, HTML conversion, auto-close, audit).
 
 ## Authentication
 
@@ -77,7 +86,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `sentinel:query` | run_kql, load_kql_playbook, generate_sentinel_query, run_kql_batch |
 | `admin` | All tools including sandbox, browser, response_actions, merge_cases |
 
-## Tools (72)
+## Tools (77)
 
 ### Tier 1 -- Core Investigation (24)
 
@@ -132,6 +141,13 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `analyse_static_file` | `investigations:submit` | Quick binary file triage (PE headers, entropy, strings) |
 | `sandbox_api_lookup` | `investigations:submit` | API-based sandbox report lookup (Hybrid Analysis, Any.Run, Joe) |
 
+### Client-Side Persistence (2)
+
+| Tool | Permission | Description |
+|---|---|---|
+| `save_report` | `investigations:submit` | Persist a locally-generated report (defang, HTML, auto-close, audit). No LLM call. |
+| `save_threat_article` | `investigations:submit` | Persist a locally-generated threat article to the article index. No LLM call. |
+
 ### Tier 3 -- Advanced / Restricted (24)
 
 | Tool | Permission | Description |
@@ -161,7 +177,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `memory_dump_guide` | `investigations:submit` | MDE Live Response dump collection guidance |
 | `analyse_memory_dump` | `investigations:submit` | Process memory dump analysis (strings, IOCs, risk scoring) |
 
-## Resources (18)
+## Resources (25)
 
 | URI | Description |
 |---|---|
@@ -173,6 +189,13 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `socai://cases/{case_id}/verdicts` | Verdict summary |
 | `socai://cases/{case_id}/enrichment` | Enrichment data |
 | `socai://cases/{case_id}/timeline` | Timeline events |
+| `socai://cases/{case_id}/notes` | Analyst notes (free-text investigation context) |
+| `socai://cases/{case_id}/response-actions` | Client response actions and containment plan |
+| `socai://cases/{case_id}/fp-ticket` | Existing FP closure comment |
+| `socai://cases/{case_id}/matrix` | Investigation reasoning matrix (Rumsfeld method) |
+| `socai://cases/{case_id}/determination` | Evidence-chain determination analysis |
+| `socai://cases/{case_id}/quality-gate` | Report quality gate review results |
+| `socai://cases/{case_id}/followups` | Follow-up investigation proposals |
 | `socai://clients` | Client registry with platform scope |
 | `socai://clients/{client_name}` | Full client configuration |
 | `socai://clients/{name}/playbook` | Client response playbook |
@@ -184,7 +207,9 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `socai://articles` | Threat article index |
 | `socai://landscape` | Threat landscape summary |
 
-## Prompts (5)
+## Prompts (16)
+
+### Guided Workflows (5)
 
 | Prompt | Description |
 |---|---|
@@ -193,6 +218,29 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `write_fp_ticket` | FP ticket generation workflow |
 | `kql_investigation` | Unified KQL playbook prompt (select playbook: phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, ioc-hunt) |
 | `user_security_check` | Broad-scope user account security review (identity validation → alerts → sign-in risk → email threats → activity audit → risk assessment) |
+
+### Client-Side Report Generation (8)
+
+These prompts load system instructions + case data into the analyst's local Claude Desktop session. The local session generates the report, then `save_report` / `save_threat_article` persists it (handles defanging, HTML conversion, auto-close, audit).
+
+| Prompt | Replaces (server-side) | Auto-closes |
+|---|---|---|
+| `write_mdr_report` | `generate_mdr_report` | Yes (preserves disposition) |
+| `write_pup_report` | `generate_pup_report` | Yes (`pup_pua`) |
+| `write_fp_closure` | `generate_fp_ticket` | Yes (`false_positive`) |
+| `write_fp_tuning` | `generate_fp_tuning_ticket` | No |
+| `write_executive_summary` | `generate_executive_summary` | No |
+| `write_security_arch_review` | `security_arch_review` | No |
+| `write_threat_article` | `generate_threat_article` | N/A |
+| `write_response_plan` | `response_actions` (advisory) | No |
+
+### Client-Side Analysis (3)
+
+| Prompt | Replaces (server-side) | Purpose |
+|---|---|---|
+| `run_determination` | `run_determination` tool | Evidence-chain disposition analysis (TP/BP/FP) |
+| `build_investigation_matrix` | `generate_investigation_matrix` tool | Rumsfeld matrix (knowns/unknowns/hypotheses) |
+| `review_report` | `review_report_quality` tool | Report quality gate review |
 
 ## Access Control
 
@@ -229,9 +277,9 @@ mcp_server/
                        #   unhandled exception hook, SSE connection lifecycle middleware
     auth.py            # SocaiTokenVerifier, _require_scope
     config.py          # Env var configuration
-    tools.py           # 72 MCP tool wrappers
-    resources.py       # 18 MCP resource implementations
-    prompts.py         # 5 MCP prompt implementations
+    tools.py           # 77 MCP tool wrappers
+    resources.py       # 25 MCP resource implementations
+    prompts.py         # 16 MCP prompt implementations
     usage.py           # Tool invocation logging (JSONL + stderr); emits tool_call,
                        #   tool_result, tool_error events with result previews
     logging_config.py  # Structured JSONL logger (RotatingFileHandler, 10 MB × 3 backups)

@@ -21,6 +21,54 @@ Investigations are human-in-the-loop (HITL). The analyst drives each step via MC
 
 The exact sequence depends on attack type. `classify_attack` returns the recommended tool order. `plan_investigation` returns a full plan with phases, dependencies, and skip conditions.
 
+## Client-Side vs Server-Side Generation
+
+The MCP server exposes two modes for report and analysis tasks:
+
+**Server-side tools** (original) — the MCP server calls the Claude API itself:
+- `generate_mdr_report`, `generate_pup_report`, `generate_fp_ticket`, etc.
+- Useful for CLI usage or when the analyst prefers a one-shot tool call
+
+**Client-side prompts** (preferred for Claude Desktop) — the analyst's local session does the thinking:
+- `write_mdr_report`, `write_pup_report`, `write_fp_closure`, etc.
+- The prompt loads the system instructions + case data into the local session
+- The analyst's Claude generates the report with full conversation context
+- `save_report` / `save_threat_article` persists the output (defanging, HTML, auto-close, audit)
+
+The client-side approach is preferred because:
+- The local session has the full investigation conversation — better reports
+- No redundant server-side Claude API calls (Claude calling Claude)
+- Faster iteration — analyst can say "rewrite section 3" without re-invoking the tool
+
+### Client-Side Report Prompts
+
+| Prompt | Replaces | Auto-closes |
+|---|---|---|
+| `write_mdr_report` | `generate_mdr_report` | Yes (preserves disposition) |
+| `write_pup_report` | `generate_pup_report` | Yes (`pup_pua`) |
+| `write_fp_closure` | `generate_fp_ticket` | Yes (`false_positive`) |
+| `write_fp_tuning` | `generate_fp_tuning_ticket` | No |
+| `write_executive_summary` | `generate_executive_summary` | No |
+| `write_security_arch_review` | `security_arch_review` | No |
+| `write_threat_article` | `generate_threat_article` | N/A |
+| `write_response_plan` | `response_actions` (advisory) | No |
+
+### Client-Side Analysis Prompts
+
+| Prompt | Replaces | Purpose |
+|---|---|---|
+| `run_determination` | `run_determination` tool | Evidence-chain disposition analysis |
+| `build_investigation_matrix` | `generate_investigation_matrix` tool | Rumsfeld matrix (knowns/unknowns/hypotheses) |
+| `review_report` | `review_report_quality` tool | Report quality gate review |
+
+### Design Principle
+
+**Local Claude does the thinking. MCP tools provide the weapons.**
+
+Tools handle: API calls (enrichment, Sentinel, sandbox), file I/O (case management, artefact persistence), external integrations (Confluence, OpenCTI, Cyberint), and deterministic logic (attack classification, response matrix resolution).
+
+Prompts handle: report generation, analytical reasoning, disposition analysis, quality review, threat article writing — anything that is "read context, produce text".
+
 ## Tool Layer
 
 **Tool layer** (`tools/`) — stateless functions that do the actual work. Every tool (except `client_query.py`):
@@ -60,15 +108,15 @@ After enrichment, if verdict_summary has 0 malicious and 0 suspicious IOCs, the 
 
 ## Auto-close on Deliverable Collection
 
-Cases auto-close when the analyst collects their deliverable. The close logic lives in the tool layer so it works consistently across all entry points (CLI, MCP server):
+Cases auto-close when the analyst collects their deliverable. The close logic lives in the tool layer so it works consistently across all entry points (CLI, MCP server, client-side save):
 
-| Deliverable | Tool | Disposition set |
-|---|---|---|
-| MDR report | `generate_mdr_report()` | Preserves existing disposition |
-| PUP report | `generate_pup_report()` | `pup_pua` |
-| FP ticket | `fp_ticket()` | `false_positive` |
+| Deliverable | Server Tool | Client-Side Prompt + Save | Disposition |
+|---|---|---|---|
+| MDR report | `generate_mdr_report()` | `write_mdr_report` → `save_report` | Preserves existing |
+| PUP report | `generate_pup_report()` | `write_pup_report` → `save_report` | `pup_pua` |
+| FP ticket | `fp_ticket()` | `write_fp_closure` → `save_report` | `false_positive` |
 
-Each tool calls `index_case(case_id, status="closed", ...)` on successful generation. If the tool fails (skipped, error, needs_clarification), the case remains open.
+Each path calls `index_case(case_id, status="closed", ...)` on successful generation/save. If the tool fails, the case remains open.
 
 ## Client Playbook Resolution
 
@@ -80,4 +128,4 @@ When a case has a `client` field and a matching playbook exists in `config/clien
 4. **Escalation matrix** — filtered by resolved priority; collects permitted actions per asset type
 5. **Contact process** — from default `response[]` entry or alert-specific override
 
-The tool is purely deterministic (no LLM call). Output is consumed by the MDR report's "Approved Response Actions" section.
+The tool is purely deterministic (no LLM call). Output is consumed by the MDR report's "Approved Response Actions" section. The client playbook is also exposed as a resource (`socai://clients/{name}/playbook`) so the `write_response_plan` prompt can reference it directly.
