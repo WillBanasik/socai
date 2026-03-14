@@ -87,6 +87,25 @@ IPv4 addresses use a 3-tier enrichment model to reduce API calls:
 
 Hosting providers (Linode/Akamai hosting, DigitalOcean, OCI) are deliberately **not** pre-screened since attackers use them. Only CDN-specific ASNs are filtered. Requires `dnspython` for ASN resolution (falls back to ipinfo.io free tier if unavailable).
 
+## Authentication & Roles
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `SOCAI_JWT_SECRET` | (insecure default) | JWT signing secret — **must set in production** |
+| `SOCAI_JWT_TTL_HOURS` | `8` | Token expiry in hours (`24` = daily, `720` = 30 days) |
+
+Users are managed locally in `config/users.json` (bcrypt-hashed passwords). Roles are defined in `config/roles.json` — they control the assistant's tone, explanation depth, and response style, not which tools are accessible.
+
+| Role | Tone | Severity Ceiling | Response Authority |
+|------|------|------------------|-------------------|
+| `junior_mdr` | Educational | Medium | Observe & escalate |
+| `mdr_analyst` | Professional | Critical | Containment |
+| `senior_analyst` | Peer | Critical | Full IR |
+
+Token generation: `python3 -c "from api.auth import create_token_for_role; print(create_token_for_role('analyst@soc.com', 'mdr_analyst'))"`
+
+See `docs/mcp-server.md` for deployment architecture, Claude Desktop configuration, and Entra ID migration path.
+
 ## MCP Server
 
 See `docs/mcp-server.md` for env vars, RBAC, tools, resources, prompts, and deployment.
@@ -204,3 +223,5 @@ See `docs/sandbox.md` for env vars, Docker setup, network modes, and safety deta
 ## Secret Config Files
 
 `config/client_entities.json` and `config/workspace_tables.json` are git-ignored (contain real client names and workspace GUIDs). `registry/alias_map.json` stores runtime alias mappings. Only `config/client_entities.example.json` is tracked.
+
+`config/users.json` contains bcrypt-hashed passwords — `chmod 600` and git-ignore. `config/roles.json` is safe to commit (no secrets — only role definitions and permission mappings).

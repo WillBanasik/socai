@@ -53,26 +53,41 @@ The MCP server provides two modes for report and analysis work:
 Uses self-issued JWTs (`api/auth.py`). Clients authenticate with `Authorization: Bearer <token>`.
 
 ```bash
-# Generate a token via Python
-python3 -c "from api.auth import create_access_token; print(create_access_token('analyst@example.com', 'analyst', ['investigations:submit','investigations:read','campaigns:read','sentinel:query']))"
+# Generate a token with role-resolved permissions (preferred)
+python3 -c "from api.auth import create_token_for_role; print(create_token_for_role('alice@soc.com', 'junior_mdr'))"
+python3 -c "from api.auth import create_token_for_role; print(create_token_for_role('bob@soc.com', 'mdr_analyst'))"
+python3 -c "from api.auth import create_token_for_role; print(create_token_for_role('charlie@soc.com', 'senior_analyst'))"
+
+# Or with explicit permissions (legacy)
+python3 -c "from api.auth import create_access_token; print(create_access_token('analyst@example.com', 'mdr_analyst', ['investigations:submit','investigations:read','campaigns:read','sentinel:query']))"
 ```
+
+**Token TTL:** Controlled by `SOCAI_JWT_TTL_HOURS` (default `8`). For centrally hosted deployments behind a VPN, longer TTLs (24h–30d) reduce friction. Tokens carry the analyst's role, email, and permissions — the MCP server reads these on every request.
+
+**Security checklist:**
+- Set a strong random `SOCAI_JWT_SECRET` in `.env` (the default is insecure)
+- Use TLS (Caddy/nginx reverse proxy) — JWTs over plain HTTP are interceptable
+- Bind `SOCAI_MCP_HOST=127.0.0.1` when behind a reverse proxy
+- `chmod 600 config/users.json` (contains password hashes)
 
 ### Entra ID (future)
 
-Set `SOCAI_MCP_AUTH=entra_id` to validate Azure AD tokens instead. No other code changes needed -- the verifier is the only component that touches token validation.
+Set `SOCAI_MCP_AUTH=entra_id` to validate Azure AD tokens instead. `SocaiTokenVerifier` is the only component that touches token validation — swap it to validate against Entra's JWKS endpoint. Map Entra security groups (`sg-soc-junior`, `sg-soc-analyst`, `sg-soc-senior`) to role names in `config/roles.json`. Everything downstream (RBAC, roles, resources, prompts) stays unchanged.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `SOCAI_MCP_PORT` | `8001` | Server port |
-| `SOCAI_MCP_HOST` | `0.0.0.0` | Bind address |
+| `SOCAI_MCP_HOST` | `0.0.0.0` | Bind address (`127.0.0.1` when behind reverse proxy) |
 | `SOCAI_MCP_TRANSPORT` | `sse` | Transport: `sse`, `streamable-http`, or `stdio` |
 | `SOCAI_MCP_AUTH` | `local` | Auth mode: `local` or `entra_id` |
 | `SOCAI_MCP_MOUNT_PATH` | `/` | Mount path for SSE routes |
 | `SOCAI_MCP_LOG_LEVEL` | `INFO` | Structured log level |
 | `SOCAI_MCP_LOG_RESULTS` | `1` | Log tool result previews (`0` to disable) |
 | `SOCAI_MCP_LOG_MAX_RESULT` | `2000` | Max chars per result preview in logs |
+| `SOCAI_JWT_SECRET` | (insecure default) | JWT signing secret — **must set in production** |
+| `SOCAI_JWT_TTL_HOURS` | `8` | Token expiry (hours); `720` = 30 days |
 
 ## RBAC Permissions
 
@@ -341,7 +356,47 @@ tail -f registry/mcp_server.jsonl | python3 -m json.tool
 
 ## Production Deployment
 
-Use a reverse proxy (nginx/Caddy) to terminate TLS:
+### Architecture
+
+```
+Analyst's Claude Desktop (VPN / corporate network)
+    │
+    │ SSE + Bearer JWT over HTTPS
+    ▼
+┌──────────────────────────┐
+│  Caddy / nginx (TLS)     │  ← socai.yourcompany.com
+│  Automatic HTTPS certs   │
+└──────────────────────────┘
+    │
+    │ HTTP (localhost only)
+    ▼
+┌──────────────────────────┐
+│  mcp_server (port 8001)  │  ← SOCAI_MCP_HOST=127.0.0.1
+│  77 tools, 26 resources  │
+│  JWT RBAC, role system   │
+└──────────────────────────┘
+    │
+    │ Filesystem
+    ▼
+cases/ + registry/ + articles/
+```
+
+### Caddy (recommended — automatic HTTPS)
+
+```
+socai.yourcompany.com {
+    reverse_proxy 127.0.0.1:8001 {
+        flush_interval -1
+        transport http {
+            read_timeout 0
+        }
+    }
+}
+```
+
+`flush_interval -1` is critical — without it Caddy buffers SSE events and the MCP connection stalls.
+
+### nginx
 
 ```nginx
 location / {
@@ -353,9 +408,51 @@ location / {
 }
 ```
 
+### Server startup
+
+```bash
+# Bind to localhost only (reverse proxy handles external traffic)
+SOCAI_MCP_HOST=127.0.0.1 python3 -m mcp_server
+```
+
+### Security checklist
+
+- [ ] Set `SOCAI_JWT_SECRET` to a strong random value in `.env`
+- [ ] Set `SOCAI_MCP_HOST=127.0.0.1` (don't expose port 8001 directly)
+- [ ] TLS via reverse proxy (Caddy auto-HTTPS or nginx + certbot)
+- [ ] VPN or network-level access control (don't expose to the internet without)
+- [ ] `chmod 600 config/users.json` and `.env`
+- [ ] Set `SOCAI_JWT_TTL_HOURS` appropriate to your environment (8h–720h)
+
 ## Claude Desktop Configuration
 
-### WSL2 (Windows host, socai in WSL)
+### Centrally Hosted (SSE over HTTPS)
+
+Analysts connect Claude Desktop to the central server. Each analyst gets a JWT token with their role:
+
+```bash
+# Admin generates tokens for the team
+python3 -c "from api.auth import create_token_for_role; print(create_token_for_role('alice@soc.com', 'junior_mdr'))"
+```
+
+Analyst's Claude Desktop config (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "socai": {
+      "url": "https://socai.yourcompany.com/sse",
+      "headers": {
+        "Authorization": "Bearer <their-token>"
+      }
+    }
+  }
+}
+```
+
+The token carries the analyst's email, role, and permissions. The `socai://role` resource returns role-specific behavioural instructions at session start, so the assistant adapts to the analyst's experience level automatically.
+
+### Local Development — WSL2 (Windows host, socai in WSL)
 
 The `env` block in Claude Desktop config is **not** forwarded into WSL processes, so environment variables must be set inline:
 
@@ -370,7 +467,7 @@ The `env` block in Claude Desktop config is **not** forwarded into WSL processes
 }
 ```
 
-### Native Linux / macOS
+### Local Development — Native Linux / macOS
 
 ```json
 {
@@ -385,8 +482,12 @@ The `env` block in Claude Desktop config is **not** forwarded into WSL processes
 }
 ```
 
-**stdio auth:** All RBAC scope checks are bypassed (local trust model) — no JWT needed. Caller is `"local"` with `["admin"]` scopes.
+### Transport Modes
 
-**SSE transport (remote):** Connect MCP client to `http://host:8001/sse` with a Bearer token.
+| Mode | Auth | Use case |
+|------|------|----------|
+| `stdio` | None (local trust) | Local dev, Claude Desktop on same machine. Caller is `"local"` with admin scopes, `senior_analyst` role. |
+| `sse` | Bearer JWT | Central server. Analysts connect over HTTPS via reverse proxy. |
+| `streamable-http` | Bearer JWT | Alternative to SSE for clients that prefer HTTP streaming. |
 
 **Project instructions:** `docs/claude-desktop-instructions.md` — loaded via Claude Desktop `.claude_project`.
