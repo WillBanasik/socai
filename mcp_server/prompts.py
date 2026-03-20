@@ -8,6 +8,12 @@ the Claude Desktop prompt picker:
 - ``write_fp_ticket`` — false-positive analysis and suppression ticket
 - ``hitl_investigation`` — HITL investigation workflow with analyst checkpoints
 - ``user_security_check`` — broad-scope user account security review
+- ``write_timeline`` — client-side forensic timeline reconstruction
+- ``write_evtx_analysis`` — client-side EVTX attack chain analysis
+- ``write_phishing_verdict`` — client-side phishing page assessment
+- ``write_pe_verdict`` — client-side PE binary malware assessment
+- ``write_cve_context`` — client-side CVE contextualisation
+- ``write_mdr_report`` — client-side MDR report using full conversation context
 """
 from __future__ import annotations
 
@@ -1202,6 +1208,456 @@ def register_prompts(mcp: FastMCP) -> None:
         )
 
     # ------------------------------------------------------------------
+    # Analysis prompts (client-side — replace server LLM calls)
+    # Additional client-side analysis prompts
+    # ------------------------------------------------------------------
+
+    @mcp.prompt()
+    def write_timeline(case_id: str) -> str:
+        """Reconstruct a forensic timeline locally in Claude Desktop.
+
+        Loads all timestamped events extracted from case artefacts and lets
+        your local session perform MITRE ATT&CK mapping, gap analysis, and
+        narrative reconstruction.
+
+        The ``reconstruct_timeline`` tool does this on the server with an
+        API call — use this prompt to avoid that cost.
+
+        Parameters
+        ----------
+        case_id : str
+            Case to reconstruct the timeline for.
+        """
+        from tools.timeline_reconstruct import _SYSTEM_PROMPT as prompt
+        from tools.timeline_reconstruct import _extract_events
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+        import json
+
+        events, sources = _extract_events(case_id)
+
+        # Sort chronologically
+        events.sort(key=lambda e: e.get("timestamp", ""))
+
+        context_parts = [f"# Case: {case_id}\n"]
+        context_parts.append(f"## Sources Scanned\n{', '.join(sources)}\n")
+        context_parts.append(f"## Events ({len(events)} total)\n")
+        context_parts.append(f"```json\n{json.dumps(events, indent=2, default=str)}\n```\n")
+
+        context = "\n".join(context_parts)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            f"# Forensic Timeline Reconstruction — Instructions\n\n"
+            f"{prompt}\n\n"
+            f"---\n\n"
+            f"# Case Events\n\n"
+            f"{context}\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Reconstruct the forensic timeline for case **{case_id}**.\n\n"
+            f"Structure your output as:\n"
+            f"1. **MITRE ATT&CK Mapping** — each event mapped to a tactic\n"
+            f"2. **Dwell-Time Gaps** — significant gaps between activity clusters\n"
+            f"3. **Key Events** — the 5-10 most forensically important events with reasoning\n"
+            f"4. **Narrative** — 2-3 sentence attack timeline summary\n\n"
+            f"When done, call `add_finding` with your timeline analysis.\n"
+        )
+
+    # ------------------------------------------------------------------
+    # EVTX correlation prompt (client-side)
+    # ------------------------------------------------------------------
+
+    @mcp.prompt()
+    def write_evtx_analysis(case_id: str) -> str:
+        """Analyse Windows Event Log attack chains locally in Claude Desktop.
+
+        Loads parsed EVTX data and detected attack chains, then lets your
+        local session perform narrative reconstruction and MITRE mapping.
+
+        The ``correlate_evtx`` tool does this on the server with an API
+        call — use this prompt to avoid that cost.
+
+        Parameters
+        ----------
+        case_id : str
+            Case to analyse EVTX data for.
+        """
+        from tools.evtx_correlate import _SYSTEM_PROMPT as prompt
+        from tools.evtx_correlate import _load_parsed_logs
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+        import json
+
+        case_dir = CASES_DIR / case_id
+        context_parts = [f"# Case: {case_id}\n"]
+
+        # Load case metadata
+        try:
+            meta = load_json(case_dir / "case_meta.json")
+            context_parts.append(f"## Case Metadata\n{json.dumps(meta, indent=2, default=str)}\n")
+        except Exception:
+            pass
+
+        # Load parsed logs
+        raw_events = _load_parsed_logs(case_id)
+        if raw_events:
+            # Truncate to avoid context overflow
+            events_text = json.dumps(raw_events[:500], indent=2, default=str)
+            if len(events_text) > 15000:
+                events_text = events_text[:15000] + "\n[...truncated...]"
+            context_parts.append(f"## Parsed Windows Events ({len(raw_events)} total)\n```json\n{events_text}\n```\n")
+        else:
+            context_parts.append("## Parsed Windows Events\nNo parsed EVTX data found. Run `parse_logs` first.\n")
+
+        # Load existing chain detections if available
+        chains_path = case_dir / "artefacts" / "evtx" / "evtx_chains.json"
+        if chains_path.exists():
+            try:
+                chains = load_json(chains_path)
+                chains_text = json.dumps(chains, indent=2, default=str)
+                if len(chains_text) > 5000:
+                    chains_text = chains_text[:5000] + "\n[...truncated...]"
+                context_parts.append(f"## Previously Detected Chains\n```json\n{chains_text}\n```\n")
+            except Exception:
+                pass
+
+        context = "\n".join(context_parts)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            f"# EVTX Attack Chain Analysis — Instructions\n\n"
+            f"{prompt}\n\n"
+            f"---\n\n"
+            f"# Case Data\n\n"
+            f"{context}\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Analyse the Windows Event Log data for case **{case_id}** and identify "
+            f"attack chains.\n\n"
+            f"Structure your output as:\n"
+            f"1. **Attack Narrative** — chronological reconstruction of the attack\n"
+            f"2. **MITRE ATT&CK Mapping** — techniques observed with evidence\n"
+            f"3. **Attacker Sophistication** — assessment based on techniques used\n"
+            f"4. **Detection Recommendations** — specific rules for observed patterns\n\n"
+            f"When done, call `add_finding` with your analysis.\n"
+        )
+
+    # ------------------------------------------------------------------
+    # Phishing verdict prompt (client-side)
+    # ------------------------------------------------------------------
+
+    @mcp.prompt()
+    def write_phishing_verdict(case_id: str) -> str:
+        """Assess captured web pages for phishing locally in Claude Desktop.
+
+        Loads web capture data (page text, URLs, titles, screenshots) and
+        phishing detection findings, then lets your local session assess
+        brand impersonation and deceptive intent.
+
+        The ``detect_phishing`` tool runs server-side LLM calls for page
+        purpose checks and vision analysis — use this prompt to do that
+        reasoning locally instead.
+
+        Note: ``capture_urls`` must be run first to capture the pages.
+        This prompt handles the analysis, not the capture.
+
+        Parameters
+        ----------
+        case_id : str
+            Case with captured web pages to assess.
+        """
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+        import json
+
+        case_dir = CASES_DIR / case_id
+        context_parts = [f"# Case: {case_id}\n"]
+
+        # Load case metadata
+        try:
+            meta = load_json(case_dir / "case_meta.json")
+            context_parts.append(f"## Case Metadata\n{json.dumps(meta, indent=2, default=str)}\n")
+        except Exception:
+            pass
+
+        # Load web captures
+        web_dir = case_dir / "artefacts" / "web"
+        captures_found = False
+        if web_dir.is_dir():
+            for sub in sorted(web_dir.iterdir()):
+                if not sub.is_dir():
+                    continue
+                manifest_path = sub / "capture_manifest.json"
+                if manifest_path.exists():
+                    captures_found = True
+                    try:
+                        manifest = load_json(manifest_path)
+                        context_parts.append(f"### Capture: {sub.name}")
+                        context_parts.append(f"- **URL:** {manifest.get('url', 'N/A')}")
+                        context_parts.append(f"- **Final URL:** {manifest.get('final_url', 'N/A')}")
+                        context_parts.append(f"- **Title:** {manifest.get('title', 'N/A')}")
+                        context_parts.append(f"- **Status:** {manifest.get('status_code', 'N/A')}")
+
+                        # Include page text if available
+                        body_path = sub / "body.txt"
+                        if body_path.exists():
+                            body_text = body_path.read_text(encoding="utf-8", errors="replace")[:4000]
+                            context_parts.append(f"- **Page text (first 4000 chars):**\n```\n{body_text}\n```")
+
+                        # Include HTML excerpt
+                        html_path = sub / "page.html"
+                        if html_path.exists():
+                            html_text = html_path.read_text(encoding="utf-8", errors="replace")[:6000]
+                            context_parts.append(f"- **HTML source (first 6000 chars):**\n```html\n{html_text}\n```")
+
+                        context_parts.append("")
+                    except Exception:
+                        pass
+
+        if not captures_found:
+            context_parts.append("## Web Captures\nNo captures found. Run `capture_urls` first.\n")
+
+        # Load existing phishing findings if any
+        phishing_path = case_dir / "artefacts" / "web" / "phishing_findings.json"
+        if phishing_path.exists():
+            try:
+                findings = load_json(phishing_path)
+                findings_text = json.dumps(findings, indent=2, default=str)
+                if len(findings_text) > 3000:
+                    findings_text = findings_text[:3000] + "\n[...truncated...]"
+                context_parts.append(f"## Existing Phishing Findings (deterministic)\n```json\n{findings_text}\n```\n")
+            except Exception:
+                pass
+
+        # Load IOC enrichment for domain context
+        enrichment_path = case_dir / "artefacts" / "enrichment.json"
+        if not enrichment_path.exists():
+            enrichment_path = case_dir / "artefacts" / "enrichment" / "enrichment.json"
+        if enrichment_path.exists():
+            try:
+                enrichment = load_json(enrichment_path)
+                # Extract just domain/URL enrichment
+                domain_results = [r for r in enrichment.get("results", [])
+                                  if r.get("ioc_type") in ("domain", "url")]
+                if domain_results:
+                    enr_text = json.dumps(domain_results[:20], indent=2, default=str)
+                    if len(enr_text) > 3000:
+                        enr_text = enr_text[:3000] + "\n[...truncated...]"
+                    context_parts.append(f"## Domain/URL Enrichment\n```json\n{enr_text}\n```\n")
+            except Exception:
+                pass
+
+        context = "\n".join(context_parts)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            "# Phishing Page Assessment — Instructions\n\n"
+            "You are a senior SOC analyst assessing captured web pages for phishing "
+            "and brand impersonation. Use UK English.\n\n"
+            "## Assessment Criteria\n\n"
+            "For each captured page, assess:\n"
+            "1. **Brand impersonation** — does the page mimic a known brand (Microsoft, "
+            "Google, Apple, PayPal, DocuSign, Amazon, LinkedIn, etc.) on a domain that "
+            "does NOT belong to that brand?\n"
+            "2. **Page purpose** — does the page have a clear legitimate purpose, or is it "
+            "deceptive/purposeless?\n"
+            "3. **Login forms** — are there credential harvesting forms?\n"
+            "4. **Lure patterns** — 'view shared document', 'verify account', CAPTCHA "
+            "gates, fake file previews, tech-support scams?\n"
+            "5. **Domain analysis** — newly registered? Typosquatting? Unrelated to content?\n\n"
+            "## Confidence Levels\n"
+            "- **high** — clear brand impersonation or credential harvesting on wrong domain\n"
+            "- **medium** — suspicious elements but ambiguous (e.g. generic login, no clear brand)\n"
+            "- **low** — minor indicators, likely benign but worth noting\n\n"
+            "---\n\n"
+            f"# Case Data\n\n"
+            f"{context}\n\n"
+            "---\n\n"
+            f"# Task\n\n"
+            f"Assess each captured page in case **{case_id}** for phishing indicators.\n\n"
+            f"For each page, provide:\n"
+            f"- **Verdict:** phishing / suspicious / clean\n"
+            f"- **Brand impersonated:** (if applicable)\n"
+            f"- **Confidence:** high / medium / low\n"
+            f"- **Evidence:** specific elements that support your verdict\n"
+            f"- **Reasoning:** why you reached this conclusion\n\n"
+            f"When done, call `add_finding` with your assessment.\n"
+        )
+
+    # ------------------------------------------------------------------
+    # PE analysis verdict prompt (client-side)
+    # ------------------------------------------------------------------
+
+    @mcp.prompt()
+    def write_pe_verdict(case_id: str) -> str:
+        """Assess PE binaries locally in Claude Desktop.
+
+        Loads deterministic PE static analysis results (sections, imports,
+        entropy, strings, packer signatures) and lets your local session
+        produce the malware assessment verdict.
+
+        The ``analyse_pe`` tool runs a server-side LLM call for this — use
+        this prompt to do that reasoning locally instead.
+
+        Note: ``analyse_pe`` must be run first to extract the static data.
+        This prompt only handles the LLM verdict, not the extraction.
+
+        Parameters
+        ----------
+        case_id : str
+            Case with PE analysis data to assess.
+        """
+        from tools.pe_analysis import _LLM_SYSTEM_PROMPT as prompt
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+        import json
+
+        case_dir = CASES_DIR / case_id
+        context_parts = [f"# Case: {case_id}\n"]
+
+        # Load PE analysis results
+        pe_path = case_dir / "artefacts" / "pe_analysis" / "pe_analysis.json"
+        if pe_path.exists():
+            try:
+                pe_data = load_json(pe_path)
+                for i, file_result in enumerate(pe_data.get("files", [])):
+                    # Exclude raw strings list, include sample
+                    summary = {k: v for k, v in file_result.items() if k != "strings"}
+                    summary["strings_sample"] = file_result.get("strings", [])[:50]
+                    summary_text = json.dumps(summary, indent=2, default=str)
+                    if len(summary_text) > 8000:
+                        summary_text = summary_text[:8000] + "\n[...truncated...]"
+                    context_parts.append(f"## File {i+1}: {file_result.get('filename', 'unknown')}\n```json\n{summary_text}\n```\n")
+            except Exception:
+                context_parts.append("## PE Analysis\nFailed to load PE analysis data.\n")
+        else:
+            context_parts.append("## PE Analysis\nNo PE analysis data found. Run `analyse_pe` first.\n")
+
+        context = "\n".join(context_parts)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            f"# PE Malware Assessment — Instructions\n\n"
+            f"{prompt}\n\n"
+            f"---\n\n"
+            f"# PE Analysis Data\n\n"
+            f"{context}\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Assess each PE binary in case **{case_id}** and provide a structured "
+            f"malware assessment.\n\n"
+            f"For each file, provide:\n"
+            f"- **Verdict:** malicious / suspicious / clean\n"
+            f"- **Confidence:** high / medium / low\n"
+            f"- **Capabilities:** what the binary can do (based on imports/strings)\n"
+            f"- **Packing/Obfuscation:** evidence of evasion techniques\n"
+            f"- **IOCs:** any C2 infrastructure, credentials, or tool artefacts found in strings\n"
+            f"- **Reasoning:** specific imports, sections, or strings that support your verdict\n\n"
+            f"When done, call `add_finding` with your assessment.\n"
+        )
+
+    # ------------------------------------------------------------------
+    # CVE contextualisation prompt (client-side)
+    # ------------------------------------------------------------------
+
+    @mcp.prompt()
+    def write_cve_context(case_id: str) -> str:
+        """Contextualise CVEs locally in Claude Desktop.
+
+        Loads CVE data (NVD, EPSS, CISA KEV scores) already fetched by the
+        server and lets your local session produce the contextualised
+        assessment and patching priorities.
+
+        The ``contextualise_cves`` tool runs a server-side LLM call for
+        this — use this prompt to avoid that cost. Note: the tool must be
+        run first to fetch the CVE data from APIs.
+
+        Parameters
+        ----------
+        case_id : str
+            Case with CVE data to contextualise.
+        """
+        from tools.cve_contextualise import _LLM_SYSTEM_PROMPT as prompt
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+        import json
+
+        case_dir = CASES_DIR / case_id
+        context_parts = [f"# Case: {case_id}\n"]
+
+        # Load case metadata
+        try:
+            meta = load_json(case_dir / "case_meta.json")
+            context_parts.append(f"## Case Metadata\n{json.dumps(meta, indent=2, default=str)}\n")
+        except Exception:
+            pass
+
+        # Load CVE contextualisation results
+        cve_path = case_dir / "artefacts" / "cve" / "cve_context.json"
+        if cve_path.exists():
+            try:
+                cve_data = load_json(cve_path)
+                cve_text = json.dumps(cve_data, indent=2, default=str)
+                if len(cve_text) > 12000:
+                    cve_text = cve_text[:12000] + "\n[...truncated...]"
+                context_parts.append(f"## CVE Data\n```json\n{cve_text}\n```\n")
+            except Exception:
+                context_parts.append("## CVE Data\nFailed to load CVE data.\n")
+        else:
+            context_parts.append("## CVE Data\nNo CVE data found. Run `contextualise_cves` first.\n")
+
+        # Load enrichment for additional context
+        enrichment_path = case_dir / "artefacts" / "enrichment" / "enrichment.json"
+        if not enrichment_path.exists():
+            enrichment_path = case_dir / "artefacts" / "enrichment.json"
+        if enrichment_path.exists():
+            try:
+                enrichment = load_json(enrichment_path)
+                # Just include summary stats, not full data
+                stats = enrichment.get("stats", {})
+                if stats:
+                    context_parts.append(f"## Enrichment Stats\n{json.dumps(stats, indent=2, default=str)}\n")
+            except Exception:
+                pass
+
+        context = "\n".join(context_parts)
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            context = alias_map.alias_text(context)
+
+        return (
+            f"# CVE Contextualisation — Instructions\n\n"
+            f"{prompt}\n\n"
+            f"---\n\n"
+            f"# Case Data\n\n"
+            f"{context}\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Contextualise the CVEs found in case **{case_id}** within the "
+            f"investigation context.\n\n"
+            f"For each CVE, provide:\n"
+            f"- **Exploitation likelihood** — EPSS score interpretation, active exploitation status\n"
+            f"- **Relevance to case** — how this CVE relates to observed TTPs\n"
+            f"- **Patching priority** — critical / high / medium / low with reasoning\n"
+            f"- **Detection opportunities** — how to detect exploitation attempts\n\n"
+            f"Produce an overall patching priority list ordered by risk.\n\n"
+            f"When done, call `add_finding` with your assessment.\n"
+        )
+
+    # ------------------------------------------------------------------
     # User security check prompt
     # ------------------------------------------------------------------
 
@@ -1525,3 +1981,65 @@ def register_prompts(mcp: FastMCP) -> None:
         ]
 
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # MDR report prompt (client-side — uses conversation context)
+    # ------------------------------------------------------------------
+
+    @mcp.prompt()
+    def write_mdr_report(case_id: str) -> str:
+        """Generate an MDR incident report locally using your full conversation context.
+
+        Unlike the server-side ``generate_mdr_report`` tool, this prompt lets
+        your local session write the report with access to everything discussed
+        in the conversation — KQL results, email traces, enrichment findings,
+        analytical reasoning, and analyst decisions.
+
+        When the report is complete, call ``save_report`` with
+        ``report_type="mdr_report"`` to persist it (handles defanging, HTML
+        conversion, auto-close, and audit).
+
+        Parameters
+        ----------
+        case_id : str
+            Case to generate the MDR report for.
+        """
+        from tools.generate_mdr_report import _SYSTEM_PROMPT, _build_context
+
+        # Load artefact context (same data the server-side report would see)
+        artefact_context = _build_context(case_id)
+
+        alias_map = _get_alias_map_safe()
+        if alias_map:
+            artefact_context = alias_map.alias_text(artefact_context)
+
+        return (
+            f"# MDR Report Generation — Instructions\n\n"
+            f"{_SYSTEM_PROMPT}\n\n"
+            f"---\n\n"
+            f"# Case Artefacts (from disk)\n\n"
+            f"{artefact_context}\n\n"
+            f"---\n\n"
+            f"# IMPORTANT — Using Conversation Context\n\n"
+            f"The artefact data above is supplementary. Your **primary source** for "
+            f"this report is the **full conversation history** — every KQL query result, "
+            f"email trace, enrichment finding, timeline analysis, and analytical decision "
+            f"discussed with the analyst during this investigation.\n\n"
+            f"The server-side report generator cannot see conversation context, which is "
+            f"why this prompt exists. You MUST incorporate all investigation findings from "
+            f"the conversation, not just what is on disk.\n\n"
+            f"Where conversation findings contradict or extend the artefact data, the "
+            f"conversation findings take precedence (they represent the analyst's live "
+            f"investigation).\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Write the MDR incident report for case **{case_id}** following the mandatory "
+            f"5-section structure from the instructions above.\n\n"
+            f"When your report is complete, call `save_report` with:\n"
+            f"- `case_id`: `{case_id}`\n"
+            f"- `report_type`: `mdr_report`\n"
+            f"- `report_text`: the full markdown report\n"
+            f"- `disposition`: the appropriate disposition value "
+            f"(`true_positive`, `benign_positive`, `false_positive`, `benign`, "
+            f"`pup_pua`, `inconclusive`)\n"
+        )

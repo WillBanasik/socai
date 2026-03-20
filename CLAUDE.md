@@ -9,6 +9,9 @@ Guidance for Claude Code working with the socai codebase. **Details are in `docs
 python3 -m pytest tests/ -v
 python3 -m pytest tests/test_tools.py::test_extract_iocs_from_text -v
 
+# Create a case
+python3 socai.py create-case --title "Alert title" --severity high --analyst <name> --client <client> --tags "tag1,tag2"
+
 # Re-run stages
 python3 socai.py report --case IV_CASE_001
 python3 socai.py enrich --case IV_CASE_001
@@ -35,6 +38,8 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **Shared API** (`api/`) — auth, actions, timeline, input parsing — used by MCP server
 - **Pipeline:** HITL (human-in-the-loop) — analyst drives investigation step by step via MCP tools; see `docs/pipeline.md`
 - **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, articles in `articles/`
+- **Background scheduler** (`tools/scheduler.py`) — daemon thread started by MCP server; rebuilds case memory index (6h), refreshes GeoIP (7d), rebuilds client baselines (24h)
+- **Intelligence layer** — `tools/case_memory.py` (BM25 semantic recall), `tools/client_baseline.py` (per-client profiles), `tools/geoip.py` (local MaxMind GeoLite2)
 - **Auto-close on Deliverable Collection** — `generate_mdr_report` (preserves disposition), `generate_pup_report` (`pup_pua`), `fp_ticket` (`false_positive`). Close logic in tool layer. `fp_tuning_ticket` does NOT auto-close.
 
 ## Sentinel Incident Classification
@@ -111,7 +116,7 @@ Read these only when working on the relevant area:
 | Doc | Contents |
 |-----|----------|
 | `docs/pipeline.md` | HITL workflow, tool sequence, auto-disposition, auto-close |
-| `docs/tools-reference.md` | All tool details: web capture, phishing, enrichment, sandbox, forensics, etc. |
+| `docs/tools-reference.md` | All tool details: case memory, baselines, GeoIP, scheduler, web capture, phishing, enrichment, sandbox, forensics, etc. |
 | `docs/configuration.md` | Env vars, API keys, model tiering summary, client aliasing config |
 | `docs/artefacts.md` | Complete file/artefact path reference table |
 | `docs/extending.md` | How to add new providers, tools, brands, detectors |

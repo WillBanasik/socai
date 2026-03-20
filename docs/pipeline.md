@@ -8,15 +8,18 @@ Investigations are human-in-the-loop (HITL). The analyst drives each step via MC
 
 ```
 1. lookup_client          → confirm client and platform config
-2. classify_attack        → deterministic attack-type classification
-3. plan_investigation     → advisory step-by-step plan (optional)
-4. add_evidence           → attach raw alert data to case
-5. enrich_iocs            → extract and enrich IOCs
-6. capture_urls           → screenshot and capture web evidence (if URLs)
-7. detect_phishing        → brand impersonation detection (if URLs)
-8. analyse_email          → email header/content analysis (if email)
-9. run_kql                → Sentinel queries via playbook
-10. generate_mdr_report   → MDR report (auto-closes case)
+2. get_client_baseline    → load behavioural profile for this client (optional, recommended)
+3. classify_attack        → deterministic attack-type classification
+4. plan_investigation     → advisory step-by-step plan (optional)
+5. recall_cases           → exact IOC/keyword search in prior cases
+6. recall_semantic        → semantic similarity search (finds similar past investigations by context)
+7. add_evidence           → attach raw alert data to case
+8. enrich_iocs            → extract and enrich IOCs
+9. capture_urls           → screenshot and capture web evidence (if URLs)
+10. detect_phishing       → brand impersonation detection (if URLs)
+11. analyse_email         → email header/content analysis (if email)
+12. run_kql               → Sentinel queries via playbook
+13. generate_mdr_report   → MDR report (auto-closes case)
 ```
 
 The exact sequence depends on attack type. `classify_attack` returns the recommended tool order. `plan_investigation` returns a full plan with phases, dependencies, and skip conditions.
@@ -105,6 +108,10 @@ When classified as `pup_pua`, the workflow short-circuits after enrichment. `gen
 ## Auto-disposition
 
 After enrichment, if verdict_summary has 0 malicious and 0 suspicious IOCs, the case is auto-closed with disposition `benign_auto_closed` — unless the report confidence score meets or exceeds `SOCAI_CONF_AUTO_CLOSE` (default 0.20), in which case the auto-close is reverted.
+
+## Direct Close from Triage
+
+For clear-cut dispositions that don't need a full investigation cycle (e.g. obvious benign positives, known PUP software, duplicate alerts), the `close_case` MCP tool allows closing directly from triage status. This enables a lightweight two-step flow: `create_case` → `close_case(disposition="benign_positive")` — zero server-side API credits, ideal for the desktop LLM handling straightforward alerts.
 
 ## Auto-close on Deliverable Collection
 

@@ -69,7 +69,7 @@ def register_resources(mcp: FastMCP) -> None:
         from config.settings import CASES_DIR
         from tools.common import load_json
 
-        path = CASES_DIR / case_id / "artefacts" / "iocs.json"
+        path = CASES_DIR / case_id / "iocs" / "iocs.json"
         if not path.exists():
             return _json({"error": "No IOCs found.", "iocs": {}})
         return _json(load_json(path))
@@ -82,7 +82,7 @@ def register_resources(mcp: FastMCP) -> None:
         from config.settings import CASES_DIR
         from tools.common import load_json
 
-        path = CASES_DIR / case_id / "artefacts" / "verdicts.json"
+        path = CASES_DIR / case_id / "artefacts" / "enrichment" / "verdict_summary.json"
         if not path.exists():
             return _json({"error": "No verdicts found."})
         return _json(load_json(path))
@@ -149,6 +149,138 @@ def register_resources(mcp: FastMCP) -> None:
         if not path.exists():
             return f"No FP ticket found for case {case_id!r}."
         return path.read_text(encoding="utf-8")
+
+    @mcp.resource("socai://cases/{case_id}/evidence")
+    def case_evidence(case_id: str) -> str:
+        """Raw evidence files added to the case.
+
+        Contains alerts, log snippets, and other raw data added via
+        ``add_evidence``. Read this to see all raw input data for a case
+        in a single call instead of multiple ``read_case_file`` invocations.
+        """
+        _require_scope("investigations:read")
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+
+        evidence_dir = CASES_DIR / case_id / "evidence"
+        if not evidence_dir.is_dir():
+            return _json({"error": "No evidence directory found.", "evidence": []})
+
+        evidence = []
+        for path in sorted(evidence_dir.iterdir()):
+            if path.is_file():
+                try:
+                    if path.suffix == ".json":
+                        evidence.append({
+                            "filename": path.name,
+                            "type": "json",
+                            "data": load_json(path),
+                        })
+                    else:
+                        text = path.read_text(encoding="utf-8", errors="replace")
+                        if len(text) > 10000:
+                            text = text[:10000] + "\n[...truncated...]"
+                        evidence.append({
+                            "filename": path.name,
+                            "type": "text",
+                            "data": text,
+                        })
+                except Exception:
+                    evidence.append({
+                        "filename": path.name,
+                        "type": "error",
+                        "data": "Failed to read file.",
+                    })
+
+        return _json({"evidence": evidence, "count": len(evidence)})
+
+    @mcp.resource("socai://cases/{case_id}/findings")
+    def case_findings(case_id: str) -> str:
+        """Analytical findings recorded via ``add_finding``.
+
+        Contains all analyst conclusions, determinations, and observations
+        recorded during the investigation.
+        """
+        _require_scope("investigations:read")
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+
+        findings_path = CASES_DIR / case_id / "artefacts" / "findings.json"
+        if not findings_path.exists():
+            return _json({"findings": [], "count": 0})
+        data = load_json(findings_path)
+        findings = data if isinstance(data, list) else data.get("findings", [])
+        return _json({"findings": findings, "count": len(findings)})
+
+    @mcp.resource("socai://cases/{case_id}/full")
+    def case_full(case_id: str) -> str:
+        """Complete case bundle — meta, IOCs, enrichment, verdicts, timeline,
+        findings, and evidence in a single read.
+
+        Use this instead of making 5-6 separate resource reads or tool calls
+        to assemble case context. Truncates large sections to stay within
+        reasonable size limits.
+        """
+        _require_scope("investigations:read")
+
+        from config.settings import CASES_DIR
+        from tools.common import load_json
+
+        case_dir = CASES_DIR / case_id
+        if not case_dir.is_dir():
+            return _json({"error": f"Case {case_id!r} not found."})
+
+        def _load(rel_path: str, default=None):
+            path = case_dir / rel_path
+            if not path.exists():
+                return default
+            try:
+                if path.suffix == ".json":
+                    return load_json(path)
+                return path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                return default
+
+        def _truncate_json(obj, max_chars: int = 8000):
+            import json as _json_mod
+            text = _json_mod.dumps(obj, indent=2, default=str)
+            if len(text) > max_chars:
+                return _json_mod.loads(_json_mod.dumps(obj, default=str))  # ensure serialisable
+            return obj
+
+        bundle = {
+            "case_id": case_id,
+            "meta": _load("case_meta.json", {}),
+            "iocs": _load("iocs/iocs.json", {}),
+            "verdicts": _load("artefacts/enrichment/verdict_summary.json", {}),
+            "enrichment_stats": (_load("artefacts/enrichment.json", {}) or {}).get("stats", {}),
+            "timeline": _load("artefacts/timeline.json", []),
+            "findings": _load("artefacts/findings.json", []),
+        }
+
+        # Include evidence filenames (not full content — too large)
+        evidence_dir = case_dir / "evidence"
+        if evidence_dir.is_dir():
+            bundle["evidence_files"] = sorted(p.name for p in evidence_dir.iterdir() if p.is_file())
+        else:
+            bundle["evidence_files"] = []
+
+        # Include report existence flags
+        reports_dir = case_dir / "reports"
+        if reports_dir.is_dir():
+            bundle["reports"] = sorted(p.name for p in reports_dir.iterdir() if p.is_file())
+        else:
+            bundle["reports"] = []
+
+        # Analyst notes (truncated)
+        notes = _load("notes/analyst_input.md")
+        if notes and len(notes) > 2000:
+            notes = notes[:2000] + "\n[...truncated...]"
+        bundle["notes"] = notes
+
+        return _json(bundle)
 
     # ------------------------------------------------------------------
     # Rumsfeld Investigation Analysis
@@ -379,6 +511,105 @@ def register_resources(mcp: FastMCP) -> None:
         return _json({"profiles": profiles, "attack_types": list(ATTACK_TYPES)})
 
     # ------------------------------------------------------------------
+    # Enrichment Provider Configuration
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://enrichment-providers")
+    def enrichment_providers() -> str:
+        """Configured enrichment providers and their availability.
+
+        Shows which threat intelligence providers are configured (have API
+        keys) and available for use. Read this to understand what enrichment
+        sources are available before running ``enrich_iocs``.
+        """
+        _require_scope("investigations:read")
+
+        import os
+
+        providers = {
+            "ip": {
+                "tier1_fast": [
+                    {"name": "AbuseIPDB", "configured": bool(os.environ.get("ABUSEIPDB_KEY"))},
+                    {"name": "URLhaus", "configured": True},  # No key required
+                    {"name": "ThreatFox", "configured": True},  # No key required
+                    {"name": "OpenCTI", "configured": bool(os.environ.get("OPENCTI_URL") and os.environ.get("OPENCTI_TOKEN"))},
+                    {"name": "WhoisXML (ASN)", "configured": bool(os.environ.get("WHOISXML_KEY"))},
+                ],
+                "tier2_deep": [
+                    {"name": "VirusTotal", "configured": bool(os.environ.get("VT_API_KEY"))},
+                    {"name": "Shodan", "configured": bool(os.environ.get("SHODAN_KEY"))},
+                    {"name": "GreyNoise", "configured": bool(os.environ.get("GREYNOISE_KEY"))},
+                    {"name": "ProxyCheck", "configured": bool(os.environ.get("PROXYCHECK_KEY"))},
+                    {"name": "Censys", "configured": bool(os.environ.get("CENSYS_API_ID") and os.environ.get("CENSYS_API_SECRET"))},
+                    {"name": "OTX", "configured": bool(os.environ.get("OTX_KEY"))},
+                ],
+            },
+            "domain": {
+                "tier1_fast": [
+                    {"name": "URLhaus", "configured": True},
+                    {"name": "ThreatFox", "configured": True},
+                    {"name": "OpenCTI", "configured": bool(os.environ.get("OPENCTI_URL") and os.environ.get("OPENCTI_TOKEN"))},
+                    {"name": "WhoisXML", "configured": bool(os.environ.get("WHOISXML_KEY"))},
+                ],
+                "tier2_deep": [
+                    {"name": "VirusTotal", "configured": bool(os.environ.get("VT_API_KEY"))},
+                    {"name": "urlscan.io", "configured": bool(os.environ.get("URLSCAN_KEY"))},
+                    {"name": "Censys", "configured": bool(os.environ.get("CENSYS_API_ID") and os.environ.get("CENSYS_API_SECRET"))},
+                    {"name": "OTX", "configured": bool(os.environ.get("OTX_KEY"))},
+                ],
+            },
+            "url": {
+                "tier1_fast": [
+                    {"name": "URLhaus", "configured": True},
+                    {"name": "ThreatFox", "configured": True},
+                    {"name": "OpenCTI", "configured": bool(os.environ.get("OPENCTI_URL") and os.environ.get("OPENCTI_TOKEN"))},
+                ],
+                "tier2_deep": [
+                    {"name": "VirusTotal", "configured": bool(os.environ.get("VT_API_KEY"))},
+                    {"name": "urlscan.io", "configured": bool(os.environ.get("URLSCAN_KEY"))},
+                    {"name": "OTX", "configured": bool(os.environ.get("OTX_KEY"))},
+                ],
+            },
+            "hash": {
+                "tier1_fast": [
+                    {"name": "MalwareBazaar", "configured": True},
+                    {"name": "ThreatFox", "configured": True},
+                    {"name": "OpenCTI", "configured": bool(os.environ.get("OPENCTI_URL") and os.environ.get("OPENCTI_TOKEN"))},
+                ],
+                "tier2_deep": [
+                    {"name": "VirusTotal", "configured": bool(os.environ.get("VT_API_KEY"))},
+                    {"name": "Intezer", "configured": bool(os.environ.get("INTEZER_KEY"))},
+                    {"name": "OTX", "configured": bool(os.environ.get("OTX_KEY"))},
+                ],
+            },
+        }
+
+        # Summary counts
+        total = 0
+        configured = 0
+        for ioc_type_providers in providers.values():
+            for tier_providers in ioc_type_providers.values():
+                for p in tier_providers:
+                    total += 1
+                    if p["configured"]:
+                        configured += 1
+
+        return _json({
+            "providers": providers,
+            "summary": {
+                "total_provider_slots": total,
+                "configured": configured,
+                "unconfigured": total - configured,
+            },
+            "enrichment_director": "deterministic",
+            "tier_escalation": (
+                "Tier 1 (fast/free) runs on all IOCs. Tier 2 (deep) runs only on "
+                "IOCs where Tier 1 returns suspicious/malicious signals, ambiguous "
+                "results, or no data."
+            ),
+        })
+
+    # ------------------------------------------------------------------
     # IOC Index
     # ------------------------------------------------------------------
 
@@ -578,7 +809,7 @@ def register_resources(mcp: FastMCP) -> None:
                 },
             },
             "prompts": {
-                "total": 16,
+                "total": 21,
                 "items": [
                     {
                         "name": "hitl_investigation",
@@ -644,10 +875,30 @@ def register_resources(mcp: FastMCP) -> None:
                         "name": "review_report",
                         "description": "Client-side report quality gate review (unconfirmed claims, speculation, gaps).",
                     },
+                    {
+                        "name": "write_timeline",
+                        "description": "Client-side forensic timeline reconstruction.",
+                    },
+                    {
+                        "name": "write_evtx_analysis",
+                        "description": "Client-side EVTX attack chain analysis.",
+                    },
+                    {
+                        "name": "write_phishing_verdict",
+                        "description": "Client-side phishing page assessment.",
+                    },
+                    {
+                        "name": "write_pe_verdict",
+                        "description": "Client-side PE binary malware assessment.",
+                    },
+                    {
+                        "name": "write_cve_context",
+                        "description": "Client-side CVE contextualisation.",
+                    },
                 ],
             },
             "resources": {
-                "total": 26,
+                "total": 30,
                 "uris": [
                     {"uri": "socai://capabilities", "description": "This overview"},
                     {"uri": "socai://role", "description": "Current analyst role, permissions, and behavioural instructions"},
@@ -661,6 +912,9 @@ def register_resources(mcp: FastMCP) -> None:
                     {"uri": "socai://cases/{case_id}/notes", "description": "Analyst notes"},
                     {"uri": "socai://cases/{case_id}/response-actions", "description": "Client response actions and containment plan"},
                     {"uri": "socai://cases/{case_id}/fp-ticket", "description": "Existing FP closure comment"},
+                    {"uri": "socai://cases/{case_id}/evidence", "description": "Raw evidence files"},
+                    {"uri": "socai://cases/{case_id}/findings", "description": "Analytical findings"},
+                    {"uri": "socai://cases/{case_id}/full", "description": "Complete case bundle (meta + IOCs + enrichment + verdicts + timeline + findings)"},
                     {"uri": "socai://cases/{case_id}/matrix", "description": "Investigation reasoning matrix (Rumsfeld method)"},
                     {"uri": "socai://cases/{case_id}/determination", "description": "Evidence-chain determination analysis"},
                     {"uri": "socai://cases/{case_id}/quality-gate", "description": "Report quality gate review results"},
@@ -672,6 +926,7 @@ def register_resources(mcp: FastMCP) -> None:
                     {"uri": "socai://playbooks/{id}", "description": "Full KQL playbook with stages"},
                     {"uri": "socai://sentinel-queries", "description": "Sentinel composite query scenarios"},
                     {"uri": "socai://pipeline-profiles", "description": "Attack-type routing profiles"},
+                    {"uri": "socai://enrichment-providers", "description": "Configured enrichment providers and availability"},
                     {"uri": "socai://ioc-index/stats", "description": "IOC index summary with recurring indicators"},
                     {"uri": "socai://articles", "description": "Threat article index"},
                     {"uri": "socai://landscape", "description": "Threat landscape across recent cases"},

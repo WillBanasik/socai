@@ -106,6 +106,10 @@ def case_create(
     registry["cases"][case_id] = {
         "title": meta["title"],
         "severity": severity,
+        "client": resolved_client,
+        "tags": tags or [],
+        "attack_type": None,
+        "disposition": None,
         "status": status,
         "created_at": meta["created_at"],
         "updated_at": meta["updated_at"],

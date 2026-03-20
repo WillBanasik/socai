@@ -77,6 +77,23 @@ def _glob_logs(log_arg: str | None) -> list[str]:
 # Sub-commands
 # ---------------------------------------------------------------------------
 
+def cmd_create_case(args: argparse.Namespace) -> None:
+    from tools.case_create import case_create, next_case_id
+    case_id = args.case or next_case_id()
+    tags = [t.strip() for t in args.tags.split(",")] if args.tags else None
+    result = case_create(
+        case_id,
+        title=args.title or "",
+        severity=args.severity,
+        analyst=args.analyst,
+        tags=tags,
+        client=args.client or "",
+    )
+    print(f"Case {result['case_id']} created at cases/{result['case_id']}/")
+    if args.json:
+        print(json.dumps(result, indent=2))
+
+
 def cmd_report(args: argparse.Namespace) -> None:
     from tools.generate_report import generate_report
     result = generate_report(args.case)
@@ -1310,6 +1327,15 @@ def build_parser() -> argparse.ArgumentParser:
     # list
     sub.add_parser("list", help="List all registered cases.")
 
+    # create-case
+    p_cc = sub.add_parser("create-case", help="Create a new investigation case.")
+    p_cc.add_argument("--case", default=None, help="Case ID (auto-generated if omitted).")
+    p_cc.add_argument("--title", "-t", default=None, help="Case title.")
+    p_cc.add_argument("--severity", "-s", default="medium", choices=["low", "medium", "high", "critical"])
+    p_cc.add_argument("--analyst", "-a", default="unassigned")
+    p_cc.add_argument("--client", "-c", default=None, help="Client name.")
+    p_cc.add_argument("--tags", default=None, help="Comma-separated tags.")
+
     # enrich
     p_en = sub.add_parser("enrich", help="Re-run IOC extraction + enrichment for a case.")
     p_en.add_argument("--case", required=True)
@@ -1707,6 +1733,7 @@ def main() -> None:
     _setup_logging(args.verbose)
 
     dispatch = {
+        "create-case":    cmd_create_case,
         "report":         cmd_report,
         "weekly":         cmd_weekly,
         "close":          cmd_close,

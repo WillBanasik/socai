@@ -13,6 +13,7 @@ All settings in `config/settings.py`; secrets in `.env` (git-ignored, auto-loade
 | `SOCAI_LLM_MODEL` | `claude-sonnet-4-6` | Claude model for LLM steps (legacy fallback) |
 | `SOCAI_ENRICH_CACHE_TTL` | `24` | Enrichment cache TTL (hours); `0` = disabled |
 | `SOCAI_ENRICH_WORKERS` | `10` | Thread pool size for parallel enrichment (all tiers) |
+| `MAXMIND_LICENSE_KEY` | — | MaxMind license key for local GeoIP (free at maxmind.com/en/geolite2/signup) |
 | `SOCAI_CONF_AUTO_CLOSE` | `0.20` | Confidence threshold; benign cases below this are auto-closed |
 | `SOCAI_TRIAGE_ESCALATION_THRESHOLD` | `1` | Known-malicious IOC count to trigger severity escalation |
 | `SOCAI_CAMPAIGN_MIN_IOCS` | `2` | Min shared IOCs to form a campaign |

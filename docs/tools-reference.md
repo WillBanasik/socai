@@ -1,5 +1,102 @@
 # Tools Reference
 
+## Case Memory (Semantic Recall)
+
+`tools/case_memory.py` provides BM25-ranked semantic search over all case content — complementing the exact IOC/keyword lookup in `tools/recall.py`.
+
+**Functions:**
+
+- `build_case_memory_index(include_open=True)` — walks all cases in the registry, extracts text (title, tags, IOCs, attack type, report excerpt, analyst notes), tokenises, and writes a BM25-ready index to `registry/case_memory.json`. Returns `{"status": "ok", "indexed": N}`.
+
+- `search_case_memory(query, *, top_k=5, client_filter="")` — runs BM25 ranking over the index and returns the top-K most similar cases. Auto-builds the index if it doesn't exist. Results include `relevance_score` (BM25 score), title, client, severity, status, disposition, and tags.
+
+**When to use:** After `recall_cases` (exact match), use `recall_semantic` to surface similar *context* — e.g. "DocuSign phishing" finds past DocuSign campaigns even if no single IOC overlaps.
+
+**Index freshness:** Rebuilt every 6 hours by the background scheduler (`tools/scheduler.py`). Can be force-rebuilt via the `rebuild_case_memory` MCP tool.
+
+**Implementation:** BM25 is implemented inline in `case_memory.py` — no external dependencies.
+
+**Output:** `registry/case_memory.json` (token lists per case; not a case artefact — no audit entry).
+
+---
+
+## Client Behavioural Baselines
+
+`tools/client_baseline.py` builds per-client profiles from historical case data, providing context when interpreting enrichment results for a client.
+
+**Functions:**
+
+- `build_client_baseline(client)` — scans all cases for the client and builds a profile covering: IOC recurrence (top-50 per type by frequency), confirmed malicious/suspicious IOCs from prior enrichments, attack type distribution, severity distribution, tag frequency, and disposition breakdown. Writes to `registry/baselines/{client_key}.json`.
+
+- `get_client_baseline(client)` — returns the existing baseline or builds it on first call.
+
+- `check_against_baseline(client, ioc_type, value)` — returns `{"known": bool, "seen": N, "cases": [...]}` for a specific IOC value, enabling enrichment context like "this IP appeared 4 times across client cases, always clean".
+
+**Schema** (`registry/baselines/{client}.json`):
+```json
+{
+  "client": "client_key",
+  "built_at": "...",
+  "case_count": 15,
+  "iocs": {
+    "ipv4": {"1.2.3.4": {"seen": 3, "cases": ["IV_CASE_001", ...]}},
+    "domain": {...}
+  },
+  "known_malicious": [...],
+  "known_suspicious": [...],
+  "attack_types": {"phishing": 8, "account_compromise": 4},
+  "severity_dist": {"high": 9, "medium": 5, ...},
+  "tags": {"identity_protection": 6, ...},
+  "dispositions": {"true_positive": 3, "benign_positive": 8, "false_positive": 4}
+}
+```
+
+**Index freshness:** Rebuilt every 24 hours by the background scheduler for all configured clients.
+
+---
+
+## GeoIP (Local MaxMind)
+
+`tools/geoip.py` provides fast offline IP geolocation via a local MaxMind GeoLite2-City database, avoiding API quota consumption for geographic context during enrichment.
+
+**Functions:**
+
+- `lookup_ip(ip)` — returns `{"available": True, "country": ..., "country_code": ..., "city": ..., "latitude": ..., "longitude": ..., "timezone": ...}`. Returns `{"available": False, "note": "..."}` gracefully when the database is absent or `geoip2` is not installed.
+
+- `bulk_lookup(ips)` — returns `{ip: lookup_result}` for multiple IPs.
+
+- `refresh_geoip_db(force=False)` — downloads the GeoLite2-City database (~70 MB compressed) from MaxMind. Skips if updated within the past 7 days unless `force=True`. Database stored at `registry/geoip/GeoLite2-City.mmdb`.
+
+**Requirements:**
+- `MAXMIND_LICENSE_KEY` in `.env` (free at maxmind.com/en/geolite2/signup)
+- `pip install geoip2`
+
+Both are optional — `lookup_ip` degrades gracefully with `{"available": False}` if either is missing.
+
+**Index freshness:** Database refreshed weekly by the background scheduler.
+
+---
+
+## Background Scheduler
+
+`tools/scheduler.py` runs periodic maintenance tasks in a daemon thread started at MCP server startup.
+
+**Tasks:**
+
+| Task | Interval | Purpose |
+|---|---|---|
+| `case_memory_rebuild` | 6 hours | Keep BM25 semantic index fresh as cases are created/closed |
+| `geoip_refresh` | 7 days | Update MaxMind GeoLite2-City database |
+| `baseline_refresh` | 24 hours | Rebuild per-client baselines for all configured clients |
+
+**API:**
+- `start_scheduler()` — starts the daemon thread. Idempotent (safe to call multiple times). Called automatically from MCP server lifespan (`mcp_server/server.py`).
+- `stop_scheduler()` — signals the thread to stop at its next 60-second check interval. Called on server shutdown.
+
+Each task run is logged as a `scheduler_task` event in `registry/mcp_server.jsonl`.
+
+---
+
 ## Web Capture
 
 `tools/web_capture.py` exposes two public functions:

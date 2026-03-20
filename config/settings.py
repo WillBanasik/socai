@@ -150,6 +150,22 @@ SOCAI_MODEL_GAP_ANALYSIS        = os.getenv("SOCAI_MODEL_GAP_ANALYSIS",        "
 SOCAI_ENRICH_DIRECTOR           = os.getenv("SOCAI_ENRICH_DIRECTOR",           "0")  # opt-in
 
 # ---------------------------------------------------------------------------
+# Case memory index (BM25 semantic recall)
+# ---------------------------------------------------------------------------
+CASE_MEMORY_INDEX_FILE = BASE_DIR / "registry" / "case_memory.json"
+
+# ---------------------------------------------------------------------------
+# Per-client behavioural baselines
+# ---------------------------------------------------------------------------
+BASELINES_DIR = BASE_DIR / "registry" / "baselines"
+
+# ---------------------------------------------------------------------------
+# Local GeoIP database (MaxMind GeoLite2)
+# ---------------------------------------------------------------------------
+MAXMIND_LICENSE_KEY = os.getenv("MAXMIND_LICENSE_KEY", "")
+GEOIP_DB_PATH = BASE_DIR / "registry" / "geoip" / "GeoLite2-City.mmdb"
+
+# ---------------------------------------------------------------------------
 # Batch API
 # ---------------------------------------------------------------------------
 BATCH_POLL_INTERVAL = int(os.getenv("SOCAI_BATCH_POLL_INTERVAL", "30"))

@@ -503,6 +503,68 @@ def _register_tier1(mcp: FastMCP) -> None:
         except Exception as exc:
             return _json({"error": f"Error reading {file_path}: {exc}"})
 
+    @mcp.tool(title="List Case Files", annotations={"readOnlyHint": True})
+    def list_case_files(case_id: str, subpath: str = "") -> str:
+        """Use when you need to discover what artefact files exist in a case
+        directory — e.g. after running a tool that produces artefacts, or when
+        the analyst asks to review available evidence.
+
+        Returns a tree of all files under the case directory (or a subdirectory
+        if ``subpath`` is provided), with file sizes. Use the returned relative
+        paths with ``read_case_file`` to read individual files.
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        subpath : str
+            Optional subdirectory to scope the listing (e.g. "artefacts/browser_session").
+            Defaults to the full case directory.
+        """
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from config.settings import CASES_DIR
+        import re as _re
+
+        if not _re.match(r"^[A-Za-z0-9_-]+$", case_id):
+            return _json({"error": "Invalid case_id."})
+
+        case_dir = CASES_DIR / case_id
+        if not case_dir.is_dir():
+            return _json({"error": f"Case not found: {case_id}"})
+
+        target = case_dir
+        if subpath:
+            clean = Path(subpath).as_posix()
+            if ".." in clean or clean.startswith("/"):
+                return _json({"error": "Directory traversal not allowed."})
+            target = case_dir / clean
+            try:
+                target.resolve().relative_to(case_dir.resolve())
+            except ValueError:
+                return _json({"error": "Directory traversal not allowed."})
+            if not target.is_dir():
+                return _json({"error": f"Directory not found: {subpath}"})
+
+        files = []
+        for p in sorted(target.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(case_dir).as_posix()
+            try:
+                size = p.stat().st_size
+            except OSError:
+                size = 0
+            files.append({"path": rel, "size": size})
+
+        return _json({
+            "case_id": case_id,
+            "root": subpath or ".",
+            "file_count": len(files),
+            "files": files,
+        })
+
     @mcp.tool(title="Create Case")
     async def create_case(
         title: str,
@@ -643,9 +705,9 @@ def _register_tier1(mcp: FastMCP) -> None:
         disposition (e.g. "false_positive", "true_positive", "benign_positive",
         "benign", "inconclusive").
 
-        Only **active** cases can be closed. If the case is still in triage,
-        use ``promote_case`` to move it to active first, or ``discard_case`` to
-        triage it out.
+        Cases can be closed from **active** or **triage** status. Closing from
+        triage is useful for clear-cut dispositions (e.g. obvious benign positive
+        or PUP) that don't need a full investigation cycle.
 
         Parameters
         ----------
@@ -653,25 +715,13 @@ def _register_tier1(mcp: FastMCP) -> None:
             Case identifier, e.g. "IV_CASE_001".
         disposition : str
             Closing disposition. One of: "true_positive", "benign_positive",
-            "false_positive", "benign", "inconclusive", "resolved". Default "resolved".
+            "false_positive", "benign", "pup_pua", "inconclusive", "resolved".
+            Default "resolved".
             Use "benign_positive" when the alert fired correctly on real activity
             but that activity was authorised/non-threatening (not "true_positive").
         """
         _require_scope("investigations:submit")
         # No boundary check — close_case is administrative (bulk close across cases)
-
-        # Guard: only active (or legacy open) cases can be closed
-        from config.settings import CASES_DIR
-        from tools.common import load_json
-        meta_path = CASES_DIR / case_id / "case_meta.json"
-        if meta_path.exists():
-            meta = load_json(meta_path)
-            status = meta.get("status", "")
-            if status == "triage":
-                raise ToolError(
-                    f"Case {case_id} is in triage. Promote it to active with "
-                    f"promote_case first, or use discard_case to triage it out."
-                )
 
         from tools.index_case import index_case
         return _json(index_case(case_id, status="closed", disposition=disposition))
@@ -3118,10 +3168,15 @@ def _register_tier3(mcp: FastMCP) -> None:
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        limit = max(1, min(int(max_rows), 1000))
+
         def _run_one(query: str) -> dict:
             try:
                 from scripts.run_kql import run_kql
-                rows = run_kql(ws_id, query, max_rows=max_rows)
+                q = query.rstrip().rstrip(";")
+                if "| take " not in q.lower() and "| limit " not in q.lower():
+                    q += f"\n| take {limit}"
+                rows = run_kql(ws_id, q)
                 return {"query": query[:200], "row_count": len(rows), "rows": rows}
             except Exception as exc:
                 return {"query": query[:200], "error": str(exc), "row_count": 0, "rows": []}
@@ -3861,6 +3916,181 @@ def _register_tier3(mcp: FastMCP) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Intelligence tier — semantic memory, baselines, GeoIP
+# ---------------------------------------------------------------------------
+
+def _register_intelligence(mcp: FastMCP) -> None:
+
+    @mcp.tool(title="Semantic Case Recall", annotations={"readOnlyHint": True})
+    async def recall_semantic(
+        query: Annotated[str, "Natural-language description of what you're looking for "
+                              "(e.g. 'DocuSign phishing credential harvest' or "
+                              "'account takeover Egypt sign-in')."],
+        top_k: Annotated[int, "Maximum results to return (default 5)."] = 5,
+        client_filter: Annotated[str, "Restrict results to a specific client (optional)."] = "",
+    ) -> str:
+        """Use when you want to find prior cases similar to the current investigation
+        by *meaning* rather than exact IOC match.
+
+        Unlike ``recall_cases`` (exact IOC/keyword lookup), this tool uses BM25
+        ranked text search over case titles, tags, IOCs, report excerpts, and
+        analyst notes — so it surfaces cases with similar *context* even when no
+        single IOC overlaps.
+
+        Best for:
+        - "Have we seen DocuSign phishing before?"
+        - "Any prior account compromises from unfamiliar countries?"
+        - "Similar malware dropper via macro?"
+
+        Call ``recall_cases`` first for exact IOC matches, then call this for
+        broader thematic context.
+
+        Parameters
+        ----------
+        query : str
+            Natural-language description of the investigation type.
+        top_k : int
+            Max results (default 5).
+        client_filter : str
+            Optional client name to scope results.
+        """
+        _require_scope("investigations:read")
+
+        result = await asyncio.to_thread(
+            lambda: __import__("tools.case_memory", fromlist=["search_case_memory"])
+                        .search_case_memory(query, top_k=top_k, client_filter=client_filter)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Rebuild Case Memory Index")
+    async def rebuild_case_memory() -> str:
+        """Use to manually refresh the semantic case memory index.
+
+        The index is rebuilt automatically every 6 hours by the background
+        scheduler. Call this if you've just closed several cases and want
+        them immediately searchable via ``recall_semantic``.
+
+        Returns the number of cases indexed and the file path.
+        """
+        _require_scope("investigations:read")
+
+        result = await asyncio.to_thread(
+            lambda: __import__("tools.case_memory", fromlist=["build_case_memory_index"])
+                        .build_case_memory_index()
+        )
+        return _json(result)
+
+    @mcp.tool(title="Get Client Baseline", annotations={"readOnlyHint": True})
+    async def get_client_baseline(
+        client_name: Annotated[str, "Client name to retrieve baseline for."],
+    ) -> str:
+        """Use when you want to understand what is 'normal' for a client before
+        interpreting enrichment results.
+
+        Returns a behavioural profile built from all historical cases for the
+        client, including:
+        - IOC recurrence (IPs/domains that appear repeatedly, always clean)
+        - Confirmed malicious / suspicious IOCs seen in prior cases
+        - Attack type distribution (e.g. 60% phishing, 30% account compromise)
+        - Severity distribution and tag frequency
+
+        Built automatically from case history. Rebuilt every 24 hours by the
+        background scheduler, or on demand via ``rebuild_client_baseline``.
+
+        Call ``lookup_client`` first to confirm the client name, then this to
+        load baseline context before enriching IOCs.
+
+        Parameters
+        ----------
+        client_name : str
+            Client name (case-insensitive).
+        """
+        _require_scope("investigations:read")
+
+        result = await asyncio.to_thread(
+            lambda: __import__("tools.client_baseline", fromlist=["get_client_baseline"])
+                        .get_client_baseline(client_name)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Rebuild Client Baseline")
+    async def rebuild_client_baseline(
+        client_name: Annotated[str, "Client name to rebuild baseline for."],
+    ) -> str:
+        """Use to force-rebuild the behavioural baseline for a client.
+
+        Scans all historical cases for this client and recomputes the profile
+        (IOC recurrence, attack type distribution, severity breakdown, tags).
+
+        The baseline is rebuilt automatically every 24 hours by the background
+        scheduler. Call this after a significant batch of new cases has been
+        closed for a client.
+
+        Parameters
+        ----------
+        client_name : str
+            Client name (case-insensitive).
+        """
+        _require_scope("investigations:write")
+
+        result = await asyncio.to_thread(
+            lambda: __import__("tools.client_baseline", fromlist=["build_client_baseline"])
+                        .build_client_baseline(client_name)
+        )
+        return _json(result)
+
+    @mcp.tool(title="GeoIP Lookup", annotations={"readOnlyHint": True})
+    async def geoip_lookup(
+        ip: Annotated[str, "IPv4 or IPv6 address to geolocate."],
+    ) -> str:
+        """Use when you need to quickly geolocate an IP address without consuming
+        enrichment API quota.
+
+        Queries the local MaxMind GeoLite2-City database (offline, fast).
+        Returns country, city, latitude/longitude, and timezone.
+
+        Requires MAXMIND_LICENSE_KEY in .env and geoip2 installed.
+        Returns {"available": False} gracefully if not configured.
+
+        Parameters
+        ----------
+        ip : str
+            IPv4 or IPv6 address.
+        """
+        _require_scope("enrichment:run")
+
+        result = await asyncio.to_thread(
+            lambda: __import__("tools.geoip", fromlist=["lookup_ip"])
+                        .lookup_ip(ip)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Refresh GeoIP Database")
+    async def refresh_geoip(
+        force: Annotated[bool, "Re-download even if recently updated."] = False,
+    ) -> str:
+        """Use to download or update the local MaxMind GeoLite2-City database.
+
+        The database (~70 MB) is refreshed automatically every 7 days by the
+        background scheduler. Call with force=True to update immediately.
+
+        Requires MAXMIND_LICENSE_KEY in .env (free MaxMind account).
+
+        Parameters
+        ----------
+        force : bool
+            Force re-download even if database is current.
+        """
+        _require_scope("admin")
+
+        result = await asyncio.to_thread(
+            lambda: __import__("tools.geoip", fromlist=["refresh_geoip_db"])
+                        .refresh_geoip_db(force=force)
+        )
+        return _json(result)
+
+
+# ---------------------------------------------------------------------------
 # Registration entry point
 # ---------------------------------------------------------------------------
 
@@ -3870,3 +4100,4 @@ def register_tools(mcp: FastMCP) -> None:
     _register_tier2(mcp)
     _register_tier2_rumsfeld(mcp)
     _register_tier3(mcp)
+    _register_intelligence(mcp)

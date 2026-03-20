@@ -28,8 +28,9 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  77 tools, 26 resources │
-│  16 prompts, JSONL logs │
+│  84 tools, 30 resources │
+│  21 prompts, JSONL logs │
+│  Background scheduler   │
 └─────────────────────────┘
     │
     │ Shared filesystem
@@ -88,6 +89,7 @@ Set `SOCAI_MCP_AUTH=entra_id` to validate Azure AD tokens instead. `SocaiTokenVe
 | `SOCAI_MCP_LOG_MAX_RESULT` | `2000` | Max chars per result preview in logs |
 | `SOCAI_JWT_SECRET` | (insecure default) | JWT signing secret — **must set in production** |
 | `SOCAI_JWT_TTL_HOURS` | `8` | Token expiry (hours); `720` = 30 days |
+| `MAXMIND_LICENSE_KEY` | — | MaxMind license key for local GeoIP database (free at maxmind.com) |
 
 ## RBAC Permissions
 
@@ -95,11 +97,12 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 
 | Permission | Grants |
 |---|---|
-| `investigations:read` | list_cases, get_case, read_report, read_case_file, recall_cases, classify_attack, plan_investigation, resources |
-| `investigations:submit` | capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, analyse_pe, yara_scan, memory tools, all write tools |
+| `investigations:read` | list_cases, get_case, read_report, read_case_file, recall_cases, recall_semantic, classify_attack, plan_investigation, get_client_baseline, resources |
+| `investigations:submit` | capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, analyse_pe, yara_scan, memory tools, all write tools, rebuild_client_baseline |
+| `enrichment:run` | geoip_lookup |
 | `campaigns:read` | campaign_cluster, assess_landscape, search_threat_articles |
 | `sentinel:query` | run_kql, load_kql_playbook, generate_sentinel_query, run_kql_batch |
-| `admin` | All tools including sandbox, browser, response_actions, merge_cases |
+| `admin` | All tools including sandbox, browser, response_actions, merge_cases, refresh_geoip |
 
 ## Analyst Roles
 
@@ -126,7 +129,7 @@ python3 -c "from api.auth import create_token_for_role; print(create_token_for_r
 
 When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg-soc-analyst`, `sg-soc-senior`) to these role names in the auth config.
 
-## Tools (77)
+## Tools (84)
 
 ### Tier 1 -- Core Investigation (24)
 
@@ -188,6 +191,17 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `save_report` | `investigations:submit` | Persist a locally-generated report (defang, HTML, auto-close, audit). No LLM call. |
 | `save_threat_article` | `investigations:submit` | Persist a locally-generated threat article to the article index. No LLM call. |
 
+### Intelligence -- Semantic Memory, Baselines, GeoIP (6)
+
+| Tool | Permission | Description |
+|---|---|---|
+| `recall_semantic` | `investigations:read` | BM25 semantic case recall by meaning (not just exact IOC match) |
+| `rebuild_case_memory` | `investigations:read` | Rebuild semantic case memory index immediately |
+| `get_client_baseline` | `investigations:read` | Get per-client behavioural profile (IOC recurrence, attack patterns, severity dist.) |
+| `rebuild_client_baseline` | `investigations:write` | Force-rebuild a client's behavioural baseline |
+| `geoip_lookup` | `enrichment:run` | Fast offline IP geolocation via local MaxMind GeoLite2 |
+| `refresh_geoip` | `admin` | Download/update local MaxMind GeoLite2-City database |
+
 ### Tier 3 -- Advanced / Restricted (24)
 
 | Tool | Permission | Description |
@@ -217,7 +231,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `memory_dump_guide` | `investigations:submit` | MDE Live Response dump collection guidance |
 | `analyse_memory_dump` | `investigations:submit` | Process memory dump analysis (strings, IOCs, risk scoring) |
 
-## Resources (26)
+## Resources (30)
 
 | URI | Description |
 |---|---|
@@ -232,6 +246,9 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://cases/{case_id}/notes` | Analyst notes (free-text investigation context) |
 | `socai://cases/{case_id}/response-actions` | Client response actions and containment plan |
 | `socai://cases/{case_id}/fp-ticket` | Existing FP closure comment |
+| `socai://cases/{case_id}/evidence` | Raw evidence files added via `add_evidence` |
+| `socai://cases/{case_id}/findings` | Analytical findings recorded via `add_finding` |
+| `socai://cases/{case_id}/full` | Complete case bundle (meta + IOCs + enrichment + verdicts + timeline + findings) |
 | `socai://cases/{case_id}/matrix` | Investigation reasoning matrix (Rumsfeld method) |
 | `socai://cases/{case_id}/determination` | Evidence-chain determination analysis |
 | `socai://cases/{case_id}/quality-gate` | Report quality gate review results |
@@ -239,6 +256,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://clients` | Client registry with platform scope |
 | `socai://clients/{client_name}` | Full client configuration |
 | `socai://clients/{name}/playbook` | Client response playbook |
+| `socai://enrichment-providers` | Configured TI providers and availability per IOC type |
 | `socai://ioc-index/stats` | IOC index summary with tier breakdown |
 | `socai://playbooks` | KQL playbook index |
 | `socai://playbooks/{id}` | Full playbook with stages |
@@ -248,7 +266,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://landscape` | Threat landscape summary |
 | `socai://role` | Current analyst role, permissions, and behavioural instructions |
 
-## Prompts (16)
+## Prompts (21)
 
 ### Guided Workflows (5)
 
@@ -275,13 +293,18 @@ These prompts load system instructions + case data into the analyst's local Clau
 | `write_threat_article` | `generate_threat_article` | N/A |
 | `write_response_plan` | `response_actions` (advisory) | No |
 
-### Client-Side Analysis (3)
+### Client-Side Analysis (8)
 
 | Prompt | Replaces (server-side) | Purpose |
 |---|---|---|
 | `run_determination` | `run_determination` tool | Evidence-chain disposition analysis (TP/BP/FP) |
 | `build_investigation_matrix` | `generate_investigation_matrix` tool | Rumsfeld matrix (knowns/unknowns/hypotheses) |
 | `review_report` | `review_report_quality` tool | Report quality gate review |
+| `write_timeline` | `reconstruct_timeline` tool | Forensic timeline reconstruction with MITRE mapping |
+| `write_evtx_analysis` | `correlate_evtx` tool | EVTX attack chain analysis and narrative |
+| `write_phishing_verdict` | `detect_phishing` tool (LLM portion) | Phishing page assessment and brand impersonation |
+| `write_pe_verdict` | `analyse_pe` tool (LLM portion) | PE binary malware assessment |
+| `write_cve_context` | `contextualise_cves` tool (LLM portion) | CVE contextualisation and patching priorities |
 
 ## Access Control
 
@@ -318,7 +341,7 @@ mcp_server/
                        #   unhandled exception hook, SSE connection lifecycle middleware
     auth.py            # SocaiTokenVerifier, _require_scope
     config.py          # Env var configuration
-    tools.py           # 77 MCP tool wrappers
+    tools.py           # 84 MCP tool wrappers
     resources.py       # 26 MCP resource implementations
     prompts.py         # 16 MCP prompt implementations
     usage.py           # Tool invocation logging (JSONL + stderr); emits tool_call,
@@ -346,6 +369,8 @@ The MCP server writes structured JSONL events to `registry/mcp_server.jsonl` (10
 | `tool_call` | Tool invoked | tool, args (summarised) |
 | `tool_result` | Tool returns | tool, duration_ms, result_preview |
 | `tool_error` | Tool raises | tool, error, duration_ms |
+| `scheduler_task` | Background task completes | task, status, result |
+| `browser_orphan_cleanup` | Orphaned Chromium processes reaped at startup | killed (count) |
 
 **PID file:** `registry/mcp_server.pid` — written on startup, removed on clean shutdown. On next startup, `_check_stale_pid()` detects unclean shutdowns and logs a recovery event.
 
@@ -372,8 +397,9 @@ Analyst's Claude Desktop (VPN / corporate network)
     ▼
 ┌──────────────────────────┐
 │  mcp_server (port 8001)  │  ← SOCAI_MCP_HOST=127.0.0.1
-│  77 tools, 26 resources  │
+│  84 tools, 26 resources  │
 │  JWT RBAC, role system   │
+│  Background scheduler    │
 └──────────────────────────┘
     │
     │ Filesystem

@@ -36,6 +36,7 @@ Usage (standalone):
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -91,6 +92,30 @@ _PCAP_POLL_INTERVAL = 2.0
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _relative_artefact_paths(case_id: str, paths: dict) -> dict | None:
+    """Convert absolute artefact paths to case-relative paths for MCP clients.
+
+    Returns a dict of {label: relative_path} suitable for ``read_case_file``,
+    or None when there is no case_id (session-only mode).
+    """
+    if not case_id:
+        return None
+    case_root = CASES_DIR / case_id
+    result = {}
+    for label, p in paths.items():
+        if p is None:
+            continue
+        try:
+            result[label] = Path(p).relative_to(case_root).as_posix()
+        except ValueError:
+            continue
+    return result or None
+
+
+# ---------------------------------------------------------------------------
 # Docker management
 # ---------------------------------------------------------------------------
 
@@ -115,8 +140,15 @@ def _check_novnc_port() -> int:
     return NOVNC_PORT
 
 
-def _start_container(session_id: str, url: str) -> str:
+def _start_container(session_id: str, url: str, telemetry_dir: Path | None = None) -> str:
     """Start the browser container with --network=host.
+
+    Args:
+        session_id: Unique session identifier.
+        url: Starting URL to navigate to.
+        telemetry_dir: Host directory to bind-mount as /telemetry.
+            When provided, tcpdump writes the pcap directly to the host
+            filesystem — surviving container crashes and OOM kills.
 
     Returns container ID.
     """
@@ -132,8 +164,13 @@ def _start_container(session_id: str, url: str) -> str:
         "-e", f"START_URL={url}",
         "-e", "SCREEN_WIDTH=1920",
         "-e", "SCREEN_HEIGHT=1080",
-        DOCKER_IMAGE,
     ]
+
+    if telemetry_dir:
+        telemetry_dir.mkdir(parents=True, exist_ok=True)
+        cmd += ["-v", f"{telemetry_dir.resolve()}:/telemetry"]
+
+    cmd.append(DOCKER_IMAGE)
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -142,10 +179,35 @@ def _start_container(session_id: str, url: str) -> str:
     return result.stdout.strip()
 
 
-def _stop_container(session_id: str) -> None:
-    """Stop and remove the container."""
+def _stop_container(session_id: str) -> bool:
+    """Stop and remove the container.  Returns True on success."""
     name = _container_name(session_id)
-    subprocess.run(["docker", "stop", name], capture_output=True, timeout=30)
+    try:
+        result = subprocess.run(
+            ["docker", "stop", name], capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            # Container may already be gone (--rm auto-removed, or manually killed)
+            inspect = subprocess.run(
+                ["docker", "inspect", name],
+                capture_output=True, text=True, timeout=5,
+            )
+            if inspect.returncode != 0:
+                # Container doesn't exist — already cleaned up, that's fine
+                return True
+            print(f"[browser] Warning: docker stop failed for {name}: {result.stderr.strip()}")
+            return False
+        return True
+    except subprocess.TimeoutExpired:
+        print(f"[browser] Warning: docker stop timed out for {name} — forcing kill")
+        try:
+            subprocess.run(["docker", "kill", name], capture_output=True, timeout=10)
+        except Exception:
+            pass
+        return False
+    except Exception as exc:
+        print(f"[browser] Warning: failed to stop container {name}: {exc}")
+        return False
 
 
 def _copy_from_container(session_id: str, src: str, dest: Path) -> bool:
@@ -549,6 +611,45 @@ _stop_locks: dict[str, threading.Lock] = {}
 _active_monitors: dict[str, _IdleMonitor] = {}
 
 
+_shutdown_in_progress = False
+
+
+def _shutdown_active_sessions() -> None:
+    """Gracefully stop all active browser sessions.
+
+    Called on process exit (atexit) or signal (SIGTERM/SIGINT) to ensure
+    containers are torn down and artefacts collected even if the MCP server
+    crashes or is killed.
+    """
+    global _shutdown_in_progress
+    if _shutdown_in_progress:
+        return
+    _shutdown_in_progress = True
+
+    active = [s for s in _list_session_states()
+              if s.get("status") == "active"]
+    if not active:
+        return
+
+    print(f"\n[browser] Process shutting down — stopping {len(active)} active session(s)...")
+    for s in active:
+        sid = s["session_id"]
+        try:
+            stop_session(sid, stop_reason="process_exit")
+            print(f"[browser] Session {sid} stopped cleanly on shutdown")
+        except Exception as exc:
+            print(f"[browser] Warning: failed to stop {sid} on shutdown: {exc}")
+            # Last resort: force-kill the container
+            _stop_container(sid)
+
+
+# Register atexit cleanup — runs on normal exit and sys.exit().
+# This is the primary safety net; signal handlers in the MCP server or CLI
+# will trigger atexit on their way out, so we don't install our own signal
+# handlers here (which would break the MCP server's handler chain).
+atexit.register(_shutdown_active_sessions)
+
+
 def _idle_watchdog(session_id: str, monitor: _IdleMonitor,
                    done_event: threading.Event) -> None:
     """Background thread: auto-stop session when idle timeout fires."""
@@ -641,11 +742,15 @@ def start_session(
     # Check noVNC port
     novnc_port = _check_novnc_port()
 
+    # Create host-side telemetry directory so pcap survives container death
+    telemetry_dir = SESSIONS_DIR / session_id / "telemetry"
+    telemetry_dir.mkdir(parents=True, exist_ok=True)
+
     print(f"[browser] Starting session {session_id}...")
 
     # Start Docker container
     try:
-        container_id = _start_container(session_id, url)
+        container_id = _start_container(session_id, url, telemetry_dir=telemetry_dir)
     except RuntimeError as exc:
         return {"status": "error", "reason": str(exc)}
 
@@ -758,12 +863,19 @@ def stop_session(
         Session results manifest.
     """
     lock = _stop_locks.setdefault(session_id, threading.Lock())
-    acquired = lock.acquire(timeout=30)
+    acquired = lock.acquire(timeout=60)
     if not acquired:
-        return {"status": "error", "reason": "Session stop already in progress"}
+        # Another thread is stopping this session — wait for its result
+        cached = _session_results.get(session_id)
+        if cached:
+            return cached
+        return {"status": "ok", "reason": "Session stopped by concurrent caller",
+                "session_id": session_id}
 
     try:
-        return _stop_session_inner(session_id, stop_reason=stop_reason)
+        result = _stop_session_inner(session_id, stop_reason=stop_reason)
+        _session_results[session_id] = result
+        return result
     finally:
         lock.release()
 
@@ -801,24 +913,48 @@ def _stop_session_inner(
     out_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy artefacts from container BEFORE stopping it
+    # Collect artefacts — prefer host-mounted telemetry (survives container
+    # death), fall back to docker cp for sessions started before the mount.
     pcap_path = out_dir / "capture.pcap"
     screenshot_path = out_dir / "screenshot_final.png"
-    pcap_ok = _copy_from_container(session_id, "/telemetry/capture.pcap", pcap_path)
-    screenshot_ok = _copy_from_container(session_id, "/telemetry/screenshot_final.png",
-                                          screenshot_path)
 
-    if pcap_ok:
-        print(f"[browser] Pcap captured ({pcap_path.stat().st_size:,} bytes)")
+    host_telemetry = SESSIONS_DIR / session_id / "telemetry"
+    host_pcap = host_telemetry / "capture.pcap"
+    host_screenshot = host_telemetry / "screenshot_final.png"
+
+    import shutil
+
+    # Pcap
+    if host_pcap.exists() and host_pcap.stat().st_size > 0:
+        shutil.copy2(host_pcap, pcap_path)
+        pcap_ok = True
+        print(f"[browser] Pcap recovered from host mount ({pcap_path.stat().st_size:,} bytes)")
     else:
-        print("[browser] Warning: no pcap captured")
+        pcap_ok = _copy_from_container(session_id, "/telemetry/capture.pcap", pcap_path)
+        if pcap_ok:
+            print(f"[browser] Pcap captured via docker cp ({pcap_path.stat().st_size:,} bytes)")
+        else:
+            print("[browser] Warning: no pcap captured")
 
-    if screenshot_ok:
-        print(f"[browser] Final screenshot captured")
+    # Screenshot
+    if host_screenshot.exists() and host_screenshot.stat().st_size > 0:
+        shutil.copy2(host_screenshot, screenshot_path)
+        screenshot_ok = True
+        print("[browser] Final screenshot recovered from host mount")
+    else:
+        screenshot_ok = _copy_from_container(
+            session_id, "/telemetry/screenshot_final.png", screenshot_path)
+        if screenshot_ok:
+            print("[browser] Final screenshot captured via docker cp")
 
     # Stop container
-    _stop_container(session_id)
-    print("[browser] Container destroyed")
+    container_stopped = _stop_container(session_id)
+    if container_stopped:
+        print("[browser] Container destroyed")
+    else:
+        log_error(case_id or session_id, "browser_session.stop",
+                  f"Container stop failed for {session_id}",
+                  severity="warning", context={"stop_reason": stop_reason})
 
     # Parse pcap into structured data
     network_data: dict = {}
@@ -894,6 +1030,14 @@ def _stop_session_inner(
             "dns_log": str(out_dir / "dns_log.json") if dns_queries else None,
             "screenshot": str(screenshot_path) if screenshot_ok else None,
         },
+        "case_files": _relative_artefact_paths(case_id, {
+            "capture_pcap": pcap_path if pcap_ok else None,
+            "network_log": (out_dir / "network_log.json") if network_data else None,
+            "dns_log": (out_dir / "dns_log.json") if dns_queries else None,
+            "screenshot": screenshot_path if screenshot_ok else None,
+            "parsed_log": logs_dir / "mde_browser_session.parsed.json",
+            "entities": logs_dir / "mde_browser_session.entities.json",
+        }),
     }
 
     save_json(out_dir / "session_manifest.json", manifest)
@@ -952,15 +1096,31 @@ def list_sessions() -> list[dict]:
 
 
 def cleanup_orphaned() -> int:
-    """Stop any orphaned session containers and clean up state."""
+    """Stop any orphaned session containers, collecting artefacts first.
+
+    Attempts a graceful stop via ``stop_session`` so that pcap/screenshot
+    are copied out before the container is destroyed.  Falls back to a raw
+    ``docker stop`` if the graceful path fails.
+    """
     cleaned = 0
     for s in _list_session_states():
-        if s.get("status") in ("orphaned", "active"):
-            container = _container_name(s["session_id"])
-            subprocess.run(["docker", "stop", container], capture_output=True, timeout=10)
-            s["status"] = "cleaned"
-            _save_session_state(s["session_id"], s)
-            cleaned += 1
+        if s.get("status") not in ("orphaned", "active"):
+            continue
+        sid = s["session_id"]
+        # Try graceful stop (copies artefacts, parses pcap, writes manifest)
+        try:
+            result = stop_session(sid, stop_reason="cleanup")
+            if result.get("status") == "ok":
+                print(f"[browser] Cleaned session {sid} — artefacts preserved")
+                cleaned += 1
+                continue
+        except Exception as exc:
+            print(f"[browser] Graceful cleanup failed for {sid}: {exc}")
+        # Fallback: force-kill the container, mark state
+        _stop_container(sid)
+        s["status"] = "cleaned"
+        _save_session_state(sid, s)
+        cleaned += 1
     return cleaned
 
 

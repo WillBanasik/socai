@@ -17,6 +17,9 @@ playwright>=1.43.0
 # Optional – native EVTX parsing
 # python-evtx>=0.7.0
 
+# Optional – local GeoIP lookups (requires MAXMIND_LICENSE_KEY in .env)
+# geoip2>=4.8.0
+
 # MCP server
 mcp>=1.1.0
 

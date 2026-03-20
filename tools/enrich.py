@@ -1674,101 +1674,16 @@ def _llm_enrichment_review(
     candidates: list[str],
     case_meta: dict | None = None,
 ) -> dict:
-    """LLM advisory: suggest additional IOCs to escalate or pivot.
+    """Enrichment escalation review — now fully deterministic.
 
-    Returns {"escalate_additional": [...], "pivot_iocs": [...], "reasoning": "..."}.
-    Returns empty dict on any failure — deterministic path unaffected.
+    Previously used an LLM call to decide additional Tier 2 escalations.
+    Replaced with deterministic rules in _apply_deterministic_escalation()
+    to eliminate an Anthropic API call on every enrichment run.
 
-    Gated behind SOCAI_ENRICH_DIRECTOR=1.
+    Returns empty dict — deterministic escalation is handled in
+    _apply_deterministic_escalation().
     """
-    from config.settings import ANTHROPIC_KEY, SOCAI_ENRICH_DIRECTOR
-    if SOCAI_ENRICH_DIRECTOR != "1":
-        return {}
-    if not ANTHROPIC_KEY:
-        return {}
-
-    try:
-        import anthropic
-    except ImportError:
-        return {}
-
-    from tools.common import get_model
-
-    # Build a concise summary of Tier 1 results for this IOC type
-    type_results = [r for r in tier1_results
-                    if r.get("ioc_type") == ioc_type or r.get("ioc") in candidates]
-    if not type_results:
-        return {}
-
-    # Truncate to avoid token bloat
-    results_summary = []
-    for r in type_results[:30]:
-        results_summary.append({
-            "ioc": r.get("ioc"),
-            "provider": r.get("provider"),
-            "verdict": r.get("verdict"),
-            "status": r.get("status"),
-            "total_reports": r.get("total_reports"),
-            "malware": r.get("malware"),
-            "threat_type": r.get("threat_type"),
-            "newly_registered": r.get("newly_registered"),
-        })
-
-    attack_type = (case_meta or {}).get("attack_type", "unknown")
-
-    user_prompt = (
-        f"IOC type: {ioc_type}\n"
-        f"Attack type: {attack_type}\n"
-        f"Candidates: {candidates[:20]}\n\n"
-        f"Tier 1 results:\n{json.dumps(results_summary, indent=2, default=str)[:3000]}"
-    )
-
-    system_prompt = (
-        "You are a threat intelligence analyst reviewing Tier 1 enrichment results. "
-        "Decide which IOCs should be escalated to Tier 2 deep enrichment.\n\n"
-        "You can ONLY ADD to the escalation list — you cannot skip IOCs that "
-        "the deterministic logic would escalate. Focus on:\n"
-        "- IOCs where Tier 1 data is ambiguous but context suggests risk\n"
-        "- Newly discovered IOCs to pivot to (e.g. domains from WHOIS, related IPs)\n"
-        "- Patterns the deterministic rules miss (structural domain similarity, "
-        "registration timing, ASN clustering)\n\n"
-        "Return JSON: {\"escalate_additional\": [\"ioc1\", ...], "
-        "\"pivot_iocs\": [{\"value\": \"...\", \"type\": \"...\", \"reason\": \"...\"}], "
-        "\"reasoning\": \"...\"}\n"
-        "Return ONLY the JSON. Use UK English."
-    )
-
-    try:
-        severity = (case_meta or {}).get("severity", "medium")
-        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-        model = get_model("enrich_director", severity)
-        message = client.messages.create(
-            model=model,
-            max_tokens=512,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        text = message.content[0].text.strip()
-        tokens_in = message.usage.input_tokens
-        tokens_out = message.usage.output_tokens
-        print(f"[enrich] LLM director ({ioc_type}): {tokens_in}/{tokens_out} tokens")
-
-        # Parse response
-        if text.startswith("```"):
-            lines = text.splitlines()
-            lines = [ln for ln in lines if not ln.strip().startswith("```")]
-            text = "\n".join(lines).strip()
-
-        parsed = json.loads(text)
-        return {
-            "escalate_additional": parsed.get("escalate_additional", []),
-            "pivot_iocs": parsed.get("pivot_iocs", []),
-            "reasoning": parsed.get("reasoning", ""),
-        }
-    except Exception as exc:
-        log_error(case_id, "enrich._llm_enrichment_review", str(exc),
-                  severity="warning", context={"ioc_type": ioc_type})
-        return {}
+    return {}
 
 
 def _save_pivot_iocs(case_id: str, pivots: list[dict]) -> None:
@@ -1794,6 +1709,72 @@ def _save_pivot_iocs(case_id: str, pivots: list[dict]) -> None:
         print(f"[enrich] Saved {len(pivots)} pivot IOC(s) for follow-up enrichment")
 
 
+def _apply_deterministic_escalation(
+    case_id: str,
+    escalate_list: list[str],
+    candidate_list: list[str],
+    tier1_results: list[dict],
+    ioc_type: str,
+    case_meta: dict | None = None,
+) -> list[str]:
+    """Rule-based escalation to complement the per-IOC _needs_deep_enrichment checks.
+
+    Catches patterns the individual IOC checks miss:
+    - IOCs with ambiguous Tier 1 results (mixed verdicts across providers)
+    - IOCs related to the attack type (e.g. domains in phishing cases)
+    - IOCs with no Tier 1 data at all (all providers returned nothing)
+
+    Never removes items from escalate_list, only adds.
+    """
+    attack_type = (case_meta or {}).get("attack_type", "generic")
+
+    # Build a lookup of Tier 1 results per IOC
+    results_by_ioc: dict[str, list[dict]] = {}
+    for r in tier1_results:
+        ioc_val = r.get("ioc", "")
+        if ioc_val:
+            results_by_ioc.setdefault(ioc_val, []).append(r)
+
+    added = 0
+    for ioc in candidate_list:
+        if ioc in escalate_list:
+            continue
+
+        ioc_results = results_by_ioc.get(ioc, [])
+
+        # Rule 1: No Tier 1 data at all — escalate for visibility
+        if not ioc_results:
+            escalate_list.append(ioc)
+            added += 1
+            continue
+
+        # Rule 2: Mixed verdicts across providers (disagreement = ambiguity)
+        verdicts = {r.get("verdict") for r in ioc_results if r.get("verdict")}
+        verdicts.discard("unknown")
+        verdicts.discard("not_found")
+        if len(verdicts) > 1:
+            escalate_list.append(ioc)
+            added += 1
+            continue
+
+        # Rule 3: Attack-type boost — in phishing cases, escalate all domains/URLs
+        if attack_type == "phishing" and ioc_type in ("domain", "url"):
+            escalate_list.append(ioc)
+            added += 1
+            continue
+
+        # Rule 4: In malware cases, escalate all hashes for full VT report
+        if attack_type == "malware" and ioc_type in ("md5", "sha1", "sha256"):
+            escalate_list.append(ioc)
+            added += 1
+            continue
+
+    if added:
+        print(f"[enrich] Deterministic escalation added {added} {ioc_type}(s) to Tier 2")
+
+    return escalate_list
+
+
 def _apply_llm_escalation(
     case_id: str,
     escalate_list: list[str],
@@ -1802,27 +1783,17 @@ def _apply_llm_escalation(
     ioc_type: str,
     case_meta: dict | None = None,
 ) -> list[str]:
-    """Run LLM enrichment director and merge additional escalations.
+    """Apply escalation rules and merge additional escalations.
 
-    Returns the (possibly expanded) escalation list. Never removes items.
+    Uses deterministic rules. The LLM director has been removed to
+    eliminate an Anthropic API call per enrichment run.
+
+    Never removes items from escalate_list, only adds.
     """
-    try:
-        advice = _llm_enrichment_review(
-            case_id, tier1_results, ioc_type, candidate_list, case_meta,
-        )
-        if advice.get("escalate_additional"):
-            added = 0
-            for ioc in advice["escalate_additional"]:
-                if ioc in candidate_list and ioc not in escalate_list:
-                    escalate_list.append(ioc)
-                    added += 1
-            if added:
-                print(f"[enrich] LLM director added {added} {ioc_type}(s) "
-                      f"to Tier 2: {advice.get('reasoning', '')[:100]}")
-        if advice.get("pivot_iocs"):
-            _save_pivot_iocs(case_id, advice["pivot_iocs"])
-    except Exception:
-        pass  # Deterministic path continues unaffected
+    escalate_list = _apply_deterministic_escalation(
+        case_id, escalate_list, candidate_list, tier1_results,
+        ioc_type, case_meta,
+    )
     return escalate_list
 
 
@@ -2518,6 +2489,9 @@ def quick_enrich(iocs: list[str], deep: bool = True) -> dict:
     (composite verdict per IOC), ``ioc_count``, ``provider_calls``.
     """
     from tools.score_verdicts import _composite_verdict
+
+    if isinstance(iocs, str):
+        iocs = [iocs]
 
     cache = _cache_load()
     tasks: list[tuple] = []

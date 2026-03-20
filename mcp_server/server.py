@@ -282,9 +282,14 @@ async def _socai_lifespan(server: FastMCP):
     mcp_log("server_start",
             transport=MCP_TRANSPORT, host=MCP_HOST, port=MCP_PORT,
             pid=os.getpid(), tool_count=tool_count)
+
+    from tools.scheduler import start_scheduler, stop_scheduler
+    start_scheduler()
+
     try:
         yield {}
     finally:
+        stop_scheduler()
         uptime_s = int(time.monotonic() - _server_start_time)
         mcp_log("server_stop", reason="shutdown", pid=os.getpid(), uptime_s=uptime_s)
         _remove_pid()
