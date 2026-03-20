@@ -363,10 +363,11 @@ class TestGeoIP:
     def test_refresh_no_license_key(self):
         from tools.geoip import refresh_geoip_db
 
-        with patch("tools.geoip.MAXMIND_LICENSE_KEY", ""):
+        with patch("tools.geoip.MAXMIND_LICENSE_KEY", ""), \
+             patch("tools.geoip.MAXMIND_ACCOUNT_ID", ""):
             result = refresh_geoip_db()
         assert result["status"] == "error"
-        assert "MAXMIND_LICENSE_KEY" in result["reason"]
+        assert "MAXMIND" in result["reason"]
 
     def test_refresh_skip_recent(self):
         """Should skip download if database updated within 7 days."""

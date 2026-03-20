@@ -162,6 +162,7 @@ BASELINES_DIR = BASE_DIR / "registry" / "baselines"
 # ---------------------------------------------------------------------------
 # Local GeoIP database (MaxMind GeoLite2)
 # ---------------------------------------------------------------------------
+MAXMIND_ACCOUNT_ID = os.getenv("MAXMIND_ACCOUNT_ID", "")
 MAXMIND_LICENSE_KEY = os.getenv("MAXMIND_LICENSE_KEY", "")
 GEOIP_DB_PATH = BASE_DIR / "registry" / "geoip" / "GeoLite2-City.mmdb"
 

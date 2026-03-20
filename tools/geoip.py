@@ -35,13 +35,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import GEOIP_DB_PATH, MAXMIND_LICENSE_KEY
+from config.settings import GEOIP_DB_PATH, MAXMIND_ACCOUNT_ID, MAXMIND_LICENSE_KEY
 from tools.common import get_session, log_error, utcnow
 
 _META_PATH = GEOIP_DB_PATH.parent / "meta.json"
 _DOWNLOAD_URL = (
-    "https://download.maxmind.com/app/geoip_download"
-    "?edition_id=GeoLite2-City&license_key={key}&suffix=tar.gz"
+    "https://download.maxmind.com/geoip/databases/GeoLite2-City/download"
+    "?suffix=tar.gz"
 )
 
 
@@ -88,11 +88,11 @@ def refresh_geoip_db(force: bool = False) -> dict:
     Returns:
         {"status": "ok", "path": str, "updated": bool}
     """
-    if not MAXMIND_LICENSE_KEY:
+    if not MAXMIND_LICENSE_KEY or not MAXMIND_ACCOUNT_ID:
         return {
             "status": "error",
             "reason": (
-                "MAXMIND_LICENSE_KEY not set. Add it to .env to enable local GeoIP. "
+                "MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY must both be set in .env. "
                 "Free registration at https://www.maxmind.com/en/geolite2/signup"
             ),
         }
@@ -114,10 +114,12 @@ def refresh_geoip_db(force: bool = False) -> dict:
             except Exception:
                 pass
 
-    url = _DOWNLOAD_URL.format(key=MAXMIND_LICENSE_KEY)
     try:
         session = get_session()
-        response = session.get(url, timeout=120, stream=True)
+        response = session.get(
+            _DOWNLOAD_URL, timeout=120, stream=True,
+            auth=(MAXMIND_ACCOUNT_ID, MAXMIND_LICENSE_KEY),
+        )
         response.raise_for_status()
 
         content = response.content
