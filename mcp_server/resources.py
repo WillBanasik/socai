@@ -523,6 +523,26 @@ def register_resources(mcp: FastMCP) -> None:
 
         return path.read_text(encoding="utf-8")
 
+    @mcp.resource("socai://clients/{client_name}/sentinel")
+    def client_sentinel(client_name: str) -> str:
+        """Sentinel workspace reference for a client — workspace ID,
+        available tables with descriptions, and key query patterns.
+
+        Read this before building KQL queries to know which tables
+        exist and what fields to use.
+        """
+        _require_scope("investigations:read")
+
+        from config.settings import CLIENT_PLAYBOOKS_DIR as CLIENTS_DIR
+        candidates = [
+            CLIENTS_DIR / client_name / "sentinel.md",
+            CLIENTS_DIR / client_name.lower().replace(" ", "_") / "sentinel.md",
+        ]
+        for p in candidates:
+            if p.exists():
+                return p.read_text(encoding="utf-8")
+        return _json({"error": f"No Sentinel reference found for client {client_name!r}."})
+
     # ------------------------------------------------------------------
     # Pipeline Profiles (Attack-Type Routing)
     # ------------------------------------------------------------------
@@ -921,6 +941,7 @@ def register_resources(mcp: FastMCP) -> None:
                     "socai://clients/{name}": "Full client config.",
                     "socai://clients/{name}/playbook": "Client response playbook.",
                     "socai://clients/{name}/knowledge": "Client knowledge base — environment, security stack, network, identity, historical patterns.",
+                    "socai://clients/{name}/sentinel": "Sentinel workspace reference — workspace ID, available tables, key query patterns.",
                     "socai://playbooks": "KQL playbook index.",
                     "socai://sentinel-queries": "Composite Sentinel query scenarios.",
                     "socai://enrichment-providers": "Available enrichment providers.",

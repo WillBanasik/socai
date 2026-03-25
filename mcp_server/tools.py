@@ -199,8 +199,10 @@ def _register_tier1(mcp: FastMCP) -> None:
         }
         # Check for response playbook and knowledge base
         from mcp_server.resources import _resolve_client_playbook, _resolve_client_knowledge
+        from config.settings import CLIENT_PLAYBOOKS_DIR as CLIENTS_DIR
         result["has_response_playbook"] = _resolve_client_playbook(cfg["name"]) is not None
         result["has_knowledge_base"] = _resolve_client_knowledge(cfg["name"]) is not None
+        result["has_sentinel_reference"] = (CLIENTS_DIR / cfg["name"] / "sentinel.md").exists()
 
         return _json(result)
 
