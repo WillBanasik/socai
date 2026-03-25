@@ -6,71 +6,73 @@ Investigations are human-in-the-loop (HITL). The analyst drives each step via MC
 
 ### Typical Tool Sequence
 
+Case creation is **deferred** — the analyst investigates caseless during triage and assessment. The case materialises automatically when a deliverable tool is called (`generate_mdr_report`, `generate_pup_report`, `generate_fp_ticket`). Analysts can still call `create_case` manually at any point.
+
 ```
+── Caseless tools (no case_id required) ──
 1. lookup_client          → confirm client and platform config
 2. get_client_baseline    → load behavioural profile for this client (optional, recommended)
 3. classify_attack        → deterministic attack-type classification
 4. plan_investigation     → advisory step-by-step plan (optional)
 5. recall_cases           → exact IOC/keyword search in prior cases
 6. recall_semantic        → semantic similarity search (finds similar past investigations by context)
-7. add_evidence           → attach raw alert data to case
-8. enrich_iocs            → extract and enrich IOCs
-9. capture_urls           → screenshot and capture web evidence (if URLs)
-10. detect_phishing       → brand impersonation detection (if URLs)
-11. analyse_email         → email header/content analysis (if email)
-12. run_kql               → Sentinel queries via playbook
-13. generate_mdr_report   → MDR report (auto-closes case)
+7. quick_enrich           → fast IOC lookups, no case required
+8. extract_iocs_from_text → IOC extraction from raw text
+9. run_kql                → Sentinel queries via playbook
+
+── Case-bound tools (call create_case first, or defer to deliverable phase) ──
+10. enrich_iocs           → extract and enrich IOCs (writes to case)
+11. add_evidence          → attach raw alert data to case
+12. capture_urls          → screenshot and capture web evidence (if URLs)
+13. detect_phishing       → brand impersonation detection (if URLs)
+14. analyse_email         → email header/content analysis (if email)
+
+── Deliverable phase (case auto-created + promoted if needed) ──
+15. generate_mdr_report   → MDR report (auto-creates case if needed, auto-closes)
+    generate_pup_report   → PUP report (auto-creates case if needed, auto-closes)
+    generate_fp_ticket    → FP ticket (auto-creates case if needed, auto-closes)
 ```
 
 The exact sequence depends on attack type. `classify_attack` returns the recommended tool order. `plan_investigation` returns a full plan with phases, dependencies, and skip conditions.
 
-## Client-Side vs Server-Side Generation
+## Report & Analysis Generation
 
-The MCP server exposes two modes for report and analysis tasks:
+All LLM reasoning — report writing, disposition analysis, quality review — is handled by the analyst's local Claude Desktop agent. The MCP server provides prompts that load system instructions and case data into the local session, and save tools that persist the output.
 
-**Server-side tools** (original) — the MCP server calls the Claude API itself:
-- `generate_mdr_report`, `generate_pup_report`, `generate_fp_ticket`, etc.
-- Useful for CLI usage or when the analyst prefers a one-shot tool call
+**Workflow:** Select MCP prompt (e.g. `write_mdr_report`) -> local Claude generates the report with full conversation context -> call `save_report` / `save_threat_article` to persist (handles defanging, HTML conversion, auto-close, audit).
 
-**Client-side prompts** (preferred for Claude Desktop) — the analyst's local session does the thinking:
-- `write_mdr_report`, `write_pup_report`, `write_fp_closure`, etc.
-- The prompt loads the system instructions + case data into the local session
-- The analyst's Claude generates the report with full conversation context
-- `save_report` / `save_threat_article` persists the output (defanging, HTML, auto-close, audit)
+**Why local:** The analyst's session has the full investigation conversation, producing better output than a cold context-free call. The analyst can iterate ("rewrite section 3") without re-invoking tools.
 
-The client-side approach is preferred because:
-- The local session has the full investigation conversation — better reports
-- No redundant server-side Claude API calls (Claude calling Claude)
-- Faster iteration — analyst can say "rewrite section 3" without re-invoking the tool
+Note: The server-side tool names (`generate_mdr_report`, `generate_pup_report`, `generate_fp_ticket`, etc.) still exist as MCP tools but now redirect to the prompt workflow — they collect case data and return it for the local agent to process, rather than making direct API calls.
 
-### Client-Side Report Prompts
+### Report Prompts
 
-| Prompt | Replaces | Auto-closes |
+| Prompt | Auto-closes | Save tool |
 |---|---|---|
-| `write_mdr_report` | `generate_mdr_report` | Yes (preserves disposition) |
-| `write_pup_report` | `generate_pup_report` | Yes (`pup_pua`) |
-| `write_fp_closure` | `generate_fp_ticket` | Yes (`false_positive`) |
-| `write_fp_tuning` | `generate_fp_tuning_ticket` | No |
-| `write_executive_summary` | `generate_executive_summary` | No |
-| `write_security_arch_review` | `security_arch_review` | No |
-| `write_threat_article` | `generate_threat_article` | N/A |
-| `write_response_plan` | `response_actions` (advisory) | No |
+| `write_mdr_report` | Yes (preserves disposition) | `save_report` |
+| `write_pup_report` | Yes (`pup_pua`) | `save_report` |
+| `write_fp_closure` | Yes (`false_positive`) | `save_report` |
+| `write_fp_tuning` | No | `save_report` |
+| `write_executive_summary` | No | `save_report` |
+| `write_security_arch_review` | No | `save_report` |
+| `write_threat_article` | N/A | `save_threat_article` |
+| `write_response_plan` | No | `save_report` |
 
-### Client-Side Analysis Prompts
+### Analysis Prompts
 
-| Prompt | Replaces | Purpose |
+| Prompt | Purpose | Save tool |
 |---|---|---|
-| `run_determination` | `run_determination` tool | Evidence-chain disposition analysis |
-| `build_investigation_matrix` | `generate_investigation_matrix` tool | Rumsfeld matrix (knowns/unknowns/hypotheses) |
-| `review_report` | `review_report_quality` tool | Report quality gate review |
+| `run_determination` | Evidence-chain disposition analysis | `save_analysis` |
+| `build_investigation_matrix` | Rumsfeld matrix (knowns/unknowns/hypotheses) | `save_analysis` |
+| `review_report` | Report quality gate review | `save_analysis` |
 
 ### Design Principle
 
-**Local Claude does the thinking. MCP tools provide the weapons.**
+**Claude Desktop agent does all reasoning. MCP tools provide data and persistence.**
 
 Tools handle: API calls (enrichment, Sentinel, sandbox), file I/O (case management, artefact persistence), external integrations (Confluence, OpenCTI, Cyberint), and deterministic logic (attack classification, response matrix resolution).
 
-Prompts handle: report generation, analytical reasoning, disposition analysis, quality review, threat article writing — anything that is "read context, produce text".
+Prompts handle: report generation, analytical reasoning, disposition analysis, quality review, threat article writing — anything that requires LLM judgement. The local Claude session has the full investigation conversation, so it produces better output than any context-free call could.
 
 ## Tool Layer
 
@@ -111,7 +113,9 @@ After enrichment, if verdict_summary has 0 malicious and 0 suspicious IOCs, the 
 
 ## Direct Close from Triage
 
-For clear-cut dispositions that don't need a full investigation cycle (e.g. obvious benign positives, known PUP software, duplicate alerts), the `close_case` MCP tool allows closing directly from triage status. This enables a lightweight two-step flow: `create_case` → `close_case(disposition="benign_positive")` — zero server-side API credits, ideal for the desktop LLM handling straightforward alerts.
+For clear-cut dispositions that don't need a full investigation cycle (e.g. obvious benign positives, known PUP software, duplicate alerts), the `close_case` MCP tool allows closing directly from triage status. This enables a lightweight two-step flow: `create_case` → `close_case(disposition="benign_positive")` — ideal for straightforward alerts.
+
+Alternatively, when a deliverable is needed, case creation is deferred entirely — deliverable tools (`generate_mdr_report`, `generate_pup_report`, `generate_fp_ticket`) auto-create and promote a case if one doesn't exist. The analyst can also call `create_case` manually at any point during the investigation.
 
 ## Auto-close on Deliverable Collection
 

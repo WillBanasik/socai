@@ -92,6 +92,7 @@ def index_case(
             "title":       meta.get("title", case_id),
             "severity":    meta.get("severity", "medium"),
             "status":      meta.get("status", "open"),
+            "disposition": meta.get("disposition"),
             "created_at":  meta.get("created_at", ""),
             "updated_at":  meta["updated_at"],
             "case_dir":    str(case_dir),

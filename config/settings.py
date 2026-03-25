@@ -103,50 +103,8 @@ CLIENT_PLAYBOOKS_DIR = BASE_DIR / "config" / "clients"
 ROLES_FILE           = BASE_DIR / "config" / "roles.json"
 DEFAULT_CLIENT    = os.getenv("SOCAI_DEFAULT_CLIENT", "")
 
-# Claude model for LLM-assisted steps (optional, not required for core)
-LLM_MODEL        = os.getenv("SOCAI_LLM_MODEL", "claude-sonnet-4-6")
-ANTHROPIC_KEY    = os.getenv("ANTHROPIC_API_KEY", "")
-
-# ---------------------------------------------------------------------------
-# Model tiers
-# ---------------------------------------------------------------------------
-SOCAI_MODEL_HEAVY    = os.getenv("SOCAI_MODEL_HEAVY",    "claude-opus-4-6")
-SOCAI_MODEL_STANDARD = os.getenv("SOCAI_MODEL_STANDARD", "claude-sonnet-4-6")
-SOCAI_MODEL_FAST     = os.getenv("SOCAI_MODEL_FAST",     "claude-haiku-4-5-20251001")
-
-# Per-task model assignments (value = tier name or full model string)
-SOCAI_MODEL_CHAT_ROUTING  = os.getenv("SOCAI_MODEL_CHAT_ROUTING",  "fast")
-SOCAI_MODEL_CHAT_RESPONSE = os.getenv("SOCAI_MODEL_CHAT_RESPONSE", "standard")
-SOCAI_MODEL_SECARCH       = os.getenv("SOCAI_MODEL_SECARCH",       "standard")
-SOCAI_MODEL_REPORT        = os.getenv("SOCAI_MODEL_REPORT",        "fast")
-SOCAI_MODEL_EXEC_SUMMARY  = os.getenv("SOCAI_MODEL_EXEC_SUMMARY",  "standard")
-SOCAI_MODEL_FP_TICKET     = os.getenv("SOCAI_MODEL_FP_TICKET",     "standard")
-SOCAI_MODEL_FP_TUNING_TICKET = os.getenv("SOCAI_MODEL_FP_TUNING_TICKET", "standard")
-SOCAI_MODEL_EVTX          = os.getenv("SOCAI_MODEL_EVTX",          "standard")
-SOCAI_MODEL_PE_ANALYSIS   = os.getenv("SOCAI_MODEL_PE_ANALYSIS",   "standard")
-SOCAI_MODEL_CVE           = os.getenv("SOCAI_MODEL_CVE",           "fast")
-SOCAI_MODEL_YARA          = os.getenv("SOCAI_MODEL_YARA",          "standard")
-SOCAI_MODEL_TIMELINE      = os.getenv("SOCAI_MODEL_TIMELINE",      "fast")
-SOCAI_MODEL_QUERIES       = os.getenv("SOCAI_MODEL_QUERIES",       "fast")
-SOCAI_MODEL_MDR_REPORT    = os.getenv("SOCAI_MODEL_MDR_REPORT",    "standard")
-
-# LLM insight helpers (tools/llm_insight.py)
-SOCAI_MODEL_REPORT_NARRATIVE    = os.getenv("SOCAI_MODEL_REPORT_NARRATIVE",    "fast")
-SOCAI_MODEL_CAMPAIGN_NARRATIVE  = os.getenv("SOCAI_MODEL_CAMPAIGN_NARRATIVE",  "fast")
-SOCAI_MODEL_QUERY_REFINEMENT    = os.getenv("SOCAI_MODEL_QUERY_REFINEMENT",    "fast")
-SOCAI_MODEL_TRIAGE_CONTEXT      = os.getenv("SOCAI_MODEL_TRIAGE_CONTEXT",      "fast")
-SOCAI_MODEL_ANOMALY_CONTEXT     = os.getenv("SOCAI_MODEL_ANOMALY_CONTEXT",     "fast")
-SOCAI_MODEL_CORRELATION_INSIGHT = os.getenv("SOCAI_MODEL_CORRELATION_INSIGHT",  "fast")
-SOCAI_MODEL_RESPONSE_PRIORITY   = os.getenv("SOCAI_MODEL_RESPONSE_PRIORITY",   "fast")
-SOCAI_MODEL_VERDICT_RECONCILE   = os.getenv("SOCAI_MODEL_VERDICT_RECONCILE",   "fast")
-SOCAI_MODEL_AUTO_CLOSE_REVIEW   = os.getenv("SOCAI_MODEL_AUTO_CLOSE_REVIEW",   "fast")
-
-# Rumsfeld investigation pipeline (tools/investigation_matrix.py, etc.)
-SOCAI_MODEL_MATRIX              = os.getenv("SOCAI_MODEL_MATRIX",              "standard")
-SOCAI_MODEL_QUALITY_GATE        = os.getenv("SOCAI_MODEL_QUALITY_GATE",        "fast")
-SOCAI_MODEL_ENRICH_DIRECTOR     = os.getenv("SOCAI_MODEL_ENRICH_DIRECTOR",     "fast")
-SOCAI_MODEL_DETERMINATION       = os.getenv("SOCAI_MODEL_DETERMINATION",       "standard")
-SOCAI_MODEL_GAP_ANALYSIS        = os.getenv("SOCAI_MODEL_GAP_ANALYSIS",        "standard")
+# LLM reasoning is handled exclusively by the local Claude Desktop agent.
+# No direct Anthropic API calls — all LLM work uses MCP prompts + save tools.
 SOCAI_ENRICH_DIRECTOR           = os.getenv("SOCAI_ENRICH_DIRECTOR",           "0")  # opt-in
 
 # ---------------------------------------------------------------------------
@@ -167,18 +125,10 @@ MAXMIND_LICENSE_KEY = os.getenv("MAXMIND_LICENSE_KEY", "")
 GEOIP_DB_PATH = BASE_DIR / "registry" / "geoip" / "GeoLite2-City.mmdb"
 
 # ---------------------------------------------------------------------------
-# Batch API
-# ---------------------------------------------------------------------------
-BATCH_POLL_INTERVAL = int(os.getenv("SOCAI_BATCH_POLL_INTERVAL", "30"))
-BATCH_TIMEOUT = int(os.getenv("SOCAI_BATCH_TIMEOUT", "3600"))
-BATCH_DIR = BASE_DIR / "registry" / "batches"
-
-# ---------------------------------------------------------------------------
 # Threat articles
 # ---------------------------------------------------------------------------
 ARTICLES_DIR       = BASE_DIR / "articles"
 ARTICLE_INDEX_FILE = BASE_DIR / "registry" / "article_index.json"
-SOCAI_MODEL_ARTICLES = os.getenv("SOCAI_MODEL_ARTICLES", "standard")
 
 # ---------------------------------------------------------------------------
 # Confluence (read-only, scoped token)

@@ -1,38 +1,30 @@
 """
 tool: security_arch_review
 --------------------------
-LLM-assisted security architecture review for a completed investigation.
+Security architecture review for a completed investigation.
 
-Reads all available case artefacts (IOCs, enrichment verdicts, correlation,
-report text, case metadata) and produces an actionable security control
-recommendations document mapped to the Microsoft security stack and
-CrowdStrike Falcon platform.
+The review is now written by the local Claude Desktop agent using the
+``write_security_arch_review`` MCP prompt, then persisted via ``save_report``.
 
-Enhancements (Claude API features):
-  - Prompt caching    : system prompt sent with cache_control for cross-run savings
-  - Adaptive thinking : enabled for high/critical severity cases (works alongside tools)
-  - Structured tool   : record_structured_analysis tool extracts TTPs + top actions
-  - Files API         : PDFs under artefacts/web/ uploaded and sent as document blocks
-  - Parallel subagents: network + file IOC clusters analysed concurrently with main call
+This module retains ``_SYSTEM_PROMPT`` / ``_SYSTEM_CACHED`` and
+``_build_context()`` which the MCP prompt imports for context assembly.
 
-Output:
+Data-gathering helpers (``_build_context``, ``_safe_load``) remain available
+for use by the MCP prompt layer.
+
+Output (via save_report):
   cases/<case_id>/artefacts/security_architecture/security_arch_review.md
-  cases/<case_id>/artefacts/security_architecture/security_arch_structured.json  (when tool fires)
-
-Usage (standalone):
-  python3 tools/security_arch_review.py --case IV_CASE_001
 """
 from __future__ import annotations
 
 import json
 import sys
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR, IOC_INDEX_FILE
-from tools.common import get_alias_map, get_model, load_json, log_error, save_json, utcnow, write_artefact, write_report
+from config.settings import CASES_DIR, IOC_INDEX_FILE
+from tools.common import load_json, log_error, utcnow
 
 # ---------------------------------------------------------------------------
 # Analytical guidelines — loaded from config/analytical_guidelines.md
@@ -126,49 +118,6 @@ the evidence.
 _SYSTEM_CACHED = [
     {"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
 ]
-
-# ---------------------------------------------------------------------------
-# Structured output tool (used when thinking is disabled)
-# ---------------------------------------------------------------------------
-
-_STRUCTURED_TOOL = {
-    "name": "record_structured_analysis",
-    "description": (
-        "Record the structured findings from the security architecture review. "
-        "Call this tool once after completing the narrative review sections."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "ttps": {
-                "type": "array",
-                "description": "List of MITRE ATT&CK TTPs identified",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "technique_id":   {"type": "string", "description": "e.g. T1078.004"},
-                        "technique_name": {"type": "string"},
-                        "confidence":     {"type": "string", "enum": ["high", "medium", "low"]},
-                        "evidence":       {"type": "string"},
-                    },
-                    "required": ["technique_id", "technique_name", "confidence"],
-                },
-            },
-            "top_actions": {
-                "type": "array",
-                "description": "Top 5 prioritised remediation actions (one sentence each)",
-                "items": {"type": "string"},
-            },
-            "risk_rating": {
-                "type": "string",
-                "enum": ["Critical", "High", "Medium", "Low"],
-                "description": "Overall risk rating for this case",
-            },
-        },
-        "required": ["ttps", "top_actions", "risk_rating"],
-    },
-}
-
 
 # ---------------------------------------------------------------------------
 # Context builder
@@ -294,360 +243,21 @@ def _safe_load(path: Path) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Files API helper — upload PDFs from web artefacts
-# ---------------------------------------------------------------------------
-
-def _upload_case_pdfs(case_id: str, client) -> list[dict]:
-    """
-    Upload PDF files found under cases/<id>/artefacts/web/ via the Files API.
-    Returns a list of document content blocks for inclusion in the user message.
-    Silently skips any file that fails to upload.
-    """
-    web_dir = CASES_DIR / case_id / "artefacts" / "web"
-    if not web_dir.exists():
-        return []
-
-    blocks: list[dict] = []
-    for pdf_path in web_dir.rglob("document.pdf"):
-        rel = pdf_path.relative_to(CASES_DIR / case_id)
-        try:
-            pdf_bytes = pdf_path.read_bytes()
-            response  = client.beta.files.upload(
-                file=(pdf_path.name, pdf_bytes, "application/pdf")
-            )
-            blocks.append({
-                "type": "document",
-                "source": {
-                    "type":    "file",
-                    "file_id": response.id,
-                },
-                "title": str(rel),
-            })
-            print(f"[security_arch_review] Files API: uploaded {rel} → {response.id}")
-        except Exception as exc:
-            log_error(case_id, "security_arch_review.files_api", str(exc),
-                      severity="warning", context={"file": str(rel)})
-            print(f"[security_arch_review] Files API: could not upload {rel}: {exc}")
-
-    return blocks
-
-
-# ---------------------------------------------------------------------------
-# Parallel cluster subagent
-# ---------------------------------------------------------------------------
-
-def _parallel_cluster_analysis(case_id: str, client, ioc_dict: dict, severity: str = "medium") -> str:
-    """
-    Run two focused LLM calls concurrently:
-      1. Network IOC cluster (IPv4 + domain)
-      2. File IOC cluster (sha256 + md5 + sha1)
-    Returns combined markdown or empty string on failure.
-    """
-    network_iocs = (
-        [f"IP: {v}" for v in ioc_dict.get("ipv4", [])[:20]]
-        + [f"Domain: {v}" for v in ioc_dict.get("domain", [])[:20]]
-    )
-    file_iocs = (
-        [f"SHA256: {v}" for v in ioc_dict.get("sha256", [])[:10]]
-        + [f"MD5: {v}" for v in ioc_dict.get("md5", [])[:10]]
-        + [f"SHA1: {v}" for v in ioc_dict.get("sha1", [])[:10]]
-    )
-
-    cluster_system = [
-        {
-            "type": "text",
-            "text": (
-                "You are a concise threat intelligence analyst. "
-                "Given a list of IOCs from a security investigation, briefly characterise "
-                "the infrastructure cluster: likely threat actor category, hosting patterns, "
-                "shared infrastructure indicators, and any notable findings. "
-                "Be direct and technical. Maximum 300 words."
-            ),
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
-
-    def _call(label: str, iocs: list[str]) -> str:
-        if not iocs:
-            return ""
-        ioc_text = "\n".join(iocs)
-        _alias_map = get_alias_map()
-        if _alias_map:
-            ioc_text = _alias_map.alias_text(ioc_text)
-        try:
-            msg = client.messages.create(
-                model=get_model("secarch", severity),
-                max_tokens=1024,
-                system=cluster_system,
-                messages=[{
-                    "role": "user",
-                    "content": f"Analyse this IOC cluster for case {case_id}:\n\n{ioc_text}",
-                }],
-            )
-            result_text = msg.content[0].text.strip()
-            if _alias_map:
-                result_text = _alias_map.dealias_text(result_text)
-            return result_text
-        except Exception as exc:
-            log_error(case_id, f"security_arch_review.cluster_{label}", str(exc),
-                      severity="warning", context={"label": label})
-            print(f"[security_arch_review] Cluster analysis ({label}) failed: {exc}")
-            return ""
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        net_fut  = pool.submit(_call, "network", network_iocs)
-        file_fut = pool.submit(_call, "file",    file_iocs)
-        net_result  = net_fut.result()
-        file_result = file_fut.result()
-
-    parts: list[str] = []
-    if net_result:
-        parts.append(f"### Network IOC Cluster Analysis\n\n{net_result}")
-    if file_result:
-        parts.append(f"### File IOC Cluster Analysis\n\n{file_result}")
-
-    return "\n\n".join(parts)
-
-
-def _dealias_dict(alias_map, obj):
-    """Recursively dealias all string values in a dict/list structure."""
-    if isinstance(obj, str):
-        return alias_map.dealias_text(obj)
-    if isinstance(obj, list):
-        return [_dealias_dict(alias_map, item) for item in obj]
-    if isinstance(obj, dict):
-        return {k: _dealias_dict(alias_map, v) for k, v in obj.items()}
-    return obj
-
-
-# ---------------------------------------------------------------------------
-# Main function
+# Main function (stub — LLM generation removed)
 # ---------------------------------------------------------------------------
 
 def security_arch_review(case_id: str) -> dict:
+    """Stub — direct LLM generation removed.
+
+    Use the ``write_security_arch_review`` MCP prompt to generate the review
+    via the local Claude Desktop agent, then call
+    ``save_report(type=security_arch_review)`` to persist it.
     """
-    Run an LLM-assisted security architecture review for *case_id*.
-
-    Returns a manifest dict with the output path and token usage.
-    Writes the review to:
-      cases/<case_id>/artefacts/security_architecture/security_arch_review.md
-    """
-    # ── 1. Early-exit checks ──────────────────────────────────────────────
-    if not ANTHROPIC_KEY:
-        return {
-            "status":  "skipped",
-            "reason":  "ANTHROPIC_API_KEY not set — security arch review requires LLM access.",
-            "case_id": case_id,
-            "ts":      utcnow(),
-        }
-
-    try:
-        import anthropic
-    except ImportError as exc:
-        log_error(case_id, "security_arch_review.import_anthropic", str(exc), severity="info")
-        return {
-            "status":  "error",
-            "reason":  "anthropic package not installed. Run: pip install anthropic",
-            "case_id": case_id,
-            "ts":      utcnow(),
-        }
-
-    # ── 2. Read severity → determine extended thinking ────────────────────
-    case_dir  = CASES_DIR / case_id
-    meta      = _safe_load(case_dir / "case_meta.json") or {}
-    severity  = meta.get("severity", "").lower()
-    use_thinking = severity in ("high", "critical")
-
-    # ── 2b. Skip if enrichment shows all-clean (no malicious/suspicious IOCs) ──
-    verdict_path = case_dir / "artefacts" / "enrichment" / "verdict_summary.json"
-    if verdict_path.exists():
-        verdicts = _safe_load(verdict_path) or {}
-        mal_count = len(verdicts.get("high_priority", []))
-        sus_count = len(verdicts.get("needs_review", []))
-        if mal_count == 0 and sus_count == 0:
-            print(f"[security_arch_review] Skipping — verdict summary shows 0 malicious, "
-                  f"0 suspicious IOCs for {case_id}")
-            return {
-                "status":  "skipped",
-                "reason":  "All IOCs clean — security arch review not warranted.",
-                "case_id": case_id,
-                "ts":      utcnow(),
-            }
-
-    # ── 3. Build context ──────────────────────────────────────────────────
-    context = _build_context(case_id)
-    alias_map = get_alias_map()
-    if alias_map:
-        context = alias_map.alias_text(context)
-    if not context.strip():
-        return {
-            "status":  "skipped",
-            "reason":  "No case artefacts found — run enrich_iocs or add_evidence first.",
-            "case_id": case_id,
-            "ts":      utcnow(),
-        }
-
-    # ── 4. Create client ──────────────────────────────────────────────────
-    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-
-    # ── 5. Upload PDFs via Files API ──────────────────────────────────────
-    pdf_blocks = _upload_case_pdfs(case_id, client)
-
-    # ── 6. Load IOCs for cluster analysis ─────────────────────────────────
-    iocs_data = _safe_load(case_dir / "iocs" / "iocs.json") or {}
-    ioc_dict  = iocs_data.get("iocs", {})
-    has_network = bool(ioc_dict.get("ipv4") or ioc_dict.get("domain"))
-    has_files   = bool(ioc_dict.get("sha256") or ioc_dict.get("md5") or ioc_dict.get("sha1"))
-
-    # ── 7. Submit cluster analysis to background thread (runs concurrently) ──
-    focused_future = None
-    cluster_executor = None
-    if has_network and has_files:
-        cluster_executor = ThreadPoolExecutor(max_workers=1)
-        focused_future   = cluster_executor.submit(
-            _parallel_cluster_analysis, case_id, client, ioc_dict, severity
-        )
-
-    # ── 8. Build user content + make main LLM call ────────────────────────
-    user_content: list[dict] = []
-
-    # Prepend any uploaded PDF document blocks
-    user_content.extend(pdf_blocks)
-
-    # Main text context
-    user_content.append({
-        "type": "text",
-        "text": (
-            f"Please produce a Security Architecture Review for the following investigation.\n\n"
-            f"{context}"
-        ),
-    })
-
-    _model = get_model("secarch", severity)
-    call_kwargs: dict = {
-        "model":    _model,
-        "system":   _SYSTEM_CACHED,
-        "messages": [{"role": "user", "content": user_content}],
+    return {
+        "status": "use_prompt",
+        "prompt": "write_security_arch_review",
+        "save_tool": "save_report",
+        "save_args": {"report_type": "security_arch_review"},
+        "case_id": case_id,
+        "ts": utcnow(),
     }
-
-    # Adaptive thinking works with tools — no mutual exclusion needed
-    call_kwargs["tools"]      = [_STRUCTURED_TOOL]
-    call_kwargs["tool_choice"] = {"type": "auto"}
-
-    if use_thinking:
-        call_kwargs["thinking"]      = {"type": "adaptive"}
-        call_kwargs["output_config"] = {"effort": "high"}
-        call_kwargs["max_tokens"]    = 16000
-        print(f"[security_arch_review] Adaptive thinking ENABLED (severity={severity})")
-    else:
-        call_kwargs["max_tokens"] = 8192
-
-    print(f"[security_arch_review] Querying {_model} for case {case_id}...")
-    if pdf_blocks:
-        print(f"[security_arch_review] Including {len(pdf_blocks)} PDF document(s) via Files API")
-
-    message = client.messages.create(**call_kwargs)
-
-    # ── 9. Extract review_text + structured_data ──────────────────────────
-    review_text     = ""
-    structured_data = None
-
-    for block in message.content:
-        if block.type == "thinking":
-            continue  # adaptive thinking block — skip
-        elif block.type == "text":
-            review_text += block.text
-        elif block.type == "tool_use" and block.name == "record_structured_analysis":
-            structured_data = block.input
-
-    review_text = review_text.strip()
-
-    tokens_in        = message.usage.input_tokens
-    tokens_out       = message.usage.output_tokens
-    tokens_cache_read = getattr(message.usage, "cache_read_input_tokens", 0) or 0
-    tokens_cache_write = getattr(message.usage, "cache_creation_input_tokens", 0) or 0
-
-    print(
-        f"[security_arch_review] Tokens: {tokens_in} in / {tokens_out} out "
-        f"| cache_read={tokens_cache_read} cache_write={tokens_cache_write}"
-    )
-
-    # ── 10. Collect cluster deep-dive result ──────────────────────────────
-    if focused_future is not None:
-        try:
-            cluster_text = focused_future.result(timeout=90)
-            if cluster_text:
-                review_text += f"\n\n## IOC Cluster Deep-Dive\n\n{cluster_text}"
-        except FuturesTimeoutError:
-            log_error(case_id, "security_arch_review.cluster_timeout", "90s timeout",
-                      severity="warning")
-            print("[security_arch_review] Cluster analysis timed out (90 s) — skipped")
-        except Exception as exc:
-            log_error(case_id, "security_arch_review.cluster_collect", str(exc),
-                      severity="warning")
-            print(f"[security_arch_review] Cluster analysis error: {exc}")
-        finally:
-            cluster_executor.shutdown(wait=False)
-
-    # ── 11. Dealias all LLM output ────────────────────────────────────────
-    if alias_map:
-        review_text = alias_map.dealias_text(review_text)
-
-    # ── 12. Write artefacts ───────────────────────────────────────────────
-    out_dir  = case_dir / "artefacts" / "security_architecture"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "security_arch_review.md"
-
-    header = (
-        f"# Security Architecture Review — {case_id}\n\n"
-        f"_Generated: {utcnow()} | Model: {_model} | "
-        f"Tokens: {tokens_in} in / {tokens_out} out"
-        + (f" | Cache read: {tokens_cache_read}" if tokens_cache_read else "")
-        + (f" | Thinking: enabled" if use_thinking else "")
-        + f"_\n\n---\n\n"
-    )
-    write_report(out_path, header + review_text, title=f"Security Architecture Review — {case_id}")
-
-    # Structured sidecar
-    if structured_data:
-        if alias_map:
-            structured_data = _dealias_dict(alias_map, structured_data)
-        sidecar_path = out_dir / "security_arch_structured.json"
-        save_json(sidecar_path, structured_data)
-        print(f"[security_arch_review] Structured analysis saved to {sidecar_path}")
-
-    manifest = {
-        "case_id":             case_id,
-        "review_path":         str(out_path),
-        "tokens_in":           tokens_in,
-        "tokens_out":          tokens_out,
-        "tokens_cache_read":   tokens_cache_read,
-        "tokens_cache_write":  tokens_cache_write,
-        "model":               _model,
-        "use_thinking":        use_thinking,
-        "structured":          bool(structured_data),
-        "pdf_files_uploaded":  len(pdf_blocks),
-        "status":              "ok",
-        "ts":                  utcnow(),
-    }
-    save_json(out_dir / "security_arch_manifest.json", manifest)
-
-    print(f"[security_arch_review] Review written to {out_path}")
-    return manifest
-
-
-# ---------------------------------------------------------------------------
-# Standalone entrypoint
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import argparse
-
-    p = argparse.ArgumentParser(
-        description="LLM-assisted security architecture review for a case."
-    )
-    p.add_argument("--case", required=True, dest="case_id")
-    args = p.parse_args()
-
-    result = security_arch_review(args.case_id)
-    print(json.dumps(result, indent=2, default=str))

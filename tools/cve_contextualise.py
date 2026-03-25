@@ -4,11 +4,9 @@ tool: cve_contextualise
 CVE contextualisation tool for completed investigations.
 
 Scans case artefacts for CVE identifiers, fetches context from NVD, EPSS,
-CISA KEV, and OpenCTI, computes a priority score, and optionally runs an
-LLM assessment of exploitation likelihood and patching priority.
+CISA KEV, and OpenCTI, and computes a priority score.
 
-Output:
-  cases/<case_id>/artefacts/cve/cve_context.json
+Returns the CVE context dict in-memory; does NOT write to disk.
 
 Usage (standalone):
   python3 tools/cve_contextualise.py --case IV_CASE_001
@@ -24,8 +22,31 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR, OPENCTI_KEY, OPENCTI_URL
-from tools.common import get_model, get_session, load_json, log_error, save_json, utcnow
+from config.settings import CASES_DIR, OPENCTI_KEY, OPENCTI_URL
+from tools.common import get_session, load_json, log_error, utcnow
+
+# ---------------------------------------------------------------------------
+# LLM system prompt (used by MCP client-side prompts)
+# ---------------------------------------------------------------------------
+
+_LLM_SYSTEM_PROMPT = (
+    "You are a vulnerability analyst contextualising CVEs within a security "
+    "investigation. Given CVE data (NVD descriptions, CVSS scores, EPSS "
+    "exploitation probabilities, and CISA KEV status), assess each CVE in "
+    "the context of the case.\n\n"
+    "For each CVE, provide:\n"
+    "- Exploitation likelihood: interpret EPSS score and active exploitation status\n"
+    "- Relevance to case: how this CVE relates to observed TTPs and artefacts\n"
+    "- Patching priority: critical / high / medium / low with reasoning\n"
+    "- Detection opportunities: how to detect exploitation attempts\n\n"
+    "Produce an overall patching priority list ordered by risk.\n\n"
+    "Rules:\n"
+    "- CISA KEV inclusion means confirmed active exploitation in the wild.\n"
+    "- EPSS > 0.5 indicates high exploitation probability.\n"
+    "- Only make claims supported by the supplied data.\n"
+    "- Use 'Confirmed' only when data proves a link; use 'Assessed' for "
+    "inferences with stated confidence."
+)
 
 # ---------------------------------------------------------------------------
 # CVE regex
@@ -426,78 +447,6 @@ def _enrich_single_cve(cve_id: str, sources: list[str], kev_vulns: list[dict], c
 
 
 # ---------------------------------------------------------------------------
-# LLM assessment (optional)
-# ---------------------------------------------------------------------------
-
-_LLM_SYSTEM_PROMPT = """\
-You are a vulnerability analyst working within an active SOC investigation. \
-Assess the provided CVEs in the context of the investigation artefacts. \
-Focus on exploitation likelihood, relevance to observed TTPs, patching \
-priority, and detection opportunities. Be precise and evidence-based."""
-
-def _llm_assessment(cve_data: list[dict], case_id: str) -> dict | None:
-    """Run LLM assessment of CVEs in case context."""
-    if not ANTHROPIC_KEY:
-        return None
-
-    try:
-        from tools.structured_llm import structured_call
-        from tools.schemas import CveAssessment
-
-        # Build user message with CVE context
-        user_parts: list[str] = [f"## Case: {case_id}\n"]
-        user_parts.append(f"Total CVEs found: {len(cve_data)}\n")
-
-        for cve in cve_data:
-            user_parts.append(f"### {cve['cve_id']}")
-            user_parts.append(f"Found in: {', '.join(cve['sources_found_in'])}")
-            user_parts.append(f"Priority score: {cve['priority_score']}")
-
-            nvd = cve.get("nvd", {})
-            if nvd.get("status") == "ok":
-                user_parts.append(f"NVD description: {nvd.get('description', 'N/A')}")
-                user_parts.append(f"CVSS: {nvd.get('cvss_score', 'N/A')} ({nvd.get('cvss_severity', 'N/A')})")
-                user_parts.append(f"CWEs: {', '.join(nvd.get('cwes', []))}")
-
-            epss = cve.get("epss", {})
-            if epss.get("status") == "ok":
-                user_parts.append(f"EPSS score: {epss.get('score', 'N/A')} (percentile: {epss.get('percentile', 'N/A')})")
-
-            kev = cve.get("cisa_kev")
-            if kev:
-                user_parts.append(f"CISA KEV: YES — {kev.get('vendor_project', '')} {kev.get('product', '')}")
-                user_parts.append(f"  Ransomware use: {kev.get('known_ransomware_campaign_use', 'N/A')}")
-                user_parts.append(f"  Required action: {kev.get('required_action', 'N/A')}")
-            else:
-                user_parts.append("CISA KEV: Not listed")
-
-            user_parts.append("")
-
-        user_message = "\n".join(user_parts)
-
-        try:
-            _meta = load_json(CASES_DIR / case_id / "case_meta.json")
-        except Exception:
-            _meta = {}
-
-        result, _usage = structured_call(
-            model=get_model("cve", _meta.get("severity", "medium")),
-            system=[
-                {"type": "text", "text": _LLM_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-            ],
-            messages=[{"role": "user", "content": user_message}],
-            output_schema=CveAssessment,
-            max_tokens=4096,
-        )
-
-        return result.model_dump() if result else None
-
-    except Exception as exc:
-        log_error(case_id, "cve_contextualise.llm", str(exc), severity="warning")
-        return None
-
-
-# ---------------------------------------------------------------------------
 # Main tool function
 # ---------------------------------------------------------------------------
 
@@ -543,10 +492,7 @@ def cve_contextualise(case_id: str) -> dict:
                 "priority_score": 0.0,
             })
 
-    # Step 4: LLM assessment (optional)
-    llm_assessment = _llm_assessment(cve_results, case_id)
-
-    # Step 5: Compute summary stats
+    # Step 4: Compute summary stats
     cves_in_kev = sum(1 for c in cve_results if c.get("cisa_kev") is not None)
     cvss_scores = [
         c["nvd"]["cvss_score"]
@@ -566,22 +512,12 @@ def cve_contextualise(case_id: str) -> dict:
         "cves_in_kev": cves_in_kev,
         "highest_cvss": highest_cvss,
         "cves": cve_results,
-        "llm_assessment": llm_assessment,
     }
 
-    # Write output
-    out_path = CASES_DIR / case_id / "artefacts" / "cve" / "cve_context.json"
-    save_json(out_path, output)
-
     # Print summary
-    print(f"[cve_contextualise] Enriched {len(cve_results)} CVE(s)")
+    print(f"[cve_contextualise] Enriched {len(cve_results)} CVE(s) (in-memory only)")
     print(f"  CISA KEV hits: {cves_in_kev}")
     print(f"  Highest CVSS: {highest_cvss}")
-    if llm_assessment:
-        print(f"  LLM assessment: included")
-    else:
-        print(f"  LLM assessment: skipped (no API key or no CVEs)")
-    print(f"  Output: {out_path}")
 
     return output
 

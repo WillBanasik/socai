@@ -161,7 +161,7 @@ def generate_weekly_report(
     lines.append("- Ensure all CRITICAL cases have been escalated or formally closed.\n")
 
     report_text = "\n".join(lines)
-    report_path = WEEKLY_REPORTS / f"weekly_{week_label}.md"
+    report_path = WEEKLY_REPORTS / f"weekly_{week_label}.html"
     write_report(report_path, report_text, title=f"Weekly Report — {week_label}")
     print(f"[generate_weekly_report] Report written to {report_path} "
           f"({len(included)} case(s))")

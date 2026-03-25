@@ -1,14 +1,13 @@
 """
-Threat article discovery and generation for monthly SOC reporting.
+Threat article discovery and persistence for monthly SOC reporting.
 
-Fetches recent cybersecurity news from configured RSS feeds, clusters by topic,
-and produces 60-second-read article summaries categorised as ET (Emerging Threat)
-or EV (Emerging Vulnerability).
+Article generation is now done by the local Claude Desktop agent using the
+``write_threat_article`` MCP prompt, persisted via ``save_threat_article``.
+Module retains ``_SYSTEM_PROMPT``, ``fetch_candidates()``, and ``save_article()``.
 """
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -18,14 +17,7 @@ from typing import Any
 
 from tools.common import get_session
 
-from config.article_prompts import (
-    ARTICLE_SYSTEM_PROMPT,
-    ARTICLE_USER_TEMPLATE,
-    CLASSIFY_SYSTEM_PROMPT,
-    CLUSTER_SYSTEM_PROMPT,
-)
 from config.settings import (
-    ANTHROPIC_KEY,
     ARTICLE_INDEX_FILE,
     ARTICLES_DIR,
     BASE_DIR,
@@ -33,7 +25,6 @@ from config.settings import (
 )
 from tools.common import (
     defang_ioc,
-    get_model,
     load_json,
     log_error,
     save_json,
@@ -264,62 +255,6 @@ def _is_covered_confluence(title: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# LLM helpers
-# ---------------------------------------------------------------------------
-
-def _llm_call(system: str, user_msg: str, max_tokens: int = 1024) -> str:
-    """Simple single-turn LLM call. Returns text response."""
-    import anthropic
-    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-    model = get_model("articles")
-    resp = client.messages.create(
-        model=model,
-        system=system,
-        messages=[{"role": "user", "content": user_msg}],
-        max_tokens=max_tokens,
-    )
-    text = ""
-    for block in resp.content:
-        if getattr(block, "type", None) == "text":
-            text += block.text
-    return text.strip()
-
-
-def _classify_article(title: str, summary: str) -> str:
-    """Classify a single article as ET or EV using LLM."""
-    user_msg = f"Title: {title}\nSummary: {summary}"
-    result = _llm_call(CLASSIFY_SYSTEM_PROMPT, user_msg, max_tokens=10)
-    return "EV" if "EV" in result.upper() else "ET"
-
-
-def _cluster_candidates(candidates: list[dict]) -> list[dict]:
-    """Group candidates by topic using LLM. Returns list of group dicts."""
-    if len(candidates) <= 1:
-        return [{"topic": c["title"], "indices": [i], "category": c.get("category", "ET")}
-                for i, c in enumerate(candidates)]
-
-    listing = "\n".join(
-        f"[{i}] ({c.get('category', '?')}) {c['title']} — {c.get('summary', '')[:150]}"
-        for i, c in enumerate(candidates)
-    )
-    user_msg = f"Articles:\n{listing}\n\nReturn JSON array of groups."
-    raw = _llm_call(CLUSTER_SYSTEM_PROMPT, user_msg, max_tokens=2048)
-
-    # Extract JSON from response
-    try:
-        match = re.search(r"\[.*\]", raw, re.DOTALL)
-        if match:
-            groups = json.loads(match.group())
-            return groups
-    except (json.JSONDecodeError, AttributeError):
-        pass
-
-    # Fallback: each candidate in its own group
-    return [{"topic": c["title"], "indices": [i], "category": c.get("category", "ET")}
-            for i, c in enumerate(candidates)]
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -374,153 +309,18 @@ def generate_articles(
     candidates: list[dict],
     analyst: str = "unassigned",
     case_id: str | None = None,
-) -> list[dict]:
-    """Generate article summaries for the given candidates.
+) -> dict:
+    """Stub — direct LLM generation removed.
 
-    Each candidate (or group of candidates on the same topic) produces one
-    article. Returns list of manifest dicts for written artefacts.
+    Use the ``write_threat_article`` MCP prompt to generate articles via
+    the local Claude Desktop agent, then call ``save_threat_article``
+    to persist them.
     """
-    from tools.schemas import ArticleSummary
-    from tools.structured_llm import structured_call
-
-    # Cluster candidates by topic
-    groups = _cluster_candidates(candidates)
-    index = _load_article_index()
-    results: list[dict] = []
-    model = get_model("articles")
-    now = datetime.fromisoformat(utcnow().replace("Z", "+00:00"))
-    month_dir = now.strftime("%Y-%m")
-
-    for group in groups:
-        indices = group.get("indices", [])
-        if not indices:
-            continue
-
-        group_candidates = [candidates[i] for i in indices if i < len(candidates)]
-        if not group_candidates:
-            continue
-
-        cat = group.get("category", group_candidates[0].get("category", "ET"))
-        topic_title = group.get("topic", group_candidates[0]["title"])
-
-        # Fetch full content for each source
-        source_texts: list[str] = []
-        source_urls: list[str] = []
-        for c in group_candidates:
-            url = c.get("source_url", "")
-            source_urls.append(url)
-            full_text = _fetch_full_content(url)
-            if full_text:
-                source_texts.append(f"Source: {c['source_name']} ({url})\n{full_text}")
-            else:
-                # Fall back to RSS summary
-                source_texts.append(
-                    f"Source: {c['source_name']} ({url})\n{c.get('summary', 'No content available.')}"
-                )
-
-        sources_block = "\n\n---\n\n".join(source_texts)
-
-        user_msg = ARTICLE_USER_TEMPLATE.format(
-            category=cat,
-            title=topic_title,
-            sources=sources_block,
-        )
-
-        # Generate via structured output
-        try:
-            article, usage = structured_call(
-                model=model,
-                system=ARTICLE_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_msg}],
-                output_schema=ArticleSummary,
-                max_tokens=2048,
-            )
-        except Exception as exc:
-            log_error("", "threat_articles.generate", str(exc),
-                      severity="error", context={"topic": topic_title})
-            continue
-
-        if not article:
-            log_error("", "threat_articles.generate", "LLM returned no result",
-                      severity="warning", context={"topic": topic_title})
-            continue
-
-        # Build markdown output
-        md_lines = [
-            f"# {article.title}",
-            "",
-            f"**Category:** {article.category}",
-            f"**Date:** {now.strftime('%Y-%m-%d')}",
-            f"**Analyst:** {analyst}",
-            f"**Sources:** {', '.join(source_urls)}",
-            "",
-            article.body,
-            "",
-            "## Recommendations",
-            "",
-            article.recommendations,
-            "",
-            "## Indicators",
-            "",
-        ]
-
-        if article.cves:
-            md_lines.append("**CVEs:**")
-            for cve in article.cves:
-                md_lines.append(f"- {cve}")
-            md_lines.append("")
-
-        if article.iocs:
-            md_lines.append("**IOCs:**")
-            for ioc in article.iocs:
-                md_lines.append(f"- {ioc}")
-            md_lines.append("")
-
-        if not article.cves and not article.iocs:
-            md_lines.append("No indicators identified in source material.")
-            md_lines.append("")
-
-        md_text = "\n".join(md_lines)
-
-        # Generate article ID
-        seq = len(index.get("articles", [])) + 1
-        art_id = f"ART-{now.strftime('%Y%m%d')}-{seq:04d}"
-
-        # Write artefacts
-        art_dir = ARTICLES_DIR / month_dir / art_id
-        md_manifest = write_report(art_dir / "article.md", md_text, title=article.title)
-
-        manifest = {
-            "article_id": art_id,
-            "title": article.title,
-            "category": article.category,
-            "analyst": analyst,
-            "date": now.strftime("%Y-%m-%d"),
-            "source_urls": source_urls,
-            "fingerprint": _topic_fingerprint(topic_title),
-            "article_path": md_manifest["path"],
-            "confluence_page_id": None,
-            "confluence_url": None,
-            "published_at": None,
-        }
-        save_json(art_dir / "article_manifest.json", manifest)
-
-        # Update index
-        index.setdefault("articles", []).append(manifest)
-
-        # Also write to case if provided
-        if case_id:
-            from config.settings import CASES_DIR
-            case_art_dir = CASES_DIR / case_id / "artefacts" / "articles"
-            write_report(case_art_dir / f"{art_id}.md", md_text, title=article.title)
-
-        results.append(manifest)
-
-    # Persist updated index
-    if results:
-        _save_article_index(index)
-
-    return results
+    return {
+        "status": "use_prompt",
+        "prompt": "write_threat_article",
+        "save_tool": "save_threat_article",
+    }
 
 
 def save_article(

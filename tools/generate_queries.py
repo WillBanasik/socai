@@ -9,16 +9,13 @@ Supports:
   - Splunk SPL
   - LogScale / CrowdStrike Falcon
 
-Outputs:
-  cases/<case_id>/artefacts/queries/hunt_queries.md
-  cases/<case_id>/artefacts/queries/hunt_queries.yaml
+Returns the query data in-memory (markdown + structured YAML dict); does
+NOT write to disk.
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-
-import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -27,7 +24,7 @@ from config.sentinel_schema import (
     get_ip_tables, get_domain_tables, get_url_tables,
     get_hash_tables, get_email_tables, has_registry,
 )
-from tools.common import load_json, log_error, utcnow, write_artefact
+from tools.common import load_json, log_error, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -890,7 +887,7 @@ def generate_queries(
     Returns
     -------
     dict
-        Manifest with the path to the generated hunt_queries.md file.
+        Manifest with the generated query content (no disk write).
     """
     if platforms is None:
         platforms = ["kql", "splunk", "logscale"]
@@ -1000,40 +997,8 @@ def generate_queries(
         lines.append(logscale_content if logscale_content else "_No IOCs available._")
         lines.append("\n---")
 
-    # LLM-refined hunt queries (advisory)
-    try:
-        from tools.llm_insight import refine_hunt_queries
-        pattern_text = ", ".join(patterns) if patterns else "none detected"
-        refined = refine_hunt_queries(case_id, pattern_text, ioc_summary)
-        if refined:
-            lines.append("\n## LLM-Suggested Additional Queries\n")
-            lines.append("> *The following queries are LLM-generated (assessed). Validate before running.*\n")
-            lines.append(refined)
-            lines.append("\n---")
-    except Exception:
-        pass
+    markdown_text = "\n".join(lines)
 
-    # Write markdown artefact
-    out_path = case_dir / "artefacts" / "queries" / "hunt_queries.md"
-    manifest = write_artefact(out_path, "\n".join(lines))
-
-    # Write YAML artefact — use literal block scalars for query readability
-    class _LiteralStr(str):
-        pass
-
-    class _QueryDumper(yaml.Dumper):
-        pass
-
-    _QueryDumper.add_representer(
-        _LiteralStr,
-        lambda dumper, data: dumper.represent_scalar(
-            "tag:yaml.org,2002:str", data, style="|"
-        ),
-    )
-
-    yaml_path = case_dir / "artefacts" / "queries" / "hunt_queries.yaml"
-    for entry in yaml_collector:
-        entry["query"] = _LiteralStr(entry["query"])
     yaml_data = {
         "metadata": {
             "case_id": case_id,
@@ -1047,27 +1012,22 @@ def generate_queries(
         },
         "queries": yaml_collector,
     }
-    yaml_manifest = write_artefact(
-        yaml_path, yaml.dump(yaml_data, Dumper=_QueryDumper,
-                              default_flow_style=False, sort_keys=False,
-                              allow_unicode=True)
-    )
 
     ioc_counts = {k: len(v) for k, v in iocs.items() if v}
-    print(f"[generate_queries] Hunt queries written to {out_path}")
-    print(f"[generate_queries] YAML queries written to {yaml_path}")
+    print(f"[generate_queries] Queries generated for {case_id} (in-memory only)")
     print(f"[generate_queries] Platforms: {platforms} | Patterns detected: {patterns}")
 
     return {
-        "case_id":     case_id,
-        "query_path":  str(out_path),
-        "yaml_path":   str(yaml_path),
-        "platforms":   platforms,
-        "ioc_counts":  ioc_counts,
-        "patterns":    patterns,
-        "tables":      tables,
-        "ts":          utcnow(),
-        **manifest,
+        "case_id":       case_id,
+        "query_path":    None,
+        "yaml_path":     None,
+        "markdown_text": markdown_text,
+        "yaml_data":     yaml_data,
+        "platforms":     platforms,
+        "ioc_counts":    ioc_counts,
+        "patterns":      patterns,
+        "tables":        tables,
+        "ts":            utcnow(),
     }
 
 

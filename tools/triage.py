@@ -8,8 +8,7 @@ Pre-pipeline check of input IOCs against ioc_index.json and enrichment_cache.jso
 - Checks enrichment cache for IOCs with 3+ fresh provider results (skip-enrichment candidates)
 - Recommends severity escalation if known-malicious IOCs found
 
-Writes:
-  cases/<case_id>/artefacts/triage/triage_summary.json
+Returns the triage summary dict in-memory; does NOT write to disk.
 """
 from __future__ import annotations
 
@@ -21,9 +20,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import (
-    CASES_DIR, ENRICH_CACHE_FILE, ENRICH_CACHE_TTL, IOC_INDEX_FILE,
+    ENRICH_CACHE_FILE, ENRICH_CACHE_TTL, IOC_INDEX_FILE,
 )
-from tools.common import load_json, log_error, save_json, utcnow
+from tools.common import load_json, log_error, utcnow
 
 # Threshold for severity escalation: this many known-malicious IOCs triggers it
 TRIAGE_ESCALATION_THRESHOLD = int(
@@ -63,11 +62,8 @@ def _load_optional(path: Path) -> dict | None:
 def triage(case_id: str, urls: list[str] | None = None, severity: str = "medium") -> dict:
     """
     Pre-pipeline triage: check input IOCs against existing intelligence.
-    Returns a summary with known hits and recommendations.
+    Returns a summary with known hits and recommendations (no disk write).
     """
-    case_dir = CASES_DIR / case_id
-    triage_dir = case_dir / "artefacts" / "triage"
-
     # Load intelligence sources
     ioc_index = _load_optional(IOC_INDEX_FILE) or {}
     enrich_cache = _load_optional(ENRICH_CACHE_FILE) or {}
@@ -158,8 +154,6 @@ def triage(case_id: str, urls: list[str] | None = None, severity: str = "medium"
                 result["llm_context"] = context
         except Exception:
             pass
-
-    save_json(triage_dir / "triage_summary.json", result)
 
     # Print summary
     print(f"[triage] Checked {len(input_iocs)} IOC(s) against intelligence")

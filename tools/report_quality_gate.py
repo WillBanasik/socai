@@ -1,31 +1,31 @@
 """
 tool: report_quality_gate
 -------------------------
-Hybrid deterministic + LLM review of generated investigation reports against
-the investigation matrix and analytical standards.
+Deterministic review of generated investigation reports against the
+investigation matrix and analytical standards. Quality gate LLM review
+removed. Module retains deterministic check functions. Full review
+available via ``review_report`` MCP prompt.
 
 Checks:
   1. Deterministic: "confirmed" claims cross-referenced against matrix known_knowns
-  2. Deterministic: matrix coverage — are all known_knowns addressed in the report?
-  3. LLM (Haiku): causal claims without cited evidence
-  4. LLM (Haiku): speculation or gap-filling language
+  2. Deterministic: causal language detection
+  3. Deterministic: speculative language detection
+  4. Deterministic: matrix coverage — are all known_knowns addressed in the report?
 
-Output: cases/<ID>/artefacts/analysis/report_review.json
+Returns the review dict in-memory; does NOT write to disk.
 
 All functions are resilient — return safe defaults on failure, never crash.
 """
 from __future__ import annotations
 
-import json
 import re
 import sys
-import traceback as _tb
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_model, load_json, log_error, save_json, utcnow
+from config.settings import CASES_DIR
+from tools.common import load_json, log_error, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -200,128 +200,14 @@ def _check_matrix_coverage(report_text: str, matrix: dict | None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# LLM review (Haiku tier — cheap validation)
-# ---------------------------------------------------------------------------
-
-def _llm_review(report_text: str, matrix: dict | None, severity: str) -> list[dict]:
-    """LLM check for analytical standard violations."""
-    if not ANTHROPIC_KEY:
-        return []
-
-    try:
-        import anthropic
-    except ImportError:
-        return []
-
-    system_prompt = (
-        "You are a senior SOC quality reviewer auditing an MDR investigation "
-        "report against analytical and operational standards.\n\n"
-        "## Analytical Standards\n"
-        "1. Every 'confirmed' claim must cite specific data/evidence — the "
-        "artefact, field, and value that proves it\n"
-        "2. Temporal proximity is NEVER causation — two events close in time "
-        "is not evidence of a causal link without a data-level connection "
-        "(shared URL, hash, process ID, audit log entry)\n"
-        "3. No gap-filling with speculation — if a step in the attack chain "
-        "lacks evidence, it must be stated as unknown, not inferred\n"
-        "4. Evidence chain links must be independently verified — each link "
-        "(email → click → download → execution) requires its own evidence\n"
-        "5. Distinguish fact from inference — 'confirmed' = data proves it, "
-        "'assessed with [high/medium/low] confidence' = inference, "
-        "'unknown' = no data\n\n"
-        "## Operational Standards\n"
-        "6. The report MUST include a 'What Was NOT Observed' section "
-        "documenting the absence of: C2 traffic, lateral movement, "
-        "persistence mechanisms, privilege escalation, data exfiltration "
-        "(whichever are relevant). Absence of evidence is informative.\n"
-        "7. Containment/response recommendations must be proportional to "
-        "assessed risk — a clean/benign case should not recommend password "
-        "resets or device isolation; a confirmed credential harvest should\n"
-        "8. Malicious IOCs (IPs, domains, URLs) must be defanged in the "
-        "report text (e.g. evil[.]com, hxxps://). Hashes and file paths "
-        "are never defanged. Flag any un-defanged malicious IOC.\n"
-        "9. For phishing cases: the report must address the full kill chain "
-        "up to the point evidence exists — delivery mechanism, landing page "
-        "content, credential form presence, and whether credentials were "
-        "submitted. Each step must be explicitly confirmed or marked unknown.\n"
-        "10. For enrichment-heavy cases: the report must distinguish between "
-        "IOCs that are actual investigation targets vs page resources "
-        "(CDN domains, analytics, certificate infrastructure) that appeared "
-        "during web capture. Treating CDN noise as threat indicators is an "
-        "error.\n\n"
-        "## Severity Levels\n"
-        "- error: analytical standard violation that could mislead the reader "
-        "(unsupported 'confirmed', causal claim without evidence link, "
-        "missing kill chain step presented as known)\n"
-        "- warning: style/quality issue that weakens the report but doesn't "
-        "mislead (speculative language, missing NOT-observed section, "
-        "disproportionate recommendations)\n\n"
-        "Return JSON array of violations found:\n"
-        '[{"severity": "error|warning", "rule": "<rule_name>", '
-        '"location": "<section or paragraph reference>", '
-        '"finding": "<what is wrong>", '
-        '"suggestion": "<specific fix>"}]\n\n'
-        "Return [] if no violations found. Return ONLY the JSON array. "
-        "Use UK English."
-    )
-
-    matrix_summary = ""
-    if matrix:
-        matrix_summary = (
-            f"\n\nInvestigation matrix summary:\n"
-            f"- Known knowns: {len(matrix.get('known_knowns', []))}\n"
-            f"- Known unknowns: {len(matrix.get('known_unknowns', []))}\n"
-            f"- Hypotheses: {len(matrix.get('hypotheses', []))}\n"
-        )
-        # Include hypothesis statuses
-        for h in matrix.get("hypotheses", []):
-            matrix_summary += (
-                f"  - {h.get('id')}: {h.get('claim', '')[:80]} "
-                f"[{h.get('status', 'unresolved')}]\n"
-            )
-
-    user_prompt = f"Report to review:\n{report_text[:6000]}{matrix_summary}"
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-        model = get_model("quality_gate", severity)
-        message = client.messages.create(
-            model=model,
-            max_tokens=1024,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        text = message.content[0].text.strip()
-        tokens_in = message.usage.input_tokens
-        tokens_out = message.usage.output_tokens
-        print(f"[quality_gate] LLM review completed "
-              f"({tokens_in}/{tokens_out} tokens, model={model})")
-
-        # Parse
-        if text.startswith("```"):
-            lines = text.splitlines()
-            lines = [ln for ln in lines if not ln.strip().startswith("```")]
-            text = "\n".join(lines).strip()
-
-        parsed = json.loads(text)
-        if isinstance(parsed, list):
-            return parsed
-        return []
-    except Exception as exc:
-        log_error("", "report_quality_gate._llm_review", str(exc),
-                  severity="warning", traceback=_tb.format_exc())
-        return []
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def review_report(case_id: str) -> dict | None:
     """Review the investigation report against matrix and analytical standards.
 
-    Returns review dict on success, None if no report exists.
-    Writes to cases/<case_id>/artefacts/analysis/report_review.json.
+    Returns review dict on success, None if no report exists.  Does not
+    write to disk.
     """
     case_dir = CASES_DIR / case_id
 
@@ -339,9 +225,6 @@ def review_report(case_id: str) -> dict | None:
         case_dir / "artefacts" / "analysis" / "investigation_matrix.json"
     )
 
-    meta = _safe_load(case_dir / "case_meta.json") or {}
-    severity = meta.get("severity", "medium")
-
     # Run all checks
     flags: list[dict] = []
 
@@ -354,13 +237,7 @@ def review_report(case_id: str) -> dict | None:
     # 3. Deterministic: speculative language
     flags.extend(_check_speculation(report_text))
 
-    # 4. LLM review
-    llm_flags = _llm_review(report_text, matrix, severity)
-    for flag in llm_flags:
-        flag["source"] = "llm"
-    flags.extend(llm_flags)
-
-    # 5. Matrix coverage
+    # 4. Matrix coverage
     coverage = _check_matrix_coverage(report_text, matrix)
 
     # Determine pass/fail
@@ -377,11 +254,6 @@ def review_report(case_id: str) -> dict | None:
         "coverage": coverage,
         "matrix_available": matrix is not None,
     }
-
-    # Write artefact
-    analysis_dir = CASES_DIR / case_id / "artefacts" / "analysis"
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    save_json(analysis_dir / "report_review.json", result)
 
     status = "PASSED" if passed else f"FAILED ({error_count} error(s))"
     print(f"[quality_gate] {case_id}: {status}, "

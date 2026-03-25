@@ -19,9 +19,6 @@ Analysis per PE file:
   9.  File hashes (MD5, SHA1, SHA256)
   10. Strings extraction (ASCII + Unicode, deduplicated, capped at 500)
 
-Optional LLM step: sends per-file summary to Claude for malware
-classification when ANTHROPIC_API_KEY is set.
-
 Output:
   cases/<case_id>/artefacts/analysis/pe_analysis.json
 
@@ -40,8 +37,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR, STRINGS_MIN_LEN
-from tools.common import get_model, load_json, log_error, save_json, sha256_file, utcnow
+from config.settings import CASES_DIR, STRINGS_MIN_LEN
+from tools.common import load_json, log_error, save_json, sha256_file, utcnow
 
 # ---------------------------------------------------------------------------
 # Optional dependency
@@ -52,6 +49,28 @@ try:
     HAS_PEFILE = True
 except ImportError:
     HAS_PEFILE = False
+
+# ---------------------------------------------------------------------------
+# LLM system prompt (used by MCP client-side prompts)
+# ---------------------------------------------------------------------------
+
+_LLM_SYSTEM_PROMPT = (
+    "You are a malware reverse-engineering analyst. Given static PE analysis "
+    "data (section entropy, imports, exports, header anomalies, packer "
+    "signatures, and extracted strings), assess each binary.\n\n"
+    "For each file, provide:\n"
+    "- Verdict: malicious / suspicious / clean\n"
+    "- Confidence: high / medium / low\n"
+    "- Capabilities: what the binary can do based on imports and strings\n"
+    "- Packing/Obfuscation: evidence of evasion techniques\n"
+    "- IOCs: C2 infrastructure, credentials, or tool artefacts in strings\n"
+    "- Reasoning: specific imports, sections, or strings supporting the verdict\n\n"
+    "Rules:\n"
+    "- High entropy (>7.0) in code sections suggests packing or encryption.\n"
+    "- Writable+executable sections are abnormal and indicate injection or packing.\n"
+    "- Base your verdict on the totality of indicators, not any single one.\n"
+    "- Only make claims supported by the supplied data."
+)
 
 # ---------------------------------------------------------------------------
 # PE extensions to scan (case-insensitive)
@@ -385,77 +404,6 @@ def _analyse_pe(filepath: Path, case_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# LLM assessment (optional)
-# ---------------------------------------------------------------------------
-
-_LLM_SYSTEM_PROMPT = """\
-You are an expert malware reverse-engineer and threat analyst.  You are given \
-the output of automated PE (Portable Executable) static analysis for a single \
-binary.  Based on the section layout, import table, flagged APIs, header \
-anomalies, packer signatures, entropy profile, and strings, provide a \
-structured malware assessment.
-
-Focus on:
-- Whether the combination of imported APIs suggests malicious capability
-- Entropy and packing indicators that suggest obfuscation
-- Header anomalies that indicate tampering or non-standard compilation
-- Strings that reveal C2 infrastructure, credentials, or tool artefacts
-- Overall likelihood this is a legitimate binary vs malware
-
-Be precise and evidence-based.  Cite specific imports, sections, or strings \
-that support your assessment."""
-
-def _llm_assess(file_result: dict, case_id: str) -> dict | None:
-    """Send per-file analysis to Claude for malware classification."""
-    if not ANTHROPIC_KEY:
-        return None
-
-    # Prepare a summary dict (exclude raw strings list to stay within token limits)
-    summary = {k: v for k, v in file_result.items() if k != "strings"}
-    summary["strings_sample"] = file_result.get("strings", [])[:50]
-    summary_text = json.dumps(summary, indent=2, default=str)
-
-    try:
-        from tools.structured_llm import structured_call
-        from tools.schemas import PeAssessment
-
-        try:
-            _meta = load_json(CASES_DIR / case_id / "case_meta.json")
-        except Exception:
-            _meta = {}
-        _severity = _meta.get("severity", "medium")
-
-        result, _usage = structured_call(
-            model=get_model("pe_analysis", _severity),
-            system=[
-                {
-                    "type": "text",
-                    "text": _LLM_SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                },
-            ],
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Analyse this PE file and provide your structured "
-                        f"assessment.\n\n```json\n{summary_text}\n```"
-                    ),
-                },
-            ],
-            output_schema=PeAssessment,
-            max_tokens=2048,
-        )
-
-        return result.model_dump() if result else None
-
-    except Exception as exc:
-        log_error(case_id, "pe_analysis_llm", f"LLM assessment failed: {exc}",
-                  severity="warning")
-        return None
-
-
-# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -491,11 +439,6 @@ def pe_deep_analyse(case_id: str) -> dict:
                 "error": str(exc),
             }
 
-        # LLM assessment (per file)
-        llm_result = _llm_assess(analysis, case_id)
-        if llm_result:
-            analysis["llm_assessment"] = llm_result
-
         file_results.append(analysis)
 
     # -- Summary stats -----------------------------------------------------
@@ -519,7 +462,6 @@ def pe_deep_analyse(case_id: str) -> dict:
         "any_packed": any_packed,
         "any_high_entropy_sections": any_high_entropy,
         "any_writable_executable_sections": any_wx,
-        "llm_assessed": any("llm_assessment" in r for r in file_results),
         "files": file_results,
     }
 

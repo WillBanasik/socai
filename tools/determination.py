@@ -1,35 +1,22 @@
 """
 tool: determination
 -------------------
-Shadow-mode evidence-chain analysis and disposition proposal.
-
-Runs alongside the existing deterministic auto-disposition (verdict counting)
-and produces a structured disposition with:
-
-  - Full evidence chain with per-link status
-  - Gap declarations
-  - Disconfirming checks performed
-  - Agreement/disagreement with deterministic disposition
-
-When the LLM disagrees with the deterministic disposition, the case is flagged
-for analyst review rather than auto-closed.
+Determination is now done by the local Claude Desktop agent using the
+``run_determination`` MCP prompt. This module retains
+``_DETERMINATION_SYSTEM_PROMPT``, ``compare_dispositions()``, and
+normalisation helpers.
 
 Output: cases/<ID>/artefacts/analysis/determination.json
-
-All functions are safe to call without ANTHROPIC_API_KEY — they return None
-or a safe default and never crash the pipeline.
 """
 from __future__ import annotations
 
 import json
 import sys
-import traceback as _tb
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_model, load_json, log_error, save_json, utcnow
+from tools.common import load_json, log_error
 
 
 # ---------------------------------------------------------------------------
@@ -46,64 +33,6 @@ def _safe_load(path: Path) -> dict | None:
                   severity="warning", context={"path": str(path)})
         return None
 
-
-def _call_llm(
-    task: str,
-    severity: str,
-    system_prompt: str,
-    user_prompt: str,
-    max_tokens: int = 2048,
-) -> str | None:
-    """Resilient LLM call — returns None on any failure."""
-    if not ANTHROPIC_KEY:
-        return None
-
-    try:
-        import anthropic
-    except ImportError:
-        log_error("", f"determination.{task}",
-                  "anthropic package not installed", severity="info")
-        return None
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-        model = get_model(task, severity)
-        message = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        text = message.content[0].text.strip()
-        tokens_in = message.usage.input_tokens
-        tokens_out = message.usage.output_tokens
-        print(f"[determination] {task} completed "
-              f"({tokens_in}/{tokens_out} tokens, model={model})")
-        return text
-    except Exception as exc:
-        log_error("", f"determination.{task}", str(exc),
-                  severity="warning", traceback=_tb.format_exc())
-        return None
-
-
-def _parse_json_response(raw: str) -> dict | None:
-    """Extract JSON from an LLM response, handling code fences."""
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        lines = [ln for ln in lines if not ln.strip().startswith("```")]
-        text = "\n".join(lines).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start >= 0 and end > start:
-            try:
-                return json.loads(text[start:end])
-            except json.JSONDecodeError:
-                return None
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -254,173 +183,18 @@ Return ONLY the JSON object. Use UK English.
 # ---------------------------------------------------------------------------
 
 def llm_determine(case_id: str) -> dict | None:
-    """Produce an evidence-chain disposition proposal for a case.
+    """Stub — direct LLM determination removed.
 
-    Returns the determination dict on success, None on failure.
-    Writes to cases/<case_id>/artefacts/analysis/determination.json.
+    Use the ``run_determination`` MCP prompt for evidence-chain analysis
+    via the local Claude Desktop agent, then call ``add_finding``
+    to record the result.
     """
-    case_dir = CASES_DIR / case_id
-
-    meta = _safe_load(case_dir / "case_meta.json") or {}
-    verdicts = _safe_load(
-        case_dir / "artefacts" / "enrichment" / "verdict_summary.json"
-    ) or {}
-    enrichment = _safe_load(
-        case_dir / "artefacts" / "enrichment" / "enrichment.json"
-    ) or {}
-    anomalies = _safe_load(
-        case_dir / "artefacts" / "anomalies" / "anomaly_report.json"
-    ) or {}
-    correlation = _safe_load(
-        case_dir / "artefacts" / "correlation" / "correlation.json"
-    ) or {}
-    matrix = _safe_load(
-        case_dir / "artefacts" / "analysis" / "investigation_matrix.json"
-    )
-    email = _safe_load(
-        case_dir / "artefacts" / "email" / "email_analysis.json"
-    ) or {}
-
-    # Web captures — load capture manifests for disposition-critical context
-    web_captures: list[dict] = []
-    web_dir = case_dir / "artefacts" / "web"
-    if web_dir.is_dir():
-        for sub in sorted(web_dir.iterdir()):
-            manifest_path = sub / "capture_manifest.json" if sub.is_dir() else None
-            if manifest_path and manifest_path.exists():
-                manifest = _safe_load(manifest_path)
-                if manifest:
-                    web_captures.append({
-                        "domain": sub.name,
-                        "url": manifest.get("url"),
-                        "final_url": manifest.get("final_url"),
-                        "title": manifest.get("title"),
-                        "status_code": manifest.get("status_code"),
-                        "redirect_chain": manifest.get("redirect_chain", []),
-                    })
-
-    severity = meta.get("severity", "medium")
-
-    # Build user prompt
-    parts: list[str] = [
-        f"Case: {case_id}",
-        f"Title: {meta.get('title', 'N/A')}",
-        f"Severity: {severity}",
-        f"Attack type: {meta.get('attack_type', 'generic')}",
-    ]
-
-    # Verdict summary
-    if verdicts:
-        parts.append(f"\n## Verdict Summary")
-        for cat in ("high_priority", "needs_review", "clean", "unknown"):
-            items = verdicts.get(cat, [])
-            if items:
-                parts.append(f"  {cat}: {len(items)}")
-                for item in items[:5]:
-                    if isinstance(item, dict):
-                        parts.append(
-                            f"    - {item.get('ioc', 'N/A')}: "
-                            f"{item.get('verdict', 'N/A')} "
-                            f"({item.get('confidence', 'N/A')})"
-                        )
-
-    # Key enrichment results (malicious/suspicious only)
-    enrich_results = enrichment.get("results", [])
-    significant = [r for r in enrich_results
-                   if r.get("verdict") in ("malicious", "suspicious")
-                   or r.get("total_reports", 0) > 5
-                   or r.get("malware")]
-    if significant:
-        parts.append(f"\n## Significant Enrichment ({len(significant)} results)")
-        parts.append(json.dumps(significant[:15], indent=2, default=str)[:2500])
-
-    # Email analysis
-    if email:
-        parts.append(f"\n## Email Analysis\n{json.dumps(email, indent=2, default=str)[:1000]}")
-
-    # Web captures (page titles, redirects, final URLs — critical for phishing)
-    if web_captures:
-        wc_parts = []
-        for wc in web_captures[:20]:
-            line = f"  - {wc.get('domain', 'N/A')}: title=\"{wc.get('title', 'N/A')}\" status={wc.get('status_code', 'N/A')}"
-            if wc.get("final_url") and wc["final_url"] != wc.get("url"):
-                line += f" (redirected → {wc['final_url']})"
-            chain = wc.get("redirect_chain", [])
-            if len(chain) > 1:
-                line += f" [{len(chain)} hops]"
-            wc_parts.append(line)
-        parts.append(f"\n## Web Captures ({len(web_captures)} domains)\n" + "\n".join(wc_parts))
-
-    # Anomalies
-    if anomalies:
-        parts.append(f"\n## Anomalies\n{json.dumps(anomalies, indent=2, default=str)[:800]}")
-
-    # Correlations
-    if correlation:
-        parts.append(f"\n## Correlations\n{json.dumps(correlation, indent=2, default=str)[:800]}")
-
-    # Investigation matrix (if already generated)
-    if matrix:
-        compact_matrix = {
-            "known_knowns": matrix.get("known_knowns", []),
-            "known_unknowns": [
-                {k: v for k, v in ku.items() if k != "resolution" or v is not None}
-                for ku in matrix.get("known_unknowns", [])
-            ],
-            "hypotheses": matrix.get("hypotheses", []),
-        }
-        parts.append(f"\n## Investigation Matrix\n"
-                     f"{json.dumps(compact_matrix, indent=2, default=str)[:2000]}")
-
-    user_prompt = "\n".join(parts)
-
-    # Call LLM
-    raw = _call_llm(
-        task="determination",
-        severity=severity,
-        system_prompt=_DETERMINATION_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        max_tokens=2000,
-    )
-
-    if not raw:
-        return None
-
-    parsed = _parse_json_response(raw)
-    if not parsed:
-        snippet = raw[:300].replace("\n", " ")
-        log_error(case_id, "determination.llm_determine",
-                  "Failed to parse LLM response as JSON",
-                  severity="warning", context={
-                      "raw_length": len(raw),
-                      "snippet": snippet,
-                  })
-        print(f"[determination] Parse failure — first 300 chars: {snippet}")
-        return None
-
-    # Normalise
-    result = {
+    return {
+        "status": "use_prompt",
+        "prompt": "run_determination",
+        "save_tool": "add_finding",
         "case_id": case_id,
-        "ts": utcnow(),
-        "disposition": parsed.get("disposition", "inconclusive"),
-        "confidence": parsed.get("confidence", "low"),
-        "evidence_chain": parsed.get("evidence_chain", []),
-        "gaps": parsed.get("gaps", []),
-        "disconfirming_checks": parsed.get("disconfirming_checks", []),
-        "reasoning": parsed.get("reasoning", ""),
     }
-
-    # Write artefact
-    analysis_dir = CASES_DIR / case_id / "artefacts" / "analysis"
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    save_json(analysis_dir / "determination.json", result)
-
-    print(f"[determination] {case_id}: {result['disposition']} "
-          f"(confidence: {result['confidence']}, "
-          f"chain links: {len(result['evidence_chain'])}, "
-          f"gaps: {len(result['gaps'])})")
-
-    return result
 
 
 def compare_dispositions(

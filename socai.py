@@ -147,45 +147,26 @@ def cmd_enrich(args: argparse.Namespace) -> None:
 
 
 def cmd_client_query(args: argparse.Namespace) -> None:
-    from tools.client_query import client_query
-    client_query(
-        prompt=args.prompt,
-        platforms=args.platforms or None,
-        tables=args.tables or None,
-    )
+    print("Ad-hoc queries are now handled directly by the local Claude Desktop agent.")
+    print("Ask your question in the Claude Desktop conversation instead.")
 
 
 def cmd_mdr_report(args: argparse.Namespace) -> None:
-    from tools.generate_mdr_report import generate_mdr_report
-    result = generate_mdr_report(args.case)
-    if result.get("status") == "ok":
-        print(f"MDR report: {result['report_path']}")
-    else:
-        print(f"[mdr-report] {result.get('status','?')}: {result.get('reason','')}")
-    if args.json:
-        print(json.dumps(result, indent=2, default=str))
+    print("MDR report generation now uses the local Claude Desktop agent.")
+    print(f"Use the write_mdr_report MCP prompt for case {args.case},")
+    print('then call save_report with report_type="mdr_report" to persist it.')
 
 
 def cmd_pup_report(args: argparse.Namespace) -> None:
-    from tools.generate_pup_report import generate_pup_report
-    result = generate_pup_report(args.case)
-    if result.get("status") == "ok":
-        print(f"PUP/PUA report: {result['report_path']}")
-    else:
-        print(f"[pup-report] {result.get('status','?')}: {result.get('reason','')}")
-    if args.json:
-        print(json.dumps(result, indent=2, default=str))
+    print("PUP/PUA report generation now uses the local Claude Desktop agent.")
+    print(f"Use the write_pup_report MCP prompt for case {args.case},")
+    print('then call save_report with report_type="pup_report" to persist it.')
 
 
 def cmd_secarch(args: argparse.Namespace) -> None:
-    from tools.security_arch_review import security_arch_review
-    result = security_arch_review(args.case)
-    if result.get("status") == "ok":
-        print(f"Security architecture review: {result['review_path']}")
-    else:
-        print(f"[secarch] {result.get('status','?')}: {result.get('reason','')}")
-    if args.json:
-        print(json.dumps(result, indent=2, default=str))
+    print("Security architecture review now uses the local Claude Desktop agent.")
+    print(f"Use the write_security_arch_review MCP prompt for case {args.case},")
+    print('then call save_report with report_type="security_arch_review" to persist it.')
 
 
 def cmd_queries(args: argparse.Namespace) -> None:
@@ -335,14 +316,9 @@ def cmd_cve_context(args: argparse.Namespace) -> None:
 
 
 def cmd_exec_summary(args: argparse.Namespace) -> None:
-    from tools.executive_summary import executive_summary
-    result = executive_summary(args.case)
-    if result.get("status") == "ok":
-        print(f"Executive summary: {result.get('summary_path', '')}")
-    else:
-        print(f"[exec-summary] {result.get('status', '?')}: {result.get('reason', '')}")
-    if args.json:
-        print(json.dumps(result, indent=2, default=str))
+    print("Executive summary generation now uses the local Claude Desktop agent.")
+    print(f"Use the write_executive_summary MCP prompt for case {args.case},")
+    print('then call save_report with report_type="executive_summary" to persist it.')
 
 
 def cmd_response_actions(args: argparse.Namespace) -> None:
@@ -668,99 +644,15 @@ def cmd_articles_generate(args: argparse.Namespace) -> None:
 
 
 def cmd_batch_submit(args: argparse.Namespace) -> None:
-    from tools.batch import (
-        prepare_mdr_report_batch, prepare_executive_summary_batch,
-        prepare_secarch_batch, submit_batch,
-    )
-
-    _TOOL_PREPARERS = {
-        "mdr-report": prepare_mdr_report_batch,
-        "exec-summary": prepare_executive_summary_batch,
-        "secarch": prepare_secarch_batch,
-    }
-
-    # Build (preparer, case_id, tool_name) work items, filtering bad tool names
-    work_items = []
-    for case_id in args.cases:
-        for tool_name in args.tools:
-            preparer = _TOOL_PREPARERS.get(tool_name)
-            if not preparer:
-                print(f"[warn] Unknown batch tool: {tool_name}")
-                continue
-            work_items.append((preparer, case_id, tool_name))
-
-    # Prepare all batch requests concurrently (I/O-bound disk reads)
-    from concurrent.futures import ThreadPoolExecutor
-
-    requests = []
-    with ThreadPoolExecutor(max_workers=min(len(work_items), 8)) as executor:
-        futures = {
-            executor.submit(fn, cid): (cid, tname)
-            for fn, cid, tname in work_items
-        }
-        for future in futures:
-            cid, tname = futures[future]
-            try:
-                req = future.result()
-                if req:
-                    requests.append(req)
-                else:
-                    print(f"[warn] Could not prepare {tname} for {cid} (no data?)")
-            except Exception as exc:
-                print(f"[warn] Failed to prepare {tname} for {cid}: {exc}")
-
-    if not requests:
-        print("[batch-submit] No valid requests to submit.")
-        return
-
-    result = submit_batch(requests, batch_label=f"CLI batch: {', '.join(args.tools)}")
-    if args.json:
-        print(json.dumps(result, indent=2, default=str))
-    else:
-        print(f"Batch ID: {result.get('batch_id', '?')}")
-        print(f"Status: {result.get('status', '?')}")
-        print(f"Requests: {result.get('request_count', 0)}")
+    print("Batch processing has been removed. Use the MCP prompt workflow instead.")
 
 
 def cmd_batch_status(args: argparse.Namespace) -> None:
-    if args.list_batches:
-        from tools.batch import list_batches
-        batches = list_batches()
-        if not batches:
-            print("No batches found.")
-            return
-        print(f"{'Batch ID':<45} {'Status':<12} {'Requests':<10} {'Label'}")
-        print("-" * 100)
-        for b in batches:
-            print(f"{b.get('batch_id', '?'):<45} {b.get('status', '?'):<12} "
-                  f"{b.get('request_count', '?'):<10} {b.get('label', '')}")
-        return
-
-    if not args.batch_id:
-        print("[error] Provide --batch-id <id> or --list")
-        sys.exit(1)
-
-    from tools.batch import poll_batch
-    result = poll_batch(args.batch_id, poll_interval=5, timeout=10)
-    if args.json:
-        print(json.dumps(result, indent=2, default=str))
-    else:
-        print(f"Batch: {result.get('batch_id', '?')}")
-        print(f"Status: {result.get('status', '?')}")
+    print("Batch processing has been removed.")
 
 
 def cmd_batch_collect(args: argparse.Namespace) -> None:
-    from tools.batch import collect_batch_results, dispatch_batch_results
-
-    results = collect_batch_results(args.batch_id)
-    if not results:
-        print("[batch-collect] No results found.")
-        return
-
-    summary = dispatch_batch_results(results)
-    print(f"Dispatched: {summary['dispatched']}, Errors: {summary['errors']}, Total: {summary['total']}")
-    if args.json:
-        print(json.dumps(summary, indent=2, default=str))
+    print("Batch processing has been removed.")
 
 
 def cmd_velociraptor(args: argparse.Namespace) -> None:
@@ -1358,28 +1250,28 @@ def build_parser() -> argparse.ArgumentParser:
     # mdr-report
     p_mdr = sub.add_parser(
         "mdr-report",
-        help="Generate an MDR-style incident report using the Gold MDR/XDR Analyst Instruction Set.",
+        help="Generate MDR report (redirects to MCP prompt workflow).",
     )
     p_mdr.add_argument("--case", required=True)
 
     # pup-report
     p_pup = sub.add_parser(
         "pup-report",
-        help="Generate a PUP/PUA (Potentially Unwanted Program) report for a case.",
+        help="Generate PUP/PUA report (redirects to MCP prompt workflow).",
     )
     p_pup.add_argument("--case", required=True)
 
     # secarch
     p_sa = sub.add_parser(
         "secarch",
-        help="LLM-assisted security architecture review for a completed case.",
+        help="Security architecture review (redirects to MCP prompt workflow).",
     )
     p_sa.add_argument("--case", required=True)
 
     # client-query
     p_cq = sub.add_parser(
         "client-query",
-        help="Ad-hoc SIEM queries from a free-text client request. No case created.",
+        help="Ad-hoc queries (redirects to Claude Desktop agent).",
     )
     p_cq.add_argument(
         "--prompt", required=True,
@@ -1467,7 +1359,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cve.add_argument("--case", required=True)
 
     # exec-summary
-    p_es = sub.add_parser("exec-summary", help="Generate a plain-English executive summary for leadership.")
+    p_es = sub.add_parser("exec-summary", help="Executive summary (redirects to MCP prompt workflow).")
     p_es.add_argument("--case", required=True)
 
     # response-actions
@@ -1682,7 +1574,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_artg.add_argument("--case", default=None, help="Optional case ID to attach article to")
 
     # batch-submit
-    p_bsub = sub.add_parser("batch-submit", help="Submit a batch of LLM requests for multiple cases/tools.")
+    p_bsub = sub.add_parser("batch-submit", help="Batch processing (removed — use MCP prompts).")
     p_bsub.add_argument("--cases", nargs="+", required=True, metavar="CASE_ID",
                          help="Case IDs to include in the batch")
     p_bsub.add_argument("--tools", nargs="+", required=True,
@@ -1691,14 +1583,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_bsub.add_argument("--label", default="", help="Optional label for the batch")
 
     # batch-status
-    p_bst = sub.add_parser("batch-status", help="Check batch processing status.")
+    p_bst = sub.add_parser("batch-status", help="Batch processing (removed).")
     p_bst.add_argument("--batch-id", default=None, dest="batch_id",
                        help="Batch ID to check")
     p_bst.add_argument("--list", action="store_true", dest="list_batches",
                        help="List all known batches")
 
     # batch-collect
-    p_bc = sub.add_parser("batch-collect", help="Collect batch results and write artefacts.")
+    p_bc = sub.add_parser("batch-collect", help="Batch processing (removed).")
     p_bc.add_argument("--batch-id", required=True, dest="batch_id",
                       help="Batch ID to collect results for")
 

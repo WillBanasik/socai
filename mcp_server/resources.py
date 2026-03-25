@@ -95,7 +95,7 @@ def register_resources(mcp: FastMCP) -> None:
         from config.settings import CASES_DIR
         from tools.common import load_json
 
-        path = CASES_DIR / case_id / "artefacts" / "enrichment.json"
+        path = CASES_DIR / case_id / "artefacts" / "enrichment" / "enrichment.json"
         if not path.exists():
             return _json({"error": "No enrichment data found."})
         return _json(load_json(path))
@@ -108,7 +108,7 @@ def register_resources(mcp: FastMCP) -> None:
         from config.settings import CASES_DIR
         from tools.common import load_json
 
-        path = CASES_DIR / case_id / "artefacts" / "timeline.json"
+        path = CASES_DIR / case_id / "artefacts" / "timeline" / "timeline.json"
         if not path.exists():
             return _json({"error": "No timeline data found."})
         return _json(load_json(path))
@@ -255,8 +255,8 @@ def register_resources(mcp: FastMCP) -> None:
             "meta": _load("case_meta.json", {}),
             "iocs": _load("iocs/iocs.json", {}),
             "verdicts": _load("artefacts/enrichment/verdict_summary.json", {}),
-            "enrichment_stats": (_load("artefacts/enrichment.json", {}) or {}).get("stats", {}),
-            "timeline": _load("artefacts/timeline.json", []),
+            "enrichment_stats": (_load("artefacts/enrichment/enrichment.json", {}) or {}).get("stats", {}),
+            "timeline": _load("artefacts/timeline/timeline.json", []),
             "findings": _load("artefacts/findings.json", []),
         }
 
@@ -718,233 +718,205 @@ def register_resources(mcp: FastMCP) -> None:
 
     @mcp.resource("socai://capabilities")
     def capabilities_overview() -> str:
-        """Structured overview of all SOCAI tools, prompts, and resources.
+        """Complete capability map for the local Claude Desktop agent.
 
-        Read this resource to answer "what can you do?" in a single call
-        instead of enumerating tool schemas.
+        Read this FIRST in every session to understand what you can do,
+        what persists to disk, and how workflows are structured.
         """
         return _json({
-            "platform": "SOCAI — SOC Investigation Platform",
+            "architecture": {
+                "model": "Centralised tools + local agent",
+                "server": "MCP server — stateless data tools, enrichment, SIEM queries, persistence. No LLM reasoning.",
+                "agent": "Local Claude Desktop — all analysis, reasoning, report writing. Drives investigation via tools and prompts.",
+                "persistence": "Only essential artefacts saved to disk: case meta, IOCs, enrichment verdicts, final HTML reports, web captures, email evidence, sandbox telemetry, forensic data.",
+            },
             "start_here": (
-                "Call classify_attack or plan_investigation with alert data to get "
-                "an attack-type classification and step-by-step tool sequence. "
-                "Follow the returned plan."
+                "1. Read socai://role for your analyst permissions.\n"
+                "2. Call lookup_client to identify the client and their SIEM platforms.\n"
+                "3. Call classify_attack or plan_investigation with alert data.\n"
+                "4. Follow the returned plan, calling tools step by step.\n"
+                "5. When ready to deliver, use a write_* prompt then save_report."
             ),
             "tools": {
-                "total": 77,
-                "categories": {
-                    "investigation_and_triage": {
-                        "description": "Classify alerts and plan investigations",
-                        "tools": [
-                            "classify_attack", "plan_investigation",
-                            "create_case", "promote_case", "discard_case",
-                            "quick_enrich",
-                        ],
+                "data_gathering": {
+                    "description": "Tools that collect, extract, and enrich data. Call these to build your evidence base.",
+                    "tools": {
+                        "enrich_iocs": "Enrich IOCs against 15+ TI providers (VT, AbuseIPDB, Shodan, etc.). Saves IOCs + verdicts to disk.",
+                        "quick_enrich": "Fast IOC enrichment without a case. Returns results only.",
+                        "extract_iocs_from_text": "Regex IOC extraction from raw text. No case needed.",
+                        "capture_urls": "Headless browser capture — screenshots, HTML, redirects. Saves to disk as evidence.",
+                        "detect_phishing": "Tier 1 (brand regex) + Tier 2 (heuristic scoring) phishing detection. Returns verdict.",
+                        "analyse_email": "Parse .eml files — headers, auth, URLs, attachments. Saves to disk as evidence.",
+                        "correlate": "Cross-reference IOCs against parsed logs. Returns correlation data (not saved).",
+                        "detect_anomalies": "Behavioural anomaly detection in parsed logs. Returns findings (not saved).",
+                        "reconstruct_timeline": "Assemble forensic timeline from all artefacts. Returns events (not saved).",
+                        "correlate_evtx": "Windows event log attack chain detection. Returns chains (not saved).",
+                        "contextualise_cves": "NVD/EPSS/KEV lookups for CVEs. Returns context (not saved).",
+                        "parse_logs": "Parse CSV/JSON/JSONL log files. Saves parsed output to disk.",
+                        "analyse_pe": "Deep PE file analysis — imports, entropy, packers. Saves to disk.",
+                        "yara_scan": "YARA rule scanning against case files. Saves results to disk.",
+                        "sandbox_lookup": "Query sandbox providers (VT, Joe, Triage) for file hashes.",
                     },
-                    "case_management": {
-                        "description": "Create, read, update, close, link, and merge cases",
-                        "tools": [
-                            "list_cases", "get_case", "case_summary", "read_report",
-                            "read_case_file", "new_investigation", "close_case",
-                            "link_cases", "merge_cases", "add_evidence", "add_finding",
-                        ],
+                },
+                "siem_and_queries": {
+                    "description": "Query SIEM platforms and generate hunt queries.",
+                    "tools": {
+                        "lookup_client": "Identify client, confirm SIEM platforms and workspace IDs. Call FIRST before any KQL.",
+                        "run_kql": "Execute KQL query against Azure Sentinel. Read-only.",
+                        "run_kql_batch": "Execute multiple KQL queries in parallel.",
+                        "load_kql_playbook": "Load a KQL investigation playbook template.",
+                        "generate_sentinel_query": "Generate composite Sentinel queries from scenario templates.",
+                        "generate_queries": "Generate hunt queries for KQL/Splunk/LogScale from case IOCs. Returns in-memory (not saved).",
                     },
-                    "enrichment_and_analysis": {
-                        "description": "Enrich IOCs, correlate across cases, check CVEs, and search OSINT",
-                        "tools": [
-                            "enrich_iocs", "correlate", "contextualise_cves",
-                            "recall_cases", "campaign_cluster", "web_search",
-                        ],
+                },
+                "case_management": {
+                    "description": "Create, read, update, and close cases. These manage the persistent case record.",
+                    "tools": {
+                        "create_case": "Create a new case with title, severity, client, tags.",
+                        "promote_case": "Promote triage case to active investigation.",
+                        "discard_case": "Discard a triage case (noise/duplicate).",
+                        "close_case": "Close a case with disposition.",
+                        "list_cases": "List all registered cases with status/severity filters.",
+                        "get_case": "Read case metadata.",
+                        "case_summary": "Compact case summary with IOC/verdict/finding counts.",
+                        "read_report": "Read the final HTML report for a case.",
+                        "read_case_file": "Read any file from a case directory.",
+                        "list_case_files": "List all files in a case directory.",
+                        "add_evidence": "Attach raw evidence (alert JSON, IOC lists, notes) to a case.",
+                        "add_finding": "Record an analytical conclusion against a case.",
+                        "link_cases": "Create bidirectional link between related cases.",
+                        "merge_cases": "Merge IOCs and evidence from one case into another.",
+                        "new_investigation": "Semantic marker — signals a fresh investigation context.",
                     },
-                    "email_and_phishing": {
-                        "description": "Parse emails, capture URLs, and detect phishing pages",
-                        "tools": ["analyse_email", "capture_urls", "detect_phishing"],
+                },
+                "report_delivery": {
+                    "description": "These tools trigger the prompt+save workflow for deliverables. They auto-create cases if needed.",
+                    "tools": {
+                        "generate_mdr_report": "Redirects to write_mdr_report prompt → save_report. Auto-closes case.",
+                        "generate_pup_report": "Redirects to write_pup_report prompt → save_report. Auto-closes case.",
+                        "generate_executive_summary": "Redirects to write_executive_summary prompt → save_report.",
+                        "generate_fp_ticket": "Redirects to write_fp_closure prompt → save_report. Auto-closes case.",
+                        "generate_fp_tuning_ticket": "Redirects to write_fp_tuning prompt → save_report.",
+                        "security_arch_review": "Redirects to write_security_arch_review prompt → save_report.",
+                        "save_report": "Persist a locally-written report as HTML. Handles defanging, auto-close, audit.",
+                        "save_threat_article": "Persist a threat intelligence article to the article registry.",
                     },
-                    "log_analysis_and_forensics": {
-                        "description": "Parse logs, detect anomalies, correlate Windows event logs, and reconstruct timelines",
-                        "tools": [
-                            "parse_logs", "detect_anomalies", "correlate_evtx",
-                            "reconstruct_timeline",
-                        ],
+                },
+                "cross_case_intelligence": {
+                    "description": "Search across cases and threat intelligence.",
+                    "tools": {
+                        "recall_cases": "BM25 semantic search across all historical cases. Call before enrichment.",
+                        "campaign_cluster": "Find IOC overlap across cases. Returns campaign links (not saved per-case).",
+                        "assess_landscape": "Holistic threat landscape across recent cases.",
+                        "search_threat_articles": "Search existing threat articles by keyword.",
+                        "web_search": "OSINT web search (Brave/DuckDuckGo). Last resort after system tools.",
                     },
-                    "binary_and_memory_analysis": {
-                        "description": "Static PE analysis, YARA scanning, and process memory dump analysis",
-                        "tools": [
-                            "analyse_pe", "yara_scan",
-                            "memory_dump_guide", "analyse_memory_dump",
-                        ],
+                },
+                "dynamic_analysis": {
+                    "description": "Sandbox detonation and disposable browser sessions.",
+                    "tools": {
+                        "start_sandbox_session": "Detonate a sample in an isolated sandbox.",
+                        "stop_sandbox_session": "Stop sandbox and collect telemetry.",
+                        "start_browser_session": "Browse a URL in a disposable browser.",
+                        "stop_browser_session": "Stop browser and collect artefacts.",
                     },
-                    "siem_and_endpoint": {
-                        "description": "Query Sentinel, load KQL playbooks, generate hunt queries, ingest endpoint packages",
-                        "tools": [
-                            "lookup_client", "run_kql", "load_kql_playbook",
-                            "generate_sentinel_query", "generate_queries",
-                            "ingest_velociraptor", "ingest_mde_package",
-                        ],
-                    },
-                    "dynamic_analysis": {
-                        "description": "Detonate malware in sandboxes and browse suspicious sites in disposable browsers",
-                        "tools": [
-                            "start_sandbox_session", "stop_sandbox_session",
-                            "list_sandbox_sessions", "start_browser_session",
-                            "stop_browser_session", "list_browser_sessions",
-                        ],
-                    },
-                    "reporting": {
-                        "description": "Generate investigation reports, MDR deliverables, executive summaries, and response guidance",
-                        "tools": [
-                            "generate_report", "generate_mdr_report", "generate_pup_report",
-                            "generate_executive_summary", "generate_weekly",
-                            "generate_fp_ticket", "generate_fp_tuning_ticket",
-                            "security_arch_review", "response_actions",
-                        ],
-                    },
-                    "threat_intelligence": {
-                        "description": "Assess threat landscape, search and generate threat articles",
-                        "tools": [
-                            "assess_landscape", "search_threat_articles",
-                            "generate_threat_article",
-                        ],
+                },
+                "forensic_ingestion": {
+                    "description": "Ingest endpoint forensic packages.",
+                    "tools": {
+                        "ingest_velociraptor": "Ingest Velociraptor collection ZIP. Parses artefacts, extracts entities.",
+                        "ingest_mde_package": "Ingest MDE investigation package. Parses logs, EVTX, prefetch.",
                     },
                 },
             },
             "prompts": {
-                "total": 21,
-                "items": [
-                    {
-                        "name": "hitl_investigation",
-                        "description": "HITL investigation workflow — analyst-controlled checkpoints from intake to delivery.",
-                    },
-                    {
-                        "name": "triage_alert",
-                        "description": "Structured alert triage: classify, extract IOCs, enrich, verdict, next steps.",
-                    },
-                    {
-                        "name": "write_fp_ticket",
-                        "description": "False-positive analysis and suppression ticket generation.",
-                    },
-                    {
-                        "name": "kql_investigation",
-                        "description": "Unified KQL playbook prompt. Select a playbook: phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, or ioc-hunt.",
-                    },
-                    {
-                        "name": "user_security_check",
-                        "description": "Broad-scope security review of a specific user account.",
-                    },
-                    {
-                        "name": "write_mdr_report",
-                        "description": "Client-side MDR report generation — loads Gold Analyst Instruction Set + case data into local session.",
-                    },
-                    {
-                        "name": "write_pup_report",
-                        "description": "Client-side PUP/PUA report generation.",
-                    },
-                    {
-                        "name": "write_fp_closure",
-                        "description": "Client-side FP closure comment generation.",
-                    },
-                    {
-                        "name": "write_fp_tuning",
-                        "description": "Client-side SIEM engineering tuning ticket generation.",
-                    },
-                    {
-                        "name": "write_executive_summary",
-                        "description": "Client-side executive summary generation (RAG rated, non-technical).",
-                    },
-                    {
-                        "name": "write_security_arch_review",
-                        "description": "Client-side security architecture review generation.",
-                    },
-                    {
-                        "name": "write_threat_article",
-                        "description": "Client-side threat article generation — local web search, research, and writing.",
-                    },
-                    {
-                        "name": "write_response_plan",
-                        "description": "Client-side containment/response plan from client playbook.",
-                    },
-                    {
-                        "name": "run_determination",
-                        "description": "Client-side evidence-chain disposition analysis (TP/BP/FP determination).",
-                    },
-                    {
-                        "name": "build_investigation_matrix",
-                        "description": "Client-side Rumsfeld investigation matrix (known knowns, known unknowns, hypotheses).",
-                    },
-                    {
-                        "name": "review_report",
-                        "description": "Client-side report quality gate review (unconfirmed claims, speculation, gaps).",
-                    },
-                    {
-                        "name": "write_timeline",
-                        "description": "Client-side forensic timeline reconstruction.",
-                    },
-                    {
-                        "name": "write_evtx_analysis",
-                        "description": "Client-side EVTX attack chain analysis.",
-                    },
-                    {
-                        "name": "write_phishing_verdict",
-                        "description": "Client-side phishing page assessment.",
-                    },
-                    {
-                        "name": "write_pe_verdict",
-                        "description": "Client-side PE binary malware assessment.",
-                    },
-                    {
-                        "name": "write_cve_context",
-                        "description": "Client-side CVE contextualisation.",
-                    },
-                ],
+                "description": "Prompts load system instructions + case context into your session. You do the reasoning, then call a save tool.",
+                "guided_workflows": {
+                    "hitl_investigation": "Full HITL workflow — intake to delivery with analyst checkpoints.",
+                    "triage_alert": "Structured alert triage: classify, extract, enrich, verdict.",
+                    "kql_investigation": "Multi-stage KQL playbook (phishing, account-compromise, malware, priv-esc, exfil, lateral-movement, ioc-hunt).",
+                    "write_fp_ticket": "FP analysis and suppression workflow.",
+                    "user_security_check": "Broad-scope user account security review.",
+                },
+                "report_writing": {
+                    "write_mdr_report": "Gold MDR/XDR Analyst Instruction Set + case data → write report → save_report(type=mdr_report).",
+                    "write_pup_report": "PUP/PUA report → save_report(type=pup_report).",
+                    "write_fp_closure": "2-sentence FP closure comment → save_report(type=fp_ticket).",
+                    "write_fp_tuning": "SIEM engineering tuning ticket → save_report(type=fp_tuning_ticket).",
+                    "write_executive_summary": "Non-technical RAG-rated summary → save_report(type=executive_summary).",
+                    "write_security_arch_review": "Security architecture gaps and recommendations → save_report(type=security_arch_review).",
+                    "write_threat_article": "Threat intelligence article → save_threat_article.",
+                    "write_response_plan": "Containment/response plan from client playbook.",
+                },
+                "analysis": {
+                    "run_determination": "Evidence-chain disposition analysis (TP/BP/FP) → add_finding.",
+                    "build_investigation_matrix": "Rumsfeld matrix: known knowns, unknowns, hypotheses → add_finding.",
+                    "review_report": "Analytical standards quality gate.",
+                    "write_timeline": "Forensic timeline narrative.",
+                    "write_evtx_analysis": "Windows event log attack chain narrative.",
+                    "write_phishing_verdict": "Phishing page assessment.",
+                    "write_pe_verdict": "PE binary malware assessment.",
+                    "write_cve_context": "CVE contextualisation.",
+                },
             },
             "resources": {
-                "total": 30,
-                "uris": [
-                    {"uri": "socai://capabilities", "description": "This overview"},
-                    {"uri": "socai://role", "description": "Current analyst role, permissions, and behavioural instructions"},
-                    {"uri": "socai://cases", "description": "Full case registry"},
-                    {"uri": "socai://cases/{case_id}/meta", "description": "Case metadata"},
-                    {"uri": "socai://cases/{case_id}/report", "description": "Investigation report markdown"},
-                    {"uri": "socai://cases/{case_id}/iocs", "description": "Extracted IOCs"},
-                    {"uri": "socai://cases/{case_id}/verdicts", "description": "Verdict summary"},
-                    {"uri": "socai://cases/{case_id}/enrichment", "description": "Enrichment data"},
-                    {"uri": "socai://cases/{case_id}/timeline", "description": "Timeline events"},
-                    {"uri": "socai://cases/{case_id}/notes", "description": "Analyst notes"},
-                    {"uri": "socai://cases/{case_id}/response-actions", "description": "Client response actions and containment plan"},
-                    {"uri": "socai://cases/{case_id}/fp-ticket", "description": "Existing FP closure comment"},
-                    {"uri": "socai://cases/{case_id}/evidence", "description": "Raw evidence files"},
-                    {"uri": "socai://cases/{case_id}/findings", "description": "Analytical findings"},
-                    {"uri": "socai://cases/{case_id}/full", "description": "Complete case bundle (meta + IOCs + enrichment + verdicts + timeline + findings)"},
-                    {"uri": "socai://cases/{case_id}/matrix", "description": "Investigation reasoning matrix (Rumsfeld method)"},
-                    {"uri": "socai://cases/{case_id}/determination", "description": "Evidence-chain determination analysis"},
-                    {"uri": "socai://cases/{case_id}/quality-gate", "description": "Report quality gate review results"},
-                    {"uri": "socai://cases/{case_id}/followups", "description": "Follow-up investigation proposals"},
-                    {"uri": "socai://clients", "description": "Client registry with platform scope"},
-                    {"uri": "socai://clients/{name}", "description": "Full client configuration"},
-                    {"uri": "socai://clients/{name}/playbook", "description": "Client response playbook"},
-                    {"uri": "socai://playbooks", "description": "KQL playbook index"},
-                    {"uri": "socai://playbooks/{id}", "description": "Full KQL playbook with stages"},
-                    {"uri": "socai://sentinel-queries", "description": "Sentinel composite query scenarios"},
-                    {"uri": "socai://pipeline-profiles", "description": "Attack-type routing profiles"},
-                    {"uri": "socai://enrichment-providers", "description": "Configured enrichment providers and availability"},
-                    {"uri": "socai://ioc-index/stats", "description": "IOC index summary with recurring indicators"},
-                    {"uri": "socai://articles", "description": "Threat article index"},
-                    {"uri": "socai://landscape", "description": "Threat landscape across recent cases"},
-                ],
+                "description": "Read-only data URIs. Use these to inspect case state without calling tools.",
+                "case_data": {
+                    "socai://cases": "Full case registry (all cases with status/severity).",
+                    "socai://cases/{id}/meta": "Case metadata (title, severity, client, disposition).",
+                    "socai://cases/{id}/iocs": "Extracted IOCs.",
+                    "socai://cases/{id}/verdicts": "Verdict summary (malicious/suspicious/clean).",
+                    "socai://cases/{id}/enrichment": "Full enrichment data from all providers.",
+                    "socai://cases/{id}/report": "Final HTML report.",
+                    "socai://cases/{id}/full": "Complete case bundle.",
+                },
+                "client_and_config": {
+                    "socai://clients": "Client registry.",
+                    "socai://clients/{name}": "Full client config.",
+                    "socai://clients/{name}/playbook": "Client response playbook.",
+                    "socai://playbooks": "KQL playbook index.",
+                    "socai://sentinel-queries": "Composite Sentinel query scenarios.",
+                    "socai://enrichment-providers": "Available enrichment providers.",
+                },
+                "intelligence": {
+                    "socai://ioc-index/stats": "IOC index — recurring indicators across cases.",
+                    "socai://articles": "Threat article index.",
+                    "socai://landscape": "Cross-case threat landscape.",
+                },
+                "meta": {
+                    "socai://capabilities": "This capability map.",
+                    "socai://role": "Your analyst role and permissions.",
+                },
             },
-            "common_workflows": {
-                "phishing": "lookup_client → classify_attack → add_evidence → enrich_iocs → capture_urls → detect_phishing → analyse_email → run_kql → generate_mdr_report",
-                "malware": "lookup_client → classify_attack → add_evidence → enrich_iocs → analyse_pe → yara_scan → start_sandbox_session → run_kql → generate_mdr_report",
-                "account_compromise": "lookup_client → classify_attack → add_evidence → enrich_iocs → run_kql → detect_anomalies → correlate_evtx → generate_mdr_report",
-                "endpoint_forensics": "lookup_client → classify_attack → ingest_velociraptor (or ingest_mde_package) → parse_logs → detect_anomalies → correlate_evtx → enrich_iocs → generate_mdr_report",
-                "memory_forensics": "lookup_client → classify_attack → memory_dump_guide → analyse_memory_dump → enrich_iocs → generate_mdr_report",
-                "false_positive": "add_evidence → enrich_iocs → generate_fp_ticket → generate_fp_tuning_ticket (if tuning needed)",
-                "pup_pua": "classify_attack → enrich_iocs → generate_pup_report",
-            },
-            "rules": [
-                "Always identify the client (lookup_client) before running SIEM queries.",
-                "Always call recall_cases before enrichment to check prior investigations.",
-                "Reports auto-close cases: generate_mdr_report, generate_pup_report, generate_fp_ticket.",
-                "Every finding must be provable with data — never speculate or fill evidence gaps.",
+            "what_persists_to_disk": [
+                "case_meta.json — case identity, severity, client, disposition, timestamps",
+                "iocs/iocs.json — extracted IOCs",
+                "enrichment/enrichment.json + verdict_summary.json — provider verdicts",
+                "Final HTML reports (via save_report) — MDR, PUP, FP, exec summary, sec arch",
+                "Web captures — screenshots, HTML, redirect chains (evidence)",
+                "Email analysis + attachments (evidence)",
+                "Sandbox telemetry — process trees, network capture, filesystem changes",
+                "Forensic data — PE analysis, YARA results, MDE/Velociraptor ingests, parsed logs",
+                "Registry indexes — case index, IOC index, campaign registry, baselines",
             ],
+            "what_does_NOT_persist": [
+                "Anomaly reports, correlation, timeline reconstruction, EVTX chains",
+                "Hunt queries, triage summaries, CVE context, response action plans",
+                "Investigation matrix, determination, quality gate, follow-up proposals",
+                "These are computed on demand and returned in-memory to the agent.",
+            ],
+            "boundaries": [
+                "The server has NO LLM — all reasoning is done by you (the local agent).",
+                "SIEM queries are READ-ONLY — you cannot write to Sentinel.",
+                "Containment actions are RECOMMENDATIONS only — you cannot execute containment.",
+                "Reports are HTML-only — no markdown file output.",
+                "One alert = one case. Never append to existing cases.",
+            ],
+            "common_workflows": {
+                "phishing": "lookup_client → classify_attack → add_evidence → enrich_iocs → capture_urls → detect_phishing → analyse_email → kql_investigation(playbook=phishing) → write_mdr_report prompt → save_report",
+                "malware": "lookup_client → classify_attack → add_evidence → enrich_iocs → analyse_pe → yara_scan → start_sandbox_session → kql_investigation(playbook=malware-execution) → write_mdr_report prompt → save_report",
+                "account_compromise": "lookup_client → classify_attack → add_evidence → enrich_iocs → kql_investigation(playbook=account-compromise) → detect_anomalies → write_mdr_report prompt → save_report",
+                "false_positive": "add_evidence → enrich_iocs → write_fp_closure prompt → save_report(type=fp_ticket) → optionally write_fp_tuning prompt → save_report(type=fp_tuning_ticket)",
+                "pup_pua": "classify_attack → enrich_iocs → write_pup_report prompt → save_report(type=pup_report)",
+            },
         })

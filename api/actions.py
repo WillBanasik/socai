@@ -359,19 +359,15 @@ def generate_report(case_id: str, close_case: bool = False) -> dict:
 def generate_fp_ticket(case_id: str, alert_data: str,
                        platform: str | None = None,
                        query_text: str | None = None) -> dict:
-    """Generate FP suppression ticket."""
+    """Generate FP suppression ticket — redirects to prompt workflow."""
     def _do():
         from tools.fp_ticket import fp_ticket
         result = fp_ticket(case_id, alert_data=alert_data,
                            platform=platform, query_text=query_text)
-
-        if result.get("status") == "ok":
-            ticket_path = result.get('ticket_path', '')
-            result["_message"] = f"FP suppression ticket generated.\nPlatform: {result.get('platform', 'auto-detected')}" + md_file_note(ticket_path)
-        elif result.get("status") == "needs_clarification":
-            result["_message"] = f"Need more information to generate FP ticket:\n{result.get('question', '')}"
-        else:
-            result["_message"] = f"FP ticket generation: {result.get('reason', result.get('status', 'unknown'))}"
+        result["_message"] = (
+            "Use the write_fp_closure MCP prompt to generate the FP ticket, "
+            "then call save_report with report_type='fp_ticket' to persist it."
+        )
         return result
 
     return _run_action(case_id, "fp_ticket", _do,
@@ -381,19 +377,15 @@ def generate_fp_ticket(case_id: str, alert_data: str,
 def generate_fp_tuning_ticket(case_id: str, alert_data: str,
                               platform: str | None = None,
                               query_text: str | None = None) -> dict:
-    """Generate SIEM engineering tuning ticket."""
+    """Generate SIEM engineering tuning ticket — redirects to prompt workflow."""
     def _do():
         from tools.fp_tuning_ticket import fp_tuning_ticket
         result = fp_tuning_ticket(case_id, alert_data=alert_data,
                                   platform=platform, query_text=query_text)
-
-        if result.get("status") == "ok":
-            ticket_path = result.get('ticket_path', '')
-            result["_message"] = f"SIEM tuning ticket generated." + md_file_note(ticket_path)
-        elif result.get("status") == "needs_clarification":
-            result["_message"] = f"Need more information to generate tuning ticket:\n{result.get('question', '')}"
-        else:
-            result["_message"] = f"Tuning ticket generation: {result.get('reason', result.get('status', 'unknown'))}"
+        result["_message"] = (
+            "Use the write_fp_tuning MCP prompt to generate the tuning ticket, "
+            "then call save_report with report_type='fp_tuning_ticket' to persist it."
+        )
         return result
 
     return _run_action(case_id, "fp_tuning_ticket", _do,
@@ -461,23 +453,14 @@ def run_campaign_cluster(case_id: str) -> dict:
 
 
 def security_arch_review(case_id: str) -> dict:
-    """Run LLM security architecture review."""
+    """Security architecture review — redirects to prompt workflow."""
     def _do():
         from tools.security_arch_review import security_arch_review as _review
         result = _review(case_id)
-
-        if result.get("status") == "skipped":
-            result["_message"] = f"Security architecture review skipped: {result.get('reason', '')}"
-        elif result.get("status") == "error":
-            result["_message"] = f"Security architecture review error: {result.get('reason', '')}"
-        else:
-            msg = "Security architecture review complete."
-            tokens = result.get("tokens_input", 0) + result.get("tokens_output", 0)
-            if tokens:
-                msg += f"\nLLM tokens used: {tokens:,}"
-            if result.get("review_path"):
-                msg += md_file_note(result["review_path"])
-            result["_message"] = msg
+        result["_message"] = (
+            "Use the write_security_arch_review MCP prompt to generate the review, "
+            "then call save_report with report_type='security_arch_review' to persist it."
+        )
         return result
 
     return _run_action(case_id, "security_arch", _do)
@@ -592,17 +575,14 @@ def contextualise_cves(case_id: str) -> dict:
 
 
 def generate_exec_summary(case_id: str) -> dict:
-    """Generate executive summary for leadership."""
+    """Executive summary — redirects to prompt workflow."""
     def _do():
         from tools.executive_summary import executive_summary
         result = executive_summary(case_id)
-        if result.get("status") == "ok":
-            rating = result.get("risk_rating", "?")
-            result["_message"] = f"Executive summary generated (risk: **{rating}**)." + md_file_note(result.get('summary_path', ''))
-        elif result.get("status") == "skipped":
-            result["_message"] = f"Executive summary skipped: {result.get('reason', '')}"
-        else:
-            result["_message"] = f"Executive summary: {result.get('reason', result.get('status', 'unknown'))}"
+        result["_message"] = (
+            "Use the write_executive_summary MCP prompt to generate the summary, "
+            "then call save_report with report_type='executive_summary' to persist it."
+        )
         return result
 
     return _run_action(case_id, "executive_summary", _do)

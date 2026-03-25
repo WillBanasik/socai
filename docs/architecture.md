@@ -19,24 +19,23 @@ Shared API (api/)
 MCP Server (mcp_server/)
     ├── HTTPS SSE transport  → port 8001, separate process
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
-    ├── 72 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
-    ├── 18 resources         → case data, clients, IOC index, playbooks, sentinel queries, articles, landscape
-    ├── 5 prompts            → investigation orchestrator, KQL investigation, triage, FP workflows, user security check
-    ├── Boundary enforcement → per-conversation client + case isolation (prevents cross-contamination)
+    ├── 85 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
+    ├── 30 resources         → case data, clients, IOC index, playbooks, sentinel queries, articles, landscape
+    ├── 21 prompts           → investigation, KQL, triage, FP, analysis, report generation, forensics
+    ├── Save tools (3)       → save_report, save_threat_article, save_analysis (persist agent output)
+    ├── RBAC                 → per-tool scopes via JWT claims; filesystem isolation (cases/<ID>/)
     ├── Data hierarchy       → global (cross-client IOCs) / client (internal) / case (details)
     ├── Structured logging   → JSONL (registry/mcp_server.jsonl), PID file, signal handlers
     ├── stdio fallback       → Claude Desktop backward compat (no auth)
+    ├── No LLM calls         → all reasoning handled by local Claude Desktop agent
     └── Speculative enrich   → classify_attack / add_evidence fire background quick_enrich (fast providers, ≤20 IOCs)
-
-Batch API (tools/batch.py)
-    └── Bulk LLM processing  → submit / poll / collect pattern
 
 Threat Articles (tools/threat_articles.py)
     ├── RSS feed discovery    → 10 configurable feeds (config/article_sources.json)
-    ├── ET/EV classification  → heuristic + LLM
+    ├── ET/EV classification  → heuristic
     ├── Dedup                 → local index + Confluence MDR1 space
-    ├── Topic clustering      → LLM groups related sources
-    └── Article generation    → structured output (ArticleSummary schema)
+    ├── Topic clustering      → heuristic grouping
+    └── Article generation    → via write_threat_article prompt + save_threat_article tool
 
 Velociraptor Ingest (tools/velociraptor_ingest.py)
     ├── Offline collector ZIP  → results/ (VQL JSONL) + uploads/ (raw EVTX, MFT, etc.)
@@ -97,18 +96,16 @@ registry/article_index.json ← threat article dedup index
 articles/YYYY-MM/         ← threat article summaries (ET/EV)
 ```
 
-## Claude API Integration
+## LLM Architecture
 
-| Feature | Where Used |
-|---------|-----------|
-| **Tool use** | All LLM-assisted tools; MCP dispatches tools via `tool_use` API |
-| **Prompt caching** | `security_arch_review.py` |
-| **Vision** | `detect_phishing_page.py` screenshot analysis |
-| **Files API** | `security_arch_review.py` PDF uploads |
-| **Adaptive thinking** | `security_arch_review.py` for high/critical severity cases |
-| **Structured outputs** | `tools/structured_llm.py` wrapper with JSON schema validation |
-| **Batch API** | `tools/batch.py` for bulk report generation |
-| **Structured outputs** | `tools/threat_articles.py` article generation via `ArticleSummary` schema |
+The system makes **no direct Anthropic API calls**. All LLM reasoning is handled by the analyst's local Claude Desktop agent via MCP prompts.
+
+| Component | Role |
+|-----------|------|
+| **Claude Desktop agent** | All analytical reasoning, report writing, disposition analysis, quality review |
+| **MCP prompts (21)** | Load system instructions + case data into the local session |
+| **Save tools (3)** | `save_report`, `save_threat_article`, `save_analysis` — persist agent output with defanging, HTML, auto-close, audit |
+| **MCP tools (85)** | Data gathering only: enrichment APIs, Sentinel queries, file I/O, deterministic logic |
 
 ## Tool Contracts
 

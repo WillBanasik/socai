@@ -373,7 +373,7 @@ def _shodan_lookup(ioc: str, ioc_type: str) -> dict:
 
 
 def _greynoise_lookup(ioc: str, ioc_type: str) -> dict:
-    """GreyNoise — noise classification and malicious actor context for IPs."""
+    """GreyNoise Community API — noise/riot classification for IPs."""
     if ioc_type != "ipv4":
         return {"provider": "greynoise", "status": "skipped", "ioc": ioc}
     if not GREYNOISE_KEY:
@@ -382,29 +382,9 @@ def _greynoise_lookup(ioc: str, ioc_type: str) -> dict:
     headers = {"key": GREYNOISE_KEY, "Accept": "application/json"}
     result: dict = {"provider": "greynoise", "ioc": ioc}
 
-    # --- RIOT (benign business services: CDNs, scanners, etc.) ---
     try:
-        riot_resp = get_session().get(
-            f"https://api.greynoise.io/v2/riot/{ioc}",
-            headers=headers, timeout=15,
-        )
-        if riot_resp.status_code == 200:
-            r = riot_resp.json()
-            result["is_riot"] = r.get("riot", False)
-            result["riot_name"] = r.get("name")
-            result["riot_category"] = r.get("category")
-        elif riot_resp.status_code == 429:
-            result["is_riot"] = None  # unknown due to rate limit
-        else:
-            result["is_riot"] = False
-    except Exception as exc:
-        result["riot_error"] = str(exc)
-        result["is_riot"] = False
-
-    # --- Noise context: try enterprise v2 first, fall back to community v3 ---
-    try:
-        ctx_resp = get_session().get(
-            f"https://api.greynoise.io/v2/noise/context/{ioc}",
+        resp = get_session().get(
+            f"https://api.greynoise.io/v3/community/{ioc}",
             headers=headers, timeout=15,
         )
     except Exception as exc:
@@ -412,68 +392,37 @@ def _greynoise_lookup(ioc: str, ioc_type: str) -> dict:
         result["error"] = str(exc)
         return result
 
-    # Enterprise endpoint rejected — fall back to community API
-    if ctx_resp.status_code in (401, 403):
-        try:
-            com_resp = get_session().get(
-                f"https://api.greynoise.io/v3/community/{ioc}",
-                headers=headers, timeout=15,
-            )
-            if com_resp.status_code == 200:
-                c = com_resp.json()
-                classification = c.get("classification", "unknown")
-                result.update({
-                    "status": "ok",
-                    "api_tier": "community",
-                    "verdict": "malicious" if classification == "malicious" else (
-                        "clean" if classification == "benign" else "unknown"
-                    ),
-                    "seen": c.get("noise", False) or c.get("riot", False),
-                    "classification": classification,
-                    "name": c.get("name"),
-                    "last_seen": c.get("last_seen"),
-                    "greynoise_link": c.get("link", f"https://viz.greynoise.io/ip/{ioc}"),
-                })
-                return result
-            if com_resp.status_code == 429:
-                result["status"] = "rate_limited"
-                result["note"] = "GreyNoise community plan weekly quota exceeded."
-                return result
-        except Exception as exc:
-            log_error("", "enrich.greynoise_community_fallback", str(exc), severity="info")
+    if resp.status_code in (200, 404):
+        c = resp.json()
+        classification = c.get("classification", "unknown")
+        noise = c.get("noise", False)
+        riot = c.get("riot", False)
+        result.update({
+            "status": "ok",
+            "api_tier": "community",
+            "verdict": "malicious" if classification == "malicious" else (
+                "clean" if classification == "benign" else "unknown"
+            ),
+            "seen": noise or riot,
+            "is_riot": riot,
+            "classification": classification,
+            "name": c.get("name"),
+            "last_seen": c.get("last_seen"),
+            "message": c.get("message"),
+            "greynoise_link": c.get("link", f"https://viz.greynoise.io/ip/{ioc}"),
+        })
+        return result
+
+    if resp.status_code == 429:
+        result["status"] = "rate_limited"
+        result["note"] = "GreyNoise community plan weekly quota exceeded (50/week)."
+        return result
+
+    if resp.status_code in (401, 403):
         result["status"] = "invalid_api_key"
         return result
 
-    if ctx_resp.status_code == 404:
-        result["status"] = "ok"
-        result["seen"] = False
-        result["classification"] = "unknown"
-        return result
-
-    if ctx_resp.status_code != 200:
-        result["status"] = f"http_{ctx_resp.status_code}"
-        return result
-
-    c = ctx_resp.json()
-    classification = c.get("classification", "unknown")
-    verdict = "malicious" if classification == "malicious" else (
-        "clean" if classification == "benign" else "unknown"
-    )
-
-    result.update({
-        "status": "ok",
-        "api_tier": "enterprise",
-        "verdict": verdict,
-        "seen": c.get("seen", False),
-        "classification": classification,
-        "name": c.get("name"),
-        "actor": c.get("actor"),
-        "tags": c.get("tags", []),
-        "cves": c.get("cve", []),
-        "first_seen": c.get("first_seen"),
-        "last_seen": c.get("last_seen"),
-        "greynoise_link": f"https://viz.greynoise.io/ip/{ioc}",
-    })
+    result["status"] = f"http_{resp.status_code}"
     return result
 
 
@@ -1663,50 +1612,6 @@ def _hash_needs_deep_enrichment(hash_val: str, fast_results: list[dict]) -> bool
     return False
 
 
-# ---------------------------------------------------------------------------
-# Enrichment director — LLM-advisory tier escalation (opt-in)
-# ---------------------------------------------------------------------------
-
-def _llm_enrichment_review(
-    case_id: str,
-    tier1_results: list[dict],
-    ioc_type: str,
-    candidates: list[str],
-    case_meta: dict | None = None,
-) -> dict:
-    """Enrichment escalation review — now fully deterministic.
-
-    Previously used an LLM call to decide additional Tier 2 escalations.
-    Replaced with deterministic rules in _apply_deterministic_escalation()
-    to eliminate an Anthropic API call on every enrichment run.
-
-    Returns empty dict — deterministic escalation is handled in
-    _apply_deterministic_escalation().
-    """
-    return {}
-
-
-def _save_pivot_iocs(case_id: str, pivots: list[dict]) -> None:
-    """Persist LLM-discovered pivot IOCs for a follow-up enrichment pass."""
-    if not pivots:
-        return
-    pivot_path = CASES_DIR / case_id / "artefacts" / "enrichment" / "pivot_iocs.json"
-    existing: list[dict] = []
-    if pivot_path.exists():
-        try:
-            existing = json.loads(pivot_path.read_text())
-        except Exception:
-            pass
-    # Deduplicate by value
-    seen = {p.get("value") for p in existing}
-    for p in pivots:
-        if p.get("value") and p["value"] not in seen:
-            existing.append({"value": p["value"], "type": p.get("type", ""),
-                             "reason": p.get("reason", ""), "ts": utcnow()})
-            seen.add(p["value"])
-    write_artefact(pivot_path, json.dumps(existing, indent=2))
-    if pivots:
-        print(f"[enrich] Saved {len(pivots)} pivot IOC(s) for follow-up enrichment")
 
 
 def _apply_deterministic_escalation(

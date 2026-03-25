@@ -18,7 +18,6 @@ Writes:
 """
 from __future__ import annotations
 
-import base64
 import json
 import re
 import sys
@@ -28,8 +27,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from html.parser import HTMLParser
-from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import KNOWN_CLEAN_DOMAINS, get_model, load_json, log_error, utcnow, write_artefact
+from config.settings import CASES_DIR
+from tools.common import KNOWN_CLEAN_DOMAINS, load_json, log_error, utcnow, write_artefact
 
 # ---------------------------------------------------------------------------
 # Brand definitions
@@ -754,192 +753,6 @@ def _compute_suspicion_score(signals: list[dict]) -> float:
     return min(1.0, sum(s["weight"] for s in signals))
 
 
-# ---------------------------------------------------------------------------
-# Tier 3 — LLM page purpose analysis (escalation for indeterminate pages)
-# ---------------------------------------------------------------------------
-
-def _llm_purpose_check(body: str, html: str, final_url: str, hostname: str,
-                       title: str) -> dict | None:
-    """Ask Claude to assess the page's purpose.
-
-    Only called for pages that passed Tier 1 (no brand/form hit) and scored
-    above threshold in Tier 2 heuristics, but still lack a clear determination.
-
-    Returns a finding dict or None.
-    """
-    if not ANTHROPIC_KEY:
-        return None
-
-    # Truncate content to avoid excessive token usage
-    body_excerpt = body[:4000] if body else "(no visible text captured)"
-    html_excerpt = html[:6000] if html else "(no HTML captured)"
-
-    prompt = (
-        "You are a senior SOC analyst assessing a captured web page.\n\n"
-        "A legitimate page serves an obvious purpose: it sells a product, shows a "
-        "news article, provides documentation, hosts a SaaS dashboard, etc. Its "
-        "purpose is immediately clear.\n\n"
-        "A phishing or malicious page often has NO clear legitimate purpose, or its "
-        "stated purpose doesn't match what the page actually does. Common patterns:\n"
-        "- 'View shared document' lure with no real document\n"
-        "- Fake login page on a domain unrelated to the brand\n"
-        "- 'Verify your account' with urgency but no real account system\n"
-        "- CAPTCHA or 'click to continue' gate hiding the real payload\n"
-        "- Page pretending to be a file preview (PDF, voicemail, fax)\n"
-        "- Fake tech-support page with a phone number\n"
-        "- Cookie-cutter landing page with no real business behind it\n\n"
-        f"**URL:** {final_url}\n"
-        f"**Page title:** {title or '(empty)'}\n\n"
-        f"**Visible text (first 4000 chars):**\n```\n{body_excerpt}\n```\n\n"
-        f"**HTML source (first 6000 chars):**\n```html\n{html_excerpt}\n```\n\n"
-        "Assess this page. What is it for? Is its purpose clear and legitimate, "
-        "or is it deceptive / purposeless / suspicious?"
-    )
-
-    try:
-        from tools.structured_llm import structured_call
-        from tools.schemas import PagePurposeAssessment
-
-        data, _usage = structured_call(
-            model=get_model("report"),
-            system=(
-                "You are a phishing detection expert. Assess web pages for "
-                "deceptive intent. Be sceptical — if you cannot identify a clear, "
-                "legitimate purpose for a page, say so. Legitimate pages make their "
-                "purpose obvious."
-            ),
-            messages=[{"role": "user", "content": prompt}],
-            output_schema=PagePurposeAssessment,
-            max_tokens=512,
-        )
-    except Exception as exc:
-        log_error("", "detect_phishing_page.llm_purpose_check", str(exc),
-                  severity="warning", context={"hostname": hostname})
-        print(f"[detect_phishing_page] LLM purpose check failed for {hostname}: {exc}")
-        return None
-
-    if data is None:
-        return None
-
-    # Only generate a finding if the LLM says the page lacks purpose or is deceptive
-    if data.has_clear_purpose and not data.deceptive_intent:
-        print(
-            f"[detect_phishing_page] Purpose check CLEAN: {hostname} — "
-            f"{data.stated_purpose[:80]}"
-        )
-        return None
-
-    confidence = data.confidence if data.confidence in ("high", "medium", "low") else "medium"
-
-    return {
-        "brand": "Unknown (no clear purpose)" if not data.deceptive_intent
-                 else "Unknown (deceptive intent)",
-        "confidence": confidence,
-        "matched_pattern": "llm_purpose_check",
-        "title_hit": False,
-        "body_hit": False,
-        "final_url": final_url,
-        "hostname": hostname,
-        "source": "llm_purpose_check",
-        "purpose_assessment": {
-            "has_clear_purpose": data.has_clear_purpose,
-            "stated_purpose": data.stated_purpose,
-            "suspicious_elements": data.suspicious_elements,
-            "deceptive_intent": data.deceptive_intent,
-            "reasoning": data.reasoning,
-        },
-    }
-
-
-# Suspicion threshold — pages scoring above this in Tier 2 heuristics get
-# escalated to Tier 3 (LLM purpose check) if they have no Tier 1 findings.
-_SUSPICION_ESCALATION_THRESHOLD = 0.4
-
-
-# ---------------------------------------------------------------------------
-# LLM vision phishing check
-# ---------------------------------------------------------------------------
-
-def _llm_vision_check(screenshot_path: Path, final_url: str, hostname: str) -> dict | None:
-    """
-    Send a screenshot to Claude Vision and ask for brand impersonation analysis.
-    Returns a finding dict or None on failure / no finding.
-    Expected JSON from model:
-      {brand_impersonation, impersonated_brand, login_form, confidence, reasoning}
-    """
-    try:
-        import anthropic
-    except ImportError as exc:
-        log_error("", "detect_phishing_page.llm_vision", str(exc), severity="info",
-                  context={"reason": "anthropic not installed"})
-        return None
-
-    try:
-        img_bytes = screenshot_path.read_bytes()
-        img_b64   = base64.standard_b64encode(img_bytes).decode()
-    except Exception as exc:
-        log_error("", "detect_phishing_page.read_screenshot", str(exc),
-                  severity="warning", context={"path": str(screenshot_path)})
-        print(f"[detect_phishing_page] LLM vision: could not read {screenshot_path}: {exc}")
-        return None
-
-    prompt = (
-        "Examine this webpage screenshot carefully. "
-        "Determine whether it impersonates a well-known brand (e.g. Microsoft, Google, "
-        "Apple, PayPal, DocuSign, Amazon, Facebook, LinkedIn, Dropbox, Adobe, DHL, "
-        "FedEx, Netflix, Zoom, Salesforce, HMRC, NHS) on a domain that does NOT "
-        "belong to that brand.\n\n"
-        f"Final URL: {final_url}\n\n"
-        "Analyse the screenshot and provide your assessment."
-    )
-
-    try:
-        from tools.structured_llm import structured_call
-        from tools.schemas import BrandImpersonationResult
-
-        data, _usage = structured_call(
-            model=get_model("report"),
-            system="You are a phishing detection expert analysing webpage screenshots.",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type":       "base64",
-                            "media_type": "image/png",
-                            "data":       img_b64,
-                        },
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }],
-            output_schema=BrandImpersonationResult,
-            max_tokens=256,
-        )
-    except Exception as exc:
-        log_error("", "detect_phishing_page.llm_vision_call", str(exc),
-                  severity="warning", context={"hostname": hostname})
-        print(f"[detect_phishing_page] LLM vision call failed for {hostname}: {exc}")
-        return None
-
-    if data is None or not data.brand_impersonation:
-        return None
-
-    confidence = data.confidence if data.confidence in ("high", "medium", "low") else "medium"
-
-    return {
-        "brand":           data.impersonated_brand or "Unknown",
-        "confidence":      confidence,
-        "matched_pattern": "llm_vision",
-        "title_hit":       False,
-        "body_hit":        False,
-        "login_form":      data.login_form,
-        "reasoning":       data.reasoning,
-        "final_url":       final_url,
-        "hostname":        hostname,
-        "source":          "llm_vision",
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -952,11 +765,6 @@ def detect_phishing_page(case_id: str) -> dict:
     Tier 1 (instant) — brand regex, credential harvest forms, TLS certs, domain age.
     Tier 2 (instant) — structural heuristics: domain entropy, URL patterns, redirect
         chain analysis, page content assessment, bait/urgency language.
-    Tier 3 (LLM)     — vision brand check + purpose analysis.  Only fires for pages
-        that have no Tier 1 finding but scored above the suspicion threshold in Tier 2.
-
-    Principle: legitimate pages serve an obvious purpose.  If we can't explain what
-    a page does, it isn't clean — we just haven't found it yet.
 
     Writes phishing_detection.json and returns a result manifest.
     """
@@ -969,18 +777,13 @@ def detect_phishing_page(case_id: str) -> dict:
     form_analysis_results: list[dict] = []
     tls_signals: list[dict] = []
     heuristic_results: list[dict] = []     # Tier 2 per-page signal reports
-    purpose_assessments: list[dict] = []   # Tier 3 LLM purpose results
     scanned = 0
-
-    # Pages that need Tier 3 escalation: (manifest_path, hostname, final_url,
-    # title, body, html, suspicion_score, signals)
-    escalation_queue: list[tuple] = []
 
     manifest_paths: list[Path] = []
     if web_dir.exists():
         manifest_paths = list(web_dir.rglob("capture_manifest.json"))
 
-    print(f"[detect_phishing_page] Scanning {len(manifest_paths)} page(s) — Tier 1 (brands/forms/TLS)")
+    print(f"[detect_phishing_page] Scanning {len(manifest_paths)} page(s) — Tier 1 (brands/forms/TLS) + Tier 2 (heuristics)")
 
     # -----------------------------------------------------------------------
     # TIER 1 — Brand regex, credential harvest, TLS, domain age
@@ -1163,137 +966,7 @@ def detect_phishing_page(case_id: str) -> dict:
                 f"{hostname} (score={suspicion_score:.2f})"
             )
 
-        # Queue for Tier 3 escalation: no Tier 1 finding, but above threshold
-        if not tier1_hit and suspicion_score >= _SUSPICION_ESCALATION_THRESHOLD:
-            escalation_queue.append((
-                manifest_path, hostname, final_url, title, body, html,
-                suspicion_score, all_signals,
-            ))
-
         scanned += 1
-
-    # -----------------------------------------------------------------------
-    # TIER 3 — LLM escalation (vision + purpose check) for indeterminate pages
-    # -----------------------------------------------------------------------
-    if ANTHROPIC_KEY and escalation_queue:
-        print(
-            f"[detect_phishing_page] Tier 3 escalation: {len(escalation_queue)} "
-            f"indeterminate page(s) — running LLM checks"
-        )
-
-        # Track findings already produced so we can deduplicate
-        existing_keys: set[tuple] = {
-            (f["brand"], f["hostname"]) for f in all_findings
-        }
-
-        llm_vision_count = 0
-        llm_purpose_count = 0
-
-        for (manifest_path, hostname, final_url, title, body, html,
-             suspicion_score, signals) in escalation_queue:
-
-            page_determined = False
-
-            # 3a. Vision check (if screenshot available, up to 10 total)
-            if llm_vision_count < 10:
-                screenshot_path = manifest_path.parent / "screenshot.png"
-                if screenshot_path.exists():
-                    vision_finding = _llm_vision_check(
-                        screenshot_path, final_url, hostname,
-                    )
-                    llm_vision_count += 1
-
-                    if vision_finding is not None:
-                        key = (vision_finding["brand"], vision_finding["hostname"])
-                        if key not in existing_keys:
-                            vision_finding["capture_manifest"] = str(manifest_path)
-                            vision_finding["suspicion_score"] = round(suspicion_score, 3)
-                            vision_finding["heuristic_signals"] = [
-                                s["signal"] for s in signals
-                            ]
-                            all_findings.append(vision_finding)
-                            existing_keys.add(key)
-                            page_determined = True
-                            print(
-                                f"[detect_phishing_page] LLM VISION "
-                                f"[{vision_finding['confidence'].upper()}] "
-                                f"{vision_finding['brand']} -> {hostname}"
-                            )
-
-            # 3b. Purpose check (if vision didn't determine, up to 10 total)
-            if not page_determined and llm_purpose_count < 10:
-                purpose_finding = _llm_purpose_check(
-                    body, html, final_url, hostname, title,
-                )
-                llm_purpose_count += 1
-
-                if purpose_finding is not None:
-                    purpose_finding["capture_manifest"] = str(manifest_path)
-                    purpose_finding["suspicion_score"] = round(suspicion_score, 3)
-                    purpose_finding["heuristic_signals"] = [
-                        s["signal"] for s in signals
-                    ]
-                    all_findings.append(purpose_finding)
-                    purpose_assessments.append(
-                        purpose_finding.get("purpose_assessment", {})
-                    )
-                    print(
-                        f"[detect_phishing_page] PURPOSE CHECK "
-                        f"[{purpose_finding['confidence'].upper()}] "
-                        f"{hostname} — "
-                        f"{purpose_finding.get('purpose_assessment', {}).get('stated_purpose', '')[:80]}"
-                    )
-                elif purpose_finding is None:
-                    # LLM said page is clean — record the assessment for audit
-                    purpose_assessments.append({
-                        "hostname": hostname,
-                        "has_clear_purpose": True,
-                        "note": "LLM assessed as legitimate",
-                    })
-
-    elif escalation_queue and not ANTHROPIC_KEY:
-        print(
-            f"[detect_phishing_page] {len(escalation_queue)} page(s) need Tier 3 "
-            f"escalation but ANTHROPIC_API_KEY is not set — skipping LLM checks"
-        )
-    elif ANTHROPIC_KEY and web_dir.exists():
-        # No escalation queue, but still run LLM vision on pages without findings
-        # (original behaviour — catch things regex missed)
-        existing_keys: set[tuple] = {
-            (f["brand"], f["hostname"]) for f in all_findings
-        }
-        llm_count = 0
-        for manifest_path in manifest_paths:
-            if llm_count >= 10:
-                break
-            manifest = json.loads(manifest_path.read_text())
-            final_url = manifest.get("final_url", manifest.get("url", ""))
-            hostname = _hostname(final_url)
-
-            if _domain_allowed(hostname, _ALWAYS_TRUSTED):
-                continue
-
-            screenshot_path = manifest_path.parent / "screenshot.png"
-            if not screenshot_path.exists():
-                continue
-
-            finding = _llm_vision_check(screenshot_path, final_url, hostname)
-            llm_count += 1
-
-            if finding is None:
-                continue
-
-            key = (finding["brand"], finding["hostname"])
-            if key in existing_keys:
-                continue
-
-            finding["capture_manifest"] = str(manifest_path)
-            all_findings.append(finding)
-            existing_keys.add(key)
-            print(
-                f"[detect_phishing_page] LLM VISION [{finding['confidence'].upper()}] "
-                f"{finding['brand']} -> {finding['hostname']}"
-            )
 
     # -----------------------------------------------------------------------
     # Deduplicate and summarise
@@ -1317,8 +990,6 @@ def detect_phishing_page(case_id: str) -> dict:
         "form_analysis": form_analysis_results,
         "tls_signals": tls_signals,
         "heuristic_analysis": heuristic_results,
-        "purpose_assessments": purpose_assessments,
-        "escalation_count": len(escalation_queue),
         "summary": {
             "high_confidence": len(high),
             "medium_confidence": len(medium),
@@ -1326,7 +997,6 @@ def detect_phishing_page(case_id: str) -> dict:
             "credential_harvest_pages": len(form_analysis_results),
             "suspicious_tls_certs": len(tls_signals),
             "pages_with_heuristic_signals": len(heuristic_results),
-            "pages_escalated_to_llm": len(escalation_queue),
         },
     }
 

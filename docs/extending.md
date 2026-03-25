@@ -44,13 +44,15 @@ Add entries to `_SUSPICIOUS_PATTERNS` in `tools/memory_guidance.py` with `patter
 
 Add a `@mcp.tool()` handler in `mcp_server/tools.py` in the appropriate tier (`_register_tier1/2/3`). Add RBAC via `_require_scope()` at the top of the handler. If the tool needs orchestration (error handling, timeline logging), add a wrapper in `api/actions.py` following the `_run_action()` pattern.
 
-## New Structured Output Schema
+**Important:** MCP tools must not make LLM API calls. Tools handle data gathering (API calls, file I/O, external integrations) and deterministic logic only. For anything requiring LLM reasoning, add an MCP prompt instead (see "New MCP Prompt" above).
 
-Add a Pydantic `BaseModel` subclass to `tools/schemas.py`, then pass it as `output_schema` to `structured_call()`. No special configuration is needed — `_schema_for_model()` in `tools/structured_llm.py` automatically adds `additionalProperties: false` to all object types (required by the Anthropic API).
+## New Output Schema
 
-## Batch-Capable Tool
+Add a Pydantic `BaseModel` subclass to `tools/schemas.py`. The schema is used as a reference by MCP prompts to guide the local Claude agent's output format.
 
-To make a tool batch-capable, add a `prepare_*_batch(case_id)` function that returns the `messages.create()` kwargs as a dict (without executing the API call). Register it in `tools/batch.py`'s dispatch table.
+## New MCP Prompt
+
+Add a prompt handler in `mcp_server/prompts.py` that loads system instructions and case data. The prompt should return structured context for the analyst's local Claude session to reason over. Pair it with the appropriate save tool (`save_report`, `save_threat_article`, or `save_analysis`) for persistence.
 
 ## New Article Source
 
@@ -58,7 +60,9 @@ Add entries to `config/article_sources.json` with `"type": "rss"` and `"categori
 
 ## MCP Server
 
-`mcp_server/` exposes 72 tools, 18 resources, and 5 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
+`mcp_server/` exposes 85 tools, 30 resources, and 21 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). The server makes no LLM calls — all reasoning is handled by the analyst's local Claude Desktop agent via prompts. Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
+
+When adding new analytical capabilities, prefer adding an MCP prompt (in `mcp_server/prompts.py`) + save handler over adding LLM-backed tools. Tools should handle data gathering and persistence only; the local agent handles all reasoning.
 
 ## Sentinel Composite Query Template
 

@@ -1,36 +1,28 @@
 """
 tool: investigation_matrix
 --------------------------
-Generates an investigation reasoning matrix (Rumsfeld method) from case
-artefacts. Produces a structured JSON artefact with:
-
-  - known_knowns:    Facts proved by collected data (with evidence citations)
-  - known_unknowns:  Specific evidence gaps and what data would close them
-  - hypotheses:      Testable claims with supporting/disconfirming checks
-
-The matrix is an analyst aid and audit artefact — it does not drive pipeline
-decisions. Every LLM call is resilient (returns None on failure, never crashes
-the pipeline).
+Matrix generation is now done by the local Claude Desktop agent using the
+``build_investigation_matrix`` MCP prompt. This module retains
+``_MATRIX_SYSTEM_PROMPT`` and data functions (``load_matrix``,
+``update_matrix``, ``get_matrix_summary``, ``_build_query_context``,
+``_collect_case_context``, ``_safe_load``).
 
 Output: cases/<ID>/artefacts/analysis/investigation_matrix.json
 
 Usage:
-    from tools.investigation_matrix import generate_matrix, load_matrix
-    matrix = generate_matrix("IV_CASE_001")
+    from tools.investigation_matrix import load_matrix, update_matrix
     matrix = load_matrix("IV_CASE_001")        # read existing
     matrix = update_matrix("IV_CASE_001", "enrich", {"id": "kk_005", ...})
 """
 from __future__ import annotations
 
-import json
 import sys
-import traceback as _tb
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_model, load_json, log_error, save_json, utcnow
+from config.settings import CASES_DIR
+from tools.common import load_json, log_error, save_json, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -119,69 +111,6 @@ def _collect_case_context(case_id: str) -> dict:
         ctx["analyst_notes"] = ""
 
     return ctx
-
-
-# ---------------------------------------------------------------------------
-# LLM call (resilient — never raises)
-# ---------------------------------------------------------------------------
-
-def _call_llm(
-    task: str,
-    severity: str,
-    system_prompt: str,
-    user_prompt: str,
-    max_tokens: int = 2048,
-) -> str | None:
-    """Call Anthropic Messages API with graceful degradation."""
-    if not ANTHROPIC_KEY:
-        return None
-
-    try:
-        import anthropic
-    except ImportError:
-        log_error("", f"investigation_matrix.{task}",
-                  "anthropic package not installed", severity="info")
-        return None
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-        model = get_model(task, severity)
-        message = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        text = message.content[0].text.strip()
-        tokens_in = message.usage.input_tokens
-        tokens_out = message.usage.output_tokens
-        print(f"[matrix] {task} completed ({tokens_in}/{tokens_out} tokens, model={model})")
-        return text
-    except Exception as exc:
-        log_error("", f"investigation_matrix.{task}", str(exc),
-                  severity="warning", traceback=_tb.format_exc())
-        return None
-
-
-def _parse_json_response(raw: str) -> dict | None:
-    """Extract JSON from an LLM response, handling code fences."""
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        lines = [ln for ln in lines if not ln.strip().startswith("```")]
-        text = "\n".join(lines).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # Try to find JSON object in the response
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start >= 0 and end > start:
-            try:
-                return json.loads(text[start:end])
-            except json.JSONDecodeError:
-                return None
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -427,136 +356,17 @@ Return ONLY the JSON object. No preamble, no markdown. Use UK English.
 # ---------------------------------------------------------------------------
 
 def generate_matrix(case_id: str) -> dict | None:
-    """Build investigation matrix from case artefacts.
+    """Stub — direct LLM generation removed.
 
-    Returns the matrix dict on success, None on failure.
-    Writes to cases/<case_id>/artefacts/analysis/investigation_matrix.json.
+    Use the ``build_investigation_matrix`` MCP prompt via the local
+    Claude Desktop agent, then call ``add_finding`` to record the result.
     """
-    ctx = _collect_case_context(case_id)
-    severity = ctx["meta"].get("severity", "medium")
-    attack_type = ctx["meta"].get("attack_type", "generic")
-
-    # Build the user prompt from collected context
-    parts: list[str] = [
-        f"Case: {case_id}",
-        f"Attack type: {attack_type} (confidence: {ctx['meta'].get('attack_type_confidence', 'unknown')})",
-        f"Title: {ctx['meta'].get('title', 'N/A')}",
-        f"Severity: {severity}",
-    ]
-
-    if ctx["analyst_notes"]:
-        parts.append(f"\n## Analyst Notes\n{ctx['analyst_notes']}")
-
-    # IOCs summary
-    iocs = ctx["iocs"].get("iocs", {})
-    if iocs:
-        ioc_summary = []
-        for ioc_type, values in iocs.items():
-            if values:
-                ioc_summary.append(f"  {ioc_type}: {len(values)} ({', '.join(str(v) for v in values[:5])}{'...' if len(values) > 5 else ''})")
-        if ioc_summary:
-            parts.append(f"\n## IOCs Extracted\n" + "\n".join(ioc_summary))
-
-    # Enrichment verdicts
-    verdicts = ctx["verdicts"]
-    if verdicts:
-        v_parts = []
-        for category in ("high_priority", "needs_review", "clean", "unknown"):
-            items = verdicts.get(category, [])
-            if items:
-                v_parts.append(f"  {category}: {len(items)}")
-                for item in items[:3]:
-                    if isinstance(item, dict):
-                        v_parts.append(f"    - {item.get('ioc', 'N/A')}: {item.get('verdict', 'N/A')} "
-                                       f"(providers: {item.get('providers_checked', 'N/A')})")
-        if v_parts:
-            parts.append(f"\n## Enrichment Verdicts\n" + "\n".join(v_parts))
-
-    # Enrichment details (truncated)
-    enrich_results = ctx["enrichment"].get("results", [])
-    if enrich_results:
-        # Include up to 20 most relevant results
-        significant = [r for r in enrich_results
-                       if r.get("verdict") in ("malicious", "suspicious")
-                       or r.get("total_reports", 0) > 0
-                       or r.get("malware")]
-        if not significant:
-            significant = enrich_results[:10]
-        parts.append(f"\n## Key Enrichment Results ({len(significant)} of {len(enrich_results)} total)\n"
-                     + json.dumps(significant[:20], indent=2, default=str)[:3000])
-
-    # Email analysis
-    if ctx["email"]:
-        parts.append(f"\n## Email Analysis\n{json.dumps(ctx['email'], indent=2, default=str)[:1500]}")
-
-    # Web captures
-    if ctx["web_captures"]:
-        wc_parts = []
-        for wc in ctx["web_captures"][:20]:
-            line = f"  - {wc.get('domain', 'N/A')}: {wc.get('title', 'N/A')}"
-            if wc.get("final_url") and wc["final_url"] != wc.get("url"):
-                line += f" (redirected → {wc['final_url']})"
-            if wc.get("redirect_chain") and len(wc["redirect_chain"]) > 1:
-                line += f" [{len(wc['redirect_chain'])} hops]"
-            wc_parts.append(line)
-        parts.append(f"\n## Web Captures ({len(ctx['web_captures'])} domains)\n" + "\n".join(wc_parts))
-
-    # Anomalies
-    if ctx["anomalies"]:
-        parts.append(f"\n## Anomalies\n{json.dumps(ctx['anomalies'], indent=2, default=str)[:1000]}")
-
-    # Correlations
-    if ctx["correlation"]:
-        parts.append(f"\n## Correlations\n{json.dumps(ctx['correlation'], indent=2, default=str)[:1000]}")
-
-    user_prompt = "\n".join(parts)
-
-    # Append query context so the LLM knows available Sentinel queries & tables
-    query_context = _build_query_context(attack_type)
-    system_prompt = _MATRIX_SYSTEM_PROMPT + query_context
-
-    # Call LLM
-    raw = _call_llm(
-        task="matrix",
-        severity=severity,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        max_tokens=3000,
-    )
-
-    if not raw:
-        print(f"[matrix] LLM call failed or no API key — skipping matrix generation")
-        return None
-
-    # Parse the response
-    parsed = _parse_json_response(raw)
-    if not parsed:
-        snippet = raw[:300].replace("\n", " ")
-        log_error(case_id, "investigation_matrix.generate_matrix",
-                  "Failed to parse LLM response as JSON",
-                  severity="warning", context={
-                      "raw_length": len(raw),
-                      "snippet": snippet,
-                  })
-        print(f"[matrix] Parse failure — first 300 chars: {snippet}")
-        return None
-
-    # Validate and normalise
-    matrix = _build_matrix(case_id, attack_type, parsed)
-
-    # Write artefact
-    analysis_dir = CASES_DIR / case_id / "artefacts" / "analysis"
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    save_json(analysis_dir / "investigation_matrix.json", matrix)
-
-    # Summary
-    kk = len(matrix.get("known_knowns", []))
-    ku = len(matrix.get("known_unknowns", []))
-    hyp = len(matrix.get("hypotheses", []))
-    print(f"[matrix] Generated for {case_id}: "
-          f"{kk} known, {ku} unknown, {hyp} hypotheses")
-
-    return matrix
+    return {
+        "status": "use_prompt",
+        "prompt": "build_investigation_matrix",
+        "save_tool": "add_finding",
+        "case_id": case_id,
+    }
 
 
 def _build_matrix(case_id: str, attack_type: str, parsed: dict) -> dict:

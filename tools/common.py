@@ -486,18 +486,16 @@ def markdown_to_html(md_text: str, title: str = "Report") -> str:
 
 
 def write_report(dest: Path, md_text: str, title: str = "Report") -> dict:
-    """Write a markdown report AND its HTML companion.
+    """Write a styled HTML report from markdown source.
 
-    Writes:
-      - ``dest``                  — raw markdown (for internal LLM consumption)
-      - ``dest.with_suffix('.html')`` — styled HTML (analyst deliverable)
+    Writes only the HTML file (no separate .md). If *dest* ends with ``.md``
+    it is automatically switched to ``.html``.
 
-    Returns the standard manifest dict with an extra ``html_path`` key.
+    Returns the standard manifest dict with the ``html_path`` key.
     """
-    manifest = write_artefact(dest, md_text)
-    html_text = markdown_to_html(md_text, title=title)
     html_dest = dest.with_suffix(".html")
-    write_artefact(html_dest, html_text)
+    html_text = markdown_to_html(md_text, title=title)
+    manifest = write_artefact(html_dest, html_text)
     manifest["html_path"] = str(html_dest)
     return manifest
 
@@ -820,82 +818,9 @@ class AliasMap:
 
 
 # ---------------------------------------------------------------------------
-# Model tiering — select the right Claude model per task and severity
+# Model tiering removed — all LLM reasoning handled by local Claude Desktop
+# agent via MCP prompts.  get_model() and related config no longer exist.
 # ---------------------------------------------------------------------------
-
-_TIER_MAP = {
-    "heavy": "SOCAI_MODEL_HEAVY",
-    "standard": "SOCAI_MODEL_STANDARD",
-    "fast": "SOCAI_MODEL_FAST",
-}
-
-_ESCALATE_TASKS = frozenset({
-    "secarch", "report", "chat_response", "evtx", "fp_ticket", "fp_tuning_ticket",
-})
-
-_TIER_ORDER = ["fast", "standard", "heavy"]
-
-# Thread-local override: when set, get_model() returns the fast model for ALL tasks.
-# Used by the web UI to force Haiku during dev/testing.  Activate via
-# force_fast_model() context manager — safe for concurrent requests.
-_model_override = threading.local()
-
-
-class force_fast_model:
-    """Context manager that forces get_model() to return the fast-tier model.
-
-    Usage (in web UI request handlers):
-        with force_fast_model():
-            result = some_tool_that_calls_get_model(...)
-    """
-    def __enter__(self):
-        _model_override.active = True
-        return self
-
-    def __exit__(self, *exc):
-        _model_override.active = False
-
-
-def get_model(task: str, severity: str = "medium") -> str:
-    """Return the Claude model string for *task*, optionally escalated by *severity*.
-
-    Resolution order:
-    0. If ``force_fast_model`` context is active, return the fast-tier model immediately
-    1. ``SOCAI_MODEL_{TASK}`` setting (may be a tier name or full model string)
-    2. Resolve tier name → model string via ``SOCAI_MODEL_{TIER}``
-    3. If severity is high/critical AND task is in the escalation set, bump one tier
-    4. Fall back to ``LLM_MODEL``
-    """
-    import config.settings as _s
-
-    # 0. Thread-local override — web UI forces everything to fast tier
-    if getattr(_model_override, "active", False):
-        return _s.SOCAI_MODEL_FAST
-
-    # 1. Look up task-specific setting
-    attr = f"SOCAI_MODEL_{task.upper()}"
-    raw = getattr(_s, attr, None) or ""
-
-    # 2. Resolve tier name → model string (or pass through full model string)
-    def _resolve(value: str) -> str:
-        low = value.lower().strip()
-        tier_attr = _TIER_MAP.get(low)
-        if tier_attr:
-            return getattr(_s, tier_attr, _s.LLM_MODEL)
-        # Not a tier name — treat as a full model string if non-empty
-        return value if value else _s.LLM_MODEL
-
-    model = _resolve(raw) if raw else _s.LLM_MODEL
-    resolved_tier = raw.lower().strip() if raw and raw.lower().strip() in _TIER_MAP else None
-
-    # 3. Severity escalation
-    if severity in ("high", "critical") and task.lower() in _ESCALATE_TASKS and resolved_tier:
-        idx = _TIER_ORDER.index(resolved_tier) if resolved_tier in _TIER_ORDER else -1
-        if 0 <= idx < len(_TIER_ORDER) - 1:
-            bumped_tier = _TIER_ORDER[idx + 1]
-            model = getattr(_s, _TIER_MAP[bumped_tier], model)
-
-    return model
 
 
 _alias_map_singleton: AliasMap | None = None

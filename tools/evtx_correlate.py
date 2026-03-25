@@ -13,8 +13,7 @@ Seven chain detectors:
   6. Kerberos abuse         (4768/4769 with RC4-HMAC encryption)
   7. Pass-the-hash          (NTLM type 3 logon without 4776 validation)
 
-Writes:
-  cases/<case_id>/artefacts/evtx/evtx_correlation.json
+Results are computed and returned to the caller; no artefacts are persisted to disk.
 
 Usage (standalone):
   python3 tools/evtx_correlate.py --case IV_CASE_001
@@ -30,8 +29,31 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_model, load_json, log_error, save_json, utcnow
+from config.settings import CASES_DIR
+from tools.common import load_json, log_error, utcnow
+
+# ---------------------------------------------------------------------------
+# System prompt (used by MCP client-side prompts)
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PROMPT = (
+    "You are a senior SOC analyst specialising in Windows Event Log forensics. "
+    "Given parsed EVTX data and any previously detected attack chains, your "
+    "task is to:\n"
+    "1. Reconstruct the attack narrative in chronological order.\n"
+    "2. Map observed techniques to MITRE ATT&CK with specific evidence.\n"
+    "3. Assess attacker sophistication based on the techniques used.\n"
+    "4. Recommend specific detection rules for the patterns observed.\n\n"
+    "Chain types to look for: brute-force-to-success, lateral movement, "
+    "persistence installation, privilege escalation, account manipulation, "
+    "Kerberos abuse (AS-REP roasting, Kerberoasting), and pass-the-hash.\n\n"
+    "Rules:\n"
+    "- Only make claims supported by the supplied data.\n"
+    "- Temporal proximity is not causation — require a data-level link.\n"
+    "- Mark gaps in the evidence chain as 'Unknown' rather than speculating.\n"
+    "- Use 'Confirmed' only when data proves a link; use 'Assessed' for "
+    "inferences with stated confidence."
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -424,88 +446,6 @@ def _detect_pass_the_hash(events: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# LLM analysis (optional)
-# ---------------------------------------------------------------------------
-
-_SYSTEM_PROMPT = """\
-You are a Windows forensics expert specialising in EVTX event log analysis \
-and attack chain reconstruction. You have deep expertise in Active Directory \
-attack patterns, lateral movement techniques, persistence mechanisms, and \
-credential abuse.
-
-When presented with detected attack chains from Windows Event Logs, you:
-- Reconstruct the likely attack narrative in chronological order
-- Map each chain to MITRE ATT&CK tactics and techniques
-- Assess attacker sophistication based on the techniques used
-- Recommend specific detection rules for each observed pattern
-
-Be precise and evidence-based. Only reference techniques supported by the \
-provided event data."""
-
-_SYSTEM_CACHED = [
-    {"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-]
-
-def _llm_analyse(case_id: str, chains: list[dict]) -> dict | None:
-    """Send detected chains to Claude for narrative and MITRE mapping."""
-    if not ANTHROPIC_KEY:
-        return None
-    if not chains:
-        return None
-
-    import json as _json
-
-    try:
-        from tools.structured_llm import structured_call
-        from tools.schemas import EvtxAnalysis
-    except ImportError:
-        log_error(case_id, "evtx_correlate.llm", "structured_llm or schemas not available",
-                  severity="info")
-        return None
-
-    chains_text = _json.dumps(chains, indent=2, default=str)
-
-    try:
-        try:
-            _meta = load_json(CASES_DIR / case_id / "case_meta.json")
-        except Exception:
-            _meta = {}
-        _severity = _meta.get("severity", "medium")
-        _model = get_model("evtx", _severity)
-        print(f"[evtx_correlate] Querying {_model} for attack chain analysis...")
-
-        result, usage = structured_call(
-            model=_model,
-            system=_SYSTEM_CACHED,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Analyse the following detected attack chains from Windows Event Logs "
-                    f"for case {case_id}. Provide your structured analysis.\n\n{chains_text}"
-                ),
-            }],
-            output_schema=EvtxAnalysis,
-            max_tokens=4096,
-        )
-
-        tokens_in = usage.get("input_tokens", 0)
-        tokens_out = usage.get("output_tokens", 0)
-        tokens_cache_read = usage.get("cache_read_input_tokens", 0)
-        tokens_cache_write = usage.get("cache_creation_input_tokens", 0)
-        print(
-            f"[evtx_correlate] Tokens: {tokens_in} in / {tokens_out} out "
-            f"| cache_read={tokens_cache_read} cache_write={tokens_cache_write}"
-        )
-
-        return result.model_dump() if result else None
-
-    except Exception as exc:
-        log_error(case_id, "evtx_correlate.llm", str(exc), severity="warning")
-        print(f"[evtx_correlate] LLM analysis failed: {exc}")
-        return None
-
-
-# ---------------------------------------------------------------------------
 # Main tool function
 # ---------------------------------------------------------------------------
 
@@ -557,28 +497,19 @@ def evtx_correlate(case_id: str) -> dict:
     for ctype, count in sorted(chain_summary.items()):
         print(f"  {ctype}: {count}")
 
-    # Optional LLM analysis
-    llm_analysis = _llm_analyse(case_id, all_chains)
-
     result = {
         "status": "ok",
         "case_id": case_id,
         "total_events_analysed": len(events),
         "chains": all_chains,
         "chain_summary": dict(chain_summary),
-        "llm_analysis": llm_analysis,
         "manifest": {
             "raw_events": len(raw_events),
             "normalised_events": len(events),
             "chains_detected": len(all_chains),
-            "llm_used": llm_analysis is not None,
             "ts": utcnow(),
         },
     }
-
-    # Write output
-    out_dir = CASES_DIR / case_id / "artefacts" / "evtx"
-    save_json(out_dir / "evtx_correlation.json", result)
 
     return result
 

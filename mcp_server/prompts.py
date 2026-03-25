@@ -1,19 +1,19 @@
 """MCP prompt implementations — workflow templates for LLM consumption.
 
-Prompts provide guided investigation workflows that analysts can select from
-the Claude Desktop prompt picker:
+21 prompts in three categories:
 
-- ``kql_investigation`` — parameterised KQL playbook for any attack type
-- ``triage_alert`` — structured alert triage process
-- ``write_fp_ticket`` — false-positive analysis and suppression ticket
-- ``hitl_investigation`` — HITL investigation workflow with analyst checkpoints
-- ``user_security_check`` — broad-scope user account security review
-- ``write_timeline`` — client-side forensic timeline reconstruction
-- ``write_evtx_analysis`` — client-side EVTX attack chain analysis
-- ``write_phishing_verdict`` — client-side phishing page assessment
-- ``write_pe_verdict`` — client-side PE binary malware assessment
-- ``write_cve_context`` — client-side CVE contextualisation
-- ``write_mdr_report`` — client-side MDR report using full conversation context
+**Guided workflows (5):** ``kql_investigation``, ``triage_alert``,
+``write_fp_ticket``, ``hitl_investigation``, ``user_security_check``
+
+**Client-side report generation (8):** ``write_mdr_report``,
+``write_pup_report``, ``write_fp_closure``, ``write_fp_tuning``,
+``write_executive_summary``, ``write_security_arch_review``,
+``write_threat_article``, ``write_response_plan``
+
+**Client-side analysis (8):** ``run_determination``,
+``build_investigation_matrix``, ``review_report``, ``write_timeline``,
+``write_evtx_analysis``, ``write_phishing_verdict``, ``write_pe_verdict``,
+``write_cve_context``
 """
 from __future__ import annotations
 
@@ -237,22 +237,17 @@ def register_prompts(mcp: FastMCP) -> None:
             "- Call `lookup_client` to confirm the client and available platforms",
             "- Do NOT proceed without a confirmed client",
             "",
-            "### 3. Case Creation",
-            "- **Always create a NEW case** for this alert — never append to an existing case,",
-            "  even if the same user or IOCs appeared in a prior investigation",
-            "- Omit case_id to auto-generate, or supply a valid IV_CASE_XXX",
-            "",
-            "### 4. IOC Extraction & Enrichment",
+            "### 3. IOC Extraction & Enrichment",
             "- Call `recall_cases` to check if any IOCs appear in prior investigations",
             "  (historical context only — do not merge into those cases)",
-            "- Call `enrich_iocs` to query threat intelligence providers",
+            "- Call `quick_enrich` to query threat intelligence providers (no case required)",
             "",
-            "### 5. Contextualisation",
+            "### 4. Contextualisation",
             "- Identify the affected user(s) and asset(s)",
             "- Determine the business impact and data sensitivity",
             "- Check for related alerts in the same timeframe",
             "",
-            "### 6. Verdict",
+            "### 5. Verdict",
             "Determine the Sentinel incident classification using this decision guide:",
             "",
             "```",
@@ -284,16 +279,19 @@ def register_prompts(mcp: FastMCP) -> None:
             "zero attacker TTPs, the most likely explanation is a VPN — confirm with the user",
             "before recommending containment.",
             "",
-            "### 7. Response Recommendation",
+            "### 6. Response Recommendation",
             "- If TP: recommend containment, eradication, and recovery actions",
             "- If BP: document the finding and any tuning recommendations",
             "- If FP: document the finding, generate suppression ticket with `generate_fp_ticket`",
             "- If Inconclusive: identify what additional data is needed",
             "",
-            "### 8. Documentation",
-            "- Register evidence with `add_evidence`",
-            "- Generate report with `generate_report` or `generate_mdr_report`",
-            "- If FP, generate suppression ticket with `generate_fp_ticket`",
+            "### 7. Documentation & Deliverables",
+            "- Case creation is **deferred** — deliverable tools (`generate_mdr_report`,",
+            "  `generate_pup_report`, `generate_fp_ticket`) auto-create and promote a case",
+            "  if one doesn't exist yet. You can also call `create_case` manually at any point.",
+            "- Generate the MDR report with `generate_mdr_report` (auto-creates case, auto-closes)",
+            "- If FP, generate suppression ticket with `generate_fp_ticket` (auto-creates case, auto-closes)",
+            "- Once a case exists, register evidence with `add_evidence` and run `enrich_iocs`",
         ])
 
         return "\n".join(lines)
@@ -420,7 +418,7 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "---",
             "",
-            "### PHASE 1 — INTAKE (before case creation)",
+            "### PHASE 1 — INTAKE (assessment, no case needed)",
             "",
             "1. Call `classify_attack` with the alert data",
             "2. Call `lookup_client` to confirm client and available platforms",
@@ -433,20 +431,31 @@ def register_prompts(mcp: FastMCP) -> None:
             "- Any prior case overlap",
             "- Proposed case title and severity",
             "",
-            "**Wait for analyst approval.** On approval:",
-            "- Call `create_case` (starts as triage status)",
-            "- Call `add_evidence` with the raw incident data",
+            "**Wait for analyst approval.** No case is created yet — caseless tools",
+            "(`quick_enrich`, `extract_iocs_from_text`, KQL queries, `recall_cases`,",
+            "browser sessions) work without a case. Case-bound tools like `enrich_iocs`",
+            "and `add_evidence` require a case_id. The case materialises automatically",
+            "when a deliverable is generated in Phase 4, or you can call `create_case`",
+            "at any point to unlock case-bound tools.",
             "",
             "---",
             "",
             "### PHASE 2 — COLLECT (evidence gathering)",
             "",
-            "Follow the tool sequence from classify_attack. Typical steps:",
-            "- `enrich_iocs` — extract and enrich all IOCs",
+            "Follow the tool sequence from classify_attack. Use caseless tools when",
+            "no case exists yet, or call `create_case` to unlock case-bound tools.",
+            "",
+            "Caseless enrichment:",
+            "- `quick_enrich` — fast IOC lookups (no case required)",
+            "- `extract_iocs_from_text` — IOC extraction (no case required)",
+            "- `run_kql` / `run_kql_batch` — Sentinel queries (no case required)",
+            "- `recall_cases` — prior investigation search (no case required)",
+            "",
+            "Case-bound (call `create_case` first, or defer to Phase 4):",
+            "- `enrich_iocs` — extract and enrich all IOCs (writes to case)",
+            "- `add_evidence` — attach raw alert data (writes to case)",
             "- `capture_urls` → `detect_phishing` — for URL/phishing cases",
             "- `analyse_email` — for email-based alerts",
-            "- `run_kql` with appropriate playbook — for cases with Sentinel access",
-            "- `generate_sentinel_query` — for composite Sentinel queries",
             "- `start_sandbox_session` — for file/malware cases (if warranted)",
             "",
             "**CP2 — EVIDENCE REVIEW**",
@@ -481,28 +490,32 @@ def register_prompts(mcp: FastMCP) -> None:
             "         └─ NO  → Benign Positive (BP)",
             "```",
             "",
-            "**CP3 — DISPOSITION & PROMOTE**",
+            "**CP3 — DISPOSITION APPROVAL**",
             "Present to the analyst:",
             "- Proposed disposition (TP/BP/FP/inconclusive) with reasoning",
             "- Evidence chain summary (confirmed/assessed/unknown for each link)",
             "- Any remaining gaps",
-            "- Recommendation: promote to active, or discard",
+            "- Recommendation: proceed to deliverable, or discard",
             "",
             "**Wait for analyst approval.** On approval:",
-            "- Call `promote_case` (triage → active) with confirmed disposition",
-            "- Or `discard_case` if alert is not worth investigating",
+            "- Proceed to Phase 4 — deliverable tools auto-create and promote the case",
+            "- Or `discard_case` if a case was manually created and the alert is not worth investigating",
             "",
             "---",
             "",
-            "### PHASE 4 — VERIFY (report generation)",
+            "### PHASE 4 — VERIFY (report generation — case auto-created here)",
+            "",
+            "Deliverable tools auto-create and promote a case if one doesn't exist yet.",
+            "You can also call `create_case` manually before this phase if preferred.",
             "",
             "Generate the appropriate report based on disposition:",
             "",
-            "- **True Positive:** `generate_report` → `generate_mdr_report`",
-            "- **Benign Positive:** `generate_report` → `generate_mdr_report`",
-            "- **False Positive:** `generate_fp_ticket` (+ `generate_fp_tuning_ticket` if tuning needed)",
-            "- **PUP/PUA:** `generate_pup_report`",
-            "- **Inconclusive:** `generate_report` only (mark gaps clearly)",
+            "- **True Positive:** `generate_mdr_report` (auto-creates case if needed, auto-closes)",
+            "- **Benign Positive:** `generate_mdr_report` (auto-creates case if needed, auto-closes)",
+            "- **False Positive:** `generate_fp_ticket` (auto-creates case if needed, auto-closes)",
+            "  (+ `generate_fp_tuning_ticket` if tuning needed)",
+            "- **PUP/PUA:** `generate_pup_report` (auto-creates case if needed, auto-closes)",
+            "- **Inconclusive:** `create_case` → `generate_report` (mark gaps clearly)",
             "",
             "Additional for high/critical:",
             "- `generate_queries` — SIEM hunt queries",
@@ -953,42 +966,6 @@ def register_prompts(mcp: FastMCP) -> None:
     # ------------------------------------------------------------------
     # Report generation prompts (client-side — no server LLM call)
     # ------------------------------------------------------------------
-
-    @mcp.prompt()
-    def write_mdr_report(case_id: str) -> str:
-        """Generate an MDR-style incident report locally in Claude Desktop.
-
-        Loads the Gold MDR/XDR Analyst Instruction Set and all case data,
-        then lets your local Claude session produce the report. When done,
-        call ``save_report`` with report_type="mdr_report" to persist it.
-
-        Parameters
-        ----------
-        case_id : str
-            Case to generate the report for.
-        """
-        from tools.generate_mdr_report import _SYSTEM_PROMPT as prompt
-        from tools.generate_mdr_report import _build_context
-        context = _build_context(case_id)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
-
-        return (
-            f"# MDR Report Generation — Instructions\n\n"
-            f"{prompt}\n\n"
-            f"---\n\n"
-            f"# Case Data\n\n"
-            f"{context}\n\n"
-            f"---\n\n"
-            f"# Task\n\n"
-            f"Produce an MDR-style incident report for case **{case_id}** following "
-            f"the Gold MDR/XDR Analyst Instruction Set above exactly.\n\n"
-            f"When the report is complete, call `save_report` with:\n"
-            f"- `case_id`: \"{case_id}\"\n"
-            f"- `report_type`: \"mdr_report\"\n"
-            f"- `report_text`: the full report markdown\n"
-        )
 
     @mcp.prompt()
     def write_pup_report(case_id: str) -> str:

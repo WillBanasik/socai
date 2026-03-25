@@ -7,9 +7,7 @@ Resolves the client playbook against case evidence (verdict summary, severity,
 crown jewels) and outputs a structured, actionable response plan. No LLM call
 — purely rule-based resolution.
 
-Output:
-  cases/<case_id>/artefacts/response_actions/response_actions.json
-  cases/<case_id>/artefacts/response_actions/response_actions.md
+Results are computed and returned to the caller; no artefacts are persisted to disk.
 """
 from __future__ import annotations
 
@@ -19,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, CLIENT_PLAYBOOKS_DIR
-from tools.common import load_json, log_error, save_json, utcnow, write_artefact
+from tools.common import load_json, log_error, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -212,9 +210,7 @@ def generate_response_actions(case_id: str) -> dict:
     """
     Generate a deterministic, client-specific response plan for *case_id*.
 
-    Returns a manifest dict. Writes:
-      artefacts/response_actions/response_actions.json
-      artefacts/response_actions/response_actions.md
+    Returns a result dict with escalation, containment, and remediation data.
     """
     case_dir = CASES_DIR / case_id
 
@@ -316,13 +312,6 @@ def generate_response_actions(case_id: str) -> dict:
             result["llm_priority_assessment"] = llm_priority
     except Exception:
         pass
-
-    # Write artefacts
-    out_dir = case_dir / "artefacts" / "response_actions"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    save_json(out_dir / "response_actions.json", result)
-    write_artefact(out_dir / "response_actions.md", _render_markdown(result))
 
     print(f"[response_actions] Response plan generated for {case_id} "
           f"(client={client}, priority={priority}, source={priority_source})")

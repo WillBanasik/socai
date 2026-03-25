@@ -34,42 +34,42 @@ from tools.common import (
 
 _REPORT_TYPES = {
     "mdr_report": {
-        "path": "reports/mdr_report.md",
+        "path": "reports/mdr_report.html",
         "title_prefix": "MDR Incident Report",
         "auto_close": True,
         "disposition": None,        # preserves existing
         "defang": True,
     },
     "pup_report": {
-        "path": "reports/pup_report.md",
+        "path": "reports/pup_report.html",
         "title_prefix": "PUP/PUA Report",
         "auto_close": True,
         "disposition": "pup_pua",
         "defang": True,
     },
     "fp_ticket": {
-        "path": "artefacts/fp_comms/fp_ticket.md",
+        "path": "artefacts/fp_comms/fp_ticket.html",
         "title_prefix": "FP Closure",
         "auto_close": True,
         "disposition": "false_positive",
         "defang": False,
     },
     "fp_tuning_ticket": {
-        "path": "artefacts/fp_comms/fp_tuning_ticket.md",
+        "path": "artefacts/fp_comms/fp_tuning_ticket.html",
         "title_prefix": "FP Tuning Ticket",
         "auto_close": False,
         "disposition": None,
         "defang": False,
     },
     "executive_summary": {
-        "path": "artefacts/executive_summary/executive_summary.md",
+        "path": "artefacts/executive_summary/executive_summary.html",
         "title_prefix": "Executive Summary",
         "auto_close": False,
         "disposition": None,
         "defang": False,
     },
     "security_arch_review": {
-        "path": "artefacts/security_architecture/security_arch_review.md",
+        "path": "artefacts/security_architecture/security_arch_review.html",
         "title_prefix": "Security Architecture Review",
         "auto_close": False,
         "disposition": None,
@@ -158,7 +158,7 @@ def save_report_to_case(
     )
     full_text = header + report_text
 
-    # Write .md + .html
+    # Write HTML report
     out_path = case_dir / cfg["path"]
     out_path.parent.mkdir(parents=True, exist_ok=True)
     write_report(out_path, full_text, title=f"{cfg['title_prefix']} — {case_id}")

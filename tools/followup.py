@@ -8,18 +8,14 @@ Relocated from agents/rumsfeld.py during the HITL refactor.
 """
 from __future__ import annotations
 
-import json
-import logging
 import sys
 import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_model, load_json, log_error, save_json, utcnow
-
-logger = logging.getLogger("socai.followup")
+from config.settings import CASES_DIR
+from tools.common import load_json, log_error, save_json, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -114,16 +110,11 @@ def _propose_followups(
     """Generate follow-up proposals from gaps.
 
     Each proposal maps a gap to a specific tool call with reasoning.
-    Uses LLM if available, falls back to deterministic tool mapping.
+    Uses deterministic tool mapping from the investigation matrix.
     """
     proposals: list[dict] = []
 
-    # Try LLM-powered proposals first
-    llm_proposals = _llm_propose_followups(case_id, matrix, gaps, determination)
-    if llm_proposals:
-        return llm_proposals
-
-    # Fallback: deterministic mapping from suggested tools
+    # Deterministic mapping from suggested tools
     for i, gap in enumerate(gaps, 1):
         suggested = gap.get("suggested_tool") or gap.get("tool", "")
         tool_info = _TOOL_MAP.get(suggested)
@@ -153,108 +144,6 @@ def _propose_followups(
             })
 
     return proposals
-
-
-def _llm_propose_followups(
-    case_id: str,
-    matrix: dict,
-    gaps: list[dict],
-    determination: dict | None = None,
-) -> list[dict] | None:
-    """Use LLM to generate contextual follow-up proposals."""
-    if not ANTHROPIC_KEY:
-        return None
-
-    try:
-        import anthropic
-    except ImportError:
-        return None
-
-    case_dir = CASES_DIR / case_id
-    meta_path = case_dir / "case_meta.json"
-    meta = {}
-    if meta_path.exists():
-        try:
-            meta = load_json(meta_path)
-        except Exception:
-            pass
-
-    severity = meta.get("severity", "medium")
-
-    system_prompt = (
-        "You are a senior SOC analyst planning follow-up investigation steps. "
-        "Given the investigation gaps and current evidence state, propose "
-        "specific tool calls to close each gap.\n\n"
-        "Available tools:\n"
-        "- generate_sentinel_query: Sentinel KQL composite queries\n"
-        "- correlate: IOC-to-log cross-correlation\n"
-        "- enrich: IOC enrichment (all tiers)\n"
-        "- capture_urls: Web page capture\n"
-        "- sandbox_session: Malware sandbox detonation\n"
-        "- browser_session: Disposable browser for URL analysis\n"
-        "- velociraptor: Endpoint forensic collection ingest\n"
-        "- mde_package: MDE investigation package ingest\n"
-        "- manual: Requires analyst action (no automated tool)\n\n"
-        "Return JSON array of proposals:\n"
-        '[{"id": "p_001", "resolves": "<gap_id>", '
-        '"action": "<description>", "tool": "<tool_name>", '
-        '"params": {<tool_params>}, "reasoning": "<why this helps>", '
-        '"priority": "high|medium|low", '
-        '"estimated_cost": "<1 API call|analyst review|etc>"}]\n\n'
-        "Return ONLY the JSON array. Use UK English."
-    )
-
-    # Append query context so the LLM can reference specific scenarios & tables
-    try:
-        from tools.investigation_matrix import _build_query_context
-        query_context = _build_query_context(meta.get("attack_type", "generic"))
-        if query_context:
-            system_prompt += query_context
-    except Exception:
-        pass  # Resilient — skip if unavailable
-
-    user_prompt = (
-        f"Case: {case_id}\n"
-        f"Attack type: {meta.get('attack_type', 'unknown')}\n"
-        f"Severity: {severity}\n\n"
-        f"Gaps to resolve:\n{json.dumps(gaps, indent=2, default=str)[:3000]}\n\n"
-    )
-
-    if determination:
-        user_prompt += (
-            f"Current determination: {determination.get('disposition')} "
-            f"({determination.get('confidence')})\n"
-            f"Evidence gaps: {determination.get('gaps', [])}\n"
-        )
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-        model = get_model("gap_analysis", severity)
-        message = client.messages.create(
-            model=model,
-            max_tokens=1500,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        text = message.content[0].text.strip()
-        logger.info("Follow-up proposals generated "
-                     "(%d/%d tokens)", message.usage.input_tokens,
-                     message.usage.output_tokens)
-
-        # Parse
-        if text.startswith("```"):
-            lines = text.splitlines()
-            lines = [ln for ln in lines if not ln.strip().startswith("```")]
-            text = "\n".join(lines).strip()
-
-        parsed = json.loads(text)
-        if isinstance(parsed, list):
-            return parsed
-        return None
-    except Exception as exc:
-        log_error(case_id, "followup._llm_propose_followups", str(exc),
-                  severity="warning", traceback=traceback.format_exc())
-        return None
 
 
 # ---------------------------------------------------------------------------

@@ -10,8 +10,9 @@ Groups cases sharing IOCs into campaigns using Union-Find connected components.
 - Extracts common MITRE ATT&CK TTPs from security_arch_structured.json
 
 Writes:
-  registry/campaigns.json (global)
-  cases/<case_id>/artefacts/campaign/campaign_links.json (per-case)
+  registry/campaigns.json (global campaign registry — retained)
+
+Per-case campaign_links.json is no longer persisted; results are returned to the caller.
 """
 from __future__ import annotations
 
@@ -289,17 +290,6 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
         "updated_at": utcnow(),
     }
     save_json(CAMPAIGNS_FILE, campaigns_data)
-
-    # Per-case links
-    if case_id:
-        case_campaigns = [c for c in campaigns if case_id in c["cases"]]
-        links = {
-            "case_id": case_id,
-            "campaigns": case_campaigns,
-            "ts": utcnow(),
-        }
-        links_path = CASES_DIR / case_id / "artefacts" / "campaign" / "campaign_links.json"
-        save_json(links_path, links)
 
     # Print summary
     print(f"[campaign_cluster] Found {len(campaigns)} campaign(s)")

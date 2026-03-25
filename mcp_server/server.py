@@ -71,7 +71,7 @@ def _build_auth_settings():
 
 _SERVER_INSTRUCTIONS = """\
 SOCAI — SOC Investigation Platform
-77 tools · 26 resources · 16 prompts for security operations.
+Tools, resources, and prompts for security operations.
 
 ## Start Here
 

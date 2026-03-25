@@ -4,14 +4,12 @@ tool: yara_scan
 YARA scanning tool for case artefacts.
 
 Scans extracted files, email attachments, and web captures against built-in
-and external YARA rules. Optionally generates custom YARA rules via LLM
-based on PE analysis and enrichment verdicts.
+and external YARA rules.
 
 yara-python is optional — if not installed, returns status "yara_not_installed".
 
 Output:
   cases/<case_id>/artefacts/yara/yara_results.json
-  cases/<case_id>/artefacts/yara/generated_rules.yar  (when generate_rules=True)
 
 Usage (standalone):
   python3 tools/yara_scan.py --case IV_CASE_001
@@ -25,8 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_model, load_json, log_error, save_json, utcnow, write_artefact
+from config.settings import CASES_DIR
+from tools.common import load_json, log_error, save_json, write_artefact
 
 try:
     import yara
@@ -237,102 +235,6 @@ def _scan_with_rules(rules, targets: list[Path], case_dir: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# LLM rule generation
-# ---------------------------------------------------------------------------
-
-_RULE_GEN_SYSTEM = """You are an expert YARA rule author for malware detection.
-Given PE analysis data and threat intelligence verdicts, write well-formed YARA
-rules that target the specific threat characteristics observed.
-
-Guidelines:
-- Each rule must have a meta section with description and author="socai-generated"
-- Use meaningful rule names prefixed with "Generated_"
-- Include both string-based and structural conditions where applicable
-- Target specific imports, section names, or byte patterns from the PE analysis
-- Incorporate known-bad IOCs (domains, IPs) as string matches where relevant
-- Output ONLY valid YARA source code, no markdown fences or commentary
-"""
-
-
-def _generate_rules_llm(case_id: str) -> str | None:
-    """Use Claude to generate custom YARA rules from case artefacts."""
-    import anthropic
-
-    if not ANTHROPIC_KEY:
-        return None
-
-    case_dir = Path(CASES_DIR) / case_id
-
-    # Gather context for LLM
-    context_parts: list[str] = []
-
-    pe_analysis = load_json(case_dir / "artefacts" / "analysis" / "pe_analysis.json")
-    if pe_analysis:
-        context_parts.append(f"PE Analysis:\n{_safe_json_str(pe_analysis)}")
-
-    verdict_summary = load_json(
-        case_dir / "artefacts" / "enrichment" / "verdict_summary.json"
-    )
-    if verdict_summary:
-        # Extract malicious and suspicious IOC values
-        mal_iocs = verdict_summary.get("high_priority", [])
-        sus_iocs = verdict_summary.get("needs_review", [])
-        if mal_iocs or sus_iocs:
-            context_parts.append(
-                f"Malicious IOCs:\n{_safe_json_str(mal_iocs)}\n"
-                f"Suspicious IOCs:\n{_safe_json_str(sus_iocs)}"
-            )
-
-    if not context_parts:
-        return None
-
-    user_msg = (
-        "Based on the following analysis data, generate YARA rules to detect "
-        "this specific threat.\n\n" + "\n\n".join(context_parts)
-    )
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-        try:
-            _meta = load_json(CASES_DIR / case_id / "case_meta.json")
-        except Exception:
-            _meta = {}
-        resp = client.messages.create(
-            model=get_model("yara", _meta.get("severity", "medium")),
-            max_tokens=4096,
-            system=[
-                {
-                    "type": "text",
-                    "text": _RULE_GEN_SYSTEM,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": user_msg}],
-        )
-        for block in resp.content:
-            if block.type == "text":
-                return block.text
-    except Exception as exc:
-        log_error(
-            case_id=case_id,
-            step="yara_scan_generate",
-            error=str(exc),
-            severity="warning",
-        )
-    return None
-
-
-def _safe_json_str(obj) -> str:
-    """JSON-serialise with truncation for LLM context."""
-    import json
-
-    text = json.dumps(obj, indent=2, default=str)
-    if len(text) > 8000:
-        text = text[:8000] + "\n... (truncated)"
-    return text
-
-
-# ---------------------------------------------------------------------------
 # Main function
 # ---------------------------------------------------------------------------
 
@@ -345,7 +247,8 @@ def yara_scan(case_id: str, generate_rules: bool = False) -> dict:
     case_id : str
         Case identifier.
     generate_rules : bool
-        If True, use LLM to generate custom rules from PE analysis / verdicts.
+        Ignored — LLM rule generation has been removed. Kept for API
+        compatibility.
 
     Returns
     -------
@@ -383,36 +286,6 @@ def yara_scan(case_id: str, generate_rules: bool = False) -> dict:
     all_matches.extend(_scan_with_rules(builtin_rules, targets, case_dir))
     for ext_rules in ext_compiled:
         all_matches.extend(_scan_with_rules(ext_rules, targets, case_dir))
-
-    # -- LLM rule generation --
-    if generate_rules:
-        gen_source = _generate_rules_llm(case_id)
-        if gen_source:
-            # Save generated rules
-            gen_path = yara_dir / "generated_rules.yar"
-            write_artefact(gen_path, gen_source)
-            generated_rules_path = str(gen_path)
-
-            # Compile and scan with generated rules
-            try:
-                gen_compiled = yara.compile(source=gen_source)
-                gen_rule_count = len(gen_compiled)
-                rules_loaded["generated"] = gen_rule_count
-                all_matches.extend(_scan_with_rules(gen_compiled, targets, case_dir))
-            except yara.SyntaxError as exc:
-                log_error(
-                    case_id=case_id,
-                    step="yara_scan_generate",
-                    error=f"Generated rules syntax error: {exc}",
-                    severity="warning",
-                )
-            except Exception as exc:
-                log_error(
-                    case_id=case_id,
-                    step="yara_scan_generate",
-                    error=str(exc),
-                    severity="warning",
-                )
 
     # -- Build manifest --
     manifest = {

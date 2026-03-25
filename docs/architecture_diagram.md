@@ -136,27 +136,21 @@ sequenceDiagram
     A->>M: classify_attack("Suspicious sign-in alert")
     M->>A: attack type + recommended tool sequence
 
-    A->>M: create_case(title, severity)
-    M->>T: case_create(IV_CASE_042, status=triage)
-    T->>F: cases/IV_CASE_042/case_meta.json
+    Note over A,M: Caseless investigation — no case needed yet
 
-    A->>M: add_evidence(case_id, alert_data)
-    Note over M,E: Background: quick_enrich (fast providers, ≤20 IOCs)
-    M->>A: evidence attached
-
-    A->>M: promote_case(IV_CASE_042)
-    M->>T: status: triage → active
-    M->>A: case promoted
-
-    A->>M: enrich_iocs(IV_CASE_042)
-    T->>E: Tiered enrichment (ASN → fast → deep)
+    A->>M: quick_enrich([iocs])
+    T->>E: Fast IOC lookups (no case required)
     E-->>T: results
     M->>A: enrichment summary
 
-    A->>M: run_kql(IV_CASE_042, ...)
+    A->>M: run_kql(workspace, query)
     M->>A: Sentinel query results
 
-    A->>M: generate_mdr_report(IV_CASE_042)
+    Note over A,M: Deliverable phase — case auto-created + promoted
+
+    A->>M: generate_mdr_report()
+    M->>T: _ensure_case() → case_create + promote
+    T->>F: cases/IV_CASE_042/case_meta.json (status=active)
     T->>F: reports/mdr_report.md
     Note over M,T: Auto-closes case
     M->>A: report generated, case closed

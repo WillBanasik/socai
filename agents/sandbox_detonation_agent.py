@@ -3,7 +3,8 @@ Sandbox Detonation Agent
 ------------------------
 Thin orchestration agent for local malware sandbox detonation.
 Starts a containerised sandbox session, waits for completion,
-collects artefacts, and triggers LLM analysis of telemetry.
+and collects artefacts.  Raw telemetry is saved for analyst review
+via Claude Desktop agent — no embedded LLM call.
 
 Used by chief.py step 6b when --detonate is set and cloud sandbox
 lookups return no definitive results.
@@ -13,14 +14,13 @@ from __future__ import annotations
 import json
 import logging
 import sys
-import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agents.base_agent import BaseAgent
-from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_model, log_error, save_json, utcnow
+from config.settings import CASES_DIR
+from tools.common import save_json, utcnow
 
 logger = logging.getLogger("socai.sandbox_detonation")
 
@@ -92,11 +92,11 @@ class SandboxDetonationAgent(BaseAgent):
             "duration": stop_result.get("duration_seconds", 0),
         })
 
-        # LLM analysis of telemetry
-        analysis = self._analyse_telemetry(stop_result)
-        if analysis:
+        # Save raw telemetry summary for analyst review
+        telemetry = self._collect_telemetry(stop_result)
+        if telemetry:
             art_dir = CASES_DIR / self.case_id / "artefacts" / "sandbox_detonation"
-            save_json(art_dir / "llm_analysis.json", analysis)
+            save_json(art_dir / "telemetry_summary.json", telemetry)
 
         self._emit("complete", {
             "session_id": session_id,
@@ -111,7 +111,7 @@ class SandboxDetonationAgent(BaseAgent):
             "duration_seconds": stop_result.get("duration_seconds", 0),
             "artefacts": stop_result.get("artefacts", {}),
             "entities_summary": stop_result.get("entities_summary", {}),
-            "llm_analysis": analysis,
+            "llm_analysis": "removed — review telemetry via Claude Desktop agent",
         }
 
     def _find_primary_sample(self) -> str | None:
@@ -141,88 +141,35 @@ class SandboxDetonationAgent(BaseAgent):
 
         return None
 
-    def _analyse_telemetry(self, stop_result: dict) -> dict | None:
-        """Use LLM to analyse collected sandbox telemetry."""
-        if not ANTHROPIC_KEY:
-            return None
+    def _collect_telemetry(self, stop_result: dict) -> dict | None:
+        """Collect sandbox telemetry summaries for analyst review.
 
+        Returns a dict of filename -> content for each telemetry artefact,
+        or None if no artefacts exist.
+        """
         art_dir = CASES_DIR / self.case_id / "artefacts" / "sandbox_detonation"
         if not art_dir.exists():
             return None
 
-        # Collect telemetry summaries for the LLM
-        context_parts = []
+        telemetry_files = {}
 
         for filename in ["sandbox_manifest.json", "strace_log.json", "network_log.json",
                          "honeypot_log.json", "process_tree.json", "filesystem_changes.json",
                          "dns_queries.json", "strings_extracted.json"]:
             p = art_dir / filename
             if p.exists():
-                text = p.read_text(errors="replace")
-                # Truncate large files
-                if len(text) > 10000:
-                    text = text[:10000] + "\n... (truncated)"
-                context_parts.append(f"=== {filename} ===\n{text}")
+                try:
+                    telemetry_files[filename] = json.loads(p.read_text(errors="replace"))
+                except json.JSONDecodeError:
+                    telemetry_files[filename] = p.read_text(errors="replace")
 
-        if not context_parts:
+        if not telemetry_files:
             return None
 
-        telemetry_text = "\n\n".join(context_parts)
-
-        try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-            case_meta = {}
-            meta_path = CASES_DIR / self.case_id / "case_meta.json"
-            if meta_path.exists():
-                from tools.common import load_json
-                case_meta = load_json(meta_path)
-            model = get_model("sandbox_detonation", case_meta.get("severity", "medium"))
-
-            response = client.messages.create(
-                model=model,
-                max_tokens=4096,
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "Analyse the following malware sandbox detonation telemetry. "
-                        "Provide:\n"
-                        "1. **Behavioural summary** — what the sample did at runtime\n"
-                        "2. **MITRE ATT&CK mapping** — TTPs observed (ID + name)\n"
-                        "3. **IOC extraction** — C2 IPs/domains, dropped file hashes, "
-                        "registry keys, mutexes\n"
-                        "4. **Behavioural classification** — trojan, ransomware, worm, "
-                        "RAT, downloader, etc.\n"
-                        "5. **Risk score** — 0-100 with justification\n"
-                        "6. **Recommended response actions**\n\n"
-                        "Return valid JSON with keys: summary, mitre_ttps (array of "
-                        "{id, name, evidence}), iocs (object with arrays: ips, domains, "
-                        "urls, hashes, mutexes, registry_keys), classification, "
-                        "risk_score (int), risk_justification, response_actions (array).\n\n"
-                        f"Telemetry:\n{telemetry_text}"
-                    ),
-                }],
-            )
-
-            # Parse JSON from response
-            response_text = response.content[0].text
-            # Try to extract JSON from the response
-            try:
-                analysis = json.loads(response_text)
-            except json.JSONDecodeError:
-                # Try to find JSON block in markdown
-                import re
-                json_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", response_text, re.DOTALL)
-                if json_match:
-                    analysis = json.loads(json_match.group(1))
-                else:
-                    analysis = {"raw_analysis": response_text}
-
-            analysis["analysed_at"] = utcnow()
-            analysis["model"] = model
-            return analysis
-
-        except Exception as exc:
-            log_error(self.case_id, "sandbox_detonation.llm_analysis", str(exc),
-                      severity="warning", traceback=traceback.format_exc())
-            return None
+        return {
+            "collected_at": utcnow(),
+            "case_id": self.case_id,
+            "files": telemetry_files,
+            "entities_summary": stop_result.get("entities_summary", {}),
+            "duration_seconds": stop_result.get("duration_seconds", 0),
+        }

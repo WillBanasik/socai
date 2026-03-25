@@ -10,7 +10,6 @@ All settings in `config/settings.py`; secrets in `.env` (git-ignored, auto-loade
 | `SOCAI_CAPTURE_TIMEOUT` | `20` | Web capture timeout (seconds) |
 | `SOCAI_SPA_DWELL` | `5000` | Extra wait (ms) after `networkidle` if page text is empty |
 | `SOCAI_STRINGS_MIN` | `6` | Min string length for static analysis |
-| `SOCAI_LLM_MODEL` | `claude-sonnet-4-6` | Claude model for LLM steps (legacy fallback) |
 | `SOCAI_ENRICH_CACHE_TTL` | `24` | Enrichment cache TTL (hours); `0` = disabled |
 | `SOCAI_ENRICH_WORKERS` | `10` | Thread pool size for parallel enrichment (all tiers) |
 | `MAXMIND_LICENSE_KEY` | — | MaxMind license key for local GeoIP (free at maxmind.com/en/geolite2/signup) |
@@ -27,26 +26,12 @@ All settings in `config/settings.py`; secrets in `.env` (git-ignored, auto-loade
 | `SOCAI_TRAVEL_WINDOW` | `3600` | Seconds window for impossible travel detection |
 | `SOCAI_LATERAL_WINDOW` | `3600` | Seconds window for lateral movement detection |
 | `SOCAI_UA` | Chrome 120 UA string | User-Agent for web capture requests |
-| `SOCAI_COMPACTION_ENABLED` | `1` | Enable API-side context compaction for long chats (Opus models) |
-| `SOCAI_BATCH_POLL_INTERVAL` | `30` | Seconds between batch status polls |
-| `SOCAI_BATCH_TIMEOUT` | `3600` | Seconds before batch polling timeout |
 | `SOCAI_BROWSER_POOL_MAX_USES` | `50` | Playwright browser recycle threshold (prevents memory leaks) |
 | `SOCAI_BROWSER_POOL_IDLE_SECS` | `300` | Auto-close pooled Playwright browser after N seconds of inactivity |
-| `ANTHROPIC_API_KEY` | `""` | Required for LLM-assisted steps and `client-query` |
 
-## Model Tiering
+## LLM Reasoning
 
-See [model_tiering.md](model_tiering.md) for full details.
-
-| Env var | Default | Purpose |
-|---------|---------|---------|
-| `SOCAI_MODEL_HEAVY` | `claude-opus-4-6` | Complex reasoning, high-stakes analysis |
-| `SOCAI_MODEL_STANDARD` | `claude-sonnet-4-6` | Most analytical tasks |
-| `SOCAI_MODEL_FAST` | `claude-haiku-4-5-20251001` | Routing, simple generation, high-volume |
-
-Per-task model assignments: `SOCAI_MODEL_{TASK}` — see `config/settings.py` for full list. Includes `SOCAI_MODEL_ARTICLES` (default `standard`) for threat article generation.
-
-Severity escalation for `{secarch, report, chat_response, evtx, fp_ticket}`: fast->standard, standard->heavy on high/critical. Note: `chat_response` defaults to `standard` (Sonnet), so escalation bumps it to `heavy` (Opus).
+All LLM reasoning (report generation, analytical judgement, disposition analysis, quality review) is handled by the local Claude Desktop agent via MCP prompts and save tools. No Anthropic API key is needed — the MCP server provides data-gathering tools and persistence, while the analyst's local Claude session does the thinking.
 
 ## API Keys
 

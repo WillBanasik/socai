@@ -1,16 +1,14 @@
 """
 tool: executive_summary
 -----------------------
-LLM-assisted executive summary generator for non-technical business leadership.
+Data-gathering module for executive summaries.
 
-Reads case artefacts and produces a plain-English executive summary with
-RAG (Red/Amber/Green) risk rating, structured via Claude tool_use.
+The summary itself is now written by the local Claude Desktop agent using
+the ``write_executive_summary`` MCP prompt, then persisted via
+``save_report``.  This module retains ``_SYSTEM_PROMPT``,
+``_SYSTEM_CACHED``, and ``_build_context()`` which the MCP prompt imports.
 
-Output:
-  cases/<case_id>/artefacts/executive_summary/executive_summary.md
-  cases/<case_id>/artefacts/executive_summary/executive_summary_manifest.json
-
-Usage (standalone):
+Usage (standalone — returns stub directing caller to the MCP prompt):
   python3 tools/executive_summary.py --case IV_CASE_001
 """
 from __future__ import annotations
@@ -21,8 +19,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_alias_map, get_model, load_json, log_error, save_json, utcnow, write_artefact, write_report
+from config.settings import CASES_DIR
+from tools.common import load_json, log_error, utcnow
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -187,151 +185,20 @@ def _build_context(case_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 def executive_summary(case_id: str) -> dict:
+    """Stub — direct LLM generation removed.
+
+    Use the ``write_executive_summary`` MCP prompt to generate the summary
+    via the local Claude Desktop agent, then call
+    ``save_report(type=executive_summary)`` to persist it.
     """
-    Generate an LLM-assisted executive summary for *case_id*.
-
-    Returns a manifest dict with the output path, risk rating, and token usage.
-    """
-    # ── 1. Early-exit checks ──────────────────────────────────────────────
-    if not ANTHROPIC_KEY:
-        return {"status": "skipped", "reason": "ANTHROPIC_API_KEY not set"}
-
-    try:
-        import anthropic
-    except ImportError as exc:
-        log_error(case_id, "executive_summary.import_anthropic", str(exc), severity="info")
-        return {
-            "status": "error",
-            "reason": "anthropic package not installed. Run: pip install anthropic",
-            "case_id": case_id,
-            "ts": utcnow(),
-        }
-
-    # ── 2. Build context ──────────────────────────────────────────────────
-    context_text = _build_context(case_id)
-    alias_map = get_alias_map()
-    if alias_map:
-        context_text = alias_map.alias_text(context_text)
-
-    if not context_text.strip():
-        return {
-            "status": "skipped",
-            "reason": "No case artefacts found — run enrich_iocs or add_evidence first.",
-            "case_id": case_id,
-            "ts": utcnow(),
-        }
-
-    # ── 3. Load metadata for template ────────────────────────────────────
-    case_dir = CASES_DIR / case_id
-    meta = _load_optional(case_dir / "case_meta.json", case_id) or {}
-    title = meta.get("title", "Untitled Investigation")
-    severity = meta.get("severity", "unknown")
-
-    # ── 4. LLM call (structured output) ─────────────────────────────────
-    from tools.structured_llm import structured_call
-    from tools.schemas import ExecutiveSummary as ExecutiveSummarySchema
-
-    _model = get_model("exec_summary", severity)
-    print(f"[executive_summary] Querying {_model} for case {case_id}...")
-
-    try:
-        structured_result, usage = structured_call(
-            model=_model,
-            system=_SYSTEM_CACHED,
-            messages=[{
-                "role": "user",
-                "content": (
-                    "Produce an executive summary for the following security "
-                    f"investigation.\n\n{context_text}"
-                ),
-            }],
-            output_schema=ExecutiveSummarySchema,
-            max_tokens=4096,
-        )
-    except Exception as exc:
-        log_error(case_id, "executive_summary.llm_call", str(exc), severity="error")
-        return {
-            "status": "error",
-            "reason": f"LLM call failed: {exc}",
-            "case_id": case_id,
-            "ts": utcnow(),
-        }
-
-    # ── 5. Extract structured data ───────────────────────────────────────
-    structured_data = structured_result.model_dump() if structured_result else None
-
-    tokens_in = usage.get("input_tokens", 0)
-    tokens_out = usage.get("output_tokens", 0)
-
-    print(
-        f"[executive_summary] Tokens: {tokens_in} in / {tokens_out} out"
-    )
-
-    # ── 6. Assemble markdown ─────────────────────────────────────────────
-    ts = utcnow()
-
-    if structured_data:
-        what_happened = structured_data.get("what_happened", "")
-        who_affected = structured_data.get("who_affected", "")
-        risk_rating = structured_data.get("risk_rating", "AMBER")
-        risk_justification = structured_data.get("risk_justification", "")
-        what_done = structured_data.get("what_done", "")
-        next_steps = structured_data.get("next_steps", [])
-        business_risk = structured_data.get("business_risk", "")
-
-        next_steps_md = "\n".join(
-            f"{i}. {step}" for i, step in enumerate(next_steps, 1)
-        )
-
-        summary_text = (
-            f"# Executive Summary — {case_id}: {title}\n\n"
-            f"**Risk Rating: {risk_rating}** — {risk_justification}\n\n"
-            f"## What Happened\n{what_happened}\n\n"
-            f"## Who Was Affected\n{who_affected}\n\n"
-            f"## What Has Been Done\n{what_done}\n\n"
-            f"## Recommended Actions\n{next_steps_md}\n\n"
-            f"## Business Risk\n{business_risk}\n\n"
-            f"---\n"
-            f"*Generated: {ts} | Case: {case_id} | Severity: {severity}*\n"
-        )
-    else:
-        # Fallback: structured output parse failed
-        risk_rating = "AMBER"
-        print("[executive_summary] WARNING: Structured output not returned — using fallback")
-        summary_text = (
-            f"# Executive Summary — {case_id}: {title}\n\n"
-            f"*Structured output could not be generated. Please re-run.*\n\n"
-            f"---\n"
-            f"*Generated: {ts} | Case: {case_id} | Severity: {severity}*\n"
-        )
-
-    # ── 7. Dealias ────────────────────────────────────────────────────────
-    if alias_map:
-        summary_text = alias_map.dealias_text(summary_text)
-
-    # ── 8. Write artefacts ────────────────────────────────────────────────
-    out_dir = case_dir / "artefacts" / "executive_summary"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    summary_path = out_dir / "executive_summary.md"
-    write_report(summary_path, summary_text, title=f"Executive Summary — {case_id}")
-
-    word_count = len(summary_text.split())
-
-    manifest = {
-        "status": "ok",
-        "summary_path": str(summary_path),
-        "risk_rating": risk_rating,
-        "word_count": word_count,
-        "tokens_input": tokens_in,
-        "tokens_output": tokens_out,
-        "model": _model,
-        "ts": ts,
+    return {
+        "status": "use_prompt",
+        "prompt": "write_executive_summary",
+        "save_tool": "save_report",
+        "save_args": {"report_type": "executive_summary"},
+        "case_id": case_id,
+        "ts": utcnow(),
     }
-    save_json(out_dir / "executive_summary_manifest.json", manifest)
-
-    print(f"[executive_summary] Summary written to {summary_path} ({word_count} words)")
-    return manifest
 
 
 # ---------------------------------------------------------------------------

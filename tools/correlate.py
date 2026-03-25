@@ -5,9 +5,7 @@ Cross-references IOCs from artefacts with log entity data to find
 overlapping indicators.  Produces a correlation matrix and a timeline
 of relevant log events.
 
-Writes:
-  cases/<case_id>/artefacts/correlation/correlation.json
-  cases/<case_id>/artefacts/correlation/timeline.json
+Results are computed and returned to the caller; no artefacts are persisted to disk.
 """
 from __future__ import annotations
 
@@ -18,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import load_json, log_error, utcnow, write_artefact
+from tools.common import load_json, log_error, utcnow
 
 
 def _load_all_entities(logs_dir: Path) -> dict[str, list]:
@@ -62,8 +60,6 @@ def correlate(case_id: str) -> dict:
     """
     case_dir = CASES_DIR / case_id
     logs_dir = case_dir / "logs"
-    corr_dir = case_dir / "artefacts" / "correlation"
-    corr_dir.mkdir(parents=True, exist_ok=True)
 
     iocs     = _load_iocs(case_dir)
     entities = _load_all_entities(logs_dir) if logs_dir.exists() else {}
@@ -136,8 +132,6 @@ def correlate(case_id: str) -> dict:
         except Exception:
             pass
 
-    write_artefact(corr_dir / "correlation.json", json.dumps(result, indent=2))
-    write_artefact(corr_dir / "timeline.json",    json.dumps(timeline, indent=2))
     print(f"[correlate] Correlation complete for {case_id}: {result['hit_summary']}")
     return result
 

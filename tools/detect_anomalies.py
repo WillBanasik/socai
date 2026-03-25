@@ -11,8 +11,7 @@ Six detectors:
   5. Volume spikes — events per IP/user exceeding mean + 2*stddev
   6. Lateral movement — same user from 3+ distinct IPs in time window
 
-Writes:
-  cases/<case_id>/artefacts/anomalies/anomaly_report.json
+Results are computed and returned to the caller; no artefacts are persisted to disk.
 """
 from __future__ import annotations
 
@@ -26,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import load_json, log_error, save_json, utcnow
+from tools.common import load_json, log_error, utcnow
 
 # Configuration
 BUSINESS_HOURS_START = int(os.getenv("SOCAI_BUSINESS_HOURS_START", "8"))
@@ -430,9 +429,6 @@ def detect_anomalies(case_id: str) -> dict:
                 result["llm_context"] = llm_context
         except Exception:
             pass
-
-    anomaly_dir = CASES_DIR / case_id / "artefacts" / "anomalies"
-    save_json(anomaly_dir / "anomaly_report.json", result)
 
     # Print summary
     print(f"[detect_anomalies] Analysed {len(events)} events, found {len(all_findings)} anomaly(ies)")

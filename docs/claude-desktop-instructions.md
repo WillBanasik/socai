@@ -21,7 +21,9 @@ Do not memorise a fixed sequence. Instead, follow this decision pattern:
 3. **Recall before enriching** — call `recall_cases` to check if IOCs have appeared in prior investigations
 4. **Follow the plan** — execute the tools in the order the plan specifies
 5. **Read `_hint` fields** — they will guide you through polling, report reading, and closure
-6. **Deliver and close** — generating a deliverable (MDR report, PUP report, FP ticket) auto-closes the case. Do not call `close_case` separately unless no deliverable is generated
+6. **Deliver and close** — generating a deliverable (MDR report, PUP report, FP ticket) auto-creates a case if one doesn't exist and auto-closes it. Do not call `close_case` separately unless no deliverable is generated
+
+Case creation is **deferred** — you do not need to call `create_case` upfront. Caseless tools (`quick_enrich`, `extract_iocs_from_text`, KQL queries, `recall_cases`) work without a case. Case-bound tools (`enrich_iocs`, `add_evidence`, `capture_urls`) require a case — either call `create_case` manually, or let the deliverable tools auto-create one at report time.
 
 When you need a full picture of an existing case, prefer `case_summary` over `get_case`. The summary returns metadata, IOCs, verdicts, enrichment, response actions, and notes in one call.
 
@@ -96,6 +98,6 @@ Confluence hosts published documentation, SOC policies, processes, runbooks, and
 
 The threat article workflow is: discover online → summarise → publish to Confluence. "Articles" without context could refer to either end of that pipeline. When in doubt, ask.
 
-## Client Boundary
+## Client Scope
 
-Each conversation is locked to one client and one case. The first `lookup_client` or case reference sets the boundary. Attempting to reference a different client or case in the same conversation will be rejected. Start a new chat for a new client or case.
+Always identify the client with `lookup_client` before running queries. All queries must target the confirmed client's platforms only. Cross-client correlation is only permitted via `recall_cases`.

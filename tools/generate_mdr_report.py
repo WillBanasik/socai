@@ -1,18 +1,13 @@
 """
 tool: generate_mdr_report
 -------------------------
-LLM-assisted MDR-style incident report following the Gold MDR/XDR Analyst
-Instruction Set — evidence-first, mandatory "What Was NOT Observed" section,
-confidence labels, UK English, professional SOC tone.
+MDR report data-gathering and system prompt.
 
-Only generated on explicit request via `python3 socai.py mdr-report --case IV_CASE_001`.
-The autonomous pipeline's generate_report is left untouched.
+The actual report is written by the local Claude Desktop agent using the
+``write_mdr_report`` MCP prompt, then persisted via ``save_report``.
 
-Output:
-  cases/<case_id>/reports/mdr_report.md
-
-Usage (standalone):
-  python3 tools/generate_mdr_report.py --case IV_CASE_001
+This module retains ``_SYSTEM_PROMPT`` and ``_build_context()`` which the
+MCP prompt imports.  The former LLM-calling function is replaced by a stub.
 """
 from __future__ import annotations
 
@@ -22,10 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR, IOC_INDEX_FILE
+from config.settings import CASES_DIR, IOC_INDEX_FILE
 from tools.common import (
-    audit, defang_report, get_alias_map, get_model, load_json, log_error, save_json,
-    utcnow, write_artefact, write_report,
+    load_json, log_error, utcnow,
 )
 
 # ---------------------------------------------------------------------------
@@ -365,114 +359,20 @@ def _safe_load(path: Path) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def generate_mdr_report(case_id: str) -> dict:
+    """Stub — direct LLM generation removed.
+
+    Use the ``write_mdr_report`` MCP prompt to generate the report via the
+    local Claude Desktop agent, then call ``save_report(type=mdr_report)``
+    to persist it.
     """
-    Generate an MDR-style incident report for *case_id* using the Gold MDR/XDR
-    Analyst Instruction Set.
-
-    Returns a manifest dict with the output path and token usage.
-    Writes the report to:
-      cases/<case_id>/reports/mdr_report.md
-    """
-    if not ANTHROPIC_KEY:
-        return {
-            "status":  "skipped",
-            "reason":  "ANTHROPIC_API_KEY not set — MDR report generation requires LLM access.",
-            "case_id": case_id,
-            "ts":      utcnow(),
-        }
-
-    try:
-        import anthropic
-    except ImportError as exc:
-        log_error(case_id, "generate_mdr_report.import_anthropic", str(exc), severity="info")
-        return {
-            "status":  "error",
-            "reason":  "anthropic package not installed. Run: pip install anthropic",
-            "case_id": case_id,
-            "ts":      utcnow(),
-        }
-
-    context = _build_context(case_id)
-    alias_map = get_alias_map()
-    if alias_map:
-        context = alias_map.alias_text(context)
-    if not context.strip():
-        return {
-            "status":  "skipped",
-            "reason":  "No case artefacts found — run enrich_iocs or add_evidence first.",
-            "case_id": case_id,
-            "ts":      utcnow(),
-        }
-
-    user_message = (
-        f"Please produce an MDR-style incident report for the following investigation, "
-        f"following the Gold MDR/XDR Analyst Instruction Set exactly.\n\n"
-        f"{context}"
-    )
-
-    _meta = _safe_load(CASES_DIR / case_id / "case_meta.json") or {}
-    _severity = _meta.get("severity", "medium")
-    _model = get_model("mdr_report", _severity)
-    print(f"[generate_mdr_report] Querying {_model} for case {case_id}...")
-    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-    message = client.messages.create(
-        model=_model,
-        max_tokens=8192,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    )
-
-    report_text = message.content[0].text
-    if alias_map:
-        report_text = alias_map.dealias_text(report_text)
-    tokens_in   = message.usage.input_tokens
-    tokens_out  = message.usage.output_tokens
-
-    # Defang malicious IOCs in the final report
-    verdict_data = _safe_load(
-        CASES_DIR / case_id / "artefacts" / "enrichment" / "verdict_summary.json"
-    )
-    if verdict_data:
-        mal_iocs: set[str] = set(verdict_data.get("high_priority", []))
-        mal_iocs.update(verdict_data.get("needs_review", []))
-        if mal_iocs:
-            report_text = defang_report(report_text, mal_iocs)
-
-    # Write artefact
-    out_dir  = CASES_DIR / case_id / "reports"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "mdr_report.md"
-
-    header = (
-        f"# MDR Incident Report — {case_id}\n\n"
-        f"_Generated: {utcnow()} | Model: {_model} | "
-        f"Tokens: {tokens_in} in / {tokens_out} out_\n\n---\n\n"
-    )
-    write_report(out_path, header + report_text, title=f"MDR Incident Report — {case_id}")
-
-    # Auto-close: MDR report is the analyst deliverable — case is done
-    try:
-        from tools.index_case import index_case
-        index_case(case_id, status="closed")
-        print(f"[generate_mdr_report] Case {case_id} auto-closed (MDR report collected).")
-    except Exception as exc:
-        log_error(case_id, "generate_mdr_report.auto_close", str(exc),
-                  severity="warning")
-
-    manifest = {
-        "case_id":     case_id,
-        "report_path": str(out_path),
-        "tokens_in":   tokens_in,
-        "tokens_out":  tokens_out,
-        "model":       _model,
-        "status":      "ok",
-        "ts":          utcnow(),
+    return {
+        "status": "use_prompt",
+        "prompt": "write_mdr_report",
+        "save_tool": "save_report",
+        "save_args": {"report_type": "mdr_report"},
+        "case_id": case_id,
+        "ts": utcnow(),
     }
-    save_json(out_dir / "mdr_report_manifest.json", manifest)
-
-    print(f"[generate_mdr_report] Report written to {out_path}")
-    print(f"[generate_mdr_report] Tokens: {tokens_in} in / {tokens_out} out")
-    return manifest
 
 
 # ---------------------------------------------------------------------------

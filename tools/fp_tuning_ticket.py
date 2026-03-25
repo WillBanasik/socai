@@ -1,33 +1,25 @@
 """
 tool: fp_tuning_ticket
 ----------------------
-LLM-assisted SIEM engineering tuning ticket generator.
+FP tuning ticket context builder and helpers.
 
-Given a case + alert data, the tool:
-  1. Loads all available case artefacts as context
-  2. Checks prior investigations for recurrence patterns (via recall)
-  3. Calls Claude to produce a structured tuning ticket suitable for
-     handoff to a SIEM engineering / detection engineering team
+The tuning ticket is now written by the local Claude Desktop agent using the
+``write_fp_tuning`` MCP prompt, then persisted via
+``save_report(type=fp_tuning_ticket)``.
 
-Returns:
-  {"status": "ok",                "ticket_path": "..."}
-  {"status": "needs_clarification", "question":   "..."}
-  {"status": "skipped",             "reason":     "..."}
-  {"status": "error",               "reason":     "..."}
+This module retains ``_SYSTEM_PROMPT``, ``_SYSTEM_CACHED``, and
+``_build_context()`` which the MCP prompt imports.  It also keeps
+``_resolve_workspace_id()`` and ``_build_recurrence_context()`` for
+live-query resolution and prior-case recall.
 
-Output:
+Unlike fp_ticket (2-sentence closure comment), the tuning ticket is a full
+engineering handoff document with root cause analysis, before/after query
+modifications, impact assessment, and recurrence data.  Does NOT auto-close
+the case.
+
+Output (via save_report):
   cases/<case_id>/artefacts/fp_comms/fp_tuning_ticket.md
   cases/<case_id>/artefacts/fp_comms/fp_tuning_ticket_manifest.json
-
-Usage (standalone):
-  python3 tools/fp_tuning_ticket.py --case IV_CASE_001 --alert alert.json
-  python3 tools/fp_tuning_ticket.py --case IV_CASE_001 --alert alert.json --query rule.kql
-  python3 tools/fp_tuning_ticket.py --case IV_CASE_001 --alert alert.json --platform sentinel
-
-Unlike fp_ticket (2-sentence closure comment), this produces a full engineering
-handoff document with root cause analysis, before/after query modifications,
-impact assessment, and recurrence data.  Does NOT auto-close the case — the
-analyst may want to generate both an FP closure comment AND a tuning ticket.
 """
 from __future__ import annotations
 
@@ -37,8 +29,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_alias_map, get_model, load_json, log_error, save_json, utcnow, write_artefact, write_report
+from config.settings import CASES_DIR
+from tools.common import load_json, log_error, utcnow
 
 # ---------------------------------------------------------------------------
 # Workspace resolution helpers (shared with fp_ticket)
@@ -422,294 +414,21 @@ def _build_recurrence_context(case_id: str, alert_data: str) -> str:
 # Main function
 # ---------------------------------------------------------------------------
 
-def fp_tuning_ticket(
-    case_id: str,
-    alert_data: str,
-    query_text: str | None = None,
-    platform: str | None = None,
-    live_query: bool = False,
-) -> dict:
+def fp_tuning_ticket(case_id, alert_data, query_text=None, platform=None, live_query=False):
+    """Stub — direct LLM generation removed.
+
+    Use the ``write_fp_tuning`` MCP prompt to generate the tuning ticket via
+    the local Claude Desktop agent, then call
+    ``save_report(type=fp_tuning_ticket)`` to persist it.
     """
-    Generate a SIEM engineering tuning ticket for *case_id*.
-
-    Parameters
-    ----------
-    case_id     : existing case ID
-    alert_data  : raw alert JSON/text (as string)
-    query_text  : original KQL rule or policy text (Sentinel cases)
-    platform    : override — sentinel|crowdstrike|defender|entra|cloudapps|splunk
-                  If None, the LLM identifies it from alert_data
-    live_query  : if True, enable the query_workspace tool so the LLM can
-                  run read-only KQL against the alert's workspace.
-                  Requires `az` CLI authenticated. Default False.
-
-    Returns a manifest dict.  Does NOT auto-close the case.
-    """
-    # ── 1. Early-exit checks ──────────────────────────────────────────────
-    if not ANTHROPIC_KEY:
-        return {
-            "status":  "skipped",
-            "reason":  "ANTHROPIC_API_KEY not set — fp-tuning requires LLM access.",
-            "case_id": case_id,
-            "ts":      utcnow(),
-        }
-
-    if not alert_data or not alert_data.strip():
-        return {
-            "status":  "error",
-            "reason":  "alert_data is empty — provide alert JSON or text.",
-            "case_id": case_id,
-            "ts":      utcnow(),
-        }
-
-    try:
-        import anthropic
-    except ImportError as exc:
-        log_error(case_id, "fp_tuning_ticket.import_anthropic", str(exc), severity="info")
-        return {
-            "status":  "error",
-            "reason":  "anthropic package not installed. Run: pip install anthropic",
-            "case_id": case_id,
-            "ts":      utcnow(),
-        }
-
-    # ── 2. Load case metadata for header ──────────────────────────────────
-    case_dir = CASES_DIR / case_id
-    meta = _safe_load(case_dir / "case_meta.json", case_id) or {}
-    analyst  = meta.get("analyst", "unassigned")
-    severity = meta.get("severity", "N/A")
-
-    # ── 3. Build context + recurrence + apply aliasing ────────────────────
-    context    = _build_context(case_id)
-    recurrence = _build_recurrence_context(case_id, alert_data)
-    alias_map  = get_alias_map()
-
-    if alias_map:
-        context    = alias_map.alias_text(context)
-        recurrence = alias_map.alias_text(recurrence)
-        alert_data = alias_map.alias_text(alert_data)
-        if query_text:
-            query_text = alias_map.alias_text(query_text)
-
-    # ── 4. Resolve workspace for live queries ─────────────────────────────
-    workspace_id = None
-    query_log: list[dict] = []
-
-    if live_query:
-        try:
-            alert_dict = json.loads(alert_data)
-        except (json.JSONDecodeError, TypeError):
-            alert_dict = None
-        workspace_id = _resolve_workspace_id(alert_dict, case_id)
-        if workspace_id:
-            print(f"[fp_tuning] Live query enabled — workspace {workspace_id}")
-        else:
-            print("[fp_tuning] Live query requested but workspace ID could not be resolved. "
-                  "Falling back to artefact-only mode.")
-            live_query = False
-
-    # ── 5. Assemble user message sections ─────────────────────────────────
-    user_parts: list[str] = [
-        "## Task\n"
-        "An analyst has determined this investigation is a False Positive and needs a "
-        "SIEM engineering tuning ticket. Generate a structured tuning ticket that a "
-        "detection engineer can use to modify the rule.\n",
-    ]
-
-    if platform:
-        user_parts.append(f"**Platform override:** {platform}\n")
-
-    if live_query and workspace_id:
-        user_parts.append(
-            "**Live workspace query is ENABLED.** You can use the `query_workspace` tool "
-            "to run read-only KQL queries (max 2) against the alert's Log Analytics workspace.\n"
-        )
-
-    user_parts.append(f"## Case Context\n\n{context}\n")
-
-    if recurrence:
-        user_parts.append(f"{recurrence}\n")
-
-    user_parts.append(f"## Alert Data\n\n```\n{alert_data}\n```\n")
-
-    if query_text:
-        user_parts.append(f"## Original Detection Rule / Query\n\n```kql\n{query_text}\n```\n")
-
-    user_parts.append(
-        "## Analyst Determination\n\n"
-        "False Positive — generate a tuning ticket for SIEM engineering.\n"
-    )
-
-    user_message = "\n".join(user_parts)
-
-    # ── 6. Build tools list ────────────────────────────────────────────────
-    tools = [_CLARIFICATION_TOOL]
-    if live_query and workspace_id:
-        tools.append(_QUERY_WORKSPACE_TOOL)
-
-    # ── 7. Call LLM (with tool-use conversation loop) ──────────────────────
-    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-    _model = get_model("fp_tuning_ticket", severity)
-
-    print(f"[fp_tuning] Querying {_model} for case {case_id}...")
-
-    messages = [{"role": "user", "content": user_message}]
-    tokens_in = tokens_out = tokens_cache_read = tokens_cache_write = 0
-    ticket_text = ""
-    clarification_question = None
-    query_call_count = 0
-
-    for _turn in range(1 + _QUERY_MAX_CALLS):  # initial + up to N tool rounds
-        try:
-            message = client.messages.create(
-                model=_model,
-                max_tokens=4096,
-                system=_SYSTEM_CACHED,
-                tools=tools,
-                tool_choice={"type": "auto"},
-                messages=messages,
-            )
-        except Exception as exc:
-            log_error(case_id, "fp_tuning_ticket.llm_call", str(exc), severity="error")
-            return {
-                "status":  "error",
-                "reason":  f"LLM API call failed: {exc}",
-                "case_id": case_id,
-                "ts":      utcnow(),
-            }
-
-        # Accumulate tokens
-        tokens_in  += message.usage.input_tokens
-        tokens_out += message.usage.output_tokens
-        tokens_cache_read  += getattr(message.usage, "cache_read_input_tokens", 0) or 0
-        tokens_cache_write += getattr(message.usage, "cache_creation_input_tokens", 0) or 0
-
-        # Check for tool use
-        has_tool_use = False
-        tool_results: list[dict] = []
-
-        for block in message.content:
-            if block.type == "text":
-                ticket_text += block.text
-            elif block.type == "tool_use" and block.name == "request_clarification":
-                clarification_question = block.input.get("question", "")
-            elif block.type == "tool_use" and block.name == "query_workspace":
-                has_tool_use = True
-                query_call_count += 1
-                kql = block.input.get("kql", "")
-                purpose = block.input.get("purpose", "")
-                print(f"[fp_tuning] Tool call #{query_call_count}: query_workspace — {purpose}")
-
-                if query_call_count > _QUERY_MAX_CALLS:
-                    result_text = json.dumps({
-                        "error": f"Query limit reached ({_QUERY_MAX_CALLS} max). "
-                                 "Use the evidence already gathered."
-                    })
-                else:
-                    try:
-                        from scripts.run_kql import run_kql
-                        rows = run_kql(workspace_id, kql, timeout=60)
-                        if len(rows) > _QUERY_MAX_ROWS:
-                            rows = rows[:_QUERY_MAX_ROWS]
-                            rows.append({"_truncated": f"Results capped at {_QUERY_MAX_ROWS} rows"})
-                        result_text = json.dumps(rows, indent=2, default=str)
-                        print(f"[fp_tuning]   → {len(rows)} row(s) returned")
-                    except Exception as exc:
-                        log_error(case_id, "fp_tuning_ticket.query_workspace", str(exc),
-                                  severity="warning", context={"kql": kql[:200]})
-                        result_text = json.dumps({"error": str(exc)})
-                        print(f"[fp_tuning]   → Error: {exc}")
-
-                query_log.append({
-                    "turn": _turn + 1,
-                    "purpose": purpose,
-                    "kql": kql,
-                    "result_preview": result_text[:500],
-                })
-
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result_text,
-                })
-
-        # If clarification was requested, stop
-        if clarification_question:
-            break
-
-        # If no tool use, we're done
-        if not has_tool_use or message.stop_reason == "end_turn":
-            break
-
-        # Continue conversation with tool results
-        messages.append({"role": "assistant", "content": message.content})
-        messages.append({"role": "user", "content": tool_results})
-
-    print(
-        f"[fp_tuning] Tokens: {tokens_in} in / {tokens_out} out "
-        f"| cache_read={tokens_cache_read} cache_write={tokens_cache_write}"
-        + (f" | queries={query_call_count}" if query_call_count else "")
-    )
-
-    # ── 8. Parse final response ────────────────────────────────────────────
-    if clarification_question:
-        return {
-            "status":   "needs_clarification",
-            "question": clarification_question,
-            "case_id":  case_id,
-            "ts":       utcnow(),
-        }
-
-    ticket_text = ticket_text.strip()
-    if not ticket_text:
-        return {
-            "status":  "error",
-            "reason":  "LLM returned empty response.",
-            "case_id": case_id,
-            "ts":      utcnow(),
-        }
-
-    # ── 9. Dealias output ─────────────────────────────────────────────────
-    if alias_map:
-        ticket_text = alias_map.dealias_text(ticket_text)
-
-    # ── 10. Write artefact ────────────────────────────────────────────────
-    out_dir = case_dir / "artefacts" / "fp_comms"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "fp_tuning_ticket.md"
-
-    header = (
-        f"# SIEM Engineering Tuning Ticket — {case_id}\n\n"
-        f"**Date:** {utcnow()} | **Analyst:** {analyst} | **Severity:** {severity}"
-        f" | Model: {_model} | Tokens: {tokens_in} in / {tokens_out} out"
-        + (f" | Cache read: {tokens_cache_read}" if tokens_cache_read else "")
-        + "\n\n---\n\n"
-    )
-    write_report(out_path, header + ticket_text, title=f"SIEM Tuning Ticket — {case_id}")
-
-    # NOTE: Deliberately does NOT auto-close the case.
-    # The analyst may want to generate both an FP closure comment AND a tuning ticket.
-
-    manifest = {
-        "case_id":            case_id,
-        "ticket_path":        str(out_path),
-        "tokens_in":          tokens_in,
-        "tokens_out":         tokens_out,
-        "tokens_cache_read":  tokens_cache_read,
-        "tokens_cache_write": tokens_cache_write,
-        "model":              _model,
-        "platform_override":  platform,
-        "has_query":          bool(query_text),
-        "live_query":         live_query,
-        "workspace_id":       workspace_id,
-        "workspace_queries":  query_log,
-        "status":             "ok",
-        "ts":                 utcnow(),
+    return {
+        "status": "use_prompt",
+        "prompt": "write_fp_tuning",
+        "save_tool": "save_report",
+        "save_args": {"report_type": "fp_tuning_ticket"},
+        "case_id": case_id,
+        "ts": utcnow(),
     }
-    save_json(out_dir / "fp_tuning_ticket_manifest.json", manifest)
-
-    print(f"[fp_tuning] Tuning ticket written to {out_path}")
-    return manifest
 
 
 # ---------------------------------------------------------------------------

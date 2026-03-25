@@ -159,17 +159,11 @@ Runs on **every** captured page regardless of Tier 1 results. Produces a suspici
 - Cloudflare-blocked pages (escalated for further analysis)
 - Password field without clear brand context
 
-### Tier 3 — LLM Purpose Analysis (escalation only)
+### Tier 3 — LLM Purpose Analysis (via prompt)
 
-Pages with a suspicion score >= 0.4 (`_SUSPICION_ESCALATION_THRESHOLD`) that have no clear determination from Tiers 1–2 are escalated to an LLM purpose check.
-
-`_llm_purpose_check()` asks Claude to assess whether the page has a **clear, legitimate purpose**. Uses the `PagePurposeAssessment` structured output schema. Pages with no clear purpose or deceptive intent generate findings.
+Pages with a suspicion score >= 0.4 (`_SUSPICION_ESCALATION_THRESHOLD`) that have no clear determination from Tiers 1-2 are flagged for LLM assessment. The `write_phishing_verdict` MCP prompt loads the heuristic results and screenshots into the analyst's local Claude session for purpose analysis and brand impersonation assessment.
 
 **Philosophy**: Legitimate pages serve an obvious purpose. If a page has phishing hallmarks but no malicious IOCs or credential harvester, it doesn't mean it's clean — it means you haven't found it yet.
-
-### LLM Vision Scan
-
-When `ANTHROPIC_API_KEY` is set, `_llm_vision_check()` base64-encodes each `screenshot.png` and sends it to Claude Vision (up to 10 pages per run). The model returns a JSON verdict (`brand_impersonation`, `impersonated_brand`, `login_form`, `confidence`, `reasoning`). Vision findings are deduplicated against regex findings by `(brand, hostname)` and printed with a `LLM VISION` prefix. Always-trusted domains are skipped. Failures are caught silently.
 
 ### Output
 
@@ -301,13 +295,12 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 
 ## FP Ticket Generation
 
-`tools/fp_ticket.py` generates a concise False Positive closure comment (max 2 sentences):
+`tools/fp_ticket.py` collects case context for False Positive closure comments:
 - Identifies alerting platform from alert data structure (Sentinel, CrowdStrike, Defender, Entra, Cloud Apps) — or accepts `--platform` override
-- Uses `request_clarification` Claude tool if platform cannot be identified
 - **Live workspace query** (`--live-query`): enables read-only KQL against the alert's Log Analytics workspace via `az monitor log-analytics query`. Max 1 query per ticket, 50 rows each, 60s timeout.
-- Output format: plain-text closure comment tailored to alert type (IOC-based, identity, endpoint, lateral movement, data access) — no markdown, no tuning suggestions
-- Applies alias/dealias cycle
-- **Auto-closes** the case with disposition `false_positive` on successful generation
+- Output format: plain-text closure comment (max 2 sentences) tailored to alert type (IOC-based, identity, endpoint, lateral movement, data access) — no markdown, no tuning suggestions
+- **Auto-closes** the case with disposition `false_positive` on successful save
+- Use the `write_fp_closure` prompt followed by `save_report` to generate and persist
 - Outputs: `artefacts/fp_comms/fp_ticket.md` + `fp_ticket_manifest.json`
 
 ## PUP/PUA Report Generation
@@ -323,7 +316,7 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 
 ### Report
 
-`generate_pup_report(case_id)` builds context from case artefacts and calls the LLM with a PUP-specific system prompt. The report focuses on software identification, scope assessment, risk level, and removal steps — lighter than a full MDR report.
+`generate_pup_report(case_id)` collects context from case artefacts for a PUP-specific report. The report focuses on software identification, scope assessment, risk level, and removal steps — lighter than a full MDR report. Use the `write_pup_report` prompt followed by `save_report` to generate and persist.
 
 - Output: `cases/<ID>/reports/pup_report.md` + `pup_report_manifest.json`
 - **Auto-closes** the case with disposition `pup_pua` on successful generation
@@ -349,14 +342,14 @@ Each attack type defines a `PIPELINE_PROFILES` entry specifying which steps to s
 
 `classify_attack_type(title, analyst_notes, tags, eml_paths, urls, zip_path, log_paths)` returns `{"attack_type", "confidence", "signals", "scores", "profile"}`. `should_skip_step(step_name, attack_type)` checks whether a pipeline step should be skipped.
 
-Classification runs in `chief.py` after case creation (step 1c). Results are stored in `case_meta.json` as `attack_type` and `attack_type_confidence`.
+Classification runs early in the investigation (before case creation). Results are stored in `case_meta.json` as `attack_type` and `attack_type_confidence` once a case exists.
 
 ## Forensic Timeline Reconstruction
 
 `tools/timeline_reconstruct.py` assembles a chronological event timeline from all case artefacts:
 - Scans: `case_meta.json`, `capture_manifest.json`, `redirect_chain.json`, `email_analysis.json`, `enrichment.json`, `sandbox_results.json`, `triage_summary.json`, `anomaly_report.json`, `logs/*.parsed.json`, `ioc_index.json`
 - Each event: `{timestamp, source, event_type, detail}`, sorted chronologically
-- LLM step (optional): attack phase mapping (MITRE ATT&CK), dwell time gap analysis, key event identification, narrative summary
+- Analysis via prompt: use `write_timeline` prompt for attack phase mapping (MITRE ATT&CK), dwell time gap analysis, key event identification, narrative summary
 - Output: `artefacts/timeline/timeline.json`
 
 ## PE File Analysis
@@ -364,7 +357,7 @@ Classification runs in `chief.py` after case creation (step 1c). Results are sto
 `tools/pe_analysis.py` performs deep static analysis on PE files (`.exe`, `.dll`, `.sys`, `.ocx`, `.scr`):
 - Dependency: `pefile` (optional — graceful skip if missing)
 - Per-file: Shannon entropy, section anomalies, import table with suspicious API flagging, export table, header anomalies, overlay detection, packer signatures, Rich header hash, file hashes, string extraction
-- LLM step (optional): malicious likelihood, likely category, recommended next steps
+- Analysis via prompt: use `write_pe_verdict` prompt for malicious likelihood, likely category, recommended next steps
 - Output: `artefacts/analysis/pe_analysis.json`
 
 ## YARA Scanning
@@ -373,7 +366,6 @@ Classification runs in `chief.py` after case creation (step 1c). Results are sto
 - Dependency: `yara-python` (optional)
 - Built-in rules: SuspiciousPE, PowerShellObfuscation, C2Patterns, Base64PEHeader, CommonRATStrings
 - External rules: `config/yara_rules/*.yar` and `*.yara`
-- `--generate-rules`: LLM generates case-specific YARA rules, saves to `artefacts/yara/generated_rules.yar`, then re-scans
 - Output: `artefacts/yara/yara_results.json`
 
 ## EVTX Attack Chain Correlation
@@ -381,7 +373,7 @@ Classification runs in `chief.py` after case creation (step 1c). Results are sto
 `tools/evtx_correlate.py` detects Windows Event Log attack chains from parsed logs:
 - Input: `logs/*.parsed.json`
 - 7 chain detectors: brute force->success (4625->4624), lateral movement (4624 type 3->4688), persistence (4698/7045 near 4624), privilege escalation (4688 elevation, 4624->4728/4732), account manipulation (4720->4732), Kerberos abuse (4768/4769 RC4), pass-the-hash (4624 type 3 NTLM without 4776)
-- LLM step (optional): attack narrative, MITRE ATT&CK mapping, attacker skill assessment, detection rule recommendations
+- Analysis via prompt: use `write_evtx_analysis` prompt for attack narrative, MITRE ATT&CK mapping, attacker skill assessment, detection rule recommendations
 - Output: `artefacts/evtx/evtx_correlation.json`
 
 ## CVE Contextualisation
@@ -390,30 +382,22 @@ Classification runs in `chief.py` after case creation (step 1c). Results are sto
 - CVE sources (regex scan): `iocs.json`, `enrichment.json`, `security_arch_review.md`, `reports/*.md`, `sandbox_results.json`
 - Data providers (parallel): NVD API v2.0, EPSS API, CISA KEV catalog (cached 24h), OpenCTI (if key set)
 - Priority score: `CVSS * 0.4 + EPSS_percentile * 0.3 + (0.3 if KEV else 0)`
-- LLM step (optional): exploitability assessment, TTP relevance, patching priority
+- Analysis via prompt: use `write_cve_context` prompt for exploitability assessment, TTP relevance, patching priority
 - Output: `artefacts/cve/cve_context.json`
 
 ## Executive Summary
 
-`tools/executive_summary.py` generates a plain-English executive summary for non-technical leadership:
-- Aliasing: applies alias/dealias cycle
-- LLM produces 6 sections: What happened, Who affected, Risk rating (RAG), What's been done, Next steps, Business risk
+`tools/executive_summary.py` collects case context for a plain-English executive summary for non-technical leadership:
+- 6 sections: What happened, Who affected, Risk rating (RAG), What's been done, Next steps, Business risk
 - Constraints: no CVE IDs, no IPs, no hashes, no tool names, no unexplained acronyms, reading age 14, max 500 words
+- Use the `write_executive_summary` prompt followed by `save_report` to generate and persist
 - Output: `artefacts/executive_summary/executive_summary.md` + manifest
 
 ## Security Architecture Review
 
-`tools/security_arch_review.py` runs an LLM-assisted security architecture review after the main investigation pipeline. Produces a six-section markdown report: Threat Profile (MITRE ATT&CK), Control Gap Analysis, Microsoft Stack Recommendations, CrowdStrike Falcon Recommendations, Prioritised Remediation Table, Detection Engineering Notes.
+`tools/security_arch_review.py` collects case context for a security architecture review. Produces a six-section markdown report: Threat Profile (MITRE ATT&CK), Control Gap Analysis, Microsoft Stack Recommendations, CrowdStrike Falcon Recommendations, Prioritised Remediation Table, Detection Engineering Notes.
 
-**Claude API features used:**
-
-| Feature | Behaviour |
-|---------|-----------|
-| **Prompt caching** | `_SYSTEM_PROMPT` cached with `cache_control: ephemeral` |
-| **Adaptive thinking** | Enabled for high/critical severity — `{"type": "adaptive"}` with `output_config: {"effort": "high"}`. Works alongside tool use (no mutual exclusion). |
-| **Structured tool use** | `record_structured_analysis` tool captures `ttps`, `top_actions`, `risk_rating` — used with both thinking and non-thinking paths |
-| **Files API** | Uploads PDFs from `artefacts/web/**/document.pdf` via `client.beta.files.upload()` |
-| **Parallel cluster subagents** | Network + file IOC clusters analysed concurrently when both present |
+Use the `write_security_arch_review` prompt followed by `save_report` to generate and persist. The local Claude session has the full investigation context for better analysis.
 
 Outputs: `security_arch_review.md`, `security_arch_structured.json`, `security_arch_manifest.json`
 
@@ -430,7 +414,7 @@ Outputs: `security_arch_review.md`, `security_arch_structured.json`, `security_a
 
 ## Report Generation
 
-`generate_report.py` loads all available artefact JSON files (all optional). Report section order after the executive summary:
+`generate_report.py` collects all available artefact JSON files (all optional) as context for report generation. Use the `write_mdr_report` prompt followed by `save_report` to generate and persist. Report section order after the executive summary:
 
 1. Triage — Known IOCs Detected (if triage found known-malicious/suspicious)
 2. Brand Impersonation Detected (if phishing_detection.json has findings)
@@ -495,15 +479,9 @@ Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 
 `config/logscale_syntax.md` is the authoritative CrowdStrike LogScale (Humio) query language reference. **All agents generating LogScale queries MUST consult this file** for correct syntax. Key pitfalls: OR binds tighter than AND (use parentheses), regex uses `/slashes/` not `=~`, no free-text search after aggregate, array params use `[square brackets]`.
 
-## Structured Outputs
+## Output Schemas
 
-`tools/structured_llm.py` provides a `structured_call()` wrapper that uses Claude's JSON schema output validation instead of fragile `json.loads()` parsing or tool-use-as-schema patterns.
-
-**Helper:** `structured_call(model, system, messages, output_schema, max_tokens, thinking=None)` → `(parsed_dict | None, usage_dict)`
-
-**Schema compliance:** `_schema_for_model()` automatically adds `additionalProperties: false` to all object types in the generated JSON schema (required by the Anthropic API). This is applied recursively, covering nested objects, `$defs`, `anyOf`/`oneOf`/`allOf` combinators, and array items. Pydantic models in `tools/schemas.py` do not need to set this manually.
-
-**Pydantic models** in `tools/schemas.py`:
+`tools/schemas.py` defines Pydantic models that describe the expected structure of analysis outputs. These are used as reference by MCP prompts to guide the local Claude agent's output format:
 - `ArticleSummary` — threat article generation
 - `BrandImpersonationResult` — phishing detection
 - `ExecutiveSummary` — executive summary sections
@@ -513,42 +491,19 @@ Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 - `EvtxAnalysis` — EVTX attack chain correlation
 - `PagePurposeAssessment` — Tier 3 phishing purpose check
 
-**Exception:** `security_arch_review.py` keeps the tool-use pattern since it produces both free-form markdown AND structured data in a single call.
-
-## Batch API
-
-`tools/batch.py` provides infrastructure for bulk LLM processing via the Claude Messages Batch API.
-
-**Core functions:**
-- `submit_batch(requests, batch_label)` — creates a batch, saves metadata to `registry/batches/<batch_id>.json`
-- `poll_batch(batch_id, poll_interval, timeout)` — polls until `processing_status == "ended"`
-- `collect_batch_results(batch_id)` — iterates results, saves to `registry/batches/<batch_id>_results.json`
-- `dispatch_batch_results(results)` — parses `custom_id` (format `tool_name:case_id`), delegates to per-tool post-processors
-
-**Batch-capable tools** expose `prepare_*_batch()` functions:
-- `tools/generate_mdr_report.py` → `prepare_mdr_report_batch(case_id)`
-- `tools/executive_summary.py` → `prepare_executive_summary_batch(case_id)`
-- `tools/cve_contextualise.py` → `prepare_cve_batch(case_id, cve_data)`
-- `tools/security_arch_review.py` → `prepare_secarch_batch(case_id)`
-
-**CLI subcommands:**
-- `socai.py batch-submit --cases IV_CASE_001 IV_CASE_002 --tools mdr-report exec-summary` — prepare (concurrently via `ThreadPoolExecutor`) and submit
-- `socai.py batch-status --batch-id <id>` / `batch-status --list` — check progress
-- `socai.py batch-collect --batch-id <id>` — retrieve results and write artefacts
-
 ## Threat Articles
 
 `tools/threat_articles.py` provides discovery and generation of 60-second-read threat intelligence articles for monthly SOC reporting, categorised as **ET** (Emerging Threat) or **EV** (Emerging Vulnerability).
 
 **Public functions:**
 - `fetch_candidates(days, max_candidates, category)` — fetches recent stories from configured RSS feeds, classifies as ET/EV, checks dedup index. Returns candidate dicts with `id`, `title`, `category`, `source_url`, `already_covered`.
-- `generate_articles(candidates, analyst, case_id)` — clusters candidates by topic, fetches full content, generates structured article summaries via `ArticleSummary` schema. Writes to `articles/YYYY-MM/ART-YYYYMMDD-NNNN/`.
+- `generate_articles(candidates, analyst, case_id)` — clusters candidates by topic, fetches full content. Use the `write_threat_article` prompt followed by `save_threat_article` to generate and persist. Writes to `articles/YYYY-MM/ART-YYYYMMDD-NNNN/`.
 - `list_articles(month, category)` — lists previously produced articles from `registry/article_index.json`.
 
 **Configuration:**
 - `config/article_sources.json` — RSS feed list (extensible; `type` field supports future Confluence/API sources)
-- `config/article_prompts.py` — LLM system prompts and user templates
-- `config/settings.py` — `ARTICLES_DIR`, `ARTICLE_INDEX_FILE`, `SOCAI_MODEL_ARTICLES`
+- `config/article_prompts.py` — prompt templates for article generation
+- `config/settings.py` — `ARTICLES_DIR`, `ARTICLE_INDEX_FILE`
 
 **Article output format:** Markdown with title, category, date, analyst, sources, anonymised body (~150-180 words), recommendations section, and defanged IOC/CVE list.
 
@@ -853,7 +808,7 @@ Container configuration:
 - `artefacts/sandbox_detonation/process_tree.json` — spawned processes
 - `artefacts/sandbox_detonation/dns_queries.json` — DNS lookups
 - `artefacts/sandbox_detonation/dropped_files/` — files created by malware
-- `artefacts/sandbox_detonation/llm_analysis.json` — LLM behavioural analysis
+- `artefacts/sandbox_detonation/analysis.json` — behavioural analysis (via prompt)
 - `logs/mde_sandbox_detonation.parsed.json` — normalised log rows
 - `logs/mde_sandbox_detonation.entities.json` — extracted entities
 
@@ -880,4 +835,12 @@ See `docs/sandbox.md` for full setup guide and safety details.
 
 ## Analytical Guidelines
 
-`config/analytical_guidelines.md` governs how LLM-assisted steps reason about detections. Loaded by `security_arch_review.py` and `generate_mdr_report.py`. Key principles: evidence-first analysis, mandatory alternative-explanation evaluation, co-occurrence != causation, precise determination language.
+`config/analytical_guidelines.md` governs analytical reasoning about detections. Referenced by MCP prompts (`write_mdr_report`, `write_security_arch_review`, etc.) to ensure the local Claude agent follows consistent standards. Key principles: evidence-first analysis, mandatory alternative-explanation evaluation, co-occurrence != causation, precise determination language.
+
+## Save Tools (Client-Side Persistence)
+
+Three MCP tools persist output generated by the local Claude agent:
+
+- **`save_report`** — persists a report generated via any `write_*` prompt. Handles IOC defanging, HTML conversion, auto-close (for MDR/PUP/FP deliverables), and audit logging. No LLM call.
+- **`save_threat_article`** — persists a threat article to the article index. Handles dedup, markdown + HTML output. No LLM call.
+- **`save_analysis`** — persists structured analytical output (determination, investigation matrix, quality gate review) to the case artefacts directory. Accepts an `analysis_type` parameter (`determination`, `matrix`, `quality_gate`) and writes to the corresponding path under the case. No LLM call.

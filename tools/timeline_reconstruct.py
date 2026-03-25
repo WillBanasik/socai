@@ -8,12 +8,7 @@ email headers, enrichment first/last seen, sandbox detonations, triage,
 anomaly events, parsed logs, IOC index entries) and assembles a unified
 chronological timeline.
 
-When ANTHROPIC_API_KEY is set, an LLM step analyses the raw events to
-produce MITRE ATT&CK phase mapping, dwell-time gap analysis, key event
-identification, and a narrative summary.
-
-Output:
-  cases/<case_id>/artefacts/timeline/timeline.json
+Results are computed and returned to the caller; no artefacts are persisted to disk.
 
 Usage (standalone):
   python3 tools/timeline_reconstruct.py --case IV_CASE_001
@@ -26,28 +21,29 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import ANTHROPIC_KEY, CASES_DIR
-from tools.common import get_model, load_json, log_error, save_json, utcnow
-
+from config.settings import CASES_DIR
+from tools.common import load_json, log_error, utcnow
 
 # ---------------------------------------------------------------------------
-# System prompt (cached)
+# System prompt (used by MCP client-side prompts)
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """\
-You are a forensic timeline analyst specialising in cybersecurity incident \
-reconstruction. Given a chronologically sorted list of events extracted from \
-investigation artefacts, you will:
-
-1. Map events to MITRE ATT&CK tactics (Initial Access, Execution, Persistence, \
-   Privilege Escalation, Defence Evasion, Credential Access, Discovery, Lateral \
-   Movement, Collection, Command and Control, Exfiltration, Impact).
-2. Identify significant dwell-time gaps between activity clusters.
-3. Select the 5-10 most forensically important events with reasoning.
-4. Write a concise 2-3 sentence narrative summary of the attack timeline.
-
-Produce a structured timeline analysis with all required fields.\
-"""
+_SYSTEM_PROMPT = (
+    "You are a senior digital forensics analyst performing timeline "
+    "reconstruction. Given a set of timestamped events extracted from case "
+    "artefacts, your task is to:\n"
+    "1. Map each event to MITRE ATT&CK tactics and techniques.\n"
+    "2. Identify dwell-time gaps — significant periods of inactivity between "
+    "activity clusters that may indicate attacker pauses or undetected phases.\n"
+    "3. Highlight the 5-10 most forensically significant events with reasoning.\n"
+    "4. Produce a concise attack narrative (2-3 sentences).\n\n"
+    "Rules:\n"
+    "- Only make claims supported by the supplied data.\n"
+    "- Temporal proximity is not causation — require a data-level link.\n"
+    "- Mark gaps in the evidence chain as 'Unknown' rather than speculating.\n"
+    "- Use 'Confirmed' only when data proves a link; use 'Assessed' for "
+    "inferences with stated confidence."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -258,78 +254,6 @@ def _extract_events(case_id: str) -> tuple[list[dict], list[str]]:
 
 
 # ---------------------------------------------------------------------------
-# LLM analysis step
-# ---------------------------------------------------------------------------
-
-def _llm_analyse(case_id: str, events: list[dict]) -> dict | None:
-    """Send events to Claude for timeline analysis. Returns structured data or None."""
-    try:
-        from tools.structured_llm import structured_call
-        from tools.schemas import TimelineAnalysis
-    except ImportError as exc:
-        log_error(case_id, "timeline_reconstruct.import", str(exc),
-                  severity="info")
-        return None
-
-    system_cached = [
-        {
-            "type": "text",
-            "text": _SYSTEM_PROMPT,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
-
-    # Prepare event list with indices for the LLM
-    indexed_events = [
-        {"index": i, **evt} for i, evt in enumerate(events)
-    ]
-
-    user_message = (
-        f"Analyse the following {len(events)} forensic timeline events "
-        f"from case {case_id} and provide your structured analysis.\n\n"
-        f"```json\n{json.dumps(indexed_events, indent=2, default=str)}\n```"
-    )
-
-    _meta = _load_optional(CASES_DIR / case_id / "case_meta.json")
-    _severity = (_meta or {}).get("severity", "medium")
-    _model = get_model("timeline", _severity)
-    print(f"[timeline_reconstruct] Querying {_model} with {len(events)} events...")
-
-    try:
-        result, usage = structured_call(
-            model=_model,
-            system=system_cached,
-            messages=[{"role": "user", "content": user_message}],
-            output_schema=TimelineAnalysis,
-            max_tokens=4096,
-        )
-    except Exception as exc:
-        log_error(case_id, "timeline_reconstruct.llm_call", str(exc),
-                  severity="error", context={"model": _model})
-        print(f"[timeline_reconstruct] LLM call failed: {exc}")
-        return None
-
-    tokens_in = usage.get("input_tokens", 0)
-    tokens_out = usage.get("output_tokens", 0)
-    tokens_cache_read = usage.get("cache_read_input_tokens", 0)
-    tokens_cache_write = usage.get("cache_creation_input_tokens", 0)
-
-    print(
-        f"[timeline_reconstruct] Tokens: {tokens_in} in / {tokens_out} out "
-        f"| cache_read={tokens_cache_read} cache_write={tokens_cache_write}"
-    )
-
-    if not result:
-        log_error(case_id, "timeline_reconstruct.llm_no_structured_output",
-                  "LLM did not return structured timeline analysis",
-                  severity="warning")
-        print("[timeline_reconstruct] LLM did not return structured output")
-        return None
-
-    return result.model_dump()
-
-
-# ---------------------------------------------------------------------------
 # Main function
 # ---------------------------------------------------------------------------
 
@@ -337,9 +261,7 @@ def timeline_reconstruct(case_id: str) -> dict:
     """
     Reconstruct a forensic timeline for *case_id* from all available artefacts.
 
-    Returns a manifest dict with status, event count, and output path.
-    Writes the timeline to:
-      cases/<case_id>/artefacts/timeline/timeline.json
+    Returns a manifest dict with status, event count, and the timeline data.
     """
     print(f"[timeline_reconstruct] Scanning artefacts for case {case_id}...")
 
@@ -371,12 +293,7 @@ def timeline_reconstruct(case_id: str) -> dict:
     # ── 2. Sort events chronologically ───────────────────────────────────
     events.sort(key=lambda e: e.get("timestamp", ""))
 
-    # ── 3. LLM analysis (optional) ───────────────────────────────────────
-    llm_analysis = None
-    if ANTHROPIC_KEY and events:
-        llm_analysis = _llm_analyse(case_id, events)
-
-    # ── 4. Build output ──────────────────────────────────────────────────
+    # ── 3. Build output ──────────────────────────────────────────────────
     timeline_data: dict = {
         "case_id": case_id,
         "generated_at": utcnow(),
@@ -385,26 +302,13 @@ def timeline_reconstruct(case_id: str) -> dict:
         "events": events,
     }
 
-    if llm_analysis:
-        timeline_data["analysis"] = llm_analysis
-
-    # ── 5. Write artefact ────────────────────────────────────────────────
-    out_dir = CASES_DIR / case_id / "artefacts" / "timeline"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "timeline.json"
-
-    save_json(out_path, timeline_data)
-
-    print(f"[timeline_reconstruct] Timeline written to {out_path}")
-
-    # ── 6. Build manifest ────────────────────────────────────────────────
+    # ── 4. Build manifest ────────────────────────────────────────────────
     manifest = {
         "status": "ok",
         "case_id": case_id,
         "total_events": len(events),
         "sources_scanned": sources,
-        "llm_analysis": bool(llm_analysis),
-        "timeline_path": str(out_path),
+        "timeline": timeline_data,
         "ts": utcnow(),
     }
 

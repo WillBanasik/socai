@@ -13,11 +13,13 @@ python3 -m pytest tests/test_tools.py::test_extract_iocs_from_text -v
 python3 socai.py create-case --title "Alert title" --severity high --analyst <name> --client <client> --tags "tag1,tag2"
 
 # Re-run stages
-python3 socai.py report --case IV_CASE_001
 python3 socai.py enrich --case IV_CASE_001
 python3 socai.py fp-ticket --case IV_CASE_001 --alert alert.json
 python3 socai.py fp-tuning --case IV_CASE_001 --alert alert.json [--query rule.kql] [--platform sentinel]
-python3 socai.py pup-report --case IV_CASE_001
+
+# Deliverable reports (mdr-report, pup-report, secarch, exec-summary)
+# These now redirect to MCP prompt workflow — use the corresponding
+# MCP prompts in Claude Desktop and save with save_report.
 
 # MCP server
 python3 -m mcp_server                                         # SSE (default)
@@ -33,14 +35,14 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 ## Architecture at a Glance
 
 - **CLI:** `socai.py` — entrypoint; `python3 socai.py --help` for full subcommand list
-- **Tools** (`tools/`) — stateless functions; accept `case_id`, write via `write_artefact()`/`save_json()`, return manifest dicts
+- **Tools** (`tools/`) — stateless functions; accept `case_id`, write via `write_artefact()`/`save_json()`, return manifest dicts. No direct LLM/API calls — all LLM reasoning is handled by the local Claude Desktop agent via MCP prompts.
 - **MCP Server** (`mcp_server/`) — HTTPS SSE on port 8001, JWT RBAC; see `docs/mcp-server.md`
 - **Shared API** (`api/`) — auth, actions, timeline, input parsing — used by MCP server
-- **Pipeline:** HITL (human-in-the-loop) — analyst drives investigation step by step via MCP tools; see `docs/pipeline.md`
+- **Pipeline:** HITL (human-in-the-loop) — analyst drives investigation step by step via MCP tools and prompts. Case creation is deferred — deliverable tools auto-create if needed. See `docs/pipeline.md`
 - **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, articles in `articles/`
-- **Background scheduler** (`tools/scheduler.py`) — daemon thread started by MCP server; rebuilds case memory index (6h), refreshes GeoIP (7d), rebuilds client baselines (24h)
+- **Background scheduler** (`tools/scheduler.py`) — daemon thread started by MCP server; refreshes GeoIP (7d), rebuilds client baselines (24h), rebuilds case memory BM25 index (6h)
 - **Intelligence layer** — `tools/case_memory.py` (BM25 semantic recall), `tools/client_baseline.py` (per-client profiles), `tools/geoip.py` (local MaxMind GeoLite2)
-- **Auto-close on Deliverable Collection** — `generate_mdr_report` (preserves disposition), `generate_pup_report` (`pup_pua`), `fp_ticket` (`false_positive`). Close logic in tool layer. `fp_tuning_ticket` does NOT auto-close.
+- **Auto-close on Deliverable Collection** — `save_report` (after MCP prompt for MDR report, PUP report, etc.) and `fp_ticket` (`false_positive`). These tools auto-create and promote a case if one doesn't exist. Close logic in tool layer. Deliverable workflow: use MCP prompt to draft report, then `save_report` to persist and auto-close. `fp_tuning_ticket` does NOT auto-close.
 
 ## Sentinel Incident Classification
 
@@ -92,12 +94,8 @@ All investigative output — conversational analysis, reports, case artefacts �
 ### Timestamps and utilities
 - Use `utcnow()` from `tools/common.py` — never `datetime.now()` or `datetime.utcnow()`
 
-### Model selection
-- Use `get_model(task, severity)` from `tools/common.py` — never hardcode model strings
-- See `docs/model_tiering.md` for tier details and per-task assignments
-
 ### Client aliasing
-- `SOCAI_ALIAS=1` redacts client names in LLM calls only; local artefacts stay real
+- `SOCAI_ALIAS=1` redacts client names in MCP prompts only; local artefacts stay real
 - Alias/dealias cycle used in: `security_arch_review.py`, `generate_mdr_report.py`, `fp_ticket.py`, `client_query.py`, `executive_summary.py`
 - `generate_report.py` has NO aliasing
 
@@ -106,7 +104,7 @@ All investigative output — conversational analysis, reports, case artefacts �
 - Hashes and file paths are never defanged
 
 ### Tests
-- All tests use case ID `TEST_AUTOMATED_001` with autouse fixture for setup/teardown
+- All tests use case ID `IV_CASE_000` with autouse fixture for setup/teardown
 - Fixtures in `tests/fixtures/`
 
 ## Detailed Documentation
@@ -117,12 +115,11 @@ Read these only when working on the relevant area:
 |-----|----------|
 | `docs/pipeline.md` | HITL workflow, tool sequence, auto-disposition, auto-close |
 | `docs/tools-reference.md` | All tool details: case memory, baselines, GeoIP, scheduler, web capture, phishing, enrichment, sandbox, forensics, etc. |
-| `docs/configuration.md` | Env vars, API keys, model tiering summary, client aliasing config |
+| `docs/configuration.md` | Env vars, API keys, client aliasing config |
 | `docs/artefacts.md` | Complete file/artefact path reference table |
 | `docs/extending.md` | How to add new providers, tools, brands, detectors |
-| `docs/architecture.md` | System overview, data flow, Claude API usage, tool contracts |
+| `docs/architecture.md` | System overview, data flow, tool contracts |
 | `docs/architecture_diagram.md` | Mermaid diagrams: system architecture, HITL sequence |
-| `docs/model_tiering.md` | Full model tiering matrix and call site map |
 | `docs/sandbox.md` | Sandbox detonation: setup, network modes, artefacts, safety, interactive mode |
 | `docs/mcp-server.md` | MCP server: auth, RBAC, tools, resources, prompts, deployment |
 | `docs/roadmap.md` | Planned features: tiered incident model, SOAR/Zoho integration |

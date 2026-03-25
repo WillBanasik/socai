@@ -2,7 +2,9 @@
 tool: generate_report
 ---------------------
 Builds a Markdown investigation report for a single case from all
-persisted artefact JSON files.
+persisted artefact JSON files.  Returns the report text in-memory for
+context; does NOT write to disk.  The MDR report (via save_report) is the
+persisted deliverable.
 
 Sections:
   1. Executive Summary
@@ -12,9 +14,6 @@ Sections:
   5. Recommendations
   6. What Was NOT Observed
   7. Confidence Assessment (LOW / MEDIUM / HIGH)
-
-Writes:
-  cases/<case_id>/reports/investigation_report.md
 """
 from __future__ import annotations
 
@@ -26,8 +25,7 @@ from textwrap import fill
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, CONF_HIGH, CONF_MED, IOC_INDEX_FILE
-from tools.common import defang_report, load_json, log_error, utcnow, write_artefact, write_report
-from tools.index_case import index_case
+from tools.common import defang_report, load_json, log_error, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -809,12 +807,10 @@ def _build_campaign_section(campaign_data: dict | None) -> str:
 
 def generate_report(case_id: str) -> dict:
     """
-    Build and save the investigation report for *case_id*.
-    Returns a dict with the report path and metadata.
+    Build the investigation report for *case_id* in-memory.
+    Returns a dict with the report text and metadata (no disk write).
     """
-    case_dir    = CASES_DIR / case_id
-    reports_dir = case_dir / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    case_dir = CASES_DIR / case_id
 
     meta = _load_optional(case_dir / "case_meta.json") or {"case_id": case_id}
 
@@ -927,15 +923,6 @@ def generate_report(case_id: str) -> dict:
     )
     sections.append(confidence_section)
 
-    # LLM-synthesised executive narrative (advisory; graceful skip if no API key)
-    try:
-        from tools.llm_insight import synthesise_report_narrative
-        narrative = synthesise_report_narrative(case_id)
-        if narrative:
-            sections.insert(1, f"## Analytical Narrative\n\n> *The following narrative is LLM-synthesised (assessed, not confirmed).*\n\n{narrative}\n")
-    except Exception:
-        pass  # LLM enhancement is optional
-
     # Artefact index
     sections.append("## Artefact Index\n")
     all_artefacts = sorted(case_dir.rglob("*"))
@@ -953,16 +940,11 @@ def generate_report(case_id: str) -> dict:
         if mal_iocs:
             report_text = defang_report(report_text, mal_iocs)
 
-    report_path = reports_dir / "investigation_report.md"
-    write_report(report_path, report_text, title=f"Investigation Report – {case_id}")
-
-    # Update registry
-    index_case(case_id, report_path=str(report_path))
-
-    print(f"[generate_report] Report written to {report_path}")
+    print(f"[generate_report] Report generated for {case_id} (in-memory only)")
     return {
         "case_id":     case_id,
-        "report_path": str(report_path),
+        "report_path": None,
+        "report_text": report_text,
         "confidence":  _confidence_label(conf_score),
         "score":       conf_score,
         "ts":          utcnow(),
@@ -977,4 +959,4 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     result = generate_report(args.case_id)
-    print(json.dumps(result, indent=2))
+    print(result.get("report_text", ""))

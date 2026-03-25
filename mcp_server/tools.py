@@ -5,9 +5,13 @@ All tools validate permissions using ``_require_scope()`` before delegating to
 the existing action / tool layer.
 
 Tools are organised in three tiers:
-  Tier 1 (25) — Core Investigation   (Phase 1)
-  Tier 2 (19) — Extended Analysis    (Phase 2)
-  Tier 3 (23) — Advanced / Restricted (Phase 3)
+  Tier 1 — Core Investigation
+  Tier 2 — Extended Analysis
+  Tier 3 — Advanced / Restricted
+
+Deliverable tools (``generate_mdr_report``, ``generate_pup_report``,
+``generate_fp_ticket``, ``generate_fp_tuning_ticket``) accept an optional
+``case_id`` — if omitted, ``_ensure_case()`` auto-creates and promotes a case.
 """
 from __future__ import annotations
 
@@ -45,6 +49,66 @@ def _set_client_boundary(client_name: str) -> None:  # noqa: ARG001
 
 def _check_workspace_boundary(workspace_id: str) -> None:  # noqa: ARG001
     """No-op — boundaries removed."""
+
+
+def _ensure_case(
+    case_id: str,
+    *,
+    title: str = "",
+    severity: str = "medium",
+    client: str = "",
+    tags: list[str] | None = None,
+    disposition: str = "",
+) -> str:
+    """Return *case_id*, creating + promoting the case if it doesn't exist.
+
+    Deliverable tools call this instead of requiring ``case_id`` upfront.
+    If ``case_id`` is empty, a new case is auto-created and promoted to
+    active status so the deliverable can proceed immediately.
+
+    If ``case_id`` is provided but the case doesn't exist, raises
+    ``ToolError`` — callers should not silently get a different case.
+    """
+    from config.settings import CASES_DIR, DEFAULT_CLIENT
+    from tools.case_create import case_create as _create, next_case_id
+    from tools.index_case import promote_case as _promote
+
+    def _do_promote(cid: str) -> None:
+        result = _promote(cid, disposition=disposition or None)
+        if isinstance(result, dict) and "error" in result:
+            raise ToolError(result["error"])
+
+    # Resolve: if a case_id is given, it must exist
+    if case_id:
+        meta_path = CASES_DIR / case_id / "case_meta.json"
+        if not meta_path.exists():
+            raise ToolError(
+                f"Case {case_id} does not exist. Omit case_id to auto-create."
+            )
+        from tools.common import load_json
+        meta = load_json(meta_path)
+        current_status = meta.get("status", "")
+        if current_status in ("discarded", "closed", "archived"):
+            raise ToolError(
+                f"Case {case_id} is {current_status}. Cannot generate "
+                f"deliverables for a {current_status} case."
+            )
+        if current_status == "triage":
+            _do_promote(case_id)
+        return case_id
+
+    # No case_id — auto-create
+    case_id = next_case_id()
+    resolved_client = client or DEFAULT_CLIENT
+    _create(
+        case_id,
+        title=title or "Auto-created at deliverable time",
+        severity=severity,
+        client=resolved_client,
+        tags=tags or [],
+    )
+    _do_promote(case_id)
+    return case_id
 
 
 def _json(obj: object) -> str:
@@ -369,7 +433,10 @@ def _register_tier1(mcp: FastMCP) -> None:
                 "analyst": meta.get("analyst"),
                 "created_at": meta.get("created_at"),
                 "updated_at": meta.get("updated_at"),
-                "report_exists": (case_dir / "reports" / "investigation_report.md").exists(),
+                "report_exists": any(
+                    (case_dir / "reports" / f).exists()
+                    for f in ("mdr_report.html", "pup_report.html", "investigation_report.html")
+                ),
             },
             "iocs": ioc_summary,
             "verdicts": verdict_highlights,
@@ -413,9 +480,18 @@ def _register_tier1(mcp: FastMCP) -> None:
         from config.settings import CASES_DIR
         from tools.common import load_json
 
-        report_path = CASES_DIR / case_id / "reports" / "investigation_report.md"
-        if not report_path.exists():
-            return f"No report found for case {case_id!r}. Run generate_report first."
+        reports_dir = CASES_DIR / case_id / "reports"
+        report_path = None
+        for candidate in [
+            reports_dir / "mdr_report.html",
+            reports_dir / "pup_report.html",
+            reports_dir / "investigation_report.html",
+        ]:
+            if candidate.exists():
+                report_path = candidate
+                break
+        if report_path is None:
+            return f"No report found for case {case_id!r}. Run generate_mdr_report or generate_pup_report first."
 
         # Auto-close: if the report exists and case is active (or legacy open), close it
         # Triage cases are not auto-closed — they must be promoted first.
@@ -576,11 +652,18 @@ def _register_tier1(mcp: FastMCP) -> None:
         plan: str = "",
     ) -> str:
         """Use when the analyst says "create a case", "new case", "start an investigation",
-        or after classify_attack when you need to formally create a case for the alert.
+        or when you need a case before calling case-bound tools like ``enrich_iocs``
+        or ``add_evidence``.
+
+        Case creation is **optional** — deliverable tools (``generate_mdr_report``,
+        ``generate_pup_report``, ``generate_fp_ticket``) auto-create and promote
+        a case if one doesn't exist. Use this tool when you need a case earlier
+        in the workflow, e.g. to attach evidence or run case-bound enrichment.
 
         Auto-generates a case ID (IV_CASE_XXX format). The case starts in **triage**
-        status — call ``promote_case`` after evidence review to transition to active,
-        or ``discard_case`` if the alert is not worth investigating.
+        status. It is auto-promoted to active when a deliverable tool or
+        ``add_finding`` runs, or you can call ``promote_case`` / ``discard_case``
+        manually.
 
         Parameters
         ----------
@@ -741,8 +824,8 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         **IMPORTANT — Case isolation:** This tool adds evidence to the specified
         case only. If you have a NEW alert involving the same user/host/IOCs as a
-        prior case, create a NEW case first — do not add new alert data to the old
-        case. Use ``recall_cases`` for historical cross-case context instead.
+        prior case, open a NEW case — do not add new alert data to the old case.
+        Use ``recall_cases`` for historical cross-case context instead.
 
         **Difference from ``add_finding``:** this tool is for raw input data
         (alert JSON, IOC lists, analyst notes). ``add_finding`` is for recording
@@ -934,19 +1017,18 @@ def _register_tier1(mcp: FastMCP) -> None:
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
-        # Guard: if close_case=True, require active status
+        # Guard: if close_case=True, auto-promote triage → active
         if close_case:
             from config.settings import CASES_DIR
             from tools.common import load_json
             meta_path = CASES_DIR / case_id / "case_meta.json"
             if meta_path.exists():
                 meta = load_json(meta_path)
-                status = meta.get("status", "")
-                if status == "triage":
-                    raise ToolError(
-                        f"Case {case_id} is in triage. Promote it to active with "
-                        f"promote_case before generating a closing report."
-                    )
+                if meta.get("status") == "triage":
+                    from tools.index_case import promote_case as _promote
+                    result = _promote(case_id)
+                    if isinstance(result, dict) and "error" in result:
+                        raise ToolError(result["error"])
 
         from api import actions
         result = await asyncio.to_thread(
@@ -955,94 +1037,73 @@ def _register_tier1(mcp: FastMCP) -> None:
         return _json(_pop_message(result))
 
     @mcp.tool(title="Generate MDR Report")
-    async def generate_mdr_report(case_id: str) -> str:
+    async def generate_mdr_report(case_id: str = "") -> str:
         """Use when the analyst says "write the MDR report", "client report",
         "generate the deliverable", or needs the structured client-facing report
         for a completed investigation.
 
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+        **How to use:** Select the ``write_mdr_report`` prompt to get the
+        instructions and case context, write the report, then call
+        ``save_report`` with ``report_type="mdr_report"`` to persist it.
 
-        Produces the formal Managed Detection & Response report — the primary
-        deliverable sent to the client. Includes executive summary, detailed
-        findings, IOC table, response recommendations, and next steps.
-
-        **Auto-closes the case** on generation (preserves existing disposition).
-        This is by design — the MDR report is the final deliverable.
-
-        **Choosing the right report tool:**
-        - ``generate_mdr_report`` — client-facing MDR deliverable (this tool)
-        - ``generate_report`` — internal investigation narrative
-        - ``generate_pup_report`` — use instead when the detection is PUP/PUA
-          (adware, bundleware, toolbars), not a real threat
-        - ``generate_executive_summary`` — non-technical summary for leadership
+        ``case_id`` is optional — if omitted, a case is auto-created and
+        promoted to active status first.
 
         Parameters
         ----------
         case_id : str
-            Case identifier.
+            Case identifier (optional — auto-created if empty).
         """
         _require_scope("investigations:submit")
+
+        case_id = _ensure_case(case_id)
         _check_client_boundary(case_id)
 
-        # Guard: case must be active (not triage)
-        from config.settings import CASES_DIR
-        from tools.common import load_json
-        meta_path = CASES_DIR / case_id / "case_meta.json"
-        if meta_path.exists():
-            meta = load_json(meta_path)
-            if meta.get("status") == "triage":
-                raise ToolError(
-                    f"Case {case_id} is in triage. Promote it to active with "
-                    f"promote_case before generating the MDR report."
-                )
-
-        from tools.generate_mdr_report import generate_mdr_report as _mdr
-        result = await asyncio.to_thread(lambda: _mdr(case_id))
-        return _json(result)
+        return _json({
+            "status": "use_prompt",
+            "case_id": case_id,
+            "prompt": "write_mdr_report",
+            "save_tool": "save_report",
+            "save_args": {"report_type": "mdr_report"},
+            "message": (
+                f"Case {case_id} is ready. Use the write_mdr_report prompt "
+                f"to generate the report, then call save_report with "
+                f'report_type="mdr_report" to persist it.'
+            ),
+        })
 
     @mcp.tool(title="Generate PUP/PUA Report")
-    async def generate_pup_report(case_id: str) -> str:
-        """Use when the analyst says "this is just a PUP", "adware report",
-        "unwanted software", or when the detection is a Potentially Unwanted
-        Program/Application — not a real compromise or targeted attack.
+    async def generate_pup_report(case_id: str = "") -> str:
+        """Use when the detection is PUP/PUA (adware, bundleware, toolbars).
 
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+        **How to use:** Select the ``write_pup_report`` prompt to get the
+        instructions and case context, write the report, then call
+        ``save_report`` with ``report_type="pup_report"`` to persist it.
 
-        Produces a lightweight PUP/PUA-specific report covering: software
-        identification, installation scope, risk assessment, and removal steps.
-        Skips attack-chain analysis since there is no actual attack.
-
-        **Auto-closes the case** with disposition "pup_pua".
-
-        **When to use this vs ``generate_mdr_report``:** if the detection is
-        adware, bundleware, browser hijackers, toolbars, crypto miners (non-malicious),
-        or similar unwanted-but-not-malicious software, use this tool.
-        If it is an actual compromise, targeted attack, or malicious activity,
-        use ``generate_mdr_report`` instead.
+        ``case_id`` is optional — if omitted, a case is auto-created first.
 
         Parameters
         ----------
         case_id : str
-            Case identifier.
+            Case identifier (optional — auto-created if empty).
         """
         _require_scope("investigations:submit")
+
+        case_id = _ensure_case(case_id, disposition="pup_pua")
         _check_client_boundary(case_id)
 
-        # Guard: case must be active (not triage)
-        from config.settings import CASES_DIR
-        from tools.common import load_json
-        meta_path = CASES_DIR / case_id / "case_meta.json"
-        if meta_path.exists():
-            meta = load_json(meta_path)
-            if meta.get("status") == "triage":
-                raise ToolError(
-                    f"Case {case_id} is in triage. Promote it to active with "
-                    f"promote_case before generating the PUP report."
-                )
-
-        from tools.generate_pup_report import generate_pup_report as _pup
-        result = await asyncio.to_thread(lambda: _pup(case_id))
-        return _json(result)
+        return _json({
+            "status": "use_prompt",
+            "case_id": case_id,
+            "prompt": "write_pup_report",
+            "save_tool": "save_report",
+            "save_args": {"report_type": "pup_report"},
+            "message": (
+                f"Case {case_id} is ready. Use the write_pup_report prompt "
+                f"to generate the report, then call save_report with "
+                f'report_type="pup_report" to persist it.'
+            ),
+        })
 
     @mcp.tool(title="Generate Hunt Queries")
     async def generate_queries(
@@ -1110,7 +1171,7 @@ def _register_tier1(mcp: FastMCP) -> None:
           attack type, with dependencies noted
 
         Does NOT require a case — works on raw alert text alone.  Call this
-        before creating a case to inform your investigation strategy.
+        early in the investigation to inform your strategy.
 
         Parameters
         ----------
@@ -2193,9 +2254,8 @@ def _register_tier2(mcp: FastMCP) -> None:
         """
         _require_scope("investigations:read")
 
-        # Pass the active client for tier-aware filtering
-        caller = _get_caller_email()
-        active_client = _active_client.get(caller, "") if caller else ""
+        # Client boundary filtering is a no-op now
+        active_client = ""
 
         from tools.recall import recall
         result = recall(
@@ -2273,16 +2333,12 @@ def _register_tier2(mcp: FastMCP) -> None:
         analyst: str = "mcp",
         case_id: str | None = None,
     ) -> str:
-        """Use after ``search_threat_articles`` when the analyst has selected which
-        articles to write up. Trigger phrases: "write up these articles",
-        "generate the threat articles", "publish articles 1, 3, 5".
+        """Use after ``search_threat_articles`` when the analyst has selected
+        which articles to write up.
 
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
-
-        Takes the source URLs of selected threat intelligence articles, fetches
-        their content, and generates structured write-ups suitable for monthly
-        ET/EV reporting. Each article includes a summary, key findings, IOCs,
-        and analyst attribution.
+        **How to use:** Select the ``write_threat_article`` prompt to get the
+        instructions and source context, write the article, then call
+        ``save_threat_article`` to persist it.
 
         Parameters
         ----------
@@ -2297,25 +2353,18 @@ def _register_tier2(mcp: FastMCP) -> None:
         if case_id:
             _check_client_boundary(case_id)
 
-        from tools.threat_articles import generate_articles
-        from urllib.parse import urlparse
-        # Build candidate dicts from URLs with keys generate_articles expects
-        candidates = [
-            {
-                "id": u,
-                "title": u,
-                "category": "ET",
-                "source_name": urlparse(u).netloc or "unknown",
-                "source_url": u,
-                "summary": "",
-                "already_covered": False,
-            }
-            for u in candidate_urls
-        ]
-        result = await asyncio.to_thread(
-            lambda: generate_articles(candidates, analyst=analyst, case_id=case_id)
-        )
-        return _json({"articles": result, "count": len(result) if result else 0})
+        return _json({
+            "status": "use_prompt",
+            "prompt": "write_threat_article",
+            "save_tool": "save_threat_article",
+            "candidate_urls": candidate_urls,
+            "analyst": analyst,
+            "case_id": case_id,
+            "message": (
+                "Use the write_threat_article prompt to generate the article, "
+                "then call save_threat_article to persist it."
+            ),
+        })
 
     @mcp.tool(title="Save Threat Article")
     async def save_threat_article(
@@ -2396,21 +2445,9 @@ def _register_tier2(mcp: FastMCP) -> None:
         """Use when the analyst says "exec summary", "summary for management",
         "leadership briefing", or "non-technical summary".
 
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
-
-        Produces a concise, non-technical executive summary suitable for
-        senior leadership, client executives, or stakeholders who do not
-        need the full technical detail. Covers: what happened, business
-        impact, current status, and recommended next steps.
-
-        **Choosing the right report tool:**
-        - ``generate_executive_summary`` — non-technical leadership briefing (this tool)
-        - ``generate_mdr_report`` — full client-facing MDR deliverable
-        - ``generate_report`` — internal technical investigation narrative
-        - ``generate_pup_report`` — lightweight PUP/PUA report
-
-        Prerequisites: the investigation should be substantially complete
-        (enrichment, analysis, and ideally the main report generated first).
+        **How to use:** Select the ``write_executive_summary`` prompt to get
+        the instructions and case context, write the summary, then call
+        ``save_report`` with ``report_type="executive_summary"`` to persist it.
 
         Parameters
         ----------
@@ -2420,9 +2457,18 @@ def _register_tier2(mcp: FastMCP) -> None:
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
-        from api import actions
-        result = await asyncio.to_thread(lambda: actions.generate_exec_summary(case_id))
-        return _json(_pop_message(result))
+        return _json({
+            "status": "use_prompt",
+            "case_id": case_id,
+            "prompt": "write_executive_summary",
+            "save_tool": "save_report",
+            "save_args": {"report_type": "executive_summary"},
+            "message": (
+                f"Use the write_executive_summary prompt to generate the "
+                f"summary for {case_id}, then call save_report with "
+                f'report_type="executive_summary" to persist it.'
+            ),
+        })
 
     @mcp.tool(title="Parse Log Files")
     async def parse_logs(case_id: str) -> str:
@@ -2835,63 +2881,68 @@ def _register_tier2_rumsfeld(mcp: FastMCP) -> None:
     async def generate_investigation_matrix(case_id: str) -> str:
         """Generate a structured investigation reasoning matrix for a case.
 
-        Produces known_knowns (facts with evidence), known_unknowns (evidence
-        gaps), and hypotheses (testable claims with disconfirming checks).
+        **How to use:** Select the ``build_investigation_matrix`` prompt,
+        produce the matrix (known_knowns, known_unknowns, hypotheses),
+        then call ``add_finding`` with your conclusions
+        to persist it.
 
-        Use after enrichment completes to get a structured view of the
-        investigation state. The matrix enforces analytical standards —
-        every finding must cite evidence, every hypothesis must have a
-        disconfirming check.
-
-        Returns JSON matrix with known_knowns, known_unknowns, hypotheses.
+        Returns guidance on how to generate the matrix.
         """
         _require_scope("investigations:write")
         _check_client_boundary(case_id)
 
-        from api.actions import generate_investigation_matrix as _gen
-        result = await asyncio.to_thread(lambda: _gen(case_id))
-        return _json(result)
+        return _json({
+            "status": "use_prompt",
+            "case_id": case_id,
+            "prompt": "build_investigation_matrix",
+            "save_tool": "add_finding",
+            "message": (
+                f"Use the build_investigation_matrix prompt to generate the "
+                f"matrix for {case_id}, then call add_finding with "
+                f'analysis_type="investigation_matrix" to persist it.'
+            ),
+        })
 
     @mcp.tool(title="Review Report Quality")
     async def review_report_quality(case_id: str) -> str:
         """Run the analytical standards quality gate on a case report.
 
-        Checks for:
-        - 'confirmed' claims without matrix evidence backing
-        - Causal language without cited data links
-        - Speculative language (likely, probably, presumably)
-        - Matrix coverage (are all findings addressed?)
+        Returns deterministic checks for: confirmed claims without evidence,
+        causal language without data links, speculative language, and
+        matrix coverage gaps.
 
-        Returns pass/fail with specific flags and suggestions.
+        For a full LLM-assisted review, use the ``review_report`` prompt.
         """
         _require_scope("investigations:read")
         _check_client_boundary(case_id)
 
-        from api.actions import review_report_quality as _review
-        result = await asyncio.to_thread(lambda: _review(case_id))
-        return _json(result)
+        from tools.report_quality_gate import review_report
+        result = await asyncio.to_thread(lambda: review_report(case_id))
+        return _json(result or {"status": "no_report", "case_id": case_id})
 
     @mcp.tool(title="Run Determination Analysis")
     async def run_determination(case_id: str) -> str:
-        """Run evidence-chain determination analysis (shadow mode).
+        """Run evidence-chain determination analysis.
 
-        Analyses all case evidence and produces a structured disposition
-        proposal with:
-        - Disposition (TP/FP/benign/PUP/inconclusive) with confidence
-        - Full evidence chain with per-link status
-        - Gap declarations
-        - Disconfirming checks performed
-
-        This is advisory — it does not change the case disposition.
-        When it disagrees with the deterministic auto-disposition,
-        the case is flagged for analyst review.
+        **How to use:** Select the ``run_determination`` prompt to get the
+        instructions and case evidence, produce the disposition proposal,
+        then call ``add_finding`` with your conclusion
+        to persist it, or call ``add_finding`` with your conclusion.
         """
         _require_scope("investigations:write")
         _check_client_boundary(case_id)
 
-        from api.actions import run_determination as _det
-        result = await asyncio.to_thread(lambda: _det(case_id))
-        return _json(result)
+        return _json({
+            "status": "use_prompt",
+            "case_id": case_id,
+            "prompt": "run_determination",
+            "save_tool": "add_finding",
+            "message": (
+                f"Use the run_determination prompt to analyse evidence for "
+                f"{case_id}, then call add_finding with "
+                f'analysis_type="determination" to persist the result.'
+            ),
+        })
 
     @mcp.tool(title="List Follow-up Proposals")
     async def list_followups(case_id: str) -> str:
@@ -3205,19 +3256,12 @@ def _register_tier3(mcp: FastMCP) -> None:
 
     @mcp.tool(title="Security Architecture Review")
     async def security_arch_review(case_id: str) -> str:
-        """Use when the analyst says "what security gaps does this reveal?",
-        "architecture review", "what controls failed?", "how could this have
-        been prevented?", or "security recommendations".
+        """Use when the analyst says "architecture review", "what controls
+        failed?", "security recommendations".
 
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
-
-        Analyses the case findings to identify security architecture gaps and
-        control failures that allowed the incident to occur. Produces
-        recommendations for preventive controls, detection improvements,
-        and architectural changes specific to the client's environment.
-
-        Prerequisites: the investigation should be substantially complete
-        (enrichment, correlation, and ideally the main report generated).
+        **How to use:** Select the ``write_security_arch_review`` prompt,
+        write the review, then call ``save_report`` with
+        ``report_type="security_arch_review"`` to persist it.
 
         Parameters
         ----------
@@ -3227,9 +3271,18 @@ def _register_tier3(mcp: FastMCP) -> None:
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
-        from api import actions
-        result = await asyncio.to_thread(lambda: actions.security_arch_review(case_id))
-        return _json(_pop_message(result))
+        return _json({
+            "status": "use_prompt",
+            "case_id": case_id,
+            "prompt": "write_security_arch_review",
+            "save_tool": "save_report",
+            "save_args": {"report_type": "security_arch_review"},
+            "message": (
+                f"Use the write_security_arch_review prompt to generate the "
+                f"review for {case_id}, then call save_report with "
+                f'report_type="security_arch_review" to persist it.'
+            ),
+        })
 
     @mcp.tool(title="Contextualise CVEs", annotations={"readOnlyHint": True})
     async def contextualise_cves(case_id: str) -> str:
@@ -3511,108 +3564,105 @@ def _register_tier3(mcp: FastMCP) -> None:
 
     @mcp.tool(title="Generate False Positive Ticket")
     async def generate_fp_ticket(
-        case_id: str,
         alert_data: str,
+        case_id: str = "",
         platform: str | None = None,
         query_text: str | None = None,
     ) -> str:
-        """Use when the analyst says "this is a false positive", "suppress this alert",
-        "FP ticket", "tuning request", or when an alert has been determined to be
-        a false positive and needs a suppression/tuning ticket.
+        """Use when the analyst says "this is a false positive", "FP ticket".
 
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+        **How to use:** Select the ``write_fp_closure`` prompt to get the
+        instructions and case context, write the FP closure comment, then
+        call ``save_report`` with ``report_type="fp_ticket"`` to persist it.
 
-        Generates a structured false-positive suppression ticket with: alert details,
-        analyst justification, recommended suppression logic, and platform-specific
-        tuning guidance. The ticket can be used to request rule tuning from the
-        detection engineering team.
-
-        **Auto-closes the case** with disposition "false_positive".
-
-        Provide the raw alert JSON in ``alert_data``. The detection platform is
-        auto-detected from the alert data but can be overridden with ``platform``.
+        ``case_id`` is optional — if omitted, a case is auto-created first.
 
         Parameters
         ----------
-        case_id : str
-            Case identifier.
         alert_data : str
-            Raw alert JSON.
+            Raw alert JSON (stored as evidence for the prompt).
+        case_id : str
+            Case identifier (optional — auto-created if empty).
         platform : str
             Detection platform (auto-detected if omitted).
         query_text : str
             Original detection query text.
         """
         _require_scope("investigations:submit")
+
+        case_id = _ensure_case(case_id, disposition="false_positive")
         _check_client_boundary(case_id)
 
-        # Guard: case must be active (not triage)
-        from config.settings import CASES_DIR
-        from tools.common import load_json
-        meta_path = CASES_DIR / case_id / "case_meta.json"
-        if meta_path.exists():
-            meta = load_json(meta_path)
-            if meta.get("status") == "triage":
-                raise ToolError(
-                    f"Case {case_id} is in triage. Promote it to active with "
-                    f"promote_case before generating an FP ticket."
-                )
+        # Store alert as evidence so the prompt can access it
+        try:
+            from api import actions
+            actions.add_evidence(case_id, alert_data)
+        except Exception:
+            pass  # best-effort
 
-        from api import actions
-        result = await asyncio.to_thread(
-            lambda: actions.generate_fp_ticket(
-                case_id, alert_data=alert_data,
-                platform=platform, query_text=query_text,
-            )
-        )
-        return _json(_pop_message(result))
+        return _json({
+            "status": "use_prompt",
+            "case_id": case_id,
+            "prompt": "write_fp_closure",
+            "save_tool": "save_report",
+            "save_args": {"report_type": "fp_ticket"},
+            "message": (
+                f"Case {case_id} is ready with alert evidence. Use the "
+                f"write_fp_closure prompt to generate the FP ticket, then "
+                f'call save_report with report_type="fp_ticket" to persist it.'
+            ),
+        })
 
     @mcp.tool(title="Generate SIEM Tuning Ticket")
     async def generate_fp_tuning_ticket(
-        case_id: str,
         alert_data: str,
+        case_id: str = "",
         platform: str | None = None,
         query_text: str | None = None,
     ) -> str:
-        """Use when the analyst says "tuning ticket", "SIEM engineering ticket",
-        "detection engineering handoff", "rule tuning", or "fix the detection".
+        """Use when the analyst says "tuning ticket", "SIEM engineering ticket".
 
-        **Routing:** If starting a new investigation, call `classify_attack` or `plan_investigation` first.
+        **How to use:** Select the ``write_fp_tuning`` prompt to get the
+        instructions and case context, write the tuning ticket, then call
+        ``save_report`` with ``report_type="fp_tuning_ticket"`` to persist it.
 
-        Generates a structured SIEM engineering tuning ticket with: detection rule
-        identification, original query, false positive evidence, root cause analysis,
-        proposed tuning (before/after query modifications), impact assessment, and
-        recurrence data from prior cases.
-
-        This is the engineering handoff document — it gives detection engineers
-        everything they need to modify the rule. Use this AFTER or alongside
-        ``generate_fp_ticket`` (which produces the analyst closure comment).
-
-        **Does NOT auto-close the case** — the analyst may want both an FP closure
-        comment and a tuning ticket.
+        ``case_id`` is optional — if omitted, a case is auto-created first.
 
         Parameters
         ----------
-        case_id : str
-            Case identifier.
         alert_data : str
-            Raw alert JSON.
+            Raw alert JSON (stored as evidence for the prompt).
+        case_id : str
+            Case identifier (optional — auto-created if empty).
         platform : str
             Detection platform (auto-detected if omitted).
         query_text : str
             Original detection query text.
         """
         _require_scope("investigations:submit")
+
+        case_id = _ensure_case(case_id)
         _check_client_boundary(case_id)
 
-        from api import actions
-        result = await asyncio.to_thread(
-            lambda: actions.generate_fp_tuning_ticket(
-                case_id, alert_data=alert_data,
-                platform=platform, query_text=query_text,
-            )
-        )
-        return _json(_pop_message(result))
+        # Store alert as evidence so the prompt can access it
+        try:
+            from api import actions
+            actions.add_evidence(case_id, alert_data)
+        except Exception:
+            pass  # best-effort
+
+        return _json({
+            "status": "use_prompt",
+            "case_id": case_id,
+            "prompt": "write_fp_tuning",
+            "save_tool": "save_report",
+            "save_args": {"report_type": "fp_tuning_ticket"},
+            "message": (
+                f"Case {case_id} is ready with alert evidence. Use the "
+                f"write_fp_tuning prompt to generate the tuning ticket, then "
+                f'call save_report with report_type="fp_tuning_ticket" to persist it.'
+            ),
+        })
 
     @mcp.tool(title="Start Sandbox Detonation", annotations={"destructiveHint": True})
     async def start_sandbox_session(
