@@ -197,12 +197,89 @@ def _register_tier1(mcp: FastMCP) -> None:
             "platforms": platforms,
             "platform_list": list(platforms.keys()),
         }
-        # Check for response playbook
-        from pathlib import Path
-        playbook_path = Path(__file__).resolve().parent.parent / "config" / "clients" / f"{cfg['name']}.json"
-        result["has_response_playbook"] = playbook_path.exists()
+        # Check for response playbook and knowledge base
+        from mcp_server.resources import _resolve_client_playbook, _resolve_client_knowledge
+        result["has_response_playbook"] = _resolve_client_playbook(cfg["name"]) is not None
+        result["has_knowledge_base"] = _resolve_client_knowledge(cfg["name"]) is not None
 
         return _json(result)
+
+    @mcp.tool(title="Update Client Knowledge Base")
+    async def update_client_knowledge(
+        client_name: str,
+        section: str,
+        content: str,
+    ) -> str:
+        """Update a section of the client knowledge base with new information
+        discovered during an investigation.
+
+        Call this whenever you learn something persistent about a client's
+        environment — network ranges, legitimate software, FP patterns,
+        security stack details, identity infrastructure, etc.
+
+        The knowledge base is a structured markdown file. Specify which
+        section to update and provide the new content for that section.
+
+        Parameters
+        ----------
+        client_name : str
+            Client name (case-insensitive).
+        section : str
+            Section heading to update (e.g. "Network Topology",
+            "Known Legitimate Software & Services", "Historical Patterns",
+            "Security Stack", "Identity & Access", "Analyst Notes").
+        content : str
+            New content for the section (markdown). Replaces existing
+            section content between the heading and the next ``---`` divider.
+        """
+        _require_scope("investigations:submit")
+
+        from mcp_server.resources import _resolve_client_knowledge
+        from tools.common import audit
+
+        path = _resolve_client_knowledge(client_name)
+        if not path:
+            return _json({
+                "status": "error",
+                "reason": f"No knowledge base found for client {client_name!r}.",
+            })
+
+        text = path.read_text(encoding="utf-8")
+
+        # Find the section heading and replace content up to next ---
+        import re
+        heading_pattern = re.compile(
+            rf"(## {re.escape(section)}\s*\n)"  # heading line
+            rf"(.*?)"                             # section body
+            rf"(\n---|\Z)",                       # next divider or end
+            re.DOTALL,
+        )
+        match = heading_pattern.search(text)
+        if not match:
+            return _json({
+                "status": "error",
+                "reason": f"Section {section!r} not found in knowledge base. "
+                          f"Available sections can be seen via socai://clients/{client_name}/knowledge.",
+            })
+
+        updated = (
+            text[:match.start()]
+            + match.group(1)  # keep heading
+            + "\n" + content.strip() + "\n"
+            + match.group(3)  # keep divider
+            + text[match.end():]
+        )
+
+        path.write_text(updated, encoding="utf-8")
+        audit("update_client_knowledge",
+              str(path), extra={"client": client_name, "section": section})
+
+        return _json({
+            "status": "ok",
+            "client": client_name,
+            "section": section,
+            "path": str(path),
+        })
 
     @mcp.tool(title="List Cases", annotations={"readOnlyHint": True})
     def list_cases(status: str = "active,closed") -> str:

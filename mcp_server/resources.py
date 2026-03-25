@@ -17,6 +17,48 @@ def _json(obj: object) -> str:
     return json.dumps(obj, indent=2, default=str)
 
 
+def _resolve_client_playbook(client_name: str) -> Path | None:
+    """Find the playbook JSON for a client (directory or flat layout)."""
+    from config.settings import CLIENT_PLAYBOOKS_DIR as CLIENTS_DIR
+    from tools.common import load_json
+
+    # New layout: config/clients/<name>/playbook.json
+    candidates = [
+        CLIENTS_DIR / client_name / "playbook.json",
+        CLIENTS_DIR / client_name.lower().replace(" ", "_") / "playbook.json",
+        # Legacy flat layout: config/clients/<name>.json
+        CLIENTS_DIR / f"{client_name}.json",
+        CLIENTS_DIR / f"{client_name.lower().replace(' ', '_')}.json",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+
+    # Search by client_name field inside JSON files
+    for p in CLIENTS_DIR.rglob("*.json"):
+        try:
+            data = load_json(p)
+            if data.get("client_name", "").lower() == client_name.lower():
+                return p
+        except Exception:
+            continue
+    return None
+
+
+def _resolve_client_knowledge(client_name: str) -> Path | None:
+    """Find the knowledge base markdown for a client."""
+    from config.settings import CLIENT_PLAYBOOKS_DIR as CLIENTS_DIR
+
+    candidates = [
+        CLIENTS_DIR / client_name / "knowledge.md",
+        CLIENTS_DIR / client_name.lower().replace(" ", "_") / "knowledge.md",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
 def register_resources(mcp: FastMCP) -> None:
     """Register all MCP resource handlers."""
 
@@ -441,28 +483,12 @@ def register_resources(mcp: FastMCP) -> None:
         """
         _require_scope("investigations:read")
 
-        from config.settings import CLIENT_PLAYBOOKS_DIR as CLIENTS_DIR
+        path = _resolve_client_playbook(client_name)
+        if not path:
+            return _json({"error": f"No response playbook found for client {client_name!r}."})
+
         from tools.common import load_json
-
-        # Try exact name, then lowercase
-        path = CLIENTS_DIR / f"{client_name}.json"
-        if not path.exists():
-            path = CLIENTS_DIR / f"{client_name.lower().replace(' ', '_')}.json"
-        if not path.exists():
-            # Search by client_name field inside JSON files
-            for p in CLIENTS_DIR.glob("*.json"):
-                try:
-                    data = load_json(p)
-                    if data.get("client_name", "").lower() == client_name.lower():
-                        path = p
-                        break
-                except Exception:
-                    continue
-            else:
-                return _json({"error": f"No response playbook found for client {client_name!r}."})
-
         data = load_json(path)
-        # Return the response-relevant sections (strip raw contacts for privacy)
         playbook = {
             "client_name": data.get("client_name", client_name),
             "escalation_matrix": data.get("escalation_matrix", []),
@@ -476,6 +502,26 @@ def register_resources(mcp: FastMCP) -> None:
             ],
         }
         return _json(playbook)
+
+    @mcp.resource("socai://clients/{client_name}/knowledge")
+    def client_knowledge(client_name: str) -> str:
+        """Client knowledge base — persistent context about the client's
+        environment, security stack, identity infrastructure, network
+        topology, known legitimate software, historical patterns, and
+        analyst notes.
+
+        Read this at the start of every investigation to have instant
+        context without needing to ask. The knowledge base is a markdown
+        file maintained by analysts and updated as investigations reveal
+        new information about the client.
+        """
+        _require_scope("investigations:read")
+
+        path = _resolve_client_knowledge(client_name)
+        if not path:
+            return _json({"error": f"No knowledge base found for client {client_name!r}."})
+
+        return path.read_text(encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Pipeline Profiles (Attack-Type Routing)
@@ -874,6 +920,7 @@ def register_resources(mcp: FastMCP) -> None:
                     "socai://clients": "Client registry.",
                     "socai://clients/{name}": "Full client config.",
                     "socai://clients/{name}/playbook": "Client response playbook.",
+                    "socai://clients/{name}/knowledge": "Client knowledge base — environment, security stack, network, identity, historical patterns.",
                     "socai://playbooks": "KQL playbook index.",
                     "socai://sentinel-queries": "Composite Sentinel query scenarios.",
                     "socai://enrichment-providers": "Available enrichment providers.",
