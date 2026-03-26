@@ -42,7 +42,7 @@ let LookbackStart = datetime({{lookback_start}});
 let LookbackEnd = datetime({{lookback_end}});
 
 // All UPNs to monitor (target + any additional)
-let AllUPNs = array_concat(dynamic([TargetUPN]), AdditionalUPNs);
+let AllUPNs = array_concat(pack_array(TargetUPN), AdditionalUPNs);
 
 // --- SECTION 1: Permission changes on/by the target account ---
 let PermissionChanges = OfficeActivity

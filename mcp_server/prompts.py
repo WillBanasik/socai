@@ -282,15 +282,15 @@ def register_prompts(mcp: FastMCP) -> None:
             "### 6. Response Recommendation",
             "- If TP: recommend containment, eradication, and recovery actions",
             "- If BP: document the finding and any tuning recommendations",
-            "- If FP: document the finding, generate suppression ticket with `generate_fp_ticket`",
+            "- If FP: document the finding, generate suppression ticket with `prepare_fp_ticket`",
             "- If Inconclusive: identify what additional data is needed",
             "",
             "### 7. Documentation & Deliverables",
-            "- Case creation is **deferred** — deliverable tools (`generate_mdr_report`,",
-            "  `generate_pup_report`, `generate_fp_ticket`) auto-create and promote a case",
+            "- Case creation is **deferred** — deliverable tools (`prepare_mdr_report`,",
+            "  `prepare_pup_report`, `prepare_fp_ticket`) auto-create and promote a case",
             "  if one doesn't exist yet. You can also call `create_case` manually at any point.",
-            "- Generate the MDR report with `generate_mdr_report` (auto-creates case, auto-closes)",
-            "- If FP, generate suppression ticket with `generate_fp_ticket` (auto-creates case, auto-closes)",
+            "- Generate the MDR report with `prepare_mdr_report` (auto-creates case)",
+            "- If FP, generate suppression ticket with `prepare_fp_ticket` (auto-creates case)",
             "- Once a case exists, register evidence with `add_evidence` and run `enrich_iocs`",
         ])
 
@@ -360,8 +360,8 @@ def register_prompts(mcp: FastMCP) -> None:
             "- Consider allowlisting vs. query refinement vs. threshold adjustment",
             "",
             "### 4. Generate Tickets",
-            "- Use `generate_fp_ticket` with the alert data and platform → 2-sentence closure comment (auto-closes case)",
-            "- Use `generate_fp_tuning_ticket` with the alert data, platform, and detection query → structured SIEM engineering handoff (does NOT auto-close)",
+            "- Use `prepare_fp_ticket` with the alert data and platform → 2-sentence closure comment",
+            "- Use `prepare_fp_tuning_ticket` with the alert data, platform, and detection query → structured SIEM engineering handoff",
             "- The FP ticket closes the alert; the tuning ticket tells detection engineering how to fix the rule",
             "- Generate BOTH when the analyst wants the alert closed AND the rule tuned",
         ])
@@ -510,17 +510,17 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "Generate the appropriate report based on disposition:",
             "",
-            "- **True Positive:** `generate_mdr_report` (auto-creates case if needed, auto-closes)",
-            "- **Benign Positive:** `generate_mdr_report` (auto-creates case if needed, auto-closes)",
-            "- **False Positive:** `generate_fp_ticket` (auto-creates case if needed, auto-closes)",
-            "  (+ `generate_fp_tuning_ticket` if tuning needed)",
-            "- **PUP/PUA:** `generate_pup_report` (auto-creates case if needed, auto-closes)",
+            "- **True Positive:** `prepare_mdr_report` (auto-creates case if needed)",
+            "- **Benign Positive:** `prepare_mdr_report` (auto-creates case if needed)",
+            "- **False Positive:** `prepare_fp_ticket` (auto-creates case if needed)",
+            "  (+ `prepare_fp_tuning_ticket` if tuning needed)",
+            "- **PUP/PUA:** `prepare_pup_report` (auto-creates case if needed)",
             "- **Inconclusive:** `create_case` → `generate_report` (mark gaps clearly)",
             "",
             "Additional for high/critical:",
             "- `generate_queries` — SIEM hunt queries",
             "- `response_actions` — containment guidance",
-            "- `generate_executive_summary` — leadership summary",
+            "- `prepare_executive_summary` — leadership summary",
             "",
             "**CP4 — REPORT APPROVAL**",
             "Present the report summary to the analyst for review.",
@@ -560,7 +560,7 @@ def register_prompts(mcp: FastMCP) -> None:
             "- ONE ALERT = ONE CASE — never reuse existing cases for new alerts",
             "- Always identify the client before running queries",
             "- Always call recall_cases before enrichment",
-            "- Reports auto-close cases: generate_mdr_report, generate_pup_report, generate_fp_ticket",
+            "- Reports auto-close cases via save_report (after prepare_mdr_report, prepare_pup_report, prepare_fp_ticket)",
             "- Keep it concise — lead with findings, not process narration",
         ])
 
@@ -1967,7 +1967,7 @@ def register_prompts(mcp: FastMCP) -> None:
     def write_mdr_report(case_id: str) -> str:
         """Generate an MDR incident report locally using your full conversation context.
 
-        Unlike the server-side ``generate_mdr_report`` tool, this prompt lets
+        Unlike the server-side ``prepare_mdr_report`` tool, this prompt lets
         your local session write the report with access to everything discussed
         in the conversation — KQL results, email traces, enrichment findings,
         analytical reasoning, and analyst decisions.

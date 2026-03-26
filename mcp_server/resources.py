@@ -798,7 +798,7 @@ def register_resources(mcp: FastMCP) -> None:
             },
             "start_here": (
                 "1. Read socai://role for your analyst permissions.\n"
-                "2. Call lookup_client to identify the client and their SIEM platforms.\n"
+                "2. Call lookup_client — returns platforms PLUS full knowledge base, response playbook, and Sentinel reference. Read and internalise before proceeding.\n"
                 "3. Call classify_attack or plan_investigation with alert data.\n"
                 "4. Follow the returned plan, calling tools step by step.\n"
                 "5. When ready to deliver, use a write_* prompt then save_report."
@@ -827,7 +827,7 @@ def register_resources(mcp: FastMCP) -> None:
                 "siem_and_queries": {
                     "description": "Query SIEM platforms and generate hunt queries.",
                     "tools": {
-                        "lookup_client": "Identify client, confirm SIEM platforms and workspace IDs. Call FIRST before any KQL.",
+                        "lookup_client": "Identify client, confirm SIEM platforms and workspace IDs. Returns full knowledge base, response playbook, and Sentinel reference inline. Call FIRST.",
                         "run_kql": "Execute KQL query against Azure Sentinel. Read-only.",
                         "run_kql_batch": "Execute multiple KQL queries in parallel.",
                         "load_kql_playbook": "Load a KQL investigation playbook template.",
@@ -858,11 +858,11 @@ def register_resources(mcp: FastMCP) -> None:
                 "report_delivery": {
                     "description": "These tools trigger the prompt+save workflow for deliverables. They auto-create cases if needed.",
                     "tools": {
-                        "generate_mdr_report": "Redirects to write_mdr_report prompt → save_report. Auto-closes case.",
-                        "generate_pup_report": "Redirects to write_pup_report prompt → save_report. Auto-closes case.",
-                        "generate_executive_summary": "Redirects to write_executive_summary prompt → save_report.",
-                        "generate_fp_ticket": "Redirects to write_fp_closure prompt → save_report. Auto-closes case.",
-                        "generate_fp_tuning_ticket": "Redirects to write_fp_tuning prompt → save_report.",
+                        "prepare_mdr_report": "Loads context for write_mdr_report prompt → save_report. Primary client deliverable.",
+                        "prepare_pup_report": "Loads context for write_pup_report prompt → save_report.",
+                        "prepare_executive_summary": "Loads context for write_executive_summary prompt → save_report.",
+                        "prepare_fp_ticket": "Loads context for write_fp_closure prompt → save_report.",
+                        "prepare_fp_tuning_ticket": "Loads context for write_fp_tuning prompt → save_report.",
                         "security_arch_review": "Redirects to write_security_arch_review prompt → save_report.",
                         "save_report": "Persist a locally-written report as HTML. Handles defanging, auto-close, audit.",
                         "save_threat_article": "Persist a threat intelligence article to the article registry.",

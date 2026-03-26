@@ -145,7 +145,7 @@ union
 
 let hosts = dynamic([{{destination_hosts}}]);
 let source = "{{source_host}}";
-let all_hosts = array_concat(hosts, dynamic([source]));
+let all_hosts = array_concat(hosts, pack_array(source));
 let lookback = {{lookback}};
 let LsassAccess = DeviceProcessEvents
     | where TimeGenerated >= ago(lookback)

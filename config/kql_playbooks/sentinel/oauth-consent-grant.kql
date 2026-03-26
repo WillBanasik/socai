@@ -34,7 +34,7 @@ let AdditionalUPNs = dynamic([{{additional_upns}}]);
 let LookbackStart = datetime({{lookback_start}});
 let LookbackEnd = datetime({{lookback_end}});
 
-let AllUPNs = array_concat(dynamic([TargetUPN]), AdditionalUPNs);
+let AllUPNs = array_concat(pack_array(TargetUPN), AdditionalUPNs);
 
 // --- SECTION 1: Consent and app role assignment events ---
 let ConsentEvents = OfficeActivity

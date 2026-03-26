@@ -41,7 +41,7 @@ graph TB
         subgraph Output["Report Generation"]
             GR["generate_report"]
             GQ["generate_queries"]
-            MDR["generate_mdr_report"]
+            MDR["prepare_mdr_report"]
             ES["executive_summary"]
             FP["fp_ticket"]
             SAR["security_arch_review"]
@@ -148,7 +148,7 @@ sequenceDiagram
 
     Note over A,M: Deliverable phase — case auto-created + promoted
 
-    A->>M: generate_mdr_report()
+    A->>M: prepare_mdr_report()
     M->>T: _ensure_case() → case_create + promote
     T->>F: cases/IV_CASE_042/case_meta.json (status=active)
     T->>F: reports/mdr_report.md

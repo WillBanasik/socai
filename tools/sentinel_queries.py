@@ -116,6 +116,10 @@ def render_query(
         "query": query.strip(),
         "lookback_hours": lookback_hours,
         "parameters_used": {k: v for k, v in params.items() if v},
+        "note": (
+            "Composite queries use a union of numbered sections. "
+            "Missing section numbers in the output mean 0 results for that section."
+        ),
     }
 
 

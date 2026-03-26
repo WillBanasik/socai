@@ -6,7 +6,7 @@ Investigations are human-in-the-loop (HITL). The analyst drives each step via MC
 
 ### Typical Tool Sequence
 
-Case creation is **deferred** — the analyst investigates caseless during triage and assessment. The case materialises automatically when a deliverable tool is called (`generate_mdr_report`, `generate_pup_report`, `generate_fp_ticket`). Analysts can still call `create_case` manually at any point.
+Case creation is **deferred** — the analyst investigates caseless during triage and assessment. The case materialises automatically when a deliverable tool is called (`prepare_mdr_report`, `prepare_pup_report`, `prepare_fp_ticket`). Analysts can still call `create_case` manually at any point.
 
 ```
 ── Caseless tools (no case_id required) ──
@@ -28,9 +28,9 @@ Case creation is **deferred** — the analyst investigates caseless during triag
 14. analyse_email         → email header/content analysis (if email)
 
 ── Deliverable phase (case auto-created + promoted if needed) ──
-15. generate_mdr_report   → MDR report (auto-creates case if needed, auto-closes)
-    generate_pup_report   → PUP report (auto-creates case if needed, auto-closes)
-    generate_fp_ticket    → FP ticket (auto-creates case if needed, auto-closes)
+15. prepare_mdr_report    → MDR report (auto-creates case if needed, auto-closes)
+    prepare_pup_report    → PUP report (auto-creates case if needed, auto-closes)
+    prepare_fp_ticket     → FP ticket (auto-creates case if needed, auto-closes)
 ```
 
 The exact sequence depends on attack type. `classify_attack` returns the recommended tool order. `plan_investigation` returns a full plan with phases, dependencies, and skip conditions.
@@ -43,7 +43,7 @@ All LLM reasoning — report writing, disposition analysis, quality review — i
 
 **Why local:** The analyst's session has the full investigation conversation, producing better output than a cold context-free call. The analyst can iterate ("rewrite section 3") without re-invoking tools.
 
-Note: The server-side tool names (`generate_mdr_report`, `generate_pup_report`, `generate_fp_ticket`, etc.) still exist as MCP tools but now redirect to the prompt workflow — they collect case data and return it for the local agent to process, rather than making direct API calls.
+Note: The server-side tool names (`prepare_mdr_report`, `prepare_pup_report`, `prepare_fp_ticket`, etc.) still exist as MCP tools but now redirect to the prompt workflow — they collect case data and return it for the local agent to process, rather than making direct API calls.
 
 ### Report Prompts
 
@@ -115,7 +115,7 @@ After enrichment, if verdict_summary has 0 malicious and 0 suspicious IOCs, the 
 
 For clear-cut dispositions that don't need a full investigation cycle (e.g. obvious benign positives, known PUP software, duplicate alerts), the `close_case` MCP tool allows closing directly from triage status. This enables a lightweight two-step flow: `create_case` → `close_case(disposition="benign_positive")` — ideal for straightforward alerts.
 
-Alternatively, when a deliverable is needed, case creation is deferred entirely — deliverable tools (`generate_mdr_report`, `generate_pup_report`, `generate_fp_ticket`) auto-create and promote a case if one doesn't exist. The analyst can also call `create_case` manually at any point during the investigation.
+Alternatively, when a deliverable is needed, case creation is deferred entirely — deliverable tools (`prepare_mdr_report`, `prepare_pup_report`, `prepare_fp_ticket`) auto-create and promote a case if one doesn't exist. The analyst can also call `create_case` manually at any point during the investigation.
 
 ## Auto-close on Deliverable Collection
 
@@ -123,8 +123,8 @@ Cases auto-close when the analyst collects their deliverable. The close logic li
 
 | Deliverable | Server Tool | Client-Side Prompt + Save | Disposition |
 |---|---|---|---|
-| MDR report | `generate_mdr_report()` | `write_mdr_report` → `save_report` | Preserves existing |
-| PUP report | `generate_pup_report()` | `write_pup_report` → `save_report` | `pup_pua` |
+| MDR report | `prepare_mdr_report()` | `write_mdr_report` → `save_report` | Preserves existing |
+| PUP report | `prepare_pup_report()` | `write_pup_report` → `save_report` | `pup_pua` |
 | FP ticket | `fp_ticket()` | `write_fp_closure` → `save_report` | `false_positive` |
 
 Each path calls `index_case(case_id, status="closed", ...)` on successful generation/save. If the tool fails, the case remains open.

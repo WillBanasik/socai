@@ -42,7 +42,7 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, articles in `articles/`
 - **Background scheduler** (`tools/scheduler.py`) — daemon thread started by MCP server; refreshes GeoIP (7d), rebuilds client baselines (24h), rebuilds case memory BM25 index (6h)
 - **Intelligence layer** — `tools/case_memory.py` (BM25 semantic recall), `tools/client_baseline.py` (per-client profiles), `tools/geoip.py` (local MaxMind GeoLite2)
-- **Auto-close on Deliverable Collection** — `save_report` (after MCP prompt for MDR report, PUP report, etc.) and `fp_ticket` (`false_positive`). These tools auto-create and promote a case if one doesn't exist. Close logic in tool layer. Deliverable workflow: use MCP prompt to draft report, then `save_report` to persist and auto-close. `fp_tuning_ticket` does NOT auto-close.
+- **Auto-close on Deliverable Collection** — `save_report` (after MCP prompt for MDR report, PUP report, etc.) and `fp_ticket` (`false_positive`). These tools auto-create and promote a case if one doesn't exist. Close logic in tool layer. Deliverable workflow: use MCP prompt to draft report, then `save_report` to persist and auto-close. `fp_tuning_ticket` does NOT auto-close. `read_report` is read-only (no auto-close). `close_case` is idempotent (no-op if already closed).
 
 ## Sentinel Incident Classification
 

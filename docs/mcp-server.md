@@ -151,8 +151,8 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `add_finding` | `investigations:submit` | Record analytical finding/conclusion |
 | `enrich_iocs` | `investigations:submit` | Extract and enrich IOCs |
 | `generate_report` | `investigations:submit` | Collect case context for report (use `write_mdr_report` prompt to generate) |
-| `generate_mdr_report` | `investigations:submit` | Collect context for MDR report (redirects to prompt workflow) |
-| `generate_pup_report` | `investigations:submit` | Collect context for PUP/PUA report (redirects to prompt workflow) |
+| `prepare_mdr_report` | `investigations:submit` | Collect context for MDR report (redirects to prompt workflow) |
+| `prepare_pup_report` | `investigations:submit` | Collect context for PUP/PUA report (redirects to prompt workflow) |
 | `generate_queries` | `investigations:submit` | Generate SIEM hunt queries |
 | `classify_attack` | `investigations:read` | Deterministic attack-type classification |
 | `plan_investigation` | `investigations:read` | Full investigation plan with phases and dependencies |
@@ -176,7 +176,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `search_threat_articles` | `campaigns:read` | Discover threat intel article candidates |
 | `generate_threat_article` | `investigations:submit` | Collect context for threat article (use `write_threat_article` prompt) |
 | `web_search` | `investigations:submit` | OSINT web search (Brave/DuckDuckGo) |
-| `generate_executive_summary` | `investigations:submit` | Collect context for executive summary (use `write_executive_summary` prompt) |
+| `prepare_executive_summary` | `investigations:submit` | Collect context for executive summary (use `write_executive_summary` prompt) |
 | `parse_logs` | `investigations:submit` | Parse CSV/JSON/JSONL logs, extract entities |
 | `detect_anomalies` | `investigations:submit` | Behavioural anomaly detection (6 detectors) |
 | `correlate_evtx` | `investigations:submit` | Windows EVTX attack chain correlation (7 detectors) |
@@ -220,8 +220,8 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `link_cases` | `investigations:submit` | Link related cases |
 | `merge_cases` | `admin` | Merge duplicate cases |
 | `response_actions` | `investigations:submit` | Recommend containment/response actions |
-| `generate_fp_ticket` | `investigations:submit` | Collect context for FP ticket (redirects to prompt workflow; auto-closes on save) |
-| `generate_fp_tuning_ticket` | `investigations:submit` | Collect context for SIEM tuning ticket (does NOT auto-close) |
+| `prepare_fp_ticket` | `investigations:submit` | Collect context for FP ticket (redirects to prompt workflow; auto-closes on save) |
+| `prepare_fp_tuning_ticket` | `investigations:submit` | Collect context for SIEM tuning ticket (does NOT auto-close) |
 | `start_sandbox_session` | `admin` | Containerised malware detonation |
 | `stop_sandbox_session` | `admin` | Stop sandbox and collect artefacts |
 | `list_sandbox_sessions` | `admin` | List active/recent sandbox sessions |
