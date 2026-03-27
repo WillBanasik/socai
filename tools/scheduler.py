@@ -123,6 +123,42 @@ def start_scheduler() -> None:
         except Exception:
             pass
 
+        # Article discovery — daily or weekly auto-fetch of RSS candidates
+        try:
+            from config.settings import ARTICLE_AUTO_DISCOVER
+            if ARTICLE_AUTO_DISCOVER in ("daily", "weekly"):
+                interval = 24 * 3600 if ARTICLE_AUTO_DISCOVER == "daily" else 7 * 24 * 3600
+                def _auto_discover_articles():
+                    from tools.threat_articles import fetch_candidates
+                    candidates = fetch_candidates(days=7, max_candidates=30)
+                    uncovered = [c for c in candidates if not c.get("already_covered")]
+                    return {"total": len(candidates), "new": len(uncovered),
+                            "candidates": [c["title"] for c in uncovered[:10]]}
+                tasks.append(("article_discovery", interval, _auto_discover_articles))
+        except Exception:
+            pass
+
+        # Article auto-publish — push unpublished articles to OpenCTI (daily)
+        try:
+            from config.settings import ARTICLE_AUTO_PUBLISH, OPENCTI_PUBLISH_ENABLED
+            if ARTICLE_AUTO_PUBLISH and OPENCTI_PUBLISH_ENABLED:
+                def _auto_publish_articles():
+                    from tools.common import load_json as _lj
+                    from config.settings import ARTICLE_INDEX_FILE as _aif
+                    from tools.opencti_publish import publish_report
+                    index = _lj(_aif)
+                    published = []
+                    for a in index.get("articles", []):
+                        if a.get("opencti_report_id"):
+                            continue  # already published
+                        result = publish_report(a["article_id"])
+                        if result.get("status") == "ok":
+                            published.append(a["article_id"])
+                    return {"published": published, "count": len(published)}
+                tasks.append(("article_auto_publish", 24 * 3600, _auto_publish_articles))
+        except Exception:
+            pass
+
         _scheduler_thread = threading.Thread(
             target=_scheduler_loop,
             args=(tasks,),

@@ -22,6 +22,8 @@ from config.settings import (
     ARTICLES_DIR,
     BASE_DIR,
     CAPTURE_UA,
+    OPENCTI_KEY,
+    OPENCTI_URL,
 )
 from tools.common import (
     defang_ioc,
@@ -255,6 +257,77 @@ def _is_covered_confluence(title: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# OpenCTI dedup — check existing reports in the CTI platform
+# ---------------------------------------------------------------------------
+
+_opencti_report_cache: list[str] | None = None
+
+
+def _fetch_opencti_report_titles(limit: int = 30) -> list[str]:
+    """Fetch recent report titles from OpenCTI for dedup.
+
+    Cached for the lifetime of the process to avoid repeated API calls.
+    Returns lowercased titles for fuzzy matching.
+    """
+    global _opencti_report_cache
+    if _opencti_report_cache is not None:
+        return _opencti_report_cache
+
+    if not OPENCTI_KEY:
+        _opencti_report_cache = []
+        return _opencti_report_cache
+
+    try:
+        import requests as _requests
+        gql = """{
+          reports(first: %d, orderBy: created_at, orderMode: desc) {
+            edges { node { name } }
+          }
+        }""" % limit
+        headers = {"Authorization": f"Bearer {OPENCTI_KEY}",
+                    "Content-Type": "application/json"}
+        resp = _requests.post(
+            f"{OPENCTI_URL}/graphql", headers=headers,
+            json={"query": gql}, timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        edges = data.get("data", {}).get("reports", {}).get("edges", [])
+        _opencti_report_cache = [e["node"]["name"].lower() for e in edges
+                                  if e.get("node", {}).get("name")]
+    except Exception as exc:
+        log_error("", "threat_articles.opencti_dedup", str(exc),
+                  severity="warning")
+        _opencti_report_cache = []
+
+    return _opencti_report_cache
+
+
+def _is_covered_opencti(title: str) -> bool:
+    """Check if a topic is already covered by an OpenCTI report.
+
+    Uses the same stemmed token-overlap matching as Confluence dedup —
+    if >=40% of significant words in the candidate title appear in an
+    existing OpenCTI report title, it's a match.
+    """
+    report_titles = _fetch_opencti_report_titles()
+    if not report_titles:
+        return False
+
+    candidate_tokens = _tokenise(title)
+    if not candidate_tokens:
+        return False
+
+    for rt in report_titles:
+        report_tokens = _tokenise(rt)
+        overlap = candidate_tokens & report_tokens
+        if len(overlap) >= len(candidate_tokens) * 0.4:
+            return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -273,8 +346,10 @@ def fetch_candidates(
     candidates: list[dict] = []
     for entry in entries:
         fp = _topic_fingerprint(entry["title"])
+        in_opencti = _is_covered_opencti(entry["title"])
         already_covered = (_is_covered(fp, index)
-                           or _is_covered_confluence(entry["title"]))
+                           or _is_covered_confluence(entry["title"])
+                           or in_opencti)
 
         # Quick heuristic classification based on keywords
         title_lower = entry["title"].lower()
@@ -297,6 +372,7 @@ def fetch_candidates(
             "published": entry.get("published", ""),
             "summary": entry.get("summary", ""),
             "already_covered": already_covered,
+            "in_opencti": in_opencti,
         })
 
     # Sort: uncovered first, then by source diversity
@@ -377,6 +453,8 @@ def save_article(
         "confluence_page_id": None,
         "confluence_url": None,
         "published_at": None,
+        "opencti_report_id": None,
+        "opencti_url": None,
     }
     save_json(art_dir / "article_manifest.json", manifest)
 

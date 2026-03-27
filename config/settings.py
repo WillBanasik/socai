@@ -131,6 +131,16 @@ ARTICLES_DIR       = BASE_DIR / "articles"
 ARTICLE_INDEX_FILE = BASE_DIR / "registry" / "article_index.json"
 
 # ---------------------------------------------------------------------------
+# OpenCTI publishing & article automation
+# ---------------------------------------------------------------------------
+# Gate: set to "1" to enable pushing reports to OpenCTI via bundleCreate
+OPENCTI_PUBLISH_ENABLED = os.getenv("SOCAI_OPENCTI_PUBLISH", "0") == "1"
+# Autonomous discovery: "daily" | "weekly" | "" (disabled)
+ARTICLE_AUTO_DISCOVER   = os.getenv("SOCAI_ARTICLE_AUTO_DISCOVER", "")
+# Auto-publish written articles to OpenCTI (requires OPENCTI_PUBLISH_ENABLED)
+ARTICLE_AUTO_PUBLISH    = os.getenv("SOCAI_ARTICLE_AUTO_PUBLISH", "0") == "1"
+
+# ---------------------------------------------------------------------------
 # Confluence (read-only, scoped token)
 # ---------------------------------------------------------------------------
 CONFLUENCE_URL       = os.getenv("CONFLUENCE_URL", "")

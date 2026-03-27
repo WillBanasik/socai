@@ -1906,8 +1906,9 @@ def _register_tier1(mcp: FastMCP) -> None:
 
     @mcp.tool(title="Query OpenCTI", annotations={"readOnlyHint": True, "openWorldHint": True})
     async def query_opencti(
-        query: str,
+        query: str = "",
         query_type: str = "auto",
+        report_id: str = "",
     ) -> str:
         """Use when the analyst asks about threat actors, malware families, campaigns,
         attack patterns, or IOCs **from OpenCTI specifically** — e.g. "what does OpenCTI
@@ -1925,17 +1926,27 @@ def _register_tier1(mcp: FastMCP) -> None:
         Use this tool for **targeted OpenCTI queries** — when the analyst specifically
         wants threat intel context, related threat actors, campaigns, or reports.
 
+        **Deep report mode:** pass ``report_id`` (an OpenCTI UUID from a previous
+        report search) to retrieve the full report bundle — full description,
+        contained STIX objects (indicators, threat actors, malware, attack patterns,
+        observables), external references, author, TLP markings, and confidence.
+
         Parameters
         ----------
         query : str
             The search term — an IOC value (IP, domain, URL, hash, email),
             a CVE ID (e.g. "CVE-2024-1234"), or a keyword to search for
             threat actors, malware, campaigns, or reports.
+            Can be empty when ``report_id`` is provided.
         query_type : str
             One of: ``auto``, ``ioc``, ``cve``, ``threat_actor``, ``malware``,
             ``campaign``, ``report``, ``attack_pattern``.
             Default ``auto`` detects IOCs and CVEs automatically, falls back
             to a broad STIX object search for keywords.
+        report_id : str
+            OpenCTI report UUID for deep fetch. When provided, returns the
+            full report with all contained STIX objects and relationships.
+            Overrides ``query`` and ``query_type``.
         """
         _require_scope("investigations:read")
 
@@ -1946,10 +1957,18 @@ def _register_tier1(mcp: FastMCP) -> None:
             return _json({"status": "error",
                           "message": "OpenCTI not configured (SOCAI_OPENCTI_KEY not set)"})
 
-        result = await asyncio.to_thread(
-            lambda: _query_opencti_inner(query, query_type, _opencti_lookup,
-                                         _detect_ioc_type, OPENCTI_KEY, OPENCTI_URL)
-        )
+        if report_id:
+            result = await asyncio.to_thread(
+                lambda: _opencti_report_detail(report_id, OPENCTI_KEY, OPENCTI_URL)
+            )
+        else:
+            if not query:
+                return _json({"status": "error",
+                              "message": "Either query or report_id must be provided"})
+            result = await asyncio.to_thread(
+                lambda: _query_opencti_inner(query, query_type, _opencti_lookup,
+                                             _detect_ioc_type, OPENCTI_KEY, OPENCTI_URL)
+            )
         return _json(result)
 
     @mcp.tool(title="Extract IOCs from Text", annotations={"readOnlyHint": True})
@@ -2067,6 +2086,172 @@ def _register_tier1(mcp: FastMCP) -> None:
         })
 
 
+def _opencti_report_detail(
+    report_id: str,
+    opencti_key: str,
+    opencti_url: str,
+) -> dict:
+    """Fetch a full OpenCTI report with contained STIX objects and metadata."""
+    import requests as _requests
+
+    headers = {"Authorization": f"Bearer {opencti_key}", "Content-Type": "application/json"}
+    graphql_url = f"{opencti_url}/graphql"
+
+    gql = """
+    query GetReport($id: String!) {
+      report(id: $id) {
+        id
+        entity_type
+        name
+        description
+        published
+        report_types
+        confidence
+        created_at
+        createdBy { name }
+        objectMarking { definition }
+        externalReferences {
+          edges { node { url source_name description } }
+        }
+        objects(first: 500) {
+          edges {
+            node {
+              ... on StixDomainObject {
+                id
+                entity_type
+                ... on Indicator {
+                  name
+                  pattern
+                  valid_from
+                  valid_until
+                  description
+                }
+                ... on ThreatActorGroup { name description aliases }
+                ... on ThreatActorIndividual { name description aliases }
+                ... on Malware { name description is_family malware_types }
+                ... on AttackPattern { name description x_mitre_id }
+                ... on Vulnerability { name description }
+                ... on Campaign { name description first_seen last_seen }
+                ... on Infrastructure { name description }
+                ... on IntrusionSet { name description }
+                ... on Report { name }
+              }
+              ... on StixCyberObservable {
+                id
+                entity_type
+                observable_value
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    try:
+        resp = _requests.post(
+            graphql_url, headers=headers,
+            json={"query": gql, "variables": {"id": report_id}},
+            timeout=20,
+        )
+        resp.raise_for_status()
+    except Exception as exc:
+        return {"provider": "opencti", "status": "error",
+                "report_id": report_id, "error": str(exc)}
+
+    data = resp.json()
+    if "errors" in data:
+        return {"provider": "opencti", "status": "api_error",
+                "report_id": report_id,
+                "message": data["errors"][0].get("message")}
+
+    report = data.get("data", {}).get("report")
+    if not report:
+        return {"provider": "opencti", "status": "not_found",
+                "report_id": report_id, "message": "Report not found"}
+
+    # Build result
+    result = {
+        "id": report.get("id"),
+        "type": report.get("entity_type"),
+        "name": report.get("name"),
+        "description": report.get("description"),
+        "published": report.get("published"),
+        "created_at": report.get("created_at"),
+        "report_types": report.get("report_types"),
+        "confidence": report.get("confidence"),
+        "created_by": report.get("createdBy", {}).get("name") if report.get("createdBy") else None,
+        "markings": [m.get("definition") for m in (report.get("objectMarking") or [])],
+        "opencti_link": f"{opencti_url}/dashboard/analyses/reports/{report.get('id')}",
+    }
+
+    # External references
+    ext_refs = []
+    for edge in (report.get("externalReferences") or {}).get("edges", []):
+        node = edge.get("node", {})
+        ref = {}
+        if node.get("source_name"):
+            ref["source_name"] = node["source_name"]
+        if node.get("url"):
+            ref["url"] = node["url"]
+        if node.get("description"):
+            ref["description"] = node["description"]
+        if ref:
+            ext_refs.append(ref)
+    if ext_refs:
+        result["external_references"] = ext_refs
+
+    # Contained STIX objects — grouped by type
+    objects_by_type: dict[str, list] = {}
+    for edge in (report.get("objects") or {}).get("edges", []):
+        node = edge.get("node", {})
+        etype = node.get("entity_type", "unknown")
+
+        obj: dict = {"id": node.get("id"), "type": etype}
+
+        # StixCyberObservable
+        if node.get("observable_value"):
+            obj["value"] = node["observable_value"]
+        # StixDomainObject fields
+        if node.get("name"):
+            obj["name"] = node["name"]
+        if node.get("description"):
+            obj["description"] = node["description"][:2000]
+        if node.get("pattern"):
+            obj["pattern"] = node["pattern"]
+        if node.get("valid_from"):
+            obj["valid_from"] = node["valid_from"]
+        if node.get("valid_until"):
+            obj["valid_until"] = node["valid_until"]
+        if node.get("aliases"):
+            obj["aliases"] = node["aliases"]
+        if node.get("x_mitre_id"):
+            obj["mitre_id"] = node["x_mitre_id"]
+        if node.get("is_family") is not None:
+            obj["is_family"] = node["is_family"]
+        if node.get("malware_types"):
+            obj["malware_types"] = node["malware_types"]
+        if node.get("first_seen"):
+            obj["first_seen"] = node["first_seen"]
+        if node.get("last_seen"):
+            obj["last_seen"] = node["last_seen"]
+
+        objects_by_type.setdefault(etype, []).append(obj)
+
+    if objects_by_type:
+        result["objects"] = objects_by_type
+        result["object_counts"] = {k: len(v) for k, v in objects_by_type.items()}
+        result["total_objects"] = sum(len(v) for v in objects_by_type.values())
+
+    return {
+        "provider": "opencti",
+        "status": "ok",
+        "query_type": "report_detail",
+        "report_id": report_id,
+        "report": result,
+    }
+
+
 def _query_opencti_inner(
     query: str,
     query_type: str,
@@ -2167,7 +2352,7 @@ def _query_opencti_inner(
                     "created_at": node.get("created_at"),
                 }
                 if node.get("description"):
-                    entry["description"] = node["description"][:300]
+                    entry["description"] = node["description"][:2000]
                 if node.get("x_mitre_id"):
                     entry["mitre_id"] = node["x_mitre_id"]
                 if node.get("malware_types"):
@@ -2587,6 +2772,78 @@ def _register_tier2(mcp: FastMCP) -> None:
                 analyst=analyst,
                 case_id=case_id,
             )
+        )
+        result["_next_step"] = (
+            "To prepare this article for OpenCTI posting, call "
+            "generate_opencti_package with article_id="
+            f"'{result.get('article_id', '')}'. This generates an HTML file "
+            "with labelled sections for report metadata, observable blocklists, "
+            "STIX indicators, and KQL/LogScale hunt queries."
+        )
+        return _json(result)
+
+    @mcp.tool(title="Publish Article to OpenCTI")
+    async def post_opencti_report(
+        article_id: str,
+        force: bool = False,
+    ) -> str:
+        """Use when the analyst wants to push a saved threat article to OpenCTI
+        as a STIX report — e.g. "publish this to CTI", "push to OpenCTI",
+        "post the article to CTI platform".
+
+        Builds a STIX 2.1 bundle from the article (report + indicators +
+        observables) and pushes it via OpenCTI's ``bundleCreate`` mutation.
+
+        **Dedup:** Automatically checks for duplicate reports in OpenCTI by
+        title similarity before publishing. Use ``force=True`` to override.
+
+        **Requires** ``SOCAI_OPENCTI_PUBLISH=1`` in environment.
+
+        After publishing, the OpenCTI report ID and URL are written back
+        to the article manifest so the same article cannot be posted twice.
+
+        Parameters
+        ----------
+        article_id : str
+            Article ID to publish (e.g. ``ART-20260324-0001``).
+        force : bool
+            Skip dedup check and publish regardless. Default False.
+        """
+        _require_scope("investigations:submit")
+
+        from tools.opencti_publish import publish_report
+        result = await asyncio.to_thread(
+            lambda: publish_report(article_id, force=force)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Generate OpenCTI Posting Package")
+    async def generate_opencti_package(
+        article_id: str,
+    ) -> str:
+        """Use when the analyst wants to prepare a saved threat article for
+        manual posting to OpenCTI — e.g. "generate the CTI package",
+        "prepare this for OpenCTI", "give me the posting package",
+        "I need to post this to CTI".
+
+        Reads a saved article, builds a STIX 2.1 bundle with IOC indicators
+        and hunt queries (KQL + LogScale), and generates an HTML file with
+        clearly labelled sections for each piece of data to paste into
+        OpenCTI: report metadata, observable blocklists, STIX indicators,
+        KQL hunt queries, LogScale hunt queries, and the full STIX bundle.
+
+        The HTML file is saved alongside the article and opened automatically.
+
+        Parameters
+        ----------
+        article_id : str
+            Article ID to generate the package for (e.g. ``ART-20260327-0001``).
+        """
+        _require_scope("investigations:read")
+
+        from tools.opencti_publish import generate_posting_package
+        result = await asyncio.to_thread(
+            lambda: generate_posting_package(article_id)
         )
         return _json(result)
 
