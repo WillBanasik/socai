@@ -19,6 +19,7 @@ build/
 # Client config (contains workspace IDs and real client names)
 config/client_entities.json
 config/workspace_tables.json
+config/sentinel_tables.json
 config/users.json
 
 # Client knowledge bases and playbooks (confidential per-client data)
