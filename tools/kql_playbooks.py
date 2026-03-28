@@ -64,6 +64,15 @@ def load_playbook(playbook_id: str) -> dict | None:
     }
 
 
+def validate_playbook_tables(playbook: dict, workspace: str = "") -> dict:
+    """Validate playbook's declared tables against schema registry."""
+    try:
+        from config.sentinel_schema import validate_tables
+        return validate_tables(playbook.get("tables", []), workspace=workspace)
+    except Exception:
+        return {"valid": True, "warnings": [], "missing_tables": [], "unknown_tables": []}
+
+
 def render_stage(playbook: dict, stage: int, params: dict[str, str]) -> str:
     """Render a specific stage's KQL with parameter substitution.
 

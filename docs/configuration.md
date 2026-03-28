@@ -138,7 +138,32 @@ The `platforms` object determines which security platforms are available for inv
 
 ## Sentinel Workspace IDs
 
-Workspace IDs for `az monitor log-analytics query -w <ID>` are in `config/client_entities.json`. Table availability per workspace: `config/workspace_tables.json` (git-ignored, keyed by workspace name). Discovery script: `scripts/discover_sentinel_schemas.py`. Workspace resolution in `scripts/run_kql.py` tries exact match, then uppercase, then lowercase.
+Workspace IDs for `az monitor log-analytics query -w <ID>` are in `config/client_entities.json`. Table availability per workspace: `config/workspace_tables.json` (git-ignored, keyed by workspace name). Full table schemas (column names and types): `config/sentinel_tables.json` (git-ignored). Discovery script: `scripts/discover_sentinel_schemas.py`. Workspace resolution in `scripts/run_kql.py` tries exact match, then uppercase, then lowercase.
+
+### Schema validation
+
+The schema registry (`config/sentinel_tables.json`) is used across the query stack for pre-flight table validation and prompt enrichment:
+
+- **Composite queries** (`tools/sentinel_queries.py`) — `render_query()` validates declared tables and returns `schema_warnings` in the result dict.
+- **Stage-based playbooks** (`tools/kql_playbooks.py`) — `validate_playbook_tables()` checks a playbook's declared tables against the registry and optionally against a specific workspace.
+- **MCP tools** (`run_kql`, `load_kql_playbook`, `run_kql_batch`) — pre-flight validation before Azure execution; warnings returned alongside results.
+- **MCP prompt** (`kql_investigation`) — injects column schemas for the playbook's tables so Claude Desktop sees exact column names and types.
+- **CLI** (`scripts/run_kql.py`) — optional pre-flight stderr warnings.
+
+Validation is always non-blocking — warnings only, never errors. If the registry file is missing, validation is silently skipped.
+
+### Regenerating client Sentinel references
+
+```bash
+# Regenerate config/clients/{client}/sentinel.md with column schemas from the registry
+python3 scripts/generate_sentinel_reference.py performanta
+
+# All clients
+python3 scripts/generate_sentinel_reference.py --all
+
+# Preview without writing
+python3 scripts/generate_sentinel_reference.py performanta --dry-run
+```
 
 ## Confluence (Read-Only)
 

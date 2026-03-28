@@ -141,6 +141,23 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
         ]
 
+        # Inject table schemas so the agent knows correct column names
+        if pb.get("tables"):
+            try:
+                from config.sentinel_schema import get_table_schema_summary, has_registry
+                if has_registry():
+                    lines.append("## Table Schemas (use these exact column names)")
+                    lines.append("")
+                    for table_name in pb["tables"]:
+                        summary = get_table_schema_summary(table_name, max_columns=20)
+                        if summary:
+                            lines.append(f"```")
+                            lines.append(summary)
+                            lines.append(f"```")
+                            lines.append("")
+            except Exception:
+                pass
+
         if pb.get("parameters"):
             lines.append("## Playbook Parameters")
             for param in pb["parameters"]:

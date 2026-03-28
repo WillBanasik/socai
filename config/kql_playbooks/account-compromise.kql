@@ -64,16 +64,9 @@
 //       conditional access policy modifications, and mailbox rule manipulation. Single
 //       union query across AuditLogs and OfficeActivity.
 //     run: always (post-compromise persistence check)
-//   - stage: 6
-//     name: Cloud sign-in detail (Defender fallback)
-//     description: >
-//       Fallback via AADSignInEventsBeta (M365 Defender connector). Use only when
-//       Stage 1 returns no rows — covers a different data pipeline.
-//     run: when Stage 1 returns no rows
 // tables:
 //   - SigninLogs
 //   - AADNonInteractiveUserSignInLogs
-//   - AADSignInEventsBeta
 //   - SecurityEvent
 //   - IdentityLogonEvents
 //   - IdentityDirectoryEvents
@@ -440,26 +433,3 @@ union
 | sort by TimeGenerated desc
 
 
-// ============================================================================
-// STAGE 6 — Cloud sign-in detail (Defender fallback)
-// ============================================================================
-// Parameters: upn, lookback
-// Run: ONLY when Stage 1 returns no rows (different data pipeline via M365
-// Defender connector). AADSignInEventsBeta covers both interactive and
-// non-interactive in a single table.
-
-AADSignInEventsBeta
-| where Timestamp > ago({{lookback}})
-| where AccountUpn =~ "{{upn}}"
-| summarize
-    Count = count(),
-    SuccessCount = countif(ErrorCode == 0),
-    FailCount = countif(ErrorCode != 0),
-    FirstSeen = min(Timestamp),
-    LastSeen = max(Timestamp),
-    Apps = make_set(Application, 15),
-    ErrorCodes = make_set(ErrorCode, 15),
-    Devices = make_set(DeviceName, 10)
-    by IPAddress, Country, City
-| extend FailRate = round(100.0 * FailCount / Count, 1)
-| sort by Count desc

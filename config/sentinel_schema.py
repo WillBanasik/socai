@@ -10,9 +10,11 @@ Returns table definitions in the format expected by generate_queries.py:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 _SCHEMA_PATH = Path(__file__).resolve().parent / "sentinel_tables.json"
+_WORKSPACE_PATH = Path(__file__).resolve().parent / "workspace_tables.json"
 
 # ---------------------------------------------------------------------------
 # Column → IOC-type classification rules
@@ -109,6 +111,7 @@ _CONTEXT_PRIORITY = [
 # Registry cache
 # ---------------------------------------------------------------------------
 _registry: dict | None = None
+_workspace_registry: dict | None = None
 
 
 def _load_registry() -> dict:
@@ -121,6 +124,19 @@ def _load_registry() -> dict:
     with open(_SCHEMA_PATH) as f:
         _registry = json.load(f)
     return _registry
+
+
+def _load_workspace_tables() -> dict:
+    """Load per-workspace table availability from workspace_tables.json."""
+    global _workspace_registry
+    if _workspace_registry is not None:
+        return _workspace_registry
+    if not _WORKSPACE_PATH.exists():
+        _workspace_registry = {}
+        return _workspace_registry
+    with open(_WORKSPACE_PATH) as f:
+        _workspace_registry = json.load(f)
+    return _workspace_registry
 
 
 def _build_project(table_cols: dict, ioc_fields: list[str], max_extra: int = 5) -> str:
@@ -326,3 +342,248 @@ def has_registry() -> bool:
     """Check if sentinel_tables.json exists and has data."""
     registry = _load_registry()
     return len(registry) > 0
+
+
+# ---------------------------------------------------------------------------
+# Workspace-scoped table lookup
+# ---------------------------------------------------------------------------
+
+def get_workspace_tables(workspace: str) -> set[str]:
+    """Return the set of table names available in a workspace.
+
+    ``workspace`` can be a workspace code (e.g. ``"performanta"``) or a
+    workspace GUID.  Returns an empty set if the workspace is unknown or
+    the workspace index file is missing.
+    """
+    ws = _load_workspace_tables()
+    if not ws:
+        return set()
+    # Try exact code match, then case-insensitive
+    entry = ws.get(workspace) or ws.get(workspace.lower())
+    if entry:
+        return set(entry.get("tables", []))
+    # Try GUID match (iterate values)
+    for info in ws.values():
+        if info.get("workspace_id") == workspace:
+            return set(info.get("tables", []))
+    return set()
+
+
+def resolve_workspace_code(workspace_id: str) -> str:
+    """Reverse-lookup workspace code from a GUID.  Returns ``""`` if unknown."""
+    ws = _load_workspace_tables()
+    for code, info in ws.items():
+        if info.get("workspace_id") == workspace_id:
+            return code
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# KQL table extraction
+# ---------------------------------------------------------------------------
+
+# Patterns to find table references in KQL.
+# Pattern 1: bare table at start of line followed by pipe on same or next line
+#   e.g.  "SigninLogs\n| where ..." or "SigninLogs | where ..."
+# Pattern 2: let assignment  "let Foo = TableName\n| where ..."
+# Pattern 3: join subquery   "join kind=inner ( TableName\n| ..."
+_KQL_TABLE_PATTERNS = [
+    re.compile(r'^\s*(\w+)\s*$\n\s*\|', re.MULTILINE),
+    re.compile(r'^\s*(\w+)\s*\|', re.MULTILINE),
+    re.compile(r'let\s+\w+\s*=\s*(\w+)\s*\n\s*\|', re.MULTILINE),
+    re.compile(r'let\s+\w+\s*=\s*(\w+)\s*\|', re.MULTILINE),
+    re.compile(r'\(\s*(\w+)\s*\n\s*\|', re.MULTILINE),
+    # union Table1, Table2 (ad-hoc analyst queries)
+    re.compile(r'union\s+(?:isfuzzy\s*=\s*\w+\s+)?(\w+)', re.MULTILINE),
+    re.compile(r'union\s+(?:isfuzzy\s*=\s*\w+\s+)?\w+\s*,\s*(\w+)', re.MULTILINE),
+]
+
+# KQL keywords and operators that should never be treated as table names
+_KQL_KEYWORDS = {
+    "let", "union", "join", "extend", "project", "where", "summarize",
+    "sort", "order", "take", "limit", "top", "count", "distinct",
+    "render", "evaluate", "parse", "mv", "search", "find", "print",
+    "datatable", "range", "materialize", "toscalar", "dynamic",
+    "true", "false", "and", "or", "not", "in", "has", "contains",
+    "between", "ago", "now", "datetime", "timespan", "isfuzzy",
+    "kind", "inner", "leftouter", "rightouter", "fullouter",
+    "by", "on", "asc", "desc", "with", "typeof", "pack_array",
+    "array_concat", "isnotempty", "isempty", "iff", "iif",
+    "tostring", "toint", "tolong", "todouble", "todecimal",
+    "make_set", "make_list", "make_set_if", "dcount", "min", "max",
+    "avg", "sum", "count_", "any", "arg_max", "arg_min",
+    "strcat", "substring", "split", "trim", "replace",
+    "datetime_diff", "format_datetime", "bin", "floor", "ceiling",
+}
+
+
+def extract_tables_from_kql(query: str) -> set[str]:
+    """Extract referenced Sentinel table names from a KQL query string.
+
+    Uses regex patterns to find candidate table names, then filters them
+    against the schema registry to eliminate ``let`` variable names and
+    KQL keywords.  If the registry is absent, returns candidates that
+    look like known Sentinel table patterns (capitalised, no underscores
+    except ``_CL`` suffix).
+    """
+    candidates: set[str] = set()
+    for pattern in _KQL_TABLE_PATTERNS:
+        for m in pattern.finditer(query):
+            name = m.group(1)
+            if name and name.lower() not in _KQL_KEYWORDS:
+                candidates.add(name)
+
+    if not candidates:
+        return set()
+
+    # Filter against known table names in the registry
+    registry = _load_registry()
+    if registry:
+        known = set(registry.keys())
+        return candidates & known
+
+    # No registry — best-effort heuristic: keep names that start with
+    # uppercase and are not common KQL variable names
+    return {c for c in candidates if c[0].isupper() and len(c) > 2}
+
+
+# ---------------------------------------------------------------------------
+# Table validation
+# ---------------------------------------------------------------------------
+
+def validate_tables(
+    tables: list[str],
+    workspace: str = "",
+) -> dict:
+    """Validate a list of table names against the schema registry.
+
+    Returns a dict with:
+      - ``valid``: always ``True`` (warnings are advisory, never blocking)
+      - ``warnings``: list of human-readable warning strings
+      - ``missing_tables``: tables not found in the target workspace
+      - ``unknown_tables``: tables not found in the universal registry
+    """
+    result = {
+        "valid": True,
+        "warnings": [],
+        "missing_tables": [],
+        "unknown_tables": [],
+    }
+
+    if not tables:
+        return result
+
+    registry = _load_registry()
+    if not registry:
+        result["warnings"].append(
+            "Schema registry not available — run scripts/discover_sentinel_schemas.py to enable validation."
+        )
+        return result
+
+    known = set(registry.keys())
+
+    for table in tables:
+        if table not in known:
+            result["unknown_tables"].append(table)
+            result["warnings"].append(
+                f"Table '{table}' not found in schema registry."
+            )
+
+    if workspace:
+        ws_tables = get_workspace_tables(workspace)
+        if ws_tables:
+            for table in tables:
+                if table in known and table not in ws_tables:
+                    result["missing_tables"].append(table)
+                    result["warnings"].append(
+                        f"Table '{table}' exists in registry but not in workspace '{workspace}' — query section will return 0 rows."
+                    )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Schema summary for prompt injection
+# ---------------------------------------------------------------------------
+
+_TYPE_SIMPLIFY = {
+    "System.String": "String",
+    "System.DateTime": "DateTime",
+    "System.Int32": "Int",
+    "System.Int64": "Long",
+    "System.Double": "Double",
+    "System.Boolean": "Bool",
+    "System.Guid": "Guid",
+    "System.Object": "Dynamic",
+    "System.SByte": "SByte",
+    "System.TimeSpan": "TimeSpan",
+    "string": "String",
+    "datetime": "DateTime",
+    "int": "Int",
+    "long": "Long",
+    "double": "Double",
+    "bool": "Bool",
+    "guid": "Guid",
+    "dynamic": "Dynamic",
+    "timespan": "TimeSpan",
+    "real": "Double",
+}
+
+# All IOC-classified fields (union of sets/keys)
+_ALL_IOC_FIELDS = (
+    _IP_FIELDS | _DOMAIN_FIELDS | _URL_FIELDS | _EMAIL_FIELDS | set(_HASH_FIELDS.keys())
+)
+
+
+def get_table_schema_summary(table: str, max_columns: int = 25) -> str:
+    """Return a compact text summary of a table's columns for prompt injection.
+
+    Columns are ordered by investigation relevance: context priority columns
+    first, then IOC fields, then remaining columns alphabetically.
+    Types are simplified (e.g. ``System.String`` → ``String``).
+
+    Returns an empty string if the table is not in the registry.
+    """
+    registry = _load_registry()
+    entry = registry.get(table)
+    if not entry:
+        return ""
+
+    columns = entry.get("columns", {})
+    if not columns:
+        return ""
+
+    # Build ordered column list: priority → IOC → alphabetical
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    for col in _CONTEXT_PRIORITY:
+        if col in columns and col not in seen:
+            ordered.append(col)
+            seen.add(col)
+
+    for col in sorted(_ALL_IOC_FIELDS):
+        if col in columns and col not in seen:
+            ordered.append(col)
+            seen.add(col)
+
+    for col in sorted(columns.keys()):
+        if col not in seen:
+            ordered.append(col)
+            seen.add(col)
+
+    total = len(ordered)
+    display = ordered[:max_columns]
+
+    def _simplify(t: str) -> str:
+        return _TYPE_SIMPLIFY.get(t, t.replace("System.", ""))
+
+    lines = []
+    desc = _table_description(table)
+    lines.append(f"{table} — {desc} ({total} columns)")
+    for col in display:
+        lines.append(f"  {col}: {_simplify(columns[col])}")
+    if total > max_columns:
+        lines.append(f"  ... +{total - max_columns} more columns")
+
+    return "\n".join(lines)

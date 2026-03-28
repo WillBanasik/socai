@@ -36,7 +36,6 @@
 //   - SigninLogs
 //   - CommonSecurityLog
 //   - SecurityAlert
-//   - AADSignInEventsBeta
 // ---
 
 
@@ -101,19 +100,6 @@ union
         User = "",
         Detail = strcat(Severity, " | ", AlertName),
         Extra = Description
-),
-(
-    AADSignInEventsBeta
-    | where TimeGenerated >= ago(lookback)
-    | where IPAddress in (ioc_list)
-    | project
-        SourceTable = "AADSignInEventsBeta",
-        TimeGenerated,
-        Indicator = IPAddress,
-        DeviceOrSource = "",
-        User = AccountUpn,
-        Detail = strcat("ErrorCode:", ErrorCode, " | ", Application),
-        Extra = ""
 )
 | sort by TimeGenerated desc
 | take 50

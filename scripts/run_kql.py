@@ -50,8 +50,19 @@ def _resolve_workspace(workspace_id: str | None, code: str | None) -> str:
         sys.exit(1)
 
 
-def run_kql(workspace_id: str, query: str, timeout: int = 120) -> list[dict]:
+def run_kql(workspace_id: str, query: str, timeout: int = 120, skip_validation: bool = False) -> list[dict]:
     """Execute KQL via az CLI with list-based subprocess (no shell)."""
+    if not skip_validation:
+        try:
+            from config.sentinel_schema import extract_tables_from_kql, validate_tables, has_registry
+            if has_registry():
+                tables = extract_tables_from_kql(query)
+                if tables:
+                    validation = validate_tables(list(tables))
+                    for w in validation.get("warnings", []):
+                        print(f"Schema warning: {w}", file=sys.stderr)
+        except Exception:
+            pass
     cmd = [
         "az", "monitor", "log-analytics", "query",
         "-w", workspace_id,

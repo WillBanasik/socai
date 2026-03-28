@@ -108,7 +108,7 @@ def render_query(
     for key, value in params.items():
         query = query.replace(f"{{{{{key}}}}}", value)
 
-    return {
+    result = {
         "scenario": scenario_id,
         "name": scenario["name"],
         "description": scenario["description"],
@@ -121,6 +121,16 @@ def render_query(
             "Missing section numbers in the output mean 0 results for that section."
         ),
     }
+
+    try:
+        from config.sentinel_schema import validate_tables
+        validation = validate_tables(scenario["tables"])
+        if validation.get("warnings"):
+            result["schema_warnings"] = validation["warnings"]
+    except Exception:
+        pass
+
+    return result
 
 
 def render_queries_parallel(

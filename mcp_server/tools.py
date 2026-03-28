@@ -51,6 +51,31 @@ def _check_workspace_boundary(workspace_id: str) -> None:  # noqa: ARG001
     """No-op — boundaries removed."""
 
 
+def _resolve_workspace_code_from_id(workspace_id: str) -> str:
+    """Reverse-lookup workspace code from GUID for schema validation."""
+    try:
+        from config.sentinel_schema import resolve_workspace_code
+        return resolve_workspace_code(workspace_id)
+    except Exception:
+        return ""
+
+
+def _validate_kql_schema(query: str, workspace_id: str = "") -> list[str]:
+    """Pre-flight schema validation for a KQL query.  Returns warning strings."""
+    try:
+        from config.sentinel_schema import extract_tables_from_kql, validate_tables, has_registry
+        if not has_registry():
+            return []
+        tables = extract_tables_from_kql(query)
+        if not tables:
+            return []
+        ws_code = _resolve_workspace_code_from_id(workspace_id) if workspace_id else ""
+        validation = validate_tables(list(tables), workspace=ws_code)
+        return validation.get("warnings", [])
+    except Exception:
+        return []
+
+
 def _ensure_case(
     case_id: str,
     *,
@@ -3518,10 +3543,15 @@ def _register_tier3(mcp: FastMCP) -> None:
         if "| take " not in q.lower() and "| limit " not in q.lower():
             q += f"\n| take {limit}"
 
+        schema_warnings = _validate_kql_schema(q, ws_id)
+
         rows = await asyncio.to_thread(lambda: _run_kql(ws_id, q, timeout=60))
         if rows is None:
             return _json({"error": "Query execution failed."})
-        return _json({"rows": rows[:limit], "row_count": len(rows), "truncated": len(rows) > limit})
+        result = {"rows": rows[:limit], "row_count": len(rows), "truncated": len(rows) > limit}
+        if schema_warnings:
+            result["schema_warnings"] = schema_warnings
+        return _json(result)
 
     @mcp.tool(title="Load KQL Playbook", annotations={"readOnlyHint": True})
     def load_kql_playbook(
@@ -3568,7 +3598,19 @@ def _register_tier3(mcp: FastMCP) -> None:
             return _json(pb)
 
         rendered = render_stage(pb, stage, params or {})
-        return rendered if rendered else _json({"error": f"Stage {stage} not found."})
+        if not rendered:
+            return _json({"error": f"Stage {stage} not found."})
+        result = {"query": rendered}
+        try:
+            from tools.kql_playbooks import validate_playbook_tables
+            from config.sentinel_schema import has_registry
+            if has_registry() and pb.get("tables"):
+                validation = validate_playbook_tables(pb)
+                if validation.get("warnings"):
+                    result["schema_warnings"] = validation["warnings"]
+        except Exception:
+            pass
+        return _json(result)
 
     @mcp.tool(title="Generate Sentinel Composite Query", annotations={"readOnlyHint": True})
     def generate_sentinel_query(
@@ -3698,8 +3740,12 @@ def _register_tier3(mcp: FastMCP) -> None:
                 q = query.rstrip().rstrip(";")
                 if "| take " not in q.lower() and "| limit " not in q.lower():
                     q += f"\n| take {limit}"
+                warnings = _validate_kql_schema(q, ws_id)
                 rows = run_kql(ws_id, q)
-                return {"query": query[:200], "row_count": len(rows), "rows": rows}
+                r: dict = {"query": query[:200], "row_count": len(rows), "rows": rows}
+                if warnings:
+                    r["schema_warnings"] = warnings
+                return r
             except Exception as exc:
                 return {"query": query[:200], "error": str(exc), "row_count": 0, "rows": []}
 
