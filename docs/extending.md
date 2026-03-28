@@ -42,7 +42,7 @@ Add entries to `_SUSPICIOUS_PATTERNS` in `tools/memory_guidance.py` with `patter
 
 ## New MCP Tool
 
-Add a `@mcp.tool()` handler in `mcp_server/tools.py` in the appropriate tier (`_register_tier1/2/3`). Add RBAC via `_require_scope()` at the top of the handler. If the tool needs orchestration (error handling, timeline logging), add a wrapper in `api/actions.py` following the `_run_action()` pattern.
+Add a `@mcp.tool()` handler in `mcp_server/tools.py` in the appropriate tier (`_register_tier1/2/3`). Add RBAC via `_require_scope()` at the top of the handler. If the tool needs orchestration (error handling, timeline logging), add a wrapper in `api/actions.py` following the `_run_action()` pattern. Every `except` block in action wrappers must call `log_error(case_id, step, error, *, severity)` from `tools.common` — never silently swallow exceptions with bare `except: pass`.
 
 **Important:** MCP tools must not make LLM API calls. Tools handle data gathering (API calls, file I/O, external integrations) and deterministic logic only. For anything requiring LLM reasoning, add an MCP prompt instead (see "New MCP Prompt" above).
 

@@ -587,7 +587,7 @@ python3 socai.py velociraptor Windows.EventLogs.Evtx.json --case IV_CASE_001
 
 ### Chat Tool
 
-`ingest_velociraptor` is available in both case-mode and session-mode chat. Upload Velociraptor exports via the sidebar, then the tool auto-processes them and optionally chains enrichment, EVTX correlation, anomaly detection, and timeline reconstruction.
+`ingest_velociraptor` is available in both case-mode and session-mode chat. Upload Velociraptor exports via the sidebar, then the tool auto-processes them and optionally chains enrichment, EVTX correlation, anomaly detection, and timeline reconstruction. Optional analysis steps (EVTX correlation, anomaly detection, timeline reconstruction) are individually error-resilient — failures are logged via `log_error()` to `registry/error_log.jsonl` without aborting the pipeline.
 
 ## MDE Investigation Package Ingest
 
@@ -646,7 +646,7 @@ python3 socai.py mde-package /path/to/mde_export/ --case IV_CASE_001 --no-analys
 
 ### Chat Tool
 
-`ingest_mde_package` is available in both case-mode and session-mode chat. Upload MDE investigation packages via the sidebar, then the tool auto-processes them and optionally chains the enrichment pipeline.
+`ingest_mde_package` is available in both case-mode and session-mode chat. Upload MDE investigation packages via the sidebar, then the tool auto-processes them and optionally chains the enrichment pipeline. Optional analysis steps (EVTX correlation, anomaly detection, timeline reconstruction) are individually error-resilient — failures are logged via `log_error()` to `registry/error_log.jsonl` without aborting the pipeline.
 
 ## Process Memory Dump Guidance & Analysis
 
@@ -683,7 +683,7 @@ python3 socai.py memory-analyse /path/to/lsass.dmp --case IV_CASE_001
 
 ### Chat Tools
 
-`memory_dump_guide` and `analyse_memory_dump` are available in both case-mode and session-mode chat.
+`memory_dump_guide` and `analyse_memory_dump` are available in both case-mode and session-mode chat. File read failures in guidance retrieval are logged via `log_error()` rather than silently swallowed.
 
 ## Disposable Browser Sessions
 

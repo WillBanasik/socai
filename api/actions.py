@@ -679,20 +679,23 @@ def ingest_velociraptor(case_id: str, run_analysis: bool = True) -> dict:
                 chains = evtx_result.get("chains", [])
                 if chains:
                     lines.append(f"EVTX: {len(chains)} attack chain(s) detected")
-            except Exception:
-                pass
+            except Exception as exc:
+                from tools.common import log_error
+                log_error(case_id, "ingest_velociraptor.evtx_correlate", str(exc), severity="warning")
 
             try:
                 from tools.detect_anomalies import detect_anomalies
                 detect_anomalies(case_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                from tools.common import log_error
+                log_error(case_id, "ingest_velociraptor.detect_anomalies", str(exc), severity="warning")
 
             try:
                 from tools.timeline_reconstruct import timeline_reconstruct
                 timeline_reconstruct(case_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                from tools.common import log_error
+                log_error(case_id, "ingest_velociraptor.timeline_reconstruct", str(exc), severity="warning")
 
             lines.append("Analysis pipeline complete.")
 
@@ -767,20 +770,23 @@ def ingest_mde_package(case_id: str, run_analysis: bool = True) -> dict:
                 chains = evtx_result.get("chains", [])
                 if chains:
                     lines.append(f"EVTX: {len(chains)} attack chain(s) detected")
-            except Exception:
-                pass
+            except Exception as exc:
+                from tools.common import log_error
+                log_error(case_id, "ingest_mde.evtx_correlate", str(exc), severity="warning")
 
             try:
                 from tools.detect_anomalies import detect_anomalies
                 detect_anomalies(case_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                from tools.common import log_error
+                log_error(case_id, "ingest_mde.detect_anomalies", str(exc), severity="warning")
 
             try:
                 from tools.timeline_reconstruct import timeline_reconstruct
                 timeline_reconstruct(case_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                from tools.common import log_error
+                log_error(case_id, "ingest_mde.timeline_reconstruct", str(exc), severity="warning")
 
             lines.append("Analysis pipeline complete.")
 
@@ -819,7 +825,9 @@ def memory_dump_guide(
         try:
             from pathlib import Path
             content = Path(guidance_path).read_text()
-        except Exception:
+        except Exception as exc:
+            from tools.common import log_error
+            log_error(case_id, "memory_dump_guide.read_guidance", str(exc), severity="warning")
             content = ""
 
         return {

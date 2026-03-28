@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import CASES_DIR
+from tools.common import utcnow
 
 _lock = threading.Lock()
 
@@ -37,7 +37,7 @@ def append(case_id: str, entry_type: str, data: dict) -> dict:
     entry_type: "analyst", "system", "action_start", "action_done", "action_error"
     """
     entry = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": utcnow(),
         "type": entry_type,
         **data,
     }

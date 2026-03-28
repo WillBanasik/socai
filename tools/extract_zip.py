@@ -86,8 +86,6 @@ def extract_zip(
                     data = zf.read(entry.filename, pwd=pwd_bytes)
                     dest.write_bytes(data)
                     digest = sha256_file(dest)
-                    audit("extract_file", str(dest), sha256=digest,
-                          extra={"case_id": case_id, "source_zip": str(zip_path)})
 
                     # Strings extraction
                     str_out = _extract_strings(dest)

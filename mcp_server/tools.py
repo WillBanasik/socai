@@ -567,8 +567,9 @@ def _register_tier1(mcp: FastMCP) -> None:
                 })
             elif isinstance(raw_results, dict):
                 enrichment_stats["providers_used"] = sorted({
-                    p for per_ioc in raw_results.values()
-                    if isinstance(per_ioc, dict) for p in per_ioc
+                    r.get("provider") for per_ioc in raw_results.values()
+                    if isinstance(per_ioc, list) for r in per_ioc
+                    if isinstance(r, dict) and r.get("provider")
                 })
 
         # Response actions
@@ -2178,7 +2179,7 @@ def _opencti_report_detail(
                 "report_id": report_id, "error": str(exc)}
 
     data = resp.json()
-    if "errors" in data:
+    if data.get("errors"):
         return {"provider": "opencti", "status": "api_error",
                 "report_id": report_id,
                 "message": data["errors"][0].get("message")}
@@ -2351,7 +2352,7 @@ def _query_opencti_inner(
         return {"provider": "opencti", "status": "error", "query": query, "error": str(exc)}
 
     data = resp.json()
-    if "errors" in data:
+    if data.get("errors"):
         return {"provider": "opencti", "status": "api_error", "query": query,
                 "message": data["errors"][0].get("message")}
 

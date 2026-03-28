@@ -79,7 +79,8 @@ Prompts handle: report generation, analytical reasoning, disposition analysis, q
 **Tool layer** (`tools/`) — stateless functions that do the actual work. Every tool (except `client_query.py`):
 - Takes `case_id` as a required parameter
 - Writes all outputs under `cases/<case_id>/` via `write_artefact()` from `tools/common.py`
-- Appends a SHA-256 + timestamp record to `registry/audit.log`
+- `write_artefact()` and `save_json()` automatically append a SHA-256 + timestamp record to `registry/audit.log` — never call `audit()` separately after these functions (it would create duplicate entries)
+- Every `except` block must call `log_error(case_id, step, error, *, severity)` — errors are logged to `registry/error_log.jsonl`
 - Returns a JSON-serialisable manifest dict
 
 ## Attack-Type Classification
