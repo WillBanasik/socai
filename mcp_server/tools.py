@@ -191,7 +191,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         from tools.common import get_client_config
         cfg = get_client_config(client_name)
         if not cfg:
-            # Fuzzy matching: try alias, substring, and domain patterns
+            # Fuzzy matching: try substring and domain patterns
             from config.settings import CLIENT_ENTITIES
             from tools.common import load_json
             try:
@@ -203,14 +203,9 @@ def _register_tier1(mcp: FastMCP) -> None:
             suggestions = []
             for ent in entities:
                 name = ent.get("name", "").lower()
-                alias = ent.get("alias", "").lower()
                 notes = ent.get("notes", "").lower()
-                # Exact alias match
-                if query == alias:
-                    cfg = get_client_config(ent["name"])
-                    break
-                # Substring match on name or alias
-                if query in name or name in query or query in alias:
+                # Substring match on name
+                if query in name or name in query:
                     suggestions.append(ent.get("name", ""))
                     continue
                 # Domain/keyword match against notes and known_infrastructure
@@ -219,9 +214,7 @@ def _register_tier1(mcp: FastMCP) -> None:
                     suggestions.append(ent.get("name", ""))
                     continue
 
-            if cfg:
-                pass  # Found via alias — fall through to normal handling
-            elif len(suggestions) == 1:
+            if len(suggestions) == 1:
                 # Single match — auto-resolve
                 cfg = get_client_config(suggestions[0])
             else:

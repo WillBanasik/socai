@@ -109,9 +109,7 @@ Client-specific response playbooks are stored in `config/clients/<client_name>.j
 
 **Schema:** See `config/client_playbook.example.json` for documented fields: `client_name`, `response[]`, `crown_jewels`, `contacts[]`, `escalation_matrix[]`.
 
-## Client Aliasing
-
-`SOCAI_ALIAS=1` enables alias/dealias cycle for LLM calls only — local artefacts always contain real names.
+## Client Configuration
 
 Config: `config/client_entities.json` (git-ignored) — unified `clients` list. Schema: `config/client_entities.example.json`.
 
@@ -120,8 +118,6 @@ Config: `config/client_entities.json` (git-ignored) — unified `clients` list. 
 | Field | Required | Description |
 |---|---|---|
 | `name` | Yes | Canonical client name (case-insensitive matching) |
-| `alias` | No | LLM alias for data minimisation |
-| `root` | No | `true` for prefix matching in alias/dealias |
 | `platforms` | No | Nested object mapping platform → config (see below) |
 | `workspace_id` | No | Legacy; migrated to `platforms.sentinel.workspace_id` |
 
@@ -139,10 +135,6 @@ Config: `config/client_entities.json` (git-ignored) — unified `clients` list. 
 ```
 
 The `platforms` object determines which security platforms are available for investigation of that client's incidents. Used by `lookup_client` (MCP tool), `socai://clients` (resource), workspace resolution in `run_kql`, and the `hitl_investigation` prompt (Phase 0 client gate).
-
-**Root vs exact:** `root: true` does prefix matching. Exact names do whole-word replacement.
-
-**Alias boundary:** Aliasing is an LLM privacy boundary only. All local artefacts contain real names. The alias/dealias cycle runs in: `security_arch_review.py`, `generate_mdr_report.py`, `fp_ticket.py`, `client_query.py`, `executive_summary.py`.
 
 ## Sentinel Workspace IDs
 
@@ -203,7 +195,7 @@ Disposable browser sessions require Docker installed and accessible.
 | Port | 7900 (noVNC) — must be free |
 | Image | `socai-browser:latest` — build with `docker build -t socai-browser:latest docker/browser/` |
 | Host tools | `tcpdump` (for pcap parsing on session stop) |
-| Network mode | `--network=host` (one session at a time) |
+| Network mode | `--network=host` (default) or `--network=container:gluetun` (VPN) |
 
 | Variable | Default | Description |
 |---|---|---|
@@ -211,8 +203,10 @@ Disposable browser sessions require Docker installed and accessible.
 | `SOCAI_BROWSER_IDLE_TIMEOUT` | `300` | Seconds of network inactivity before auto-stop |
 | `SOCAI_BROWSER_MAX_SESSION` | `3600` | Hard session duration ceiling (seconds) |
 | `SOCAI_BROWSER_DISCONNECT_GRACE` | `15` | Seconds after last noVNC viewer disconnects before auto-stop (0 = disabled) |
+| `SOCAI_BROWSER_VPN` | `0` | Set `1` to route through gluetun VPN container |
+| `SOCAI_VPN_CONTAINER` | `gluetun` | Container name for VPN network namespace |
 
-noVNC access: `http://127.0.0.1:7900` (no password).
+noVNC access: `http://127.0.0.1:7900` (no password). When using VPN mode, port 7900 must be published on the gluetun container instead.
 
 Session state files are stored in `browser_sessions/<session_id>.json`.
 
@@ -220,8 +214,50 @@ Session state files are stored in `browser_sessions/<session_id>.json`.
 
 See `docs/sandbox.md` for env vars, Docker setup, network modes, and safety details.
 
+## OPSEC Proxy (Mullvad VPN)
+
+Routes attacker-facing traffic through a VPN to protect the analyst's source IP. Uses [gluetun](https://github.com/qdm12/gluetun) as a WireGuard sidecar with Mullvad.
+
+### Quick start
+
+```bash
+# 1. Configure Mullvad credentials
+cp deploy/.env.vpn.example deploy/.env.vpn
+# Edit deploy/.env.vpn with your WireGuard private key + address
+
+# 2. Start gluetun
+docker compose -f deploy/docker-compose.vpn.yml up -d
+
+# 3. Verify
+curl -x http://127.0.0.1:8888 https://am.i.mullvad.net/connected
+
+# 4. Add to .env
+echo 'SOCAI_OPSEC_PROXY=http://127.0.0.1:8888' >> .env
+```
+
+### What goes through the VPN
+
+| Traffic | Route | Config |
+|---------|-------|--------|
+| `capture_urls` (Playwright + requests fallback) | VPN proxy | `SOCAI_OPSEC_PROXY` |
+| `web_search` (Brave/DDG) | VPN proxy | `SOCAI_OPSEC_PROXY` |
+| Sandbox detonation (`--network vpn`) | VPN container network | `SOCAI_VPN_CONTAINER` |
+| Browser sessions (`SOCAI_BROWSER_VPN=1`) | VPN container network | `SOCAI_VPN_CONTAINER` |
+| Enrichment APIs (VT, AbuseIPDB, Shodan, etc.) | Direct | — |
+| Sentinel KQL queries | Direct | — |
+| Confluence, OpenCTI | Direct | — |
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `SOCAI_OPSEC_PROXY` | _(empty)_ | HTTP proxy URL for Playwright/requests OPSEC traffic |
+| `SOCAI_VPN_CONTAINER` | `gluetun` | Docker container name for `--network=container:` mode |
+| `SOCAI_BROWSER_VPN` | `0` | Set `1` to route browser sessions through VPN container |
+| `SOCAI_SANDBOX_NETWORK` | `monitor` | Sandbox network mode: `monitor`, `isolate`, or `vpn` |
+
 ## Secret Config Files
 
-`config/client_entities.json` and `config/workspace_tables.json` are git-ignored (contain real client names and workspace GUIDs). `registry/alias_map.json` stores runtime alias mappings. Only `config/client_entities.example.json` is tracked.
+`config/client_entities.json` and `config/workspace_tables.json` are git-ignored (contain real client names and workspace GUIDs). Only `config/client_entities.example.json` is tracked.
 
 `config/users.json` contains bcrypt-hashed passwords — `chmod 600` and git-ignore. `config/roles.json` is safe to commit (no secrets — only role definitions and permission mappings).

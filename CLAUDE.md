@@ -94,11 +94,6 @@ All investigative output — conversational analysis, reports, case artefacts �
 ### Timestamps and utilities
 - Use `utcnow()` from `tools/common.py` — never `datetime.now()` or `datetime.utcnow()`
 
-### Client aliasing
-- `SOCAI_ALIAS=1` redacts client names in MCP prompts only; local artefacts stay real
-- Alias/dealias cycle used in: `security_arch_review.py`, `generate_mdr_report.py`, `fp_ticket.py`, `client_query.py`, `executive_summary.py`
-- `generate_report.py` has NO aliasing
-
 ### Report defanging
 - Malicious + suspicious IOCs are defanged in final reports via `defang_report()` in `tools/common.py`
 - Hashes and file paths are never defanged
@@ -115,7 +110,7 @@ Read these only when working on the relevant area:
 |-----|----------|
 | `docs/pipeline.md` | HITL workflow, tool sequence, auto-disposition, auto-close |
 | `docs/tools-reference.md` | All tool details: case memory, baselines, GeoIP, scheduler, web capture, phishing, enrichment, sandbox, forensics, etc. |
-| `docs/configuration.md` | Env vars, API keys, client aliasing config |
+| `docs/configuration.md` | Env vars, API keys, client config |
 | `docs/artefacts.md` | Complete file/artefact path reference table |
 | `docs/extending.md` | How to add new providers, tools, brands, detectors |
 | `docs/architecture.md` | System overview, data flow, tool contracts |

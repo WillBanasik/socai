@@ -4,7 +4,7 @@ tool: save_report
 Lightweight report persistence for client-side (Claude Desktop) generated reports.
 
 When the analyst's local Claude session generates a report using an MCP prompt,
-this tool handles the write-back: dealiasing, defanging, HTML conversion,
+this tool handles the write-back: defanging, HTML conversion,
 auto-close logic, audit trail, and manifest generation.
 
 No LLM call — all the "thinking" was done by the local session.
@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
 from tools.common import (
-    defang_report, get_alias_map, load_json, log_error, save_json,
+    defang_report, load_json, log_error, save_json,
     utcnow, write_report,
 )
 
@@ -128,11 +128,6 @@ def save_report_to_case(
             "case_id": case_id,
             "ts": utcnow(),
         }
-
-    # Dealias if aliasing is active
-    alias_map = get_alias_map()
-    if alias_map:
-        report_text = alias_map.dealias_text(report_text)
 
     # Defang malicious/suspicious IOCs
     if cfg["defang"]:

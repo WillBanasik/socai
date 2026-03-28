@@ -65,6 +65,12 @@ WHOISXML_KEY     = os.getenv("WHOISXML_API_KEY", "")
 # Web search fallback (Brave Search API; DuckDuckGo used if no key)
 BRAVE_SEARCH_KEY = os.getenv("SOCAI_BRAVE_SEARCH_KEY", "")
 
+# OPSEC proxy — routes attacker-facing traffic through VPN (Mullvad via gluetun).
+# Set to HTTP proxy URL (e.g. "http://127.0.0.1:8888") or leave empty to go direct.
+# Used by: web_capture, web_search, detect_phishing (Playwright + requests).
+# NOT used by: enrichment APIs, Sentinel, Confluence, OpenCTI (direct).
+OPSEC_PROXY = os.getenv("SOCAI_OPSEC_PROXY", "")
+
 # Enrichment performance
 ENRICH_CACHE_FILE = BASE_DIR / "registry" / "enrichment_cache.json"
 ENRICH_CACHE_TTL  = int(os.getenv("SOCAI_ENRICH_CACHE_TTL", "24"))   # hours; 0 to disable
@@ -95,9 +101,6 @@ SANDBOX_NETWORK_NAME      = os.getenv("SOCAI_SANDBOX_NETWORK_NAME", "socai_sandb
 # Campaign clustering
 CAMPAIGNS_FILE   = BASE_DIR / "registry" / "campaigns.json"
 
-# Client domain aliasing for data minimisation
-ALIAS_ENABLED     = os.getenv("SOCAI_ALIAS", "0") == "1"
-ALIAS_MAP_FILE    = BASE_DIR / "registry" / "alias_map.json"
 CLIENT_ENTITIES   = BASE_DIR / "config" / "client_entities.json"
 CLIENT_PLAYBOOKS_DIR = BASE_DIR / "config" / "clients"
 ROLES_FILE           = BASE_DIR / "config" / "roles.json"

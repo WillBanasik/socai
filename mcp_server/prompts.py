@@ -20,14 +20,6 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 
-def _get_alias_map_safe():
-    """Load alias map if aliasing is active, or None."""
-    try:
-        from tools.common import get_alias_map
-        return get_alias_map()
-    except Exception:
-        return None
-
 
 # Valid KQL playbook IDs and their human-readable names
 _KQL_PLAYBOOKS = {
@@ -639,9 +631,6 @@ def register_prompts(mcp: FastMCP) -> None:
             parts.append(f"## Analyst Notes\n{notes_path.read_text(encoding='utf-8')[:2000]}\n")
 
         context = "\n".join(parts)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
 
         return (
             f"# Evidence-Chain Disposition Analysis — Instructions\n\n"
@@ -717,9 +706,6 @@ def register_prompts(mcp: FastMCP) -> None:
             full_prompt += f"\n\n{query_ctx}"
 
         context = "\n".join(parts)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
 
         return (
             f"# Investigation Matrix — Instructions\n\n"
@@ -862,9 +848,6 @@ def register_prompts(mcp: FastMCP) -> None:
         # Build case context (reuse MDR context builder — it's the most comprehensive)
         from tools.generate_mdr_report import _build_context
         context = _build_context(case_id)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
 
         return (
             "# Response Plan Generation — Instructions\n\n"
@@ -982,9 +965,6 @@ def register_prompts(mcp: FastMCP) -> None:
         from tools.generate_pup_report import _SYSTEM_PROMPT as prompt
         from tools.generate_pup_report import _build_context
         context = _build_context(case_id)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
 
         return (
             f"# PUP/PUA Report Generation — Instructions\n\n"
@@ -1028,11 +1008,6 @@ def register_prompts(mcp: FastMCP) -> None:
         from tools.fp_ticket import _SYSTEM_PROMPT as prompt
         from tools.fp_ticket import _build_context
         context = _build_context(case_id)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
-            if alert_data:
-                alert_data = alias_map.alias_text(alert_data)
 
         parts = [
             f"# FP Closure Comment — Instructions\n\n",
@@ -1084,11 +1059,6 @@ def register_prompts(mcp: FastMCP) -> None:
         from tools.fp_tuning_ticket import _SYSTEM_PROMPT as prompt
         from tools.fp_tuning_ticket import _build_context
         context = _build_context(case_id)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
-            if alert_data:
-                alert_data = alias_map.alias_text(alert_data)
 
         parts = [
             f"# SIEM Tuning Ticket — Instructions\n\n",
@@ -1128,9 +1098,6 @@ def register_prompts(mcp: FastMCP) -> None:
         from tools.executive_summary import _SYSTEM_PROMPT as prompt
         from tools.executive_summary import _build_context
         context = _build_context(case_id)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
 
         return (
             f"# Executive Summary — Instructions\n\n"
@@ -1164,9 +1131,6 @@ def register_prompts(mcp: FastMCP) -> None:
         from tools.security_arch_review import _SYSTEM_PROMPT as prompt
         from tools.security_arch_review import _build_context
         context = _build_context(case_id)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
 
         return (
             f"# Security Architecture Review — Instructions\n\n"
@@ -1223,9 +1187,6 @@ def register_prompts(mcp: FastMCP) -> None:
         context_parts.append(f"```json\n{json.dumps(events, indent=2, default=str)}\n```\n")
 
         context = "\n".join(context_parts)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
 
         return (
             f"# Forensic Timeline Reconstruction — Instructions\n\n"
@@ -1304,9 +1265,6 @@ def register_prompts(mcp: FastMCP) -> None:
                 pass
 
         context = "\n".join(context_parts)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
 
         return (
             f"# EVTX Attack Chain Analysis — Instructions\n\n"
@@ -1432,9 +1390,6 @@ def register_prompts(mcp: FastMCP) -> None:
                 pass
 
         context = "\n".join(context_parts)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
 
         return (
             "# Phishing Page Assessment — Instructions\n\n"
@@ -1521,9 +1476,6 @@ def register_prompts(mcp: FastMCP) -> None:
             context_parts.append("## PE Analysis\nNo PE analysis data found. Run `analyse_pe` first.\n")
 
         context = "\n".join(context_parts)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
 
         return (
             f"# PE Malware Assessment — Instructions\n\n"
@@ -1611,9 +1563,6 @@ def register_prompts(mcp: FastMCP) -> None:
                 pass
 
         context = "\n".join(context_parts)
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            context = alias_map.alias_text(context)
 
         return (
             f"# CVE Contextualisation — Instructions\n\n"
@@ -1986,9 +1935,6 @@ def register_prompts(mcp: FastMCP) -> None:
         # Load artefact context (same data the server-side report would see)
         artefact_context = _build_context(case_id)
 
-        alias_map = _get_alias_map_safe()
-        if alias_map:
-            artefact_context = alias_map.alias_text(artefact_context)
 
         return (
             f"# MDR Report Generation — Instructions\n\n"

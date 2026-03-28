@@ -85,7 +85,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from config.settings import ALIAS_ENABLED, ALIAS_MAP_FILE, AUDIT_LOG, CLIENT_ENTITIES, ERROR_LOG
+from config.settings import AUDIT_LOG, CLIENT_ENTITIES, ERROR_LOG
 
 # Thread-safe lock for audit log appends (used when parallel agents write concurrently)
 _audit_lock = threading.Lock()
@@ -129,6 +129,30 @@ def get_session() -> requests.Session:
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     _thread_local.session = session
+    return session
+
+
+def get_opsec_session() -> requests.Session:
+    """Return a per-thread ``requests.Session`` routed through the OPSEC proxy.
+
+    Falls back to a normal session if ``SOCAI_OPSEC_PROXY`` is not set.
+    Use this for attacker-facing traffic (web captures, OSINT searches).
+    """
+    session: requests.Session | None = getattr(_thread_local, "opsec_session", None)
+    if session is not None:
+        return session
+    from config.settings import OPSEC_PROXY
+    session = requests.Session()
+    adapter = HTTPAdapter(
+        max_retries=_RETRY_STRATEGY,
+        pool_connections=_POOL_CONNECTIONS,
+        pool_maxsize=_POOL_MAXSIZE,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    if OPSEC_PROXY:
+        session.proxies = {"http": OPSEC_PROXY, "https": OPSEC_PROXY}
+    _thread_local.opsec_session = session
     return session
 
 
@@ -612,11 +636,15 @@ def log_error(
 def write_artefact(dest: Path, data: bytes | str, encoding: str = "utf-8") -> dict:
     """
     Write *data* to *dest*, compute SHA-256, audit, and return a manifest dict.
+
+    Uses atomic write (tmp + os.replace) to prevent corruption on crash.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(data, str):
         data = data.encode(encoding)
-    dest.write_bytes(data)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, dest)
     digest = sha256_bytes(data)
     audit("write_artefact", str(dest), sha256=digest)
     return {
@@ -669,172 +697,8 @@ def save_json(path: Path | str, data: dict | list, indent: int = 2) -> dict:
     return write_artefact(path, raw)
 
 
-# ---------------------------------------------------------------------------
-# Client domain aliasing for data minimisation
-# ---------------------------------------------------------------------------
-
-
-
-class AliasMap:
-    """Global bidirectional alias map for client name minimisation.
-
-    Supports two kinds of entries:
-    - **Roots**: a prefix (e.g. ``heidelberg``) with an alias word
-      (``stonebridge``). Any domain name starting with the root is aliased:
-      ``heidelbergmaterials.com`` → ``stonebridge-materials.com``.
-    - **Names**: exact name → alias word (e.g. ``example-client`` → ``riverton``).
-
-    TLDs and subdomains are preserved in both cases.
-    """
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._roots: list[dict] = []          # [{"root": ..., "alias": ...}]
-        self._names: dict[str, str] = {}      # real_name -> alias_word
-        self._reverse_names: dict[str, str] = {}  # alias_word -> real_name
-
-    # -- persistence --------------------------------------------------------
-
-    def load(self) -> None:
-        """Load from registry/alias_map.json."""
-        try:
-            data = load_json(ALIAS_MAP_FILE)
-        except FileNotFoundError:
-            return
-        with self._lock:
-            self._roots = data.get("roots", [])
-            self._names = data.get("names", {})
-            self._reverse_names = {v: k for k, v in self._names.items()}
-
-    def save(self) -> None:
-        """Persist to registry/alias_map.json. Audited."""
-        with self._lock:
-            data = {
-                "version": 2,
-                "roots": list(self._roots),
-                "names": dict(self._names),
-            }
-        save_json(ALIAS_MAP_FILE, data)
-
-    # -- registration -------------------------------------------------------
-
-    def register_root(self, root: str, alias: str) -> None:
-        """Register a hierarchical root prefix with its alias word."""
-        root, alias = root.lower().strip(), alias.lower().strip()
-        with self._lock:
-            if any(r["root"] == root for r in self._roots):
-                return
-            self._roots.append({"root": root, "alias": alias})
-
-    def register_name(self, name: str, alias: str) -> None:
-        """Register an exact client name with its alias word."""
-        name, alias = name.lower().strip(), alias.lower().strip()
-        with self._lock:
-            self._names[name] = alias
-            self._reverse_names[alias] = name
-
-    def register_from_config(self) -> None:
-        """Bulk-register from config/client_entities.json."""
-        try:
-            data = load_json(CLIENT_ENTITIES)
-        except FileNotFoundError:
-            return
-        for entry in data.get("clients", []):
-            alias = entry.get("alias", "")
-            if not alias or alias == "EDIT_ME":
-                continue
-            if entry.get("root"):
-                self.register_root(entry["name"], alias)
-            else:
-                self.register_name(entry["name"], alias)
-        self.save()
-
-    # -- alias / dealias ----------------------------------------------------
-
-    def alias_text(self, text: str) -> str:
-        """Replace client names with aliases, preserving TLDs and subdomains."""
-        with self._lock:
-            roots = list(self._roots)
-            names = dict(self._names)
-        if not roots and not names:
-            return text
-        # Root pass — longest root first to avoid partial matches
-        for entry in sorted(roots, key=lambda e: len(e["root"]), reverse=True):
-            root, alias = entry["root"], entry["alias"]
-            pat = _re.compile(
-                r'(?<![a-zA-Z0-9])' + _re.escape(root) + r'([a-z]*)'
-                + r'(?![a-zA-Z0-9])',
-                _re.IGNORECASE,
-            )
-            def _root_repl(m, _alias=alias):
-                suffix = m.group(1)
-                if suffix:
-                    return _alias + "-" + suffix
-                return _alias
-            text = pat.sub(_root_repl, text)
-        # Exact name pass — longest first
-        for name in sorted(names, key=len, reverse=True):
-            alias = names[name]
-            pat = _re.compile(
-                r'(?<![a-zA-Z0-9])' + _re.escape(name)
-                + r'(?![a-zA-Z0-9])',
-                _re.IGNORECASE,
-            )
-            text = pat.sub(alias, text)
-        return text
-
-    def dealias_text(self, text: str) -> str:
-        """Reverse: replace all aliases back to real client names."""
-        with self._lock:
-            roots = list(self._roots)
-            reverse_names = dict(self._reverse_names)
-        if not roots and not reverse_names:
-            return text
-        # Reverse root pass — longest alias first
-        for entry in sorted(roots, key=lambda e: len(e["alias"]), reverse=True):
-            root, alias = entry["root"], entry["alias"]
-            pat = _re.compile(
-                r'(?<![a-zA-Z0-9])' + _re.escape(alias)
-                + r'(-[a-z]+)?'
-                + r'(?![a-zA-Z0-9])',
-                _re.IGNORECASE,
-            )
-            def _root_repl(m, _root=root):
-                suffix = m.group(1)
-                if suffix:
-                    return _root + suffix[1:]   # strip leading dash
-                return _root
-            text = pat.sub(_root_repl, text)
-        # Reverse exact name pass
-        for alias_word in sorted(reverse_names, key=len, reverse=True):
-            real_name = reverse_names[alias_word]
-            pat = _re.compile(
-                r'(?<![a-zA-Z0-9])' + _re.escape(alias_word)
-                + r'(?![a-zA-Z0-9])',
-                _re.IGNORECASE,
-            )
-            text = pat.sub(real_name, text)
-        return text
-
 
 # ---------------------------------------------------------------------------
 # Model tiering removed — all LLM reasoning handled by local Claude Desktop
 # agent via MCP prompts.  get_model() and related config no longer exist.
 # ---------------------------------------------------------------------------
-
-
-_alias_map_singleton: AliasMap | None = None
-_alias_map_init_lock = threading.Lock()
-
-
-def get_alias_map() -> AliasMap | None:
-    """Return loaded AliasMap if SOCAI_ALIAS=1, else None. Singleton."""
-    if not ALIAS_ENABLED:
-        return None
-    global _alias_map_singleton
-    with _alias_map_init_lock:
-        if _alias_map_singleton is None:
-            _alias_map_singleton = AliasMap()
-            _alias_map_singleton.load()
-            _alias_map_singleton.register_from_config()
-        return _alias_map_singleton
