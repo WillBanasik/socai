@@ -78,6 +78,7 @@ SANDBOX_MEMORY_LIMIT = os.getenv("SOCAI_SANDBOX_MEMORY", "512m")
 SANDBOX_CPU_LIMIT = os.getenv("SOCAI_SANDBOX_CPUS", "1.0")
 SANDBOX_DEFAULT_NETWORK = os.getenv("SOCAI_SANDBOX_NETWORK", "monitor")
 SANDBOX_NETWORK_NAME = os.getenv("SOCAI_SANDBOX_NETWORK_NAME", "socai_sandbox_net")
+SANDBOX_VPN_CONTAINER = os.getenv("SOCAI_VPN_CONTAINER", "gluetun")
 
 CONTAINER_PREFIX = "socai_sandbox_"
 SESSIONS_DIR = Path(__file__).resolve().parent.parent / "sandbox_sessions"
@@ -207,6 +208,8 @@ def _start_container(
     # Network configuration
     if network_mode == "isolate":
         network_args = ["--network=none"]
+    elif network_mode == "vpn":
+        network_args = [f"--network=container:{SANDBOX_VPN_CONTAINER}"]
     else:
         _ensure_network()
         network_args = [f"--network={SANDBOX_NETWORK_NAME}"]

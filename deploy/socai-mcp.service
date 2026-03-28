@@ -1,0 +1,43 @@
+# systemd user service for the socai MCP server.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   ln -s /home/will/socai/deploy/socai-mcp.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now socai-mcp
+#
+# Logs:
+#   journalctl --user -u socai-mcp -f
+#
+# Health check:
+#   curl -s http://127.0.0.1:8001/healthz | python3 -m json.tool
+
+[Unit]
+Description=socai MCP server
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+WorkingDirectory=/home/will/socai
+ExecStart=/usr/bin/python3 -m mcp_server
+EnvironmentFile=-/home/will/socai/.env
+Environment=SOCAI_MCP_HOST=127.0.0.1
+
+# Auto-restart on crash, 3s backoff
+Restart=on-failure
+RestartSec=3
+
+# Watchdog: server must ping every 30s or systemd restarts it
+WatchdogSec=30
+
+# Resource limits
+LimitNOFILE=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=socai-mcp
+
+[Install]
+WantedBy=default.target

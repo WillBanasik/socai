@@ -1,5 +1,6 @@
 # Secrets
 .env
+deploy/.env.vpn
 
 # Case data and outputs
 cases/

@@ -21,7 +21,7 @@ from urllib.parse import quote_plus
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import BRAVE_SEARCH_KEY
-from tools.common import get_session, log_error
+from tools.common import get_opsec_session, log_error
 
 _TIMEOUT = 15
 _DEFAULT_MAX_RESULTS = 10
@@ -39,7 +39,7 @@ _UA = (
 
 def _brave_search(query: str, max_results: int) -> list[dict]:
     """Search via Brave Search API (requires key)."""
-    resp = get_session().get(
+    resp = get_opsec_session().get(
         "https://api.search.brave.com/res/v1/web/search",
         headers={
             "Accept": "application/json",
@@ -70,7 +70,7 @@ def _ddg_search(query: str, max_results: int) -> list[dict]:
     """Search via DuckDuckGo HTML (no API key required)."""
     from bs4 import BeautifulSoup
 
-    resp = get_session().get(
+    resp = get_opsec_session().get(
         "https://html.duckduckgo.com/html/",
         params={"q": query},
         headers={"User-Agent": _UA},

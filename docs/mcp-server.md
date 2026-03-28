@@ -358,6 +358,8 @@ mcp_server/
     tools.py           # 88 MCP tool wrappers
     resources.py       # 30 MCP resource implementations
     prompts.py         # 21 MCP prompt implementations
+    health.py          # /healthz liveness probe (scheduler, filesystem, uptime)
+    watchdog.py        # systemd watchdog integration (sd_notify, WATCHDOG=1 loop)
     usage.py           # Tool invocation logging (JSONL + stderr); emits tool_call,
                        #   tool_result, tool_error events with result previews
     logging_config.py  # Structured JSONL logger (RotatingFileHandler, 10 MB × 3 backups)
@@ -448,12 +450,51 @@ location / {
 }
 ```
 
-### Server startup
+### Server startup (systemd — recommended)
 
 ```bash
-# Bind to localhost only (reverse proxy handles external traffic)
+# Install the systemd user service (auto-restart + watchdog)
+mkdir -p ~/.config/systemd/user
+ln -s /home/will/socai/deploy/socai-mcp.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now socai-mcp
+
+# View logs
+journalctl --user -u socai-mcp -f
+
+# Health check
+curl -s http://127.0.0.1:8001/healthz | python3 -m json.tool
+```
+
+The service unit (`deploy/socai-mcp.service`) provides:
+- **Auto-restart** on crash (3s backoff)
+- **Watchdog** (30s) — systemd restarts the server if it stops responding (deadlock, GIL contention)
+- **sd_notify** readiness — `Type=notify` so systemd knows when the server is actually serving
+- **Boot start** via `enable`
+
+For manual startup without systemd:
+
+```bash
 SOCAI_MCP_HOST=127.0.0.1 python3 -m mcp_server
 ```
+
+### Health endpoint
+
+`GET /healthz` returns a JSON liveness probe (no auth required):
+
+```json
+{
+  "status": "ok",
+  "pid": 12345,
+  "uptime_s": 3600,
+  "checks": {
+    "scheduler": {"ok": true, "detail": "alive"},
+    "filesystem": {"ok": true, "detail": "writable"}
+  }
+}
+```
+
+Returns `200` when healthy, `503` when degraded (scheduler dead or filesystem read-only). The systemd watchdog uses the same checks — if any fail, watchdog pings stop and systemd restarts the server.
 
 ### Security checklist
 

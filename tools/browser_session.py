@@ -61,6 +61,8 @@ from tools.common import log_error, save_json, utcnow, write_artefact
 DOCKER_IMAGE = os.environ.get("SOCAI_BROWSER_IMAGE", "socai-browser:latest")
 CONTAINER_PREFIX = "socai_browser_"
 SHM_SIZE = "2g"
+BROWSER_VPN_CONTAINER = os.environ.get("SOCAI_VPN_CONTAINER", "gluetun")
+BROWSER_USE_VPN = os.environ.get("SOCAI_BROWSER_VPN", "0") == "1"
 
 # noVNC port — only port needed (no Selenium, no CDP)
 NOVNC_PORT = 7900
@@ -154,11 +156,18 @@ def _start_container(session_id: str, url: str, telemetry_dir: Path | None = Non
     """
     name = _container_name(session_id)
 
+    # VPN mode: route through gluetun container, expose noVNC via port publish.
+    # Host mode: direct network access (default for local use without VPN).
+    if BROWSER_USE_VPN:
+        network_args = [f"--network=container:{BROWSER_VPN_CONTAINER}"]
+    else:
+        network_args = ["--network=host"]
+
     cmd = [
         "docker", "run", "--rm", "-d",
         "--name", name,
         "--shm-size", SHM_SIZE,
-        "--network=host",
+        *network_args,
         "--cap-add=NET_RAW",   # tcpdump needs raw socket access
         "--cap-add=SYS_ADMIN", # Chrome sandbox needs user namespaces
         "-e", f"START_URL={url}",

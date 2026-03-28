@@ -26,8 +26,9 @@ Environment variables (set in `.env` or shell):
 | `SOCAI_SANDBOX_MAX_TIMEOUT` | `600` | Maximum allowed timeout |
 | `SOCAI_SANDBOX_MEMORY` | `512m` | Container memory limit |
 | `SOCAI_SANDBOX_CPUS` | `1.0` | Container CPU limit |
-| `SOCAI_SANDBOX_NETWORK` | `monitor` | Default network mode |
+| `SOCAI_SANDBOX_NETWORK` | `monitor` | Default network mode (`monitor`, `isolate`, or `vpn`) |
 | `SOCAI_SANDBOX_NETWORK_NAME` | `socai_sandbox_net` | Docker bridge network name |
+| `SOCAI_VPN_CONTAINER` | `gluetun` | Container name for `vpn` network mode |
 
 ## Usage
 
@@ -127,7 +128,7 @@ Guard rails:
 | Risk | Mitigation |
 |---|---|
 | Container escape | `--cap-drop=ALL` (only SYS_PTRACE + NET_RAW added), `--security-opt=no-new-privileges`, non-root user, default seccomp profile |
-| Network egress | Custom bridge with no gateway (honeypot mode); `--network=none` (isolate mode) |
+| Network egress | Custom bridge with no gateway (honeypot mode); `--network=none` (isolate); `--network=container:gluetun` (vpn — routes through Mullvad VPN) |
 | Disk exhaustion | `--tmpfs` with size limits: workspace 200 MB, tmp 100 MB, telemetry 300 MB |
 | Fork bomb | `--pids-limit=256` |
 | Resource exhaustion | `--cpus=1.0`, `--memory=512m` |

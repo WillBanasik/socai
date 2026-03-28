@@ -274,6 +274,10 @@ async def _socai_lifespan(server: FastMCP):
     global _server_start_time
     _server_start_time = time.monotonic()
 
+    # Share start time with health module
+    from mcp_server import health as _health_mod
+    _health_mod._server_start_time = _server_start_time
+
     _check_stale_pid()
     _reap_orphaned_browsers()
     _write_pid()
@@ -286,9 +290,17 @@ async def _socai_lifespan(server: FastMCP):
     from tools.scheduler import start_scheduler, stop_scheduler
     start_scheduler()
 
+    # Systemd watchdog + readiness notification
+    import asyncio
+    from mcp_server.watchdog import sd_notify, watchdog_loop
+    sd_notify("READY=1")
+    _wd_task = asyncio.create_task(watchdog_loop())
+
     try:
         yield {}
     finally:
+        _wd_task.cancel()
+        sd_notify("STOPPING=1")
         stop_scheduler()
         uptime_s = int(time.monotonic() - _server_start_time)
         mcp_log("server_stop", reason="shutdown", pid=os.getpid(), uptime_s=uptime_s)
@@ -373,7 +385,6 @@ def _install_connection_logging(server: FastMCP) -> None:
     def patched_sse_app(*args, **kwargs):
         app = original_sse_app(*args, **kwargs)
 
-        from starlette.middleware import Middleware
         from starlette.types import ASGIApp, Receive, Scope, Send
 
         class ConnectionLoggingMiddleware:
@@ -410,6 +421,19 @@ def _install_connection_logging(server: FastMCP) -> None:
 
         # Wrap the app with our middleware
         return ConnectionLoggingMiddleware(app)
+
+    server.sse_app = patched_sse_app
+
+
+def _install_health_endpoint(server: FastMCP) -> None:
+    """Patch sse_app to intercept /healthz before the MCP transport."""
+    from mcp_server.health import HealthMiddleware
+
+    original_sse_app = server.sse_app
+
+    def patched_sse_app(*args, **kwargs):
+        app = original_sse_app(*args, **kwargs)
+        return HealthMiddleware(app)
 
     server.sse_app = patched_sse_app
 
@@ -465,8 +489,12 @@ def create_mcp_server(*, transport: str = MCP_TRANSPORT) -> FastMCP:
     from mcp_server.usage import install_usage_watcher
     install_usage_watcher(server)
 
-    # Install SSE connection tracking for network transports
+    # Install SSE connection tracking and health endpoint for network transports
     if is_network and transport == "sse":
+        try:
+            _install_health_endpoint(server)
+        except Exception:
+            mcp_log("health_middleware_skip", note="could not install health endpoint")
         try:
             _install_connection_logging(server)
         except Exception:
@@ -483,6 +511,10 @@ def main() -> None:
     """Entry point for ``python -m mcp_server``."""
     global _server_start_time
     _server_start_time = time.monotonic()
+
+    # Share start time with health module
+    from mcp_server import health as _health_mod
+    _health_mod._server_start_time = _server_start_time
 
     setup_mcp_logger()
     _install_signal_handlers()
@@ -510,9 +542,19 @@ def main() -> None:
     else:
         print(f"socai MCP server starting on {MCP_HOST}:{MCP_PORT} ({transport})")
 
+    # Start background scheduler (GeoIP refresh, baselines, case memory)
+    from tools.scheduler import start_scheduler, stop_scheduler
+    start_scheduler()
+
+    # Notify systemd we're ready (no-op if not under systemd)
+    from mcp_server.watchdog import sd_notify
+    sd_notify("READY=1")
+
     try:
         server.run(transport=transport, mount_path=MCP_MOUNT_PATH)
     finally:
+        sd_notify("STOPPING=1")
+        stop_scheduler()
         uptime_s = int(time.monotonic() - _server_start_time) if _server_start_time else 0
         mcp_log("server_stop", reason="shutdown", pid=os.getpid(), uptime_s=uptime_s)
         _remove_pid()

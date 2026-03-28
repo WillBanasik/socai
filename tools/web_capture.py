@@ -115,8 +115,12 @@ class _BrowserPool:
         self._teardown()
 
         from playwright.sync_api import sync_playwright  # type: ignore
+        from config.settings import OPSEC_PROXY
+        launch_kwargs: dict = {"headless": True}
+        if OPSEC_PROXY:
+            launch_kwargs["proxy"] = {"server": OPSEC_PROXY}
         self._sync_pw = sync_playwright().start()
-        self._sync_browser = self._sync_pw.chromium.launch(headless=True)
+        self._sync_browser = self._sync_pw.chromium.launch(**launch_kwargs)
         self._use_count = 0
         self._start_reaper()
 
@@ -300,10 +304,10 @@ def _capture_with_requests(url: str) -> dict:
     Returns capture dict.
     """
     from bs4 import BeautifulSoup  # type: ignore
-    from tools.common import get_session
+    from tools.common import get_opsec_session
 
     headers = {"User-Agent": CAPTURE_UA}
-    resp = get_session().get(
+    resp = get_opsec_session().get(
         url,
         headers=headers,
         timeout=CAPTURE_TIMEOUT,
@@ -559,13 +563,13 @@ def _try_pdf_download(final_url: str, html: str, out_dir: Path) -> dict | None:
         return None
 
     try:
-        from tools.common import get_session
+        from tools.common import get_opsec_session
         headers = {
             "User-Agent": CAPTURE_UA,
             "Referer": final_url,
             "Accept": "application/pdf,*/*",
         }
-        resp = get_session().get(pdf_url, headers=headers, timeout=30, allow_redirects=True)
+        resp = get_opsec_session().get(pdf_url, headers=headers, timeout=30, allow_redirects=True)
         if resp.status_code != 200:
             return None
         ct = resp.headers.get("content-type", "")
@@ -889,7 +893,11 @@ async def _async_web_capture_batch(urls: list[str], case_id: str) -> list[dict]:
     semaphore = asyncio.Semaphore(_BATCH_MAX_CONCURRENT)
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        from config.settings import OPSEC_PROXY
+        launch_kwargs: dict = {"headless": True}
+        if OPSEC_PROXY:
+            launch_kwargs["proxy"] = {"server": OPSEC_PROXY}
+        browser = await pw.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
             user_agent=CAPTURE_UA,
             extra_http_headers={"Accept-Language": "en-GB,en;q=0.9"},
