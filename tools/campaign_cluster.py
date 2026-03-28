@@ -41,8 +41,7 @@ _BENIGN_DOMAINS: set[str] = {
     "github.com", "google.com", "microsoft.com", "cloudflare.com",
     "amazonaws.com", "azure.com", "office.com", "office365.com",
     "windows.net", "live.com", "outlook.com", "protection.outlook.com",
-    # Org's own domain
-    "example-client.com",
+    # Org's own domain — add yours here or via SOCAI_CLEAN_DOMAINS env var
     # Threat-intel / research platforms (appear when crawler follows links)
     "virustotal.com", "hybrid-analysis.com", "otx.alienvault.com",
     "attack.mitre.org", "malwarebazaar.abuse.ch",

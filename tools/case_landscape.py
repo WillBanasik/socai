@@ -24,7 +24,7 @@ Usage:
     from tools.case_landscape import assess_landscape
     result = assess_landscape()           # full landscape
     result = assess_landscape(days=7)     # last 7 days only
-    result = assess_landscape(client="example-client")  # scoped to client
+    result = assess_landscape(client="acme-corp")  # scoped to client
 """
 from __future__ import annotations
 

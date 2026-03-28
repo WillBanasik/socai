@@ -50,7 +50,7 @@ INTEZER_KEY      = os.getenv("INTEZER_API_KEY", "")
 URLSCAN_KEY      = os.getenv("URLSCAN_API_KEY", "")
 PROXYCHECK_KEY   = os.getenv("PROXYCHECK_API_KEY", "")
 OPENCTI_KEY      = os.getenv("OPENCTI_API_KEY", "")
-OPENCTI_URL      = os.getenv("OPENCTI_URL", "https://opencti.example.com")
+OPENCTI_URL      = os.getenv("OPENCTI_URL", "")
 
 # Optional key for higher rate limits (keyless tier available but heavily rate-limited)
 EMAILREP_KEY     = os.getenv("EMAILREP_API_KEY", "")
@@ -156,7 +156,7 @@ CONFLUENCE_SPACE_KEY = os.getenv("CONFLUENCE_SPACE_KEY", "")
 # Cyberint (read-only alert query)
 # ---------------------------------------------------------------------------
 CYBERINT_API_KEY = os.getenv("CYBERINT_API_KEY", "")
-CYBERINT_API_URL = os.getenv("CYBERINT_API_URL", "https://cyberint.example.com")
+CYBERINT_API_URL = os.getenv("CYBERINT_API_URL", "")
 
 # ---------------------------------------------------------------------------
 # Browser pool (Playwright reuse)

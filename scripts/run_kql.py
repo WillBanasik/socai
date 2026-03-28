@@ -77,7 +77,7 @@ def run_kql(workspace_id: str, query: str, timeout: int = 120) -> list[dict]:
 def main():
     parser = argparse.ArgumentParser(description="Run KQL against Azure Log Analytics")
     parser.add_argument("-w", "--workspace-id", help="Log Analytics workspace ID")
-    parser.add_argument("--code", help="Workspace name (e.g. example-client) — resolved from config")
+    parser.add_argument("--code", help="Workspace name (e.g. acme-corp) — resolved from config")
     parser.add_argument("-f", "--file", help="Path to .kql file (reads stdin if omitted)")
     parser.add_argument("--timeout", type=int, default=120, help="Query timeout in seconds")
     args = parser.parse_args()

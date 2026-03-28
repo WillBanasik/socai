@@ -889,7 +889,7 @@ def slide_per_environment(prs):
                  "scripts/discover_sentinel_schemas.py. When --tables is provided, "
                  "queries are scoped to only confirmed tables in the target workspace — no queries "
                  "for tables that don't exist in the target environment. "
-                 "Workspace catalogued: example-client.",
+                 "Workspace catalogued: <client>.",
                  font_size=Pt(9.5), color=LIGHT_GREY)
 
     _footer(sl)

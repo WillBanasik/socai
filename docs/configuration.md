@@ -45,7 +45,7 @@ All LLM reasoning (report generation, analytical judgement, disposition analysis
 | `URLSCAN_API_KEY` | URLScan.io | domain, URL |
 | `PROXYCHECK_API_KEY` | proxycheck.io | IPv4 |
 | `OPENCTI_API_KEY` | OpenCTI | IPv4, domain, URL, hash, email, CVE |
-| `OPENCTI_URL` | `https://opencti.example.com` | Override for different instance |
+| `OPENCTI_URL` | OpenCTI instance URL | Required if using OpenCTI enrichment |
 | `OTX_API_KEY` | AlienVault OTX | IPv4, domain, URL, MD5, SHA1, SHA256 |
 | `HYBRID_ANALYSIS_API_KEY` | Hybrid Analysis | SHA256 only (overview endpoint) |
 | `WHOISXML_API_KEY` | WHOISXML API | domain (age, registrant, newly-registered flag) |
@@ -138,7 +138,7 @@ The `platforms` object determines which security platforms are available for inv
 
 ## Sentinel Workspace IDs
 
-Workspace IDs for `az monitor log-analytics query -w <ID>` are in `config/client_entities.json`. Table availability per workspace: `config/workspace_tables.json` (git-ignored, keyed by workspace name e.g. `example-client`). Discovery script: `scripts/discover_sentinel_schemas.py`. Workspace resolution in `scripts/run_kql.py` tries exact match, then uppercase, then lowercase.
+Workspace IDs for `az monitor log-analytics query -w <ID>` are in `config/client_entities.json`. Table availability per workspace: `config/workspace_tables.json` (git-ignored, keyed by workspace name). Discovery script: `scripts/discover_sentinel_schemas.py`. Workspace resolution in `scripts/run_kql.py` tries exact match, then uppercase, then lowercase.
 
 ## Confluence (Read-Only)
 
@@ -177,7 +177,7 @@ Read-only integration with the Cyberint threat intelligence platform for browsin
 | Env var | Purpose |
 |---------|---------|
 | `CYBERINT_API_KEY` | `access_token` cookie value from an authenticated Cyberint session |
-| `CYBERINT_API_URL` | API base URL (default `https://cyberint.example.com`) |
+| `CYBERINT_API_URL` | API base URL (set in `.env`) |
 
 **Usage:** `tools/cyberint_read.py` provides `list_alerts()`, `get_alert()`, `get_alert_metadata()`, `get_alert_attachment()`, `get_alert_indicator()`, `get_alert_analysis_report()`, `get_risk_scores()`. MCP tools: `query_cyberint_alerts`, `cyberint_alert_artefact`, `cyberint_metadata`. CLI: `socai.py cyberint`, `socai.py cyberint-metadata`, `socai.py cyberint-risk`.
 
