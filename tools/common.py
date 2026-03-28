@@ -667,7 +667,7 @@ def load_json(path: Path | str) -> dict | list:
 def get_client_config(client_name: str) -> dict | None:
     """Look up a client's full configuration including platform scope.
 
-    Returns a dict with 'name', 'alias', and 'platforms' (sentinel, xdr,
+    Returns a dict with 'name' and 'platforms' (sentinel, xdr,
     crowdstrike, encore), or None if not found.  Handles both the new nested
     ``platforms.sentinel.workspace_id`` layout and the legacy flat
     ``workspace_id`` field.
