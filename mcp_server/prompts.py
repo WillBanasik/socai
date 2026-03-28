@@ -20,17 +20,65 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 
+# ---------------------------------------------------------------------------
+# Shared text blocks — single source of truth for content used in multiple prompts
+# ---------------------------------------------------------------------------
 
-# Valid KQL playbook IDs and their human-readable names
-_KQL_PLAYBOOKS = {
-    "phishing": "Phishing",
-    "account-compromise": "Account Investigation",
-    "malware-execution": "Malware Execution",
-    "privilege-escalation": "Privilege Escalation",
-    "data-exfiltration": "Data Exfiltration",
-    "lateral-movement": "Lateral Movement",
-    "ioc-hunt": "IOC Hunt",
-}
+_CLASSIFICATION_TREE = [
+    "```",
+    "Did the detection logic fire correctly on real activity?",
+    "├─ NO  → False Positive (FP)",
+    "└─ YES → Was that activity malicious?",
+    "         ├─ YES → True Positive (TP)",
+    "         └─ NO  → Benign Positive (BP)",
+    "```",
+    "",
+    "- **True Positive (TP)** — confirmed malicious activity requiring response",
+    "- **Benign Positive (BP)** — alert fired correctly on real activity, but that activity is",
+    "  expected, authorised, or non-threatening (e.g. new service account from unfamiliar infra,",
+    "  authorised pen-test, security tooling triggering behavioural detections, real user travel).",
+    "  Sub-classify as: *suspicious but expected* (known/authorised) or *suspicious but not malicious*",
+    "  (genuinely unusual, but no threat confirmed).",
+    "- **False Positive (FP)** — detection misfired (geo-IP error, benign string match, logic bug)",
+    "- **Inconclusive** — insufficient data, escalate or gather more evidence",
+    "",
+    "**Never combine classifications** — 'True Positive Benign Positive' is invalid.",
+    "If the alert was accurate but the activity was authorised, classify as **Benign Positive**.",
+]
+
+_ANALYTICAL_STANDARDS = [
+    "## Analytical Standards (NON-NEGOTIABLE)",
+    "",
+    "- Every finding must be provable with supplied data",
+    "- Temporal proximity is NEVER causation",
+    "- No gap-filling with speculation",
+    "- Language: \"Confirmed\" = data proves it. \"Assessed\" = inference. \"Unknown\" = no data",
+    "- Never combine Sentinel classifications (TP + BP is invalid)",
+    "- Actively seek disconfirming evidence before concluding",
+]
+
+_BEHAVIOURAL_ASSESSMENT = [
+    "## Behavioural Assessment",
+    "",
+    "- What the session DID matters more than where it came FROM",
+    "- A suspicious IP alone is not proof of compromise — assess the ACTIVITY",
+    "- Adversarial IP + benign activity pattern = likely personal VPN, not compromise",
+    "- When activity is benign: recommend confirming VPN usage before containment",
+]
+
+
+def _get_kql_playbooks() -> dict[str, str]:
+    """Load available KQL playbook IDs and names from disk (cached after first call)."""
+    try:
+        from tools.kql_playbooks import list_playbooks
+        return {p["id"]: p["name"] for p in list_playbooks()}
+    except Exception:
+        # Fallback if playbook files are missing
+        return {}
+
+
+# Cache on module load for the docstring; refreshed per-call in the prompt body
+_KQL_PLAYBOOKS = _get_kql_playbooks()
 
 
 def register_prompts(mcp: FastMCP) -> None:
@@ -75,10 +123,11 @@ def register_prompts(mcp: FastMCP) -> None:
         """
         from tools.kql_playbooks import load_playbook, render_stage
 
-        # Resolve playbook
+        # Resolve playbook — refresh from disk each call so new playbooks are picked up
+        available = _get_kql_playbooks()
         playbook_id = playbook.strip().lower() if playbook else ""
-        if playbook_id not in _KQL_PLAYBOOKS:
-            valid = ", ".join(f"`{k}`" for k in _KQL_PLAYBOOKS)
+        if playbook_id not in available:
+            valid = ", ".join(f"`{k}`" for k in available)
             return (
                 f"Unknown playbook `{playbook_id}`. "
                 f"Valid playbooks: {valid}.\n\n"
@@ -89,7 +138,7 @@ def register_prompts(mcp: FastMCP) -> None:
         if not pb:
             return f"Playbook `{playbook_id}` not found on disk."
 
-        display_name = _KQL_PLAYBOOKS[playbook_id]
+        display_name = available[playbook_id]
 
         # Build KQL parameter dict from inputs
         params: dict[str, str] = {}
@@ -134,7 +183,10 @@ def register_prompts(mcp: FastMCP) -> None:
             f"**Timeframe:** {timeframe}",
             "",
             "**Before proceeding:** Confirm the client via `lookup_client` and register "
-            "the alert via `add_evidence`. Call `classify_attack` if you have not already.",
+            "the alert via `add_evidence`. Call `classify_attack` if you have not already. "
+            "The `lookup_client` result includes `knowledge_base`, `response_playbook`, and "
+            "`sentinel_reference` — read these to understand the client's environment, "
+            "available tables, and escalation procedures before running queries.",
             "",
             "## Overview",
             pb.get("description", ""),
@@ -244,6 +296,9 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "### 2. Client Identification",
             "- Call `lookup_client` to confirm the client and available platforms",
+            "- The result includes `knowledge_base`, `response_playbook`, and `sentinel_reference` "
+            "— read these to understand the client's environment, known FP patterns, "
+            "escalation procedures, and available Sentinel tables before proceeding",
             "- Do NOT proceed without a confirmed client",
             "",
             "### 3. IOC Extraction & Enrichment",
@@ -259,25 +314,7 @@ def register_prompts(mcp: FastMCP) -> None:
             "### 5. Verdict",
             "Determine the Sentinel incident classification using this decision guide:",
             "",
-            "```",
-            "Did the detection logic fire correctly on real activity?",
-            "├─ NO  → False Positive (FP)",
-            "└─ YES → Was that activity malicious?",
-            "         ├─ YES → True Positive (TP)",
-            "         └─ NO  → Benign Positive (BP)",
-            "```",
-            "",
-            "- **True Positive (TP)** — confirmed malicious activity requiring response",
-            "- **Benign Positive (BP)** — alert fired correctly on real activity, but that activity is",
-            "  expected, authorised, or non-threatening (e.g. new service account from unfamiliar infra,",
-            "  authorised pen-test, security tooling triggering behavioural detections, real user travel).",
-            "  Sub-classify as: *suspicious but expected* (known/authorised) or *suspicious but not malicious*",
-            "  (genuinely unusual, but no threat confirmed).",
-            "- **False Positive (FP)** — detection misfired (geo-IP error, benign string match, logic bug)",
-            "- **Inconclusive** — insufficient data, escalate or gather more evidence",
-            "",
-            "**Never combine classifications** — 'True Positive Benign Positive' is invalid.",
-            "If the alert was accurate but the activity was authorised, classify as **Benign Positive**.",
+            *_CLASSIFICATION_TREE,
             "",
             "**CRITICAL — Assess behaviour, not just indicators:**",
             "A suspicious IP or impossible-travel alert is a SIGNAL, not a verdict. Before",
@@ -430,7 +467,9 @@ def register_prompts(mcp: FastMCP) -> None:
             "### PHASE 1 — INTAKE (assessment, no case needed)",
             "",
             "1. Call `classify_attack` with the alert data",
-            "2. Call `lookup_client` to confirm client and available platforms",
+            "2. Call `lookup_client` to confirm client and available platforms — the result "
+            "includes `knowledge_base`, `response_playbook`, and `sentinel_reference`. "
+            "Internalise these: known FP patterns, escalation matrix, available Sentinel tables",
             "3. Call `recall_cases` to check for prior investigations with overlapping IOCs",
             "",
             "**CP1 — PLAN APPROVAL**",
@@ -491,13 +530,7 @@ def register_prompts(mcp: FastMCP) -> None:
             "4. If gaps remain, propose follow-up actions (`list_followup_proposals`)",
             "",
             "Determine the Sentinel incident classification:",
-            "```",
-            "Did the detection fire correctly on real activity?",
-            "├─ NO  → False Positive (FP)",
-            "└─ YES → Was activity malicious?",
-            "         ├─ YES → True Positive (TP)",
-            "         └─ NO  → Benign Positive (BP)",
-            "```",
+            *_CLASSIFICATION_TREE,
             "",
             "**CP3 — DISPOSITION APPROVAL**",
             "Present to the analyst:",
@@ -548,21 +581,9 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "---",
             "",
-            "## Analytical Standards (NON-NEGOTIABLE)",
+            *_ANALYTICAL_STANDARDS,
             "",
-            "- Every finding must be provable with supplied data",
-            "- Temporal proximity is NEVER causation",
-            "- No gap-filling with speculation",
-            "- Language: \"Confirmed\" = data proves it. \"Assessed\" = inference. \"Unknown\" = no data",
-            "- Never combine Sentinel classifications (TP + BP is invalid)",
-            "- Actively seek disconfirming evidence before concluding",
-            "",
-            "## Behavioural Assessment",
-            "",
-            "- What the session DID matters more than where it came FROM",
-            "- A suspicious IP alone is not proof of compromise — assess the ACTIVITY",
-            "- Adversarial IP + benign activity pattern = likely personal VPN, not compromise",
-            "- When activity is benign: recommend confirming VPN usage before containment",
+            *_BEHAVIOURAL_ASSESSMENT,
             "",
             "## Rules",
             "",
@@ -1671,7 +1692,9 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "**Do not proceed until the user identity is confirmed to exist.**",
             "",
-            "Call `lookup_client` to confirm the client and resolve the Sentinel workspace.",
+            "Call `lookup_client` to confirm the client and resolve the Sentinel workspace. "
+            "The result includes `knowledge_base` and `sentinel_reference` — check for "
+            "known FP patterns and available tables before querying.",
             "",
             "Then run this KQL to validate the account:",
             "",
@@ -1900,16 +1923,10 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "---",
             "",
-            "## Analytical Standards — Apply Throughout",
+            *_ANALYTICAL_STANDARDS,
             "",
-            "- **Evidence-first:** every finding must cite specific data (timestamps, IPs,",
-            "  alert names, operation names). No vague claims.",
-            "- **Assess behaviour, not just indicators:** a risky sign-in IP is a signal,",
-            "  not a verdict. Check what the session DID before concluding compromise.",
-            "- **Language discipline:** Confirmed (data proves it) / Assessed (inference) /",
-            "  Unknown (no data). Never say 'confirmed' for an inference.",
-            "- **Disconfirming evidence:** actively look for evidence that contradicts",
-            "  emerging hypotheses before reporting them as findings.",
+            *_BEHAVIOURAL_ASSESSMENT,
+            "",
             "- **Proportionate response:** a clean sweep is a valid and valuable outcome.",
             "  Do not manufacture findings to justify the check. If the user is clean,",
             "  say so clearly and confidently.",

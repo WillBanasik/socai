@@ -219,12 +219,46 @@ def extract_and_enrich(case_id: str, include_private: bool = False) -> dict:
         if recurring:
             lines.append(f"\n{recurring} IOC(s) seen in prior investigations — recurring infrastructure.")
 
+        # Build structured top IOCs for inline return
+        top_malicious = []
+        if verdict_result:
+            for item in verdict_result.get("high_priority", [])[:5]:
+                if isinstance(item, dict):
+                    top_malicious.append({
+                        "ioc": item.get("ioc", ""),
+                        "type": item.get("type", ""),
+                        "verdict": item.get("verdict", "malicious"),
+                        "confidence": item.get("confidence", ""),
+                        "providers": item.get("providers", []),
+                    })
+                else:
+                    top_malicious.append({"ioc": str(item)})
+
+        top_suspicious = []
+        if verdict_result:
+            for item in verdict_result.get("needs_review", [])[:5]:
+                if isinstance(item, dict):
+                    top_suspicious.append({
+                        "ioc": item.get("ioc", ""),
+                        "type": item.get("type", ""),
+                        "verdict": item.get("verdict", "suspicious"),
+                        "confidence": item.get("confidence", ""),
+                        "providers": item.get("providers", []),
+                    })
+                else:
+                    top_suspicious.append({"ioc": str(item)})
+
         return {
             "iocs_extracted": ioc_total,
+            "type_counts": type_counts,
             "enriched": enriched,
+            "cached": cached,
             "malicious": mal_count,
             "suspicious": sus_count,
             "clean": clean_count,
+            "top_malicious": top_malicious,
+            "top_suspicious": top_suspicious,
+            "recurring_iocs": recurring,
             "_message": "\n".join(lines),
         }
 
