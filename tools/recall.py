@@ -18,7 +18,7 @@ Usage:
     result = recall(
         iocs=["gamblingprice.com", "154.119.71.68"],
         emails=["user@example.com"],
-        keywords=["nascent-is"],
+        keywords=["keyword"],
     )
 """
 from __future__ import annotations

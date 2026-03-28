@@ -779,7 +779,7 @@ def slide_per_environment(prs):
     _add_textbox(sl, Inches(0.5), Inches(1.05), Inches(5.1), Inches(0.35),
                  "PER WORKSPACE", font_size=Pt(13), bold=True, color=BLUE_LIGHT)
     workspace_lines = [
-        "Workspace ID:  00000000-0000-0000-0000-000000000000",
+        "Workspace ID:  <from client_entities.json>",
         "Tables:        57 (auto-discovered via Sentinel schema)",
         "Schema:        config/sentinel_tables.json",
         "CLI:           az monitor log-analytics query -w <ID>",

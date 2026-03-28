@@ -15,9 +15,27 @@ import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-WORKSPACES = {
-    "example-client": "00000000-0000-0000-0000-000000000000",
-}
+
+def _load_workspaces() -> dict[str, str]:
+    """Load workspace map from config/client_entities.json."""
+    cfg_path = Path(__file__).resolve().parent.parent / "config" / "client_entities.json"
+    try:
+        with open(cfg_path) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"ERROR: {cfg_path} not found. Copy from client_entities.example.json.", file=sys.stderr)
+        sys.exit(1)
+    workspaces = {}
+    for client in data.get("clients", []):
+        name = client.get("name", "")
+        wid = (client.get("platforms", {}).get("sentinel", {}).get("workspace_id")
+               or client.get("workspace_id", ""))
+        if name and wid and not wid.startswith("00000000"):
+            workspaces[name] = wid
+    return workspaces
+
+
+WORKSPACES = _load_workspaces()
 
 # Step 1 query: get active tables from last 7 days
 TABLE_LIST_QUERY = """Usage
