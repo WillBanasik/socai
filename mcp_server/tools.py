@@ -2387,7 +2387,7 @@ def _query_opencti_inner(
 
 
 # ---------------------------------------------------------------------------
-# Tier 2 — Extended Analysis (19 tools)
+# Tier 2 — Extended Analysis (26 tools)
 # ---------------------------------------------------------------------------
 
 def _register_tier2(mcp: FastMCP) -> None:
@@ -2688,6 +2688,36 @@ def _register_tier2(mcp: FastMCP) -> None:
         candidates = fetch_candidates(days=days, max_candidates=count, category=category)
         return _json({"candidates": candidates, "count": len(candidates)})
 
+    @mcp.tool(title="Check Article Dedup", annotations={"readOnlyHint": True})
+    def check_article_dedup(title: str) -> str:
+        """Check whether a proposed article topic is already covered before
+        investing time writing it. Checks three stores:
+
+          1. Local article index (exact fingerprint match)
+          2. Confluence (stemmed token overlap)
+          3. OpenCTI (stemmed token overlap)
+
+        Returns match details so the analyst can decide whether to proceed.
+
+        Parameters
+        ----------
+        title : str
+            Proposed article title or topic to check for duplicates.
+        """
+        _require_scope("campaigns:read")
+
+        from tools.threat_articles import check_topic_dedup
+        result = check_topic_dedup(title)
+        if not result["is_duplicate"]:
+            result["message"] = "No duplicates found. Safe to write this article."
+        else:
+            result["message"] = (
+                "Duplicate(s) detected. Review the matches below. "
+                "If you still want to proceed, use force=True when calling "
+                "save_threat_article."
+            )
+        return _json(result)
+
     @mcp.tool(title="Generate Threat Article")
     async def generate_threat_article(
         candidate_urls: list[str],
@@ -2735,10 +2765,15 @@ def _register_tier2(mcp: FastMCP) -> None:
         source_urls: list[str] | None = None,
         analyst: str = "mcp",
         case_id: str | None = None,
+        force: bool = False,
     ) -> str:
         """Use after generating a threat article locally with the
         ``write_threat_article`` prompt. Persists the article to disk,
         updates the article index, and optionally links to a case.
+
+        Automatically checks for duplicates across the local index,
+        Confluence, and OpenCTI before saving. If a duplicate is
+        detected, returns a warning — use ``force=True`` to override.
 
         **Workflow:** Select ``write_threat_article`` prompt → research and
         write the article locally → call this tool to save it.
@@ -2757,6 +2792,8 @@ def _register_tier2(mcp: FastMCP) -> None:
             Analyst name for attribution.
         case_id : str
             Optional case ID to associate with.
+        force : bool
+            Override duplicate detection and save regardless. Default False.
         """
         _require_scope("investigations:submit")
         if case_id:
@@ -2771,15 +2808,26 @@ def _register_tier2(mcp: FastMCP) -> None:
                 source_urls=source_urls or [],
                 analyst=analyst,
                 case_id=case_id,
+                force=force,
             )
         )
-        result["_next_step"] = (
-            "To prepare this article for OpenCTI posting, call "
-            "generate_opencti_package with article_id="
-            f"'{result.get('article_id', '')}'. This generates an HTML file "
-            "with labelled sections for report metadata, observable blocklists, "
-            "STIX indicators, and KQL/LogScale hunt queries."
-        )
+
+        if result.get("status") == "duplicate_warning":
+            result["_hint"] = (
+                "To save this article despite the duplicate warning, "
+                "call save_threat_article again with force=True."
+            )
+            return _json(result)
+
+        from config.settings import OPENCTI_PUBLISH_ENABLED
+        if OPENCTI_PUBLISH_ENABLED:
+            result["_next_step"] = (
+                "To prepare this article for OpenCTI posting, call "
+                "generate_opencti_package with article_id="
+                f"'{result.get('article_id', '')}'. This generates an HTML file "
+                "with labelled sections for report metadata, observable blocklists, "
+                "STIX indicators, and KQL/LogScale hunt queries."
+            )
         return _json(result)
 
     @mcp.tool(title="Publish Article to OpenCTI")
@@ -3413,7 +3461,7 @@ def _register_tier2_rumsfeld(mcp: FastMCP) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tier 3 — Advanced / Restricted (23 tools)
+# Tier 3 — Advanced / Restricted (31 tools)
 # ---------------------------------------------------------------------------
 
 def _register_tier3(mcp: FastMCP) -> None:

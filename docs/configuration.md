@@ -150,19 +150,33 @@ Workspace IDs for `az monitor log-analytics query -w <ID>` are in `config/client
 
 ## Confluence (Read-Only)
 
-Read-only integration with Confluence Cloud for checking existing articles and (future) process documentation.
+Read-only integration with Confluence Cloud for searching existing articles, reading SOC policies/runbooks, and dedup checking before publishing threat articles.
 
 | Env var | Purpose |
 |---------|---------|
 | `CONFLUENCE_URL` | Instance URL (e.g. `https://yourinstance.atlassian.net`) |
-| `CONFLUENCE_CLOUD_ID` | Numeric cloud ID (from `{url}/_edge/tenant_info`) |
+| `CONFLUENCE_CLOUD_ID` | Cloud ID (from `{url}/_edge/tenant_info`) |
 | `CONFLUENCE_EMAIL` | Account email for basic auth |
-| `CONFLUENCE_API_TOKEN` | Scoped API token (read-only, Confluence only) |
+| `CONFLUENCE_API_TOKEN` | Fine-grained (scoped) API token — read-only, Confluence only |
 | `CONFLUENCE_SPACE_KEY` | Space key to read from (e.g. `MDR1`) |
 
-**Token setup:** Create a scoped token at [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens) with "Create API token with scopes" → app: Confluence → scopes: `read:page:confluence`, `read:space:confluence`. Scoped tokens use the `api.atlassian.com/ex/confluence/{cloudId}` base URL.
+**Token setup:** Create a fine-grained token at [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens) → "Create API token with scopes" → product: Confluence on your instance.
 
-**Usage:** `tools/confluence_read.py` provides `list_pages()`, `get_page()`, `search_pages()`, `get_page_by_title()`. Used by `tools/threat_articles.py` for dedup against recently published articles in the MDR1 space.
+Required scopes (all read-only):
+
+| Scope | Grants |
+|-------|--------|
+| `read:page:confluence` | Pages, children, versions, properties, blogposts |
+| `read:space:confluence` | Spaces, space properties |
+| `read:label:confluence` | Page and global labels |
+| `search:confluence` | CQL search (`title ~`, `text ~`) via v1 search endpoint |
+| `read:comment:confluence` | Footer and inline comments on pages |
+| `read:attachment:confluence` | Page attachments |
+| `read:content.metadata:confluence` | Page ancestors / hierarchy navigation |
+
+Scoped tokens use the `api.atlassian.com/ex/confluence/{cloudId}` base URL. v2 endpoints handle page/space reads; the v1 `/rest/api/search` endpoint handles CQL queries.
+
+**Usage:** `tools/confluence_read.py` provides `list_pages()`, `get_page()`, `search_pages()`, `get_page_by_title()`. The `search_confluence` MCP tool exposes three modes: browse (recent pages), search (CQL title match), and read (full page by ID). Used by `tools/threat_articles.py` for dedup against published articles in the configured space.
 
 ## Cyberint (Read-Only CTI Alerts)
 

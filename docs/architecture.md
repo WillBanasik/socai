@@ -19,10 +19,10 @@ Shared API (api/)
 MCP Server (mcp_server/)
     ├── HTTPS SSE transport  → port 8001, separate process
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
-    ├── 85 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
+    ├── 88 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
     ├── 30 resources         → case data, clients, IOC index, playbooks, sentinel queries, articles, landscape
     ├── 21 prompts           → investigation, KQL, triage, FP, analysis, report generation, forensics
-    ├── Save tools (3)       → save_report, save_threat_article, save_analysis (persist agent output)
+    ├── Save tools (2)       → save_report, save_threat_article (persist agent output)
     ├── RBAC                 → per-tool scopes via JWT claims; filesystem isolation (cases/<ID>/)
     ├── Data hierarchy       → global (cross-client IOCs) / client (internal) / case (details)
     ├── Structured logging   → JSONL (registry/mcp_server.jsonl), PID file, signal handlers
@@ -58,7 +58,9 @@ Browser Session (tools/browser_session.py)
     └── Session lifecycle                   → start → analyst browses manually → stop → pcap collection
 
 Confluence (tools/confluence_read.py)
-    └── Read-only client      → scoped API token, single space (MDR1)
+    ├── Read-only client      → fine-grained API token, single space (MDR1)
+    ├── v2 API                → pages, children, ancestors, versions, comments, attachments, labels
+    └── v1 API (CQL search)   → title ~/text ~ queries via /rest/api/search
 ```
 
 ## Data Flow
@@ -104,8 +106,8 @@ The system makes **no direct Anthropic API calls**. All LLM reasoning is handled
 |-----------|------|
 | **Claude Desktop agent** | All analytical reasoning, report writing, disposition analysis, quality review |
 | **MCP prompts (21)** | Load system instructions + case data into the local session |
-| **Save tools (3)** | `save_report`, `save_threat_article`, `save_analysis` — persist agent output with defanging, HTML, auto-close, audit |
-| **MCP tools (85)** | Data gathering only: enrichment APIs, Sentinel queries, file I/O, deterministic logic |
+| **Save tools (2)** | `save_report`, `save_threat_article` — persist agent output with defanging, HTML, auto-close, audit |
+| **MCP tools (88)** | Data gathering only: enrichment APIs, Sentinel queries, file I/O, deterministic logic |
 
 ## Tool Contracts
 

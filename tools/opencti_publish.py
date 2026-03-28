@@ -488,6 +488,10 @@ def publish_report(article_id: str, *, force: bool = False) -> dict:
             local_manifest["published_at"] = manifest["published_at"]
             save_json(manifest_file, local_manifest)
 
+    # Invalidate dedup caches so subsequent checks see this report
+    from tools.threat_articles import invalidate_dedup_caches
+    invalidate_dedup_caches()
+
     return {
         "status": "ok",
         "article_id": article_id,

@@ -62,9 +62,9 @@ Note: The server-side tool names (`prepare_mdr_report`, `prepare_pup_report`, `p
 
 | Prompt | Purpose | Save tool |
 |---|---|---|
-| `run_determination` | Evidence-chain disposition analysis | `save_analysis` |
-| `build_investigation_matrix` | Rumsfeld matrix (knowns/unknowns/hypotheses) | `save_analysis` |
-| `review_report` | Report quality gate review | `save_analysis` |
+| `run_determination` | Evidence-chain disposition analysis | `add_finding` |
+| `build_investigation_matrix` | Rumsfeld matrix (knowns/unknowns/hypotheses) | `add_finding` |
+| `review_report` | Report quality gate review | `add_finding` |
 
 ### Design Principle
 

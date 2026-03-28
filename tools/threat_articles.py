@@ -191,14 +191,14 @@ def _is_covered(fingerprint: str, index: dict) -> bool:
 # Confluence dedup — check recent pages in the MDR1 space
 # ---------------------------------------------------------------------------
 
-_confluence_cache: list[str] | None = None
+_confluence_cache: list[dict] | None = None
 
 
-def _fetch_confluence_titles(limit: int = 15) -> list[str]:
-    """Fetch recent page titles from Confluence for dedup.
+def _fetch_confluence_pages(limit: int = 15) -> list[dict]:
+    """Fetch recent page titles and IDs from Confluence for dedup.
 
     Cached for the lifetime of the process to avoid repeated API calls.
-    Returns lowercased titles for fuzzy matching.
+    Returns list of ``{"title": <lowercased>, "id": <page_id>}`` dicts.
     """
     global _confluence_cache
     if _confluence_cache is not None:
@@ -210,13 +210,21 @@ def _fetch_confluence_titles(limit: int = 15) -> list[str]:
             _confluence_cache = []
             return _confluence_cache
         result = list_pages(limit=limit)
-        _confluence_cache = [p["title"].lower() for p in result.get("pages", [])]
+        _confluence_cache = [
+            {"title": p["title"].lower(), "id": p.get("id", "")}
+            for p in result.get("pages", [])
+        ]
     except Exception as exc:
         log_error("", "threat_articles.confluence_dedup", str(exc),
                   severity="warning")
         _confluence_cache = []
 
     return _confluence_cache
+
+
+def _fetch_confluence_titles(limit: int = 15) -> list[str]:
+    """Return lowercased titles only (convenience wrapper)."""
+    return [p["title"] for p in _fetch_confluence_pages(limit=limit)]
 
 
 def _stem(word: str) -> str:
@@ -327,9 +335,106 @@ def _is_covered_opencti(title: str) -> bool:
     return False
 
 
+def _find_matching_title(candidate_title: str, cached_titles: list[str]) -> str | None:
+    """Return the first cached title that fuzzy-matches the candidate, or None."""
+    candidate_tokens = _tokenise(candidate_title)
+    if not candidate_tokens:
+        return None
+    for ct in cached_titles:
+        page_tokens = _tokenise(ct)
+        overlap = candidate_tokens & page_tokens
+        if len(overlap) >= len(candidate_tokens) * 0.4:
+            return ct
+    return None
+
+
+def _find_matching_confluence_page(candidate_title: str) -> dict | None:
+    """Return the first Confluence page that fuzzy-matches, with title and ID."""
+    candidate_tokens = _tokenise(candidate_title)
+    if not candidate_tokens:
+        return None
+    for page in _fetch_confluence_pages():
+        page_tokens = _tokenise(page["title"])
+        overlap = candidate_tokens & page_tokens
+        if len(overlap) >= len(candidate_tokens) * 0.4:
+            return page
+    return None
+
+
+def invalidate_dedup_caches() -> None:
+    """Reset Confluence and OpenCTI dedup caches.
+
+    Call after saving or publishing an article so that subsequent
+    dedup checks within the same process see fresh data.
+    """
+    global _confluence_cache, _opencti_report_cache
+    _confluence_cache = None
+    _opencti_report_cache = None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def check_topic_dedup(title: str) -> dict:
+    """Check whether a topic title duplicates an existing article.
+
+    Composes all three dedup stores:
+      1. Local article index — exact fingerprint match
+      2. Confluence — stemmed 40% token overlap
+      3. OpenCTI — stemmed 40% token overlap
+
+    Returns
+    -------
+    dict
+        ``{"is_duplicate": False}`` if no match found, or
+        ``{"is_duplicate": True, "matches": [...]}`` with detail on each
+        store that matched.
+    """
+    matches: list[dict] = []
+
+    # 1. Local index
+    index = _load_article_index()
+    fp = _topic_fingerprint(title)
+    if _is_covered(fp, index):
+        for a in index.get("articles", []):
+            if a.get("fingerprint") == fp:
+                matches.append({
+                    "store": "local_index",
+                    "matched_title": a.get("title", ""),
+                    "article_id": a.get("article_id", ""),
+                })
+                break
+
+    # 2. Confluence
+    if _is_covered_confluence(title):
+        page = _find_matching_confluence_page(title)
+        match_entry: dict[str, str] = {
+            "store": "confluence",
+            "matched_title": page["title"] if page else "(title overlap detected)",
+        }
+        if page and page.get("id"):
+            match_entry["page_id"] = page["id"]
+        matches.append(match_entry)
+
+    # 3. OpenCTI
+    if _is_covered_opencti(title):
+        matched = _find_matching_title(title, _fetch_opencti_report_titles())
+        matches.append({
+            "store": "opencti",
+            "matched_title": matched or "(title overlap detected)",
+        })
+
+    if matches:
+        return {
+            "is_duplicate": True,
+            "title": title,
+            "matches": matches,
+        }
+
+    return {"is_duplicate": False, "title": title}
+
 
 def fetch_candidates(
     days: int = 7,
@@ -406,6 +511,7 @@ def save_article(
     source_urls: list[str] | None = None,
     analyst: str = "unassigned",
     case_id: str | None = None,
+    force: bool = False,
 ) -> dict:
     """Persist a threat article generated by the analyst's local Claude session.
 
@@ -423,12 +529,29 @@ def save_article(
         Analyst name for attribution.
     case_id : str, optional
         Case ID to associate with.
+    force : bool
+        Override duplicate detection and save regardless. Default False.
 
     Returns
     -------
     dict
-        Article manifest.
+        Article manifest, or ``{"status": "duplicate_warning", ...}``
+        if a duplicate is detected and *force* is False.
     """
+    # Pre-save dedup gate
+    if not force:
+        dedup = check_topic_dedup(title)
+        if dedup["is_duplicate"]:
+            return {
+                "status": "duplicate_warning",
+                "title": title,
+                "matches": dedup["matches"],
+                "message": (
+                    "This topic appears to already be covered. "
+                    "Use force=True to save anyway."
+                ),
+            }
+
     now = datetime.fromisoformat(utcnow().replace("Z", "+00:00"))
     month_dir = now.strftime("%Y-%m")
     index = _load_article_index()
@@ -468,6 +591,7 @@ def save_article(
         case_art_dir = CASES_DIR / case_id / "artefacts" / "articles"
         write_report(case_art_dir / f"{art_id}.md", article_text, title=title)
 
+    invalidate_dedup_caches()
     return manifest
 
 

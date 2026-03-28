@@ -1,8 +1,18 @@
 """
 Read-only Confluence Cloud client — scoped to a single space.
 
-Uses a scoped API token with read:page:confluence and read:space:confluence
-permissions via the Atlassian Cloud REST API v2.
+Uses a fine-grained (scoped) API token via the Atlassian Cloud REST API.
+v2 endpoints handle page/space reads; v1 ``/rest/api/search`` handles
+CQL queries (requires ``search:confluence`` scope).
+
+Required scopes on the token:
+  read:page:confluence           — pages, children, versions, properties, blogposts
+  read:space:confluence          — spaces, space properties
+  read:label:confluence          — page and global labels
+  search:confluence              — CQL search (title ~/text ~) via v1 endpoint
+  read:comment:confluence        — footer and inline comments
+  read:attachment:confluence     — page attachments
+  read:content.metadata:confluence — page ancestors / hierarchy
 """
 from __future__ import annotations
 
@@ -152,10 +162,48 @@ def get_page(page_id: str, body_format: str = "storage") -> dict | None:
     }
 
 
+def _v1_base_url() -> str:
+    """Confluence Cloud REST API v1 base URL (needed for CQL search)."""
+    return f"https://api.atlassian.com/ex/confluence/{CONFLUENCE_CLOUD_ID}/wiki/rest/api"
+
+
 def search_pages(query: str, limit: int = 10) -> list[dict]:
-    """Search for pages by title within the configured space."""
-    result = list_pages(limit=limit, title=query)
-    return result.get("pages", [])
+    """Search for pages by title within the configured space.
+
+    Uses CQL ``title ~ "query"`` via the v1 search endpoint for
+    substring/contains matching across all pages in the space.
+    Requires the ``search:confluence`` scope on the API token.
+    """
+    if not _is_configured():
+        return []
+
+    cql = f'title ~ "{query}" AND type = page AND space = "{CONFLUENCE_SPACE_KEY}"'
+    url = f"{_v1_base_url()}/search"
+    try:
+        resp = get_session().get(
+            url,
+            headers=_auth_header(),
+            params={"cql": cql, "limit": limit},
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        log_error("", "confluence_read.search", str(exc),
+                  severity="error", context={"cql": cql})
+        return []
+
+    pages = []
+    for item in data.get("results", []):
+        content = item.get("content") or item
+        pages.append({
+            "id": str(content.get("id", "")),
+            "title": content.get("title"),
+            "status": content.get("status"),
+            "created_at": content.get("createdAt"),
+            "version": (content.get("version") or {}).get("number"),
+        })
+    return pages
 
 
 def get_page_by_title(title: str) -> dict | None:

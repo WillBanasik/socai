@@ -142,14 +142,14 @@ Article is packaged for posting to OpenCTI, where SOAR picks it up for client hu
 
 | Prompt | Purpose | Save tool |
 |---|---|---|
-| `run_determination` | Evidence-chain disposition analysis | `save_analysis` |
-| `build_investigation_matrix` | Rumsfeld matrix (knowns/unknowns/hypotheses) | `save_analysis` |
-| `review_report` | Report quality gate | `save_analysis` |
-| `write_timeline` | Forensic timeline + MITRE mapping | `save_analysis` |
-| `write_evtx_analysis` | Windows event log attack-chain narrative | `save_analysis` |
-| `write_phishing_verdict` | Phishing page assessment | `save_analysis` |
-| `write_pe_verdict` | PE binary malware assessment | `save_analysis` |
-| `write_cve_context` | CVE contextualisation | `save_analysis` |
+| `run_determination` | Evidence-chain disposition analysis | `add_finding` |
+| `build_investigation_matrix` | Rumsfeld matrix (knowns/unknowns/hypotheses) | `add_finding` |
+| `review_report` | Report quality gate | `add_finding` |
+| `write_timeline` | Forensic timeline + MITRE mapping | `add_finding` |
+| `write_evtx_analysis` | Windows event log attack-chain narrative | `add_finding` |
+| `write_phishing_verdict` | Phishing page assessment | `add_finding` |
+| `write_pe_verdict` | PE binary malware assessment | `add_finding` |
+| `write_cve_context` | CVE contextualisation | `add_finding` |
 
 ### Guided Workflow Prompts
 

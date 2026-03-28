@@ -52,7 +52,7 @@ Add a Pydantic `BaseModel` subclass to `tools/schemas.py`. The schema is used as
 
 ## New MCP Prompt
 
-Add a prompt handler in `mcp_server/prompts.py` that loads system instructions and case data. The prompt should return structured context for the analyst's local Claude session to reason over. Pair it with the appropriate save tool (`save_report`, `save_threat_article`, or `save_analysis`) for persistence.
+Add a prompt handler in `mcp_server/prompts.py` that loads system instructions and case data. The prompt should return structured context for the analyst's local Claude session to reason over. Pair it with the appropriate save tool (`save_report`, `save_threat_article`, or `add_finding`) for persistence.
 
 ## New Article Source
 

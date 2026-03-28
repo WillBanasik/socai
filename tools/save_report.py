@@ -163,6 +163,7 @@ def save_report_to_case(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     write_report(out_path, full_text, title=f"{cfg['title_prefix']} — {case_id}")
 
+
     # Auto-close if applicable
     if cfg["auto_close"]:
         try:
