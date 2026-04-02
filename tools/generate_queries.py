@@ -14,6 +14,7 @@ NOT write to disk.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -781,7 +782,7 @@ def _build_splunk(iocs: dict, collector: list | None = None) -> str:
         if collector is not None:
             collector.append({
                 "platform": "splunk",
-                "category": title.lower().split()[0],
+                "category": (title.lower().split() or ["general"])[0],
                 "table": "",
                 "description": title,
                 "query": query.strip(),
@@ -794,7 +795,140 @@ def _build_splunk(iocs: dict, collector: list | None = None) -> str:
 # LogScale / CrowdStrike Falcon
 # ---------------------------------------------------------------------------
 
-def _build_logscale(iocs: dict, collector: list | None = None) -> str:
+_CS_PIVOT_PATTERNS = {
+    "aid": re.compile(r'\baid["\s:=]+([0-9a-f]{32})\b', re.I),
+    "tree_id": re.compile(r'\bTreeId["\s:=]+([0-9]+)\b', re.I),
+    "target_process_id": re.compile(r'\bTargetProcessId["\s:=]+([0-9]+)\b', re.I),
+    "hostname": re.compile(r'\bComputerName["\s:=]+([A-Za-z0-9_.-]+)\b', re.I),
+    "username": re.compile(r'\bUserName["\s:=]+([A-Za-z0-9_.\\@-]+)\b', re.I),
+}
+
+
+def _extract_cs_pivots(meta: dict, evidence_text: str) -> None:
+    """Scan evidence text for CrowdStrike pivot values and merge into meta."""
+    for key, pattern in _CS_PIVOT_PATTERNS.items():
+        if not meta.get(key):
+            m = pattern.search(evidence_text)
+            if m:
+                meta[key] = m.group(1)
+
+
+def _build_logscale_contextual(
+    parts: list[tuple[str, str]],
+    meta: dict,
+    patterns: list[str],
+) -> None:
+    """Append contextual investigation queries based on case metadata.
+
+    Generates process tree, DNS, network, file write, detection, and logon
+    queries parameterised by aid, hostname, username, TreeId, or PID values
+    found in the case metadata or evidence.
+    """
+    # Extract pivot values from case meta and evidence fields
+    aid = meta.get("aid") or meta.get("agent_id") or ""
+    hostname = meta.get("hostname") or meta.get("computer_name") or ""
+    username = meta.get("username") or meta.get("user_name") or ""
+    tree_id = meta.get("tree_id") or ""
+    target_pid = meta.get("target_process_id") or meta.get("pid") or ""
+
+    # Need at least one pivot value to generate contextual queries
+    if not any([aid, hostname]):
+        return
+
+    # Build host filter — prefer aid (unique), fall back to hostname
+    if aid:
+        host_filter = f'aid="{aid}"'
+    else:
+        host_filter = f'ComputerName="{hostname}"'
+
+    # Process tree by TreeId
+    if tree_id:
+        parts.append((
+            "Process Tree — By TreeId (CrowdStrike Falcon)",
+            f'#event_simpleName=ProcessRollup2\n'
+            f'| {host_filter}\n'
+            f'| TreeId="{tree_id}"\n'
+            f'| table([@timestamp, ComputerName, UserName, ParentBaseFileName,\n'
+            f'         FileName, CommandLine, SHA256HashData, TargetProcessId,\n'
+            f'         ParentProcessId, TreeId])\n'
+            f'| sort(@timestamp, order=asc)',
+        ))
+
+    # Child processes of a specific PID
+    if target_pid:
+        parts.append((
+            "Child Processes — By Parent PID (CrowdStrike Falcon)",
+            f'#event_simpleName=ProcessRollup2\n'
+            f'| {host_filter}\n'
+            f'| ParentProcessId="{target_pid}"\n'
+            f'| table([@timestamp, ComputerName, UserName, FileName,\n'
+            f'         CommandLine, SHA256HashData, TargetProcessId,\n'
+            f'         ParentBaseFileName])\n'
+            f'| sort(@timestamp, order=asc)',
+        ))
+
+    # DNS requests
+    parts.append((
+        "DNS Requests — By Host (CrowdStrike Falcon)",
+        f'#event_simpleName=DnsRequest\n'
+        f'| {host_filter}\n'
+        f'| table([@timestamp, ComputerName, DomainName, IP4Records,\n'
+        f'         ContextProcessId, FileName])\n'
+        f'| sort(@timestamp, order=desc)\n'
+        f'| head(200)',
+    ))
+
+    # Network connections
+    parts.append((
+        "Network Connections — By Host (CrowdStrike Falcon)",
+        f'#event_simpleName=/^(NetworkConnectIP4|NetworkConnectIP6)$/\n'
+        f'| {host_filter}\n'
+        f'| table([@timestamp, ComputerName, LocalAddressIP4, RemoteAddressIP4,\n'
+        f'         RemotePort, Protocol, FileName, CommandLine])\n'
+        f'| sort(@timestamp, order=desc)\n'
+        f'| head(200)',
+    ))
+
+    # File writes (executables, ransomware indicators)
+    parts.append((
+        "File Writes — By Host (CrowdStrike Falcon)",
+        f'#event_simpleName=/^(NewExecutableWritten|ExecutableDeleted|'
+        f'RansomwareOpenFile)$/\n'
+        f'| {host_filter}\n'
+        f'| table([@timestamp, ComputerName, TargetFileName, SourceFileName,\n'
+        f'         SHA256HashData, FileName, CommandLine])\n'
+        f'| sort(@timestamp, order=desc)\n'
+        f'| head(200)',
+    ))
+
+    # Detections
+    parts.append((
+        "Detections — By Host (CrowdStrike Falcon)",
+        f'#event_simpleName=/^(DetectionSummaryEvent|SensorDetectionSummary)$/\n'
+        f'| {host_filter}\n'
+        f'| table([@timestamp, ComputerName, DetectName, DetectDescription,\n'
+        f'         Severity, FileName, CommandLine, SHA256HashData,\n'
+        f'         Tactic, Technique])\n'
+        f'| sort(@timestamp, order=desc)',
+    ))
+
+    # User logon activity
+    if username:
+        parts.append((
+            "User Logon Activity (CrowdStrike Falcon)",
+            f'#event_simpleName=UserLogon\n'
+            f'| UserName="{username}"\n'
+            f'| table([@timestamp, ComputerName, UserName, LogonType,\n'
+            f'         LogonDomain, RemoteAddressIP4,\n'
+            f'         AuthenticationPackage])\n'
+            f'| sort(@timestamp, order=desc)\n'
+            f'| head(200)',
+        ))
+
+
+def _build_logscale(iocs: dict, collector: list | None = None,
+                    meta: dict | None = None,
+                    patterns: list[str] | None = None) -> str:
     parts: list[tuple[str, str]] = []
 
     ips = iocs.get("ipv4", [])
@@ -802,57 +936,66 @@ def _build_logscale(iocs: dict, collector: list | None = None) -> str:
     sha256s = iocs.get("sha256", [])
     md5s = iocs.get("md5", [])
 
+    def _in_filter(field: str, values: list[str]) -> str:
+        """Build an in() pipeline step for regular fields."""
+        quoted = ", ".join(f'"{v}"' for v in values)
+        return f'| in({field}, values=[{quoted}])'
+
     if ips:
-        ip_filter = " OR ".join(f'RemoteAddressIP4 = "{ip}"' for ip in ips)
+        ip_step = _in_filter("RemoteAddressIP4", ips)
         parts.append((
             "IPv4 — Network Connections (CrowdStrike Falcon)",
-            f'#event_simpleName = NetworkConnectIP4\n'
-            f'| {ip_filter}\n'
+            f'#event_simpleName=NetworkConnectIP4\n'
+            f'{ip_step}\n'
             f'| table([@timestamp, ComputerName, LocalAddressIP4, RemoteAddressIP4,\n'
             f'         RemotePort, FileName, CommandLine])',
         ))
+        ip_dns_step = _in_filter("IP4Records", ips)
         parts.append((
             "IPv4 — DNS Resolution to Suspect IPs",
-            f'#event_simpleName = DnsRequest\n'
-            f'| {ip_filter}\n'
-            f'| table([@timestamp, ComputerName, DomainName, RemoteAddressIP4, FileName])',
+            f'#event_simpleName=DnsRequest\n'
+            f'{ip_dns_step}\n'
+            f'| table([@timestamp, ComputerName, DomainName, IP4Records, FileName])',
         ))
 
     if domains:
-        dom_filter = " OR ".join(f'DomainName = "*{d}*"' for d in domains)
+        dom_step = _in_filter("DomainName", [f"*{d}*" for d in domains])
         parts.append((
             "Domain — DNS Requests (CrowdStrike Falcon)",
-            f'#event_simpleName = DnsRequest\n'
-            f'| {dom_filter}\n'
-            f'| table([@timestamp, ComputerName, DomainName, RemoteAddressIP4, FileName])',
+            f'#event_simpleName=DnsRequest\n'
+            f'{dom_step}\n'
+            f'| table([@timestamp, ComputerName, DomainName, IP4Records, FileName])',
         ))
 
     if sha256s:
-        h_filter = " OR ".join(f'SHA256HashData = "{h}"' for h in sha256s)
+        h_step = _in_filter("SHA256HashData", sha256s)
         parts.append((
             "SHA256 — File Write / Process Execution (CrowdStrike Falcon)",
-            f'#event_simpleName IN (NewExecutableWritten, ProcessRollup2)\n'
-            f'| {h_filter}\n'
+            f'#event_simpleName=/^(NewExecutableWritten|ProcessRollup2)$/\n'
+            f'{h_step}\n'
             f'| table([@timestamp, ComputerName, FileName, FilePath,\n'
             f'         SHA256HashData, ParentBaseFileName, CommandLine])',
         ))
 
     if md5s:
-        h_filter = " OR ".join(f'MD5HashData = "{h}"' for h in md5s)
+        h_step = _in_filter("MD5HashData", md5s)
         parts.append((
             "MD5 — File Write / Process Execution (CrowdStrike Falcon)",
-            f'#event_simpleName IN (NewExecutableWritten, ProcessRollup2)\n'
-            f'| {h_filter}\n'
+            f'#event_simpleName=/^(NewExecutableWritten|ProcessRollup2)$/\n'
+            f'{h_step}\n'
             f'| table([@timestamp, ComputerName, FileName, FilePath,\n'
             f'         MD5HashData, ParentBaseFileName, CommandLine])',
         ))
+
+    # --- Contextual investigation queries (from case metadata) ---
+    _build_logscale_contextual(parts, meta or {}, patterns or [])
 
     out = []
     for title, query in parts:
         if collector is not None:
             collector.append({
                 "platform": "logscale",
-                "category": title.lower().split()[0],
+                "category": (title.lower().split() or ["general"])[0],
                 "table": "",
                 "description": title,
                 "query": query.strip(),
@@ -993,7 +1136,12 @@ def generate_queries(
     # LogScale
     if "logscale" in platforms:
         lines.append("\n## LogScale / CrowdStrike Falcon\n")
-        logscale_content = _build_logscale(iocs, yaml_collector)
+        # Merge pivot values from case meta + evidence text into meta dict
+        _cs_meta = dict(meta)
+        _extract_cs_pivots(_cs_meta, scan_text)
+        logscale_content = _build_logscale(
+            iocs, yaml_collector, meta=_cs_meta, patterns=patterns,
+        )
         lines.append(logscale_content if logscale_content else "_No IOCs available._")
         lines.append("\n---")
 

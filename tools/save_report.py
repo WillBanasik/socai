@@ -186,4 +186,28 @@ def save_report_to_case(
     manifest_path = out_path.parent / f"{out_path.stem}_manifest.json"
     save_json(manifest_path, manifest)
 
+    # Report completeness metrics
+    _section_markers = {
+        "executive_summary": ("## Executive Summary", "## Summary"),
+        "timeline": ("## Timeline", "## Sequence of Events"),
+        "ioc_table": ("## IOC", "## Indicators"),
+        "evidence_chain": ("## Evidence", "## Attack Chain"),
+        "recommendations": ("## Recommend", "## Response", "## Remediation"),
+        "determination": ("## Determination", "## Disposition", "## Verdict"),
+    }
+    _lower_text = report_text.lower()
+    _sections_present = [
+        name for name, markers in _section_markers.items()
+        if any(m.lower() in _lower_text for m in markers)
+    ]
+    from tools.common import log_metric
+    log_metric("report_saved", case_id=case_id,
+               report_type=report_type,
+               auto_closed=cfg["auto_close"],
+               disposition=disposition or cfg["disposition"],
+               char_count=len(report_text),
+               sections_present=_sections_present,
+               sections_count=len(_sections_present),
+               completeness_pct=round(len(_sections_present) / len(_section_markers) * 100, 1))
+
     return manifest

@@ -1,0 +1,1326 @@
+{
+  "_comment": "CQL Grammar \u2014 rebuilt from official Humio docs. 194 functions across 12 categories.",
+  "functions": {
+    "aggregate": [
+      {
+        "label": "accumulate",
+        "detail": "Apply aggregation function cumulatively",
+        "doc": "Applies an aggregation function cumulatively to a sequence of events, useful for running totals or averages.",
+        "insertText": "accumulate(${1:function})"
+      },
+      {
+        "label": "avg",
+        "detail": "Calculate average of field",
+        "doc": "Calculates the average for a field over a set of events and returns the result in a field named _avg.",
+        "insertText": "avg(field=${1:field})"
+      },
+      {
+        "label": "bucket",
+        "detail": "Group events into time buckets",
+        "doc": "Extends groupBy() for grouping by time, dividing the search interval into buckets based on event timestamps.",
+        "insertText": "bucket(span=${1:1m}, function=${2:count()})"
+      },
+      {
+        "label": "collect",
+        "detail": "Collect field values into set",
+        "doc": "Collects a set of values from one or more fields, outputting them as a concatenated string or as multiple rows.",
+        "insertText": "collect(${1:field})"
+      },
+      {
+        "label": "count",
+        "detail": "Count number of matching events",
+        "doc": "Counts the number of events in the repository or streaming through the function.",
+        "insertText": "count()"
+      },
+      {
+        "label": "counterAsRate",
+        "detail": "Calculate rate of counter field",
+        "doc": "Calculates the rate at which a counter field changes.",
+        "insertText": "counterAsRate(${1:counter})"
+      },
+      {
+        "label": "fieldstats",
+        "detail": "Display field statistics summary",
+        "doc": "Displays statistics about the fields within the current event stream.",
+        "insertText": "fieldstats()"
+      },
+      {
+        "label": "groupBy",
+        "detail": "Group events by specified fields",
+        "doc": "Groups together events by one or more specified fields, similar to GROUP BY in SQL.",
+        "insertText": "groupBy([${1:field}], function=${2:count()})"
+      },
+      {
+        "label": "linReg",
+        "detail": "Calculate linear regression between variables",
+        "doc": "Calculates a linear relationship between two variables using least-squares fitting, outputting slope and intercept fields.",
+        "insertText": "linReg(x=${1:x}, y=${2:y})"
+      },
+      {
+        "label": "max",
+        "detail": "Find largest number in field",
+        "doc": "Finds the largest number for the specified field over a set of events.",
+        "insertText": "max(${1:field})"
+      },
+      {
+        "label": "min",
+        "detail": "Find smallest number in field",
+        "doc": "Finds the smallest number for the specified field over a set of events.",
+        "insertText": "min(${1:field})"
+      },
+      {
+        "label": "partition",
+        "detail": "Split events into ordered partitions",
+        "doc": "Splits a sequence of events into multiple partitions based on a condition, applying sub-aggregations to each partition separately.",
+        "insertText": "partition(condition=${1:test()}, split=${2:before}, function={${3:}})"
+      },
+      {
+        "label": "percentage",
+        "detail": "Calculate proportion of matching events",
+        "doc": "Calculates the proportion of events that match specified conditions, returning a floating-point number between 0 and 100.",
+        "insertText": "percentage({${1:condition}}, as=${2:pct})"
+      },
+      {
+        "label": "percentile",
+        "detail": "Estimate percentiles over numeric field",
+        "doc": "Estimates percentiles over a given collection of numbers for the specified field.",
+        "insertText": "percentile(field=${1:field}, as=${2:percentile})"
+      },
+      {
+        "label": "range",
+        "detail": "Find numeric range between min and max",
+        "doc": "Finds the numeric range between the smallest and largest numbers for the specified field over a set of events.",
+        "insertText": "range(${1:field})"
+      },
+      {
+        "label": "sankey",
+        "detail": "Produce data for Sankey diagram",
+        "doc": "Produces data compatible with the Sankey diagram widget by specifying source and target fields.",
+        "insertText": "sankey(source=${1:sourceField}, target=${2:targetField})"
+      },
+      {
+        "label": "selectFromMax",
+        "detail": "Return fields from max-value event",
+        "doc": "Identifies the event with the maximum value in a specified field and returns selected fields from that event.",
+        "insertText": "selectFromMax(${1:field}, include=[${2:fields}])"
+      },
+      {
+        "label": "selectFromMin",
+        "detail": "Return fields from min-value event",
+        "doc": "Identifies the event with the minimum value in a specified field and returns selected fields from that event.",
+        "insertText": "selectFromMin(${1:field}, include=[${2:fields}])"
+      },
+      {
+        "label": "selectLast",
+        "detail": "Keep most recent value per field",
+        "doc": "Selects a set of fields from events, keeping the field value of the most recent event with that field.",
+        "insertText": "selectLast([${1:field}])"
+      },
+      {
+        "label": "series",
+        "detail": "Collect field values into series",
+        "doc": "Collects a series of values for selected fields from multiple events into one or more events, useful for gathering transaction data by identity field.",
+        "insertText": "series(collect=[${1:field}], maxpause=${2:1m})"
+      },
+      {
+        "label": "session",
+        "detail": "Aggregate events into sessions",
+        "doc": "Collects events into sessions of events no further than maxpause apart, then performs an aggregate operation across the events in each session.",
+        "insertText": "session(maxpause=${1:15m}, ${2:count()})"
+      },
+      {
+        "label": "slidingTimeWindow",
+        "detail": "Aggregate over moving time window",
+        "doc": "Applies an aggregation to a moving time-based window of events in a sequence, useful for calculating metrics over a fixed time period.",
+        "insertText": "slidingTimeWindow([${1:aggregation}], span=${2:span})"
+      },
+      {
+        "label": "slidingWindow",
+        "detail": "Aggregate over moving event window",
+        "doc": "Applies an aggregation to a moving window of a specified number of events in a sequence, useful for trend analysis and smoothing.",
+        "insertText": "slidingWindow([${1:aggregation}], events=${2:events})"
+      },
+      {
+        "label": "stats",
+        "detail": "Compute multiple aggregate functions",
+        "doc": "Computes multiple aggregate functions over the input in a single step.",
+        "insertText": "stats(function=[${1:min()}, ${2:max()}])"
+      },
+      {
+        "label": "sum",
+        "detail": "Sum field over events",
+        "doc": "Calculates the sum of a field over a set of events, returning the result in a field named _sum.",
+        "insertText": "sum(field=${1:field})"
+      },
+      {
+        "label": "timeChart",
+        "detail": "Draw time-bucketed chart",
+        "doc": "Draws a time chart where the x-axis is time, grouping events into time buckets.",
+        "insertText": "timeChart(span=${1:1h}, function=${2:count()}, series=${3:field})"
+      },
+      {
+        "label": "top",
+        "detail": "Find most common field values",
+        "doc": "Finds the most common values of a field in a set of events, returning the top N results.",
+        "insertText": "top(${1:field}, limit=${2:10})"
+      },
+      {
+        "label": "window",
+        "detail": "Aggregate over sliding time window",
+        "doc": "Computes an aggregate for one or more fields over a sliding window of data, used with timeChart() or bucket().",
+        "insertText": "window([${1:function}], span=${2:15min})"
+      }
+    ],
+    "filtering": [
+      {
+        "label": "cidr",
+        "detail": "Filter events by IP subnet",
+        "doc": "Filters events based on IPv4 or IPv6 subnet ranges, with support for subnet lists from CSV or JSON files.",
+        "insertText": "cidr(${1:field}, subnet=${2:\"0.0.0.0/0\"})"
+      },
+      {
+        "label": "dropEvent",
+        "detail": "Drop event from query output",
+        "doc": "Drops the current event from the query output or parser pipeline, preventing it from being stored or returned.",
+        "insertText": "dropEvent()"
+      },
+      {
+        "label": "hashMatch",
+        "detail": "Filter events by hashed field value",
+        "doc": "Calculates a secure hash of a field and uses it to match and filter events.",
+        "insertText": "hashMatch(${1:value}, salt=${2:salt})"
+      },
+      {
+        "label": "head",
+        "detail": "Return oldest N events first",
+        "doc": "Retrieves the oldest events first and returns up to a specified maximum number of events.",
+        "insertText": "head(limit=${1:200})"
+      },
+      {
+        "label": "in",
+        "detail": "Filter events by field values",
+        "doc": "Selects events where a given field contains one of the specified values.",
+        "insertText": "in(field=${1:fieldName}, values=[${2:value}])"
+      },
+      {
+        "label": "regex",
+        "detail": "Match and extract fields via regex",
+        "doc": "Executes regular expressions on events to filter events or capture data using regex-based field extraction.",
+        "insertText": "regex(${1:\"pattern\"})"
+      },
+      {
+        "label": "sample",
+        "detail": "Sample a percentage of events",
+        "doc": "Samples the event stream, keeping a specified percentage of events and discarding events without the sampled field.",
+        "insertText": "sample(percentage=${1:1})"
+      },
+      {
+        "label": "selfJoinFilter",
+        "detail": "Filter events by joined IDs",
+        "doc": "Runs a two-phase filter that finds IDs satisfying all where clauses, which can be matched by distinct events sharing the same ID.",
+        "insertText": "selfJoinFilter(field=${1:field}, where=[${2:clauses}])"
+      },
+      {
+        "label": "tail",
+        "detail": "Retrieve most recent events",
+        "doc": "Retrieves the most recent events sorted by timestamp, returning up to a specified maximum number of events.",
+        "insertText": "tail(${1:200})"
+      },
+      {
+        "label": "test",
+        "detail": "Filter events by expression",
+        "doc": "Evaluates an arbitrary boolean expression and filters events, keeping only those where the expression returns true.",
+        "insertText": "test(${1:expression})"
+      },
+      {
+        "label": "wildcard",
+        "detail": "Match field with wildcard pattern",
+        "doc": "Performs a wildcard pattern search with optional case insensitivity across fields and events.",
+        "insertText": "wildcard(field=${1:field}, pattern=${2:\"*value*\"})"
+      }
+    ],
+    "time": [
+      {
+        "label": "duration",
+        "detail": "Compute milliseconds in time period",
+        "doc": "Computes the number of milliseconds in a specified fixed time period to simplify timestamp comparisons.",
+        "insertText": "duration(${1:timespan})"
+      },
+      {
+        "label": "end",
+        "detail": "Get search interval end timestamp",
+        "doc": "Assigns the end timestamp of the search time interval in milliseconds since epoch (UTC) to an output field.",
+        "insertText": "end()"
+      },
+      {
+        "label": "findTimestamp",
+        "detail": "Find and parse timestamp in field",
+        "doc": "Finds and parses the first timestamp in a given field by trying multiple timestamp formats.",
+        "insertText": "findTimestamp(field=${1:fieldName})"
+      },
+      {
+        "label": "formatDuration",
+        "detail": "Format duration as readable string",
+        "doc": "Formats a duration value into a human-readable string.",
+        "insertText": "formatDuration(${1:field}, precision=${2:3})"
+      },
+      {
+        "label": "formatTime",
+        "detail": "Format timestamp as date string",
+        "doc": "Formats a date/time field as a string using a strftime-style format pattern.",
+        "insertText": "formatTime(${1:\"%Y-%m-%d %H:%M:%S\"}, field=${2:@timestamp}, as=${3:formattedTime})"
+      },
+      {
+        "label": "now",
+        "detail": "Assign current time to field",
+        "doc": "Assigns the current time in milliseconds since January 1, 1970 (UTC) to the specified field.",
+        "insertText": "now()"
+      },
+      {
+        "label": "parseTimestamp",
+        "detail": "Parse string into event timestamp",
+        "doc": "Parses a string into a timestamp, used primarily for creating parsers for incoming events.",
+        "insertText": "parseTimestamp(field=${1:timestamp}, format=${2:\"yyyy-MM-dd'T'HH:mm:ss\"})"
+      },
+      {
+        "label": "setTimeInterval",
+        "detail": "Override query time interval",
+        "doc": "Sets the query's time interval and related time settings from within the query string, overriding UI or API time settings.",
+        "insertText": "setTimeInterval(start=${1:startMs}, end=${2:endMs})"
+      },
+      {
+        "label": "start",
+        "detail": "Assign search start timestamp",
+        "doc": "Assigns a timestamp representing the beginning of the search time interval in milliseconds since epoch to an output field.",
+        "insertText": "start(as=${1:field})"
+      },
+      {
+        "label": "time:dayOfMonth",
+        "detail": "Get day of month from timestamp",
+        "doc": "Gets the day of the month from a timestamp field.",
+        "insertText": "time:dayOfMonth(${1:field}, as=${2:day})"
+      },
+      {
+        "label": "time:dayOfWeek",
+        "detail": "Get day of week from timestamp",
+        "doc": "Gets the day of the week as a number from 1 (Monday) to 7 (Sunday) from a timestamp field.",
+        "insertText": "time:dayOfWeek(${1:field}, as=${2:weekday})"
+      },
+      {
+        "label": "time:dayOfWeekName",
+        "detail": "Get weekday name from timestamp",
+        "doc": "Gets the English display name of the day of the week from a timestamp field.",
+        "insertText": "time:dayOfWeekName(${1:field}, as=${2:weekday})"
+      },
+      {
+        "label": "time:dayOfYear",
+        "detail": "Get day of year from timestamp",
+        "doc": "Gets the day of the year (1 to 365, or 366 in a leap year) from a timestamp field.",
+        "insertText": "time:dayOfYear(${1:field}, as=${2:yearday})"
+      },
+      {
+        "label": "time:hour",
+        "detail": "Get hour from timestamp field",
+        "doc": "Gets the hour on a 24-hour clock from a timestamp field.",
+        "insertText": "time:hour(${1:field}, as=${2:hr})"
+      },
+      {
+        "label": "time:millisecond",
+        "detail": "Get millisecond from timestamp",
+        "doc": "Gets the millisecond component from a timestamp field.",
+        "insertText": "time:millisecond(${1:field}, as=${2:ms})"
+      },
+      {
+        "label": "time:minute",
+        "detail": "Get minute of timestamp field",
+        "doc": "Gets the minute of a timestamp field.",
+        "insertText": "time:minute(${1:timestamp}, as=${2:minute})"
+      },
+      {
+        "label": "time:month",
+        "detail": "Get month of timestamp field",
+        "doc": "Gets the month of a timestamp field as a number from 1 to 12.",
+        "insertText": "time:month(${1:timestamp}, as=${2:month})"
+      },
+      {
+        "label": "time:monthName",
+        "detail": "Get English month name from timestamp",
+        "doc": "Gets the English name of the month of a timestamp field (for example, January).",
+        "insertText": "time:monthName(${1:timestamp}, as=${2:month})"
+      },
+      {
+        "label": "time:second",
+        "detail": "Get second of timestamp field",
+        "doc": "Gets the second of a timestamp field.",
+        "insertText": "time:second(${1:timestamp}, as=${2:second})"
+      },
+      {
+        "label": "time:weekOfYear",
+        "detail": "Get ISO week number from timestamp",
+        "doc": "Gets the ISO 8601 week number within a year of a timestamp, a value from 1 to 53.",
+        "insertText": "time:weekOfYear(${1:timestamp}, as=${2:week})"
+      },
+      {
+        "label": "time:year",
+        "detail": "Get year of timestamp field",
+        "doc": "Gets the year of a timestamp field.",
+        "insertText": "time:year(${1:timestamp}, as=${2:year})"
+      }
+    ],
+    "transformation": [
+      {
+        "label": "bitfield:extractFlags",
+        "detail": "Extract bits as boolean fields",
+        "doc": "Decodes an integer to its bit-representation and extracts bits at specified indices to named boolean fields.",
+        "insertText": "bitfield:extractFlags(field=${1:field}, output=${2:[[0,flagName]]})"
+      },
+      {
+        "label": "bitfield:extractFlagsAsArray",
+        "detail": "Extract bits to named array",
+        "doc": "Decodes an integer to its bit-representation and extracts the true bits at specified indices into a named array.",
+        "insertText": "bitfield:extractFlagsAsArray(field=${1:field}, flagNames=${2:[[0,flagName]]}, asArray=${3:\"flagsArray[]\"})"
+      },
+      {
+        "label": "bitfield:extractFlagsAsString",
+        "detail": "Extract bits as string list",
+        "doc": "Decodes an integer to its bit-representation and extracts the true bits at specified indices into a delimited string.",
+        "insertText": "bitfield:extractFlagsAsString(field=${1:field}, flagNames=${2:[[0,flagName]]}, as=${3:\"trueFlags\"}, separator=${4:\", \"})"
+      },
+      {
+        "label": "coalesce",
+        "detail": "Return first non-null field value",
+        "doc": "Accepts a list of fields and returns the first value that is not null or empty.",
+        "insertText": "coalesce([${1:field1}, ${2:field2}])"
+      },
+      {
+        "label": "default",
+        "detail": "Set default value for field",
+        "doc": "Creates a field with a specified default value if the field does not already exist on an event.",
+        "insertText": "default(field=${1:fieldName}, value=${2:defaultValue})"
+      },
+      {
+        "label": "drop",
+        "detail": "Remove specified fields from events",
+        "doc": "Removes the specified fields from each event.",
+        "insertText": "drop(fields=[${1:field}])"
+      },
+      {
+        "label": "eval",
+        "detail": "Create field from evaluated expression",
+        "doc": "Creates a new field by evaluating the provided expression, requiring the string to start with an assignment.",
+        "insertText": "eval(${1:field}=${2:expression})"
+      },
+      {
+        "label": "eventFieldCount",
+        "detail": "Count internal fields of event",
+        "doc": "Computes the number of fields that an event uses internally for its values, excluding tags.",
+        "insertText": "eventFieldCount()"
+      },
+      {
+        "label": "eventInternals",
+        "detail": "Add event storage location fields",
+        "doc": "Adds a set of fields describing the storage locations of the current event.",
+        "insertText": "eventInternals()"
+      },
+      {
+        "label": "eventSize",
+        "detail": "Compute event disk storage size",
+        "doc": "Determines the number of bytes that an event internally uses in disk storage for its values, excluding field name bytes.",
+        "insertText": "eventSize(as=${1:eventSize})"
+      },
+      {
+        "label": "fieldset",
+        "detail": "Retrieve list of available fields",
+        "doc": "Retrieves a list of all available fields in the current event stream.",
+        "insertText": "fieldset()"
+      },
+      {
+        "label": "getField",
+        "detail": "Get field by computed name",
+        "doc": "Takes a computed source expression and sets a target field to the result, enabling dynamic field name resolution at runtime.",
+        "insertText": "getField(${1:fieldNameExpression})"
+      },
+      {
+        "label": "json:prettyPrint",
+        "detail": "Format JSON field for readability",
+        "doc": "Pretty prints a JSON field to improve its readability by formatting the JSON structure.",
+        "insertText": "json:prettyPrint(field=${1:field})"
+      },
+      {
+        "label": "neighbor",
+        "detail": "Access fields from neighboring event",
+        "doc": "Retrieves fields from either a preceding or succeeding event at a specified distance from the current event.",
+        "insertText": "neighbor(${1:key}, prefix=${2:prefix}, direction=${3:preceding})"
+      },
+      {
+        "label": "rename",
+        "detail": "Rename one or more fields",
+        "doc": "Renames one or more fields in the event.",
+        "insertText": "rename(field=[[${1:old_name}, ${2:new_name}]])"
+      },
+      {
+        "label": "select",
+        "detail": "Select specific fields from events",
+        "doc": "Specifies a set of fields to select from each event and include in the resulting event set.",
+        "insertText": "select([${1:field1, field2}])"
+      },
+      {
+        "label": "setField",
+        "detail": "Set field by computed name",
+        "doc": "Sets the field named by the result of the target expression to the result of the value expression, supporting dynamically computed field names.",
+        "insertText": "setField(target=${1:targetField}, value=${2:value})"
+      },
+      {
+        "label": "sort",
+        "detail": "Sort events by field",
+        "doc": "Sorts events based on one or more given fields, with configurable order, type, and result limit.",
+        "insertText": "sort(${1:field}, order=${2:desc}, limit=${3:200})"
+      },
+      {
+        "label": "split",
+        "detail": "Split array into multiple events",
+        "doc": "Splits an event structure that includes an array into multiple distinct events, one per array element.",
+        "insertText": "split(${1:array_field})"
+      },
+      {
+        "label": "table",
+        "detail": "Display results as table",
+        "doc": "Displays query results in a table with specified fields as columns, sorting and limiting rows as configured.",
+        "insertText": "table([${1:field}], limit=${2:200})"
+      },
+      {
+        "label": "transpose",
+        "detail": "Convert table columns into rows",
+        "doc": "Transposes table data by converting columns into rows, switching the orientation for improved readability.",
+        "insertText": "transpose(header=${1:field})"
+      },
+      {
+        "label": "writeJson",
+        "detail": "Write fields as JSON object",
+        "doc": "Writes specified field values as a JSON object and assigns the result to a target field.",
+        "insertText": "writeJson([${1:field}], as=${2:_json})"
+      }
+    ],
+    "parsing": [
+      {
+        "label": "kvParse",
+        "detail": "Parse key-value pairs into fields",
+        "doc": "Parses events encoded with key-value pairs into individual fields and values.",
+        "insertText": "kvParse(${1:field})"
+      },
+      {
+        "label": "parseCEF",
+        "detail": "Parse Common Event Format messages",
+        "doc": "Parses Common Event Format (CEF) encoded messages, supporting only CEF version 0.",
+        "insertText": "parseCEF(headerprefix=${1:\"cef.header.\"})"
+      },
+      {
+        "label": "parseCsv",
+        "detail": "Parse CSV-encoded field into columns",
+        "doc": "Parses a CSV-encoded field into known columns supporting both quoted and unquoted values.",
+        "insertText": "parseCsv(${1:field}, columns=[${2:col1, col2}])"
+      },
+      {
+        "label": "parseFixedWidth",
+        "detail": "Parse fixed-width field into columns",
+        "doc": "Parses a fixed width-encoded field into known columns using specified column widths.",
+        "insertText": "parseFixedWidth(${1:field}, columns=[${2:col1, col2}], widths=[${3:8, 8}])"
+      },
+      {
+        "label": "parseJson",
+        "detail": "Parse JSON field into named fields",
+        "doc": "Parses data or a field as JSON, converting the data into named fields and arrays within the event.",
+        "insertText": "parseJson(field=${1:@rawstring})"
+      },
+      {
+        "label": "parseLEEF",
+        "detail": "Parse LEEF encoded log messages",
+        "doc": "Parses Log Event Extended Format (LEEF) encoded messages, supporting versions 1.0 and 2.0.",
+        "insertText": "parseLEEF(headerprefix=${1:\"leef.header.\"})"
+      },
+      {
+        "label": "parseUri",
+        "detail": "Extract URI components from field",
+        "doc": "Extracts URI components from an input field and adds them as attributes to the event.",
+        "insertText": "parseUri(field=${1:url})"
+      },
+      {
+        "label": "parseUrl",
+        "detail": "Extract URL components from field",
+        "doc": "Extracts URL components from a field, adding scheme, username, password, host, port, path, fragment, and query attributes to the event.",
+        "insertText": "parseUrl(${1:field})"
+      },
+      {
+        "label": "parseXml",
+        "detail": "Parse data as XML",
+        "doc": "Parses data as XML, optionally filtering out events where the field does not contain valid XML.",
+        "insertText": "parseXml(${1:field})"
+      },
+      {
+        "label": "splitString",
+        "detail": "Split string into array values",
+        "doc": "Splits a string using a regular expression into an array of values.",
+        "insertText": "splitString(field=${1:field}, by=${2:delimiter})"
+      },
+      {
+        "label": "xml:prettyPrint",
+        "detail": "Format XML field for readability",
+        "doc": "Pretty prints an XML field, formatting it with indentation and line breaks for improved readability.",
+        "insertText": "xml:prettyPrint(field=${1:field}, step=${2:4}, width=${3:100})"
+      }
+    ],
+    "array": [
+      {
+        "label": "array:append",
+        "detail": "Append values to array field",
+        "doc": "Appends single or multiple values to an array, or creates a new array if it does not already exist.",
+        "insertText": "array:append(array=${1:\"array[]\"}, values=${2:value})"
+      },
+      {
+        "label": "array:contains",
+        "detail": "Check if array contains value",
+        "doc": "Checks whether the given value matches any of the values of the array and excludes the event if it does not match.",
+        "insertText": "array:contains(${1:\"array[]\"}, value=${2:value})"
+      },
+      {
+        "label": "array:dedup",
+        "detail": "Remove duplicate array values",
+        "doc": "Removes duplicate values from an array while preserving the ordering of the first occurrence of each unique element.",
+        "insertText": "array:dedup(${1:\"array[]\"})"
+      },
+      {
+        "label": "array:drop",
+        "detail": "Drop all fields of array",
+        "doc": "Takes the name of an array and drops all fields of that array.",
+        "insertText": "array:drop(${1:\"array[]\"})"
+      },
+      {
+        "label": "array:eval",
+        "detail": "Evaluate function on array elements",
+        "doc": "Evaluates the function argument on all values in the array, optionally saving the result in a new array.",
+        "insertText": "array:eval(${1:\"array[]\"}, var=${2:v}, function={${3:expr}})"
+      },
+      {
+        "label": "array:exists",
+        "detail": "Filter events by array condition",
+        "doc": "Filters events based on whether an array contains at least one element that meets a specified condition.",
+        "insertText": "array:exists(array=${1:\"array[]\"}, condition=${2:expr})"
+      },
+      {
+        "label": "array:filter",
+        "detail": "Filter elements from array",
+        "doc": "Filters elements from the input array using the provided function, maintaining element order in the output.",
+        "insertText": "array:filter(array=${1:\"array[]\"}, function={${2:expr}}, var=${3:\"v\"})"
+      },
+      {
+        "label": "array:intersection",
+        "detail": "Compute intersection of arrays",
+        "doc": "Computes the intersection of two arrays, returning only elements present in both.",
+        "insertText": "array:intersection(${1:\"array[]\"})"
+      },
+      {
+        "label": "array:length",
+        "detail": "Get number of array elements",
+        "doc": "Provides the number of elements in an array.",
+        "insertText": "array:length(${1:\"array[]\"}, as=${2:\"_length\"})"
+      },
+      {
+        "label": "array:reduceAll",
+        "detail": "Reduce all array elements to value",
+        "doc": "Computes a value from all events and array elements of the specified array.",
+        "insertText": "array:reduceAll(array=${1:\"array[]\"}, function=${2:expr}, var=${3:v})"
+      },
+      {
+        "label": "array:reduceColumn",
+        "detail": "Reduce array column to value",
+        "doc": "Reduces all values in an array column to a single computed value using the provided function.",
+        "insertText": "array:reduceColumn(${1:\"array[]\"}, var=${2:x}, function={${3:expr}})"
+      },
+      {
+        "label": "array:reduceRow",
+        "detail": "Reduce array row to value",
+        "doc": "Reduces all values in an array row to a single computed value using the provided function.",
+        "insertText": "array:reduceRow(array=${1:\"array[]\"}, var=${2:v}, function=${3:expr})"
+      },
+      {
+        "label": "array:regex",
+        "detail": "Filter array by regex pattern",
+        "doc": "Checks whether the given pattern matches any of the values of the array and excludes the event if no value matches.",
+        "insertText": "array:regex(${1:\"array[]\"}, regex=${2:\"pattern\"})"
+      },
+      {
+        "label": "array:rename",
+        "detail": "Rename all array fields",
+        "doc": "Takes the name of an array and renames all fields of that array to the new name.",
+        "insertText": "array:rename(array=${1:\"array[]\"}, as=${2:\"newArray[]\"})"
+      },
+      {
+        "label": "array:sort",
+        "detail": "Sort array elements by type",
+        "doc": "Sorts the elements of an array using the given data type and order, optionally saving the result to a new array.",
+        "insertText": "array:sort(${1:\"array[]\"}, type=${2:\"string\"}, order=${3:\"asc\"})"
+      },
+      {
+        "label": "array:union",
+        "detail": "Compute union of arrays",
+        "doc": "Computes the union of two arrays, combining their elements into a single array.",
+        "insertText": "array:union(array=${1:array}, as=${2:result})"
+      },
+      {
+        "label": "concatArray",
+        "detail": "Concatenate array field values",
+        "doc": "Concatenates the values of all fields with the same name and an array suffix into a value in a new field.",
+        "insertText": "concatArray(${1:array})"
+      },
+      {
+        "label": "objectArray:eval",
+        "detail": "Evaluate function over array elements",
+        "doc": "Iterates over the values of a nested array, applies a function on each element, and returns results in a new array field.",
+        "insertText": "objectArray:eval(${1:array}, asArray=${2:out[]}, function={${3:}})"
+      },
+      {
+        "label": "objectArray:exists",
+        "detail": "Filter events by array condition",
+        "doc": "Checks if an array contains at least one element that meets a specified condition, filtering events based on array contents.",
+        "insertText": "objectArray:exists(array=${1:field}, condition=${2:})"
+      }
+    ],
+    "math": [
+      {
+        "label": "math:abs",
+        "detail": "Calculate absolute value of field",
+        "doc": "Calculates the absolute value of a numeric field.",
+        "insertText": "math:abs(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:arccos",
+        "detail": "Calculate arc cosine of field",
+        "doc": "Calculates the arc cosine of a field, returning an angle in the range 0.0 through \u03c0.",
+        "insertText": "math:arccos(${1:field}, as=${2:angle})"
+      },
+      {
+        "label": "math:arcsin",
+        "detail": "Calculate arc sine of field",
+        "doc": "Calculates the arc sine of a field, returning an angle in the range -\u03c0/2 through \u03c0/2.",
+        "insertText": "math:arcsin(${1:field}, as=${2:angle})"
+      },
+      {
+        "label": "math:arctan",
+        "detail": "Calculate arc tangent of value",
+        "doc": "Calculates the arc tangent of a value, returning an angle in the range -\u03c0/2 through \u03c0/2.",
+        "insertText": "math:arctan(${1:field}, as=${2:angle})"
+      },
+      {
+        "label": "math:arctan2",
+        "detail": "Calculate angle from axis to point",
+        "doc": "Calculates the angle in radians from the positive x-axis to the point (x, y) in the plane.",
+        "insertText": "math:arctan2(y=${1:y}, x=${2:x}, as=${3:angle})"
+      },
+      {
+        "label": "math:ceil",
+        "detail": "Round field value up",
+        "doc": "Rounds a field value up to the smallest double value greater than or equal to the field value that is a mathematical integer.",
+        "insertText": "math:ceil(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:cos",
+        "detail": "Calculate cosine of field",
+        "doc": "Calculates the trigonometric cosine of a field.",
+        "insertText": "math:cos(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:cosh",
+        "detail": "Calculate hyperbolic cosine of field",
+        "doc": "Computes the hyperbolic cosine of a double field, defined as (e^x + e^-x)/2.",
+        "insertText": "math:cosh(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:deg2rad",
+        "detail": "Convert degrees to radians",
+        "doc": "Converts an angle value in a field from degrees to radians.",
+        "insertText": "math:deg2rad(${1:field}, as=${2:radians})"
+      },
+      {
+        "label": "math:exp",
+        "detail": "Calculate e raised to power",
+        "doc": "Calculates Euler's number e raised to the power of a double value in a field.",
+        "insertText": "math:exp(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:expm1",
+        "detail": "Calculate e to power minus one",
+        "doc": "Calculates e^x - 1 with higher precision than exp(x)-1 for values of x close to 0.",
+        "insertText": "math:expm1(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:floor",
+        "detail": "Round field value down",
+        "doc": "Rounds a field value down to the largest double value less than or equal to the field value that is a mathematical integer.",
+        "insertText": "math:floor(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:log",
+        "detail": "Calculate natural logarithm of field",
+        "doc": "Calculates the natural logarithm (base e) of the value in a double field.",
+        "insertText": "math:log(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:log10",
+        "detail": "Calculate base-10 logarithm of field",
+        "doc": "Calculates the base 10 logarithm of a double field.",
+        "insertText": "math:log10(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:log1p",
+        "detail": "Calculate natural log of field plus one",
+        "doc": "Calculates the natural logarithm of the sum of the field value and 1 with higher precision for small values.",
+        "insertText": "math:log1p(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:log2",
+        "detail": "Calculate base-2 logarithm of field",
+        "doc": "Calculates the base 2 logarithm of a double field.",
+        "insertText": "math:log2(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:mod",
+        "detail": "Calculate floor modulus of field",
+        "doc": "Calculates the floor modulus of a field value and a divisor.",
+        "insertText": "math:mod(field=${1:field}, divisor=${2:divisor})"
+      },
+      {
+        "label": "math:pow",
+        "detail": "Raise field to exponent power",
+        "doc": "Calculates the field value raised to the specified exponent power, supporting decimal values.",
+        "insertText": "math:pow(field=${1:field}, exponent=${2:exponent}, as=${3:result})"
+      },
+      {
+        "label": "math:rad2deg",
+        "detail": "Convert radians to degrees",
+        "doc": "Converts an angle value in a field from radians to degrees.",
+        "insertText": "math:rad2deg(${1:field}, as=${2:degrees})"
+      },
+      {
+        "label": "math:sin",
+        "detail": "Calculate sine of field",
+        "doc": "Calculates the trigonometric sine of a field.",
+        "insertText": "math:sin(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:sinh",
+        "detail": "Calculate hyperbolic sine of field",
+        "doc": "Calculates the hyperbolic sine of a double field, defined as (e^x - e^-x)/2.",
+        "insertText": "math:sinh(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:spherical2cartesian",
+        "detail": "Convert spherical to cartesian coordinates",
+        "doc": "Converts spherical coordinates to Cartesian coordinates using z as the up-axis.",
+        "insertText": "math:spherical2cartesian(azimuth=${1:azimuth}, polar=${2:polar}, radius=${3:radius}, as=${4:result})"
+      },
+      {
+        "label": "math:sqrt",
+        "detail": "Calculate square root of field",
+        "doc": "Calculates the rounded positive square root of a double field.",
+        "insertText": "math:sqrt(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:tan",
+        "detail": "Calculate tangent of field angle",
+        "doc": "Calculates the trigonometric tangent of an angle stored in a field.",
+        "insertText": "math:tan(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "math:tanh",
+        "detail": "Calculate hyperbolic tangent of field",
+        "doc": "Calculates the hyperbolic tangent of a numeric field.",
+        "insertText": "math:tanh(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "parseInt",
+        "detail": "Convert integer from any radix",
+        "doc": "Converts an integer from any radix such as hexadecimal or octal to base-10 decimal.",
+        "insertText": "parseInt(${1:field}, as=${2:result}, radix=${3:16})"
+      },
+      {
+        "label": "round",
+        "detail": "Round numeric field to integer",
+        "doc": "Rounds a numeric input field to the nearest integer with an optional method to set the rounding type.",
+        "insertText": "round(${1:field})"
+      },
+      {
+        "label": "shannonEntropy",
+        "detail": "Calculate string Shannon entropy",
+        "doc": "Calculates a Shannon entropy measure from a string of characters.",
+        "insertText": "shannonEntropy(${1:field})"
+      },
+      {
+        "label": "stdDev",
+        "detail": "Calculate field standard deviation",
+        "doc": "Calculates the standard deviation for a field over a set of events, returning the result in a field named _stddev.",
+        "insertText": "stdDev(field=${1:field})"
+      },
+      {
+        "label": "unit:convert",
+        "detail": "Convert values between units",
+        "doc": "Converts values between different units, such as milliseconds to seconds or bytes to kibibytes.",
+        "insertText": "unit:convert(${1:field}, binary=${2:false})"
+      }
+    ],
+    "text": [
+      {
+        "label": "concat",
+        "detail": "Concatenate field values together",
+        "doc": "Concatenates the values of a list of fields into a single value in a new field.",
+        "insertText": "concat([${1:field1}, ${2:field2}], as=${3:result})"
+      },
+      {
+        "label": "format",
+        "detail": "Format string using printf style",
+        "doc": "Creates formatted strings using printf style and adds the result to a new field.",
+        "insertText": "format(format=${1:\"%s\"}, field=[${2:field}], as=${3:outputField})"
+      },
+      {
+        "label": "length",
+        "detail": "Compute character count of string",
+        "doc": "Computes the number of characters in a string field.",
+        "insertText": "length(field=${1:field})"
+      },
+      {
+        "label": "lower",
+        "detail": "Convert text to lowercase",
+        "doc": "Converts text from an event field or other source to lower case letters.",
+        "insertText": "lower(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "lowercase",
+        "detail": "Deprecated lowercase field values",
+        "doc": "Deprecated function that lowercases field values; use lower() in queries instead.",
+        "insertText": "lowercase(field=${1:field})"
+      },
+      {
+        "label": "replace",
+        "detail": "Replace substrings matching regex pattern",
+        "doc": "Replaces each substring of the specified field's value that matches the given regular expression with the given replacement.",
+        "insertText": "replace(${1:\"pattern\"}, with=${2:\"replacement\"}, field=${3:field})"
+      },
+      {
+        "label": "stripAnsiCodes",
+        "detail": "Remove ANSI escape codes",
+        "doc": "Removes ANSI color codes and movement commands from a string field.",
+        "insertText": "stripAnsiCodes(${1:field})"
+      },
+      {
+        "label": "text:contains",
+        "detail": "Test string contains substring",
+        "doc": "Tests if a specific substring is present within a given string, supporting plain text, field values, or expressions as arguments.",
+        "insertText": "text:contains(string=${1:string}, substring=${2:substring})"
+      },
+      {
+        "label": "text:editDistance",
+        "detail": "Calculate Levenshtein edit distance",
+        "doc": "Returns the Levenshtein edit distance between a target string and a reference string, capped at a specified maximum distance.",
+        "insertText": "text:editDistance(target=${1:field}, reference=${2:reference}, maxDistance=${3:5})"
+      },
+      {
+        "label": "text:editDistanceAsArray",
+        "detail": "Calculate edit distances as array",
+        "doc": "Returns the Levenshtein edit distance between a target string and a list of reference strings as an object array.",
+        "insertText": "text:editDistanceAsArray(target=${1:field}, references=[${2:strings}], maxDistance=${3:5})"
+      },
+      {
+        "label": "text:endsWith",
+        "detail": "Test string ends with substring",
+        "doc": "Compares two strings and filters events where one string ends with another string.",
+        "insertText": "text:endsWith(string=${1:string}, substring=${2:substring})"
+      },
+      {
+        "label": "text:length",
+        "detail": "Compute string length",
+        "doc": "Computes the length of a string, useful in combination with text:substring() for programmatic text extraction.",
+        "insertText": "text:length(${1:field})"
+      },
+      {
+        "label": "text:positionOf",
+        "detail": "Find substring position in string",
+        "doc": "Computes the position of a given character or substring within a string, useful for programmatic text extraction.",
+        "insertText": "text:positionOf(${1:field}, character=${2:char})"
+      },
+      {
+        "label": "text:startsWith",
+        "detail": "Test string starts with substring",
+        "doc": "Compares two strings and filters events where one string begins with another string.",
+        "insertText": "text:startsWith(string=${1:string}, substring=${2:substring})"
+      },
+      {
+        "label": "text:substring",
+        "detail": "Extract substring by position",
+        "doc": "Extracts a substring from a string based on specified start and end positions.",
+        "insertText": "text:substring(${1:field}, begin=${2:0}, end=${3:length})"
+      },
+      {
+        "label": "text:trim",
+        "detail": "Trim whitespace from string",
+        "doc": "Removes leading and/or trailing whitespace characters from a string, supporting all Unicode whitespace characters.",
+        "insertText": "text:trim(${1:field}, mode=${2:both})"
+      },
+      {
+        "label": "upper",
+        "detail": "Convert text to uppercase",
+        "doc": "Converts the text in a field to upper case letters.",
+        "insertText": "upper(${1:field}, as=${2:result})"
+      }
+    ],
+    "network": [
+      {
+        "label": "asn",
+        "detail": "Lookup AS number for IP",
+        "doc": "Sets the autonomous system number and organization associated with a given IP address.",
+        "insertText": "asn(field=${1:ip}, as=${2:asn})"
+      },
+      {
+        "label": "communityId",
+        "detail": "Compute network flow community ID",
+        "doc": "Computes the Community ID hash for a network flow to correlate and join flows across systems.",
+        "insertText": "communityId(proto=${1:proto}, sourceip=${2:srcip}, sourceport=${3:srcport}, destinationip=${4:dstip}, destinationport=${5:dstport})"
+      },
+      {
+        "label": "geography:distance",
+        "detail": "Calculate distance between coordinates",
+        "doc": "Calculates the distance in meters between two geographical coordinates using the Haversine approximation.",
+        "insertText": "geography:distance(lat1=${1:lat1}, lon1=${2:lon1}, lat2=${3:lat2}, lon2=${4:lon2})"
+      },
+      {
+        "label": "geohash",
+        "detail": "Compute geohash from coordinates",
+        "doc": "Calculates a geohash value from two fields representing latitude and longitude.",
+        "insertText": "geohash(lat=${1:latField}, lon=${2:lonField})"
+      },
+      {
+        "label": "ipLocation",
+        "detail": "Add geolocation data for IP",
+        "doc": "Adds geolocation data (country, city, longitude, latitude) for IPv4 or IPv6 addresses as new fields.",
+        "insertText": "ipLocation(field=${1:field})"
+      },
+      {
+        "label": "rdns",
+        "detail": "Resolve hostnames via reverse DNS",
+        "doc": "Resolves hostnames using reverse DNS lookups (deprecated, use reverseDns() instead).",
+        "insertText": "rdns(${1:field})"
+      },
+      {
+        "label": "reverseDns",
+        "detail": "Perform reverse DNS hostname lookup",
+        "doc": "Performs reverse DNS lookups to find hostnames associated with IP addresses and adds hostname information to events.",
+        "insertText": "reverseDns(${1:field}, as=${2:hostname})"
+      },
+      {
+        "label": "subnet",
+        "detail": "Compute subnet from IP field",
+        "doc": "Computes a subnet from an IPv4 field and emits the result into a specified output field.",
+        "insertText": "subnet(${1:field}, bits=${2:24}, as=${3:_subnet})"
+      },
+      {
+        "label": "worldMap",
+        "detail": "Produce World Map widget data",
+        "doc": "Produces data compatible with the World Map widget by bucketing IP addresses or lat/lon points using geohashing.",
+        "insertText": "worldMap(lat=${1:lat}, lon=${2:lon})"
+      }
+    ],
+    "encoding": [
+      {
+        "label": "base64Decode",
+        "detail": "Decode Base64 encoded field",
+        "doc": "Performs Base64 decoding of a field and decodes the result as a string according to the specified charset.",
+        "insertText": "base64Decode(${1:field})"
+      },
+      {
+        "label": "base64Encode",
+        "detail": "Encode field as Base64",
+        "doc": "Performs Base64 encoding of a field as UTF-8, converting special characters to a known set of non-special characters.",
+        "insertText": "base64Encode(field=${1:field})"
+      },
+      {
+        "label": "crypto:md5",
+        "detail": "Compute MD5 hash of field",
+        "doc": "Computes a cryptographic MD5 hash of an input field or array of fields, returning the result as a hex string.",
+        "insertText": "crypto:md5(${1:field})"
+      },
+      {
+        "label": "crypto:sha1",
+        "detail": "Compute SHA1 hash of field",
+        "doc": "Computes a cryptographic SHA1 hash of a given input field or array of fields, returning the result as a hex string.",
+        "insertText": "crypto:sha1(${1:field})"
+      },
+      {
+        "label": "crypto:sha256",
+        "detail": "Compute SHA256 hash of field",
+        "doc": "Computes a cryptographic SHA256 hash of a given input field or array of fields, returning the result as a hex string.",
+        "insertText": "crypto:sha256(${1:field})"
+      },
+      {
+        "label": "hash",
+        "detail": "Compute non-cryptographic field hash",
+        "doc": "Computes a non-cryptographic hash of a list of fields, returning an integer in the range [0, 4294967295].",
+        "insertText": "hash(field=[${1:field}])"
+      },
+      {
+        "label": "hashRewrite",
+        "detail": "Rewrite field as secure hash",
+        "doc": "Calculates a secure hash of a field and stores the hash back in the event for later matching with hashMatch().",
+        "insertText": "hashRewrite(field=${1:fieldName}, salt=${2:salt})"
+      },
+      {
+        "label": "parseHexString",
+        "detail": "Decode hex-encoded bytes to string",
+        "doc": "Parses the input from hex encoded bytes, decoding the resulting bytes as a string using the selected character set.",
+        "insertText": "parseHexString(${1:field})"
+      },
+      {
+        "label": "tokenHash",
+        "detail": "Hash structural tokens of string",
+        "doc": "Calculates a structure hash that is equal for similarly structured input strings.",
+        "insertText": "tokenHash(${1:field})"
+      },
+      {
+        "label": "urlDecode",
+        "detail": "Decode URL-encoded string field",
+        "doc": "URL-decodes the contents of a string field.",
+        "insertText": "urlDecode(${1:field}, as=${2:result})"
+      },
+      {
+        "label": "urlEncode",
+        "detail": "URL-encode special characters in field",
+        "doc": "URL-encodes the contents of a string field, converting special characters into percent-encoded equivalents.",
+        "insertText": "urlEncode(field=${1:field}, as=${2:result})"
+      }
+    ],
+    "flow": [
+      {
+        "label": "beta:param",
+        "detail": "Read parameter into event field",
+        "doc": "Reads the given parameter and assigns its value to a field in the event.",
+        "insertText": "beta:param(parameter=${1:\"param\"}, as=${2:\"field\"})"
+      },
+      {
+        "label": "beta:repeating",
+        "detail": "Repeat events at interval",
+        "doc": "Generates repeating events at a specified interval.",
+        "insertText": "beta:repeating(interval=${1:\"interval\"})"
+      },
+      {
+        "label": "callFunction",
+        "detail": "Call named function on field",
+        "doc": "Calls the named function on a field over a set of events and returns the result in a field named _function.",
+        "insertText": "callFunction(${1:functionName}, field=${2:field})"
+      },
+      {
+        "label": "copyEvent",
+        "detail": "Duplicate event in pipeline",
+        "doc": "Makes an extra copy of the event within the current pipeline, used in parsers to duplicate events for copying to another repo.",
+        "insertText": "copyEvent(${1:field})"
+      },
+      {
+        "label": "correlate",
+        "detail": "Find patterns across multiple events",
+        "doc": "Finds patterns involving multiple events linked with specified correlation keys.",
+        "insertText": "correlate(\n    ${1:QueryName}: {\n        ${2:field}=${3:value}\n    } include: [${4:field}],\n    within=${5:1h},\n    globalConstraints=[${6:field}]\n)"
+      },
+      {
+        "label": "createEvents",
+        "detail": "Generate temporary events for testing",
+        "doc": "Generates temporary events as part of the query, discarding all incoming events and outputting the generated ones.",
+        "insertText": "createEvents([${1:eventJson}])"
+      },
+      {
+        "label": "explain:asTable",
+        "detail": "Explain query plan as table",
+        "doc": "Outputs the query execution plan as a table for inspection and debugging (experimental feature).",
+        "insertText": "explain:asTable()"
+      },
+      {
+        "label": "if",
+        "detail": "Choose value based on condition",
+        "doc": "Chooses one of two expressions based on a condition, similar to a ternary operator.",
+        "insertText": "if(${1:condition}, then=${2:trueValue}, else=${3:falseValue})"
+      },
+      {
+        "label": "join",
+        "detail": "Join two LogScale searches",
+        "doc": "Joins two LogScale searches by matching results on specified key fields, supporting inner or left join modes.",
+        "insertText": "join(query=${1:query}, field=[${2:field}])"
+      },
+      {
+        "label": "selfJoin",
+        "detail": "Collate data from events sharing key",
+        "doc": "Collates data from events that share a key, useful when the number of keys exceeds groupBy() limits.",
+        "insertText": "selfJoin(${1:keyField}, limit=${2:20000})"
+      }
+    ],
+    "lookup": [
+      {
+        "label": "defineTable",
+        "detail": "Define in-memory lookup table",
+        "doc": "Executes a subquery that generates an in-memory ad-hoc table which can be joined with the primary query using match().",
+        "insertText": "defineTable(query={${1:query}}, name=${2:tableName}, include=[${3:field}])"
+      },
+      {
+        "label": "ioc:lookup",
+        "detail": "Look up indicators of compromise",
+        "doc": "Looks up IOCs such as IP addresses, URLs, and domains in CrowdStrike's curated IOC database and annotates events with security information.",
+        "insertText": "ioc:lookup(field=[${1:lookupField}], type=${2:domain})"
+      },
+      {
+        "label": "match",
+        "detail": "Match events against lookup table",
+        "doc": "Matches or joins query results with a lookup table from a CSV file, JSON file, or ad-hoc table.",
+        "insertText": "match(${1:file}, field=${2:field})"
+      },
+      {
+        "label": "matchAsArray",
+        "detail": "Match events into array result",
+        "doc": "Matches or joins query results with a lookup table similar to match(), storing multiple matching rows as an array.",
+        "insertText": "matchAsArray(file=${1:file}, field=[${2:field}], nrows=${3:2})"
+      },
+      {
+        "label": "readFile",
+        "detail": "Output CSV lookup file as events",
+        "doc": "Outputs the content of CSV lookup files or ad-hoc tables as events, usable as data input for queries.",
+        "insertText": "readFile(${1:\"filename.csv\"})"
+      }
+    ]
+  },
+  "keywords": {
+    "comparison_operators": [
+      "=",
+      "!=",
+      "<",
+      "<=",
+      ">",
+      ">=",
+      "==",
+      "=~",
+      "!=~",
+      "like",
+      "<=>",
+      ":=",
+      "wildcard",
+      "?"
+    ],
+    "control_structures": [
+      "case",
+      "match",
+      "if",
+      "else",
+      "in",
+      "default",
+      "then"
+    ],
+    "logical_operators": [
+      "and",
+      "or",
+      "not",
+      "AND",
+      "OR",
+      "NOT"
+    ],
+    "reserved_words": [
+      "true",
+      "false",
+      "null",
+      "as",
+      "var",
+      "field",
+      "repeat",
+      "negate",
+      "function",
+      "values",
+      "then",
+      "array",
+      "regex",
+      "eval",
+      "test",
+      "coalesce",
+      "groupBy",
+      "bucket",
+      "timeChart",
+      "stats",
+      "top",
+      "count",
+      "avg",
+      "sum",
+      "min",
+      "max",
+      "sort",
+      "table",
+      "format",
+      "concat",
+      "join",
+      "selfJoin",
+      "correlate",
+      "tail",
+      "head",
+      "limit",
+      "select",
+      "rename",
+      "drop",
+      "replace",
+      "split",
+      "trim",
+      "lower",
+      "upper",
+      "round",
+      "abs",
+      "math",
+      "wildcard",
+      "cidr",
+      "lookup",
+      "match",
+      "default",
+      "now",
+      "span",
+      "calendar",
+      "copyEvent",
+      "dropEvent",
+      "accumulate",
+      "array:drop",
+      "createEvents",
+      "in",
+      "array:union",
+      "parseXml",
+      "if",
+      "array:reduceRow",
+      "counterAsRate",
+      "sample",
+      "uniq",
+      "array:contains",
+      "array:reduceAll",
+      "base64Encode",
+      "array:rename",
+      "concatArray",
+      "kvParse",
+      "callFunction",
+      "asn",
+      "communityId",
+      "json:prettyPrint",
+      "array:exists",
+      "case",
+      "parseJson",
+      "array:length",
+      "collect",
+      "where",
+      "array:regex",
+      "array:intersection",
+      "like",
+      "length",
+      "array:dedup",
+      "array:filter",
+      "array:reduceColumn",
+      "array:append",
+      "array:sort",
+      "array:eval",
+      "base64Decode",
+      "getField"
+    ]
+  }
+}

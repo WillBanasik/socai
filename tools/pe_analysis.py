@@ -38,7 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, STRINGS_MIN_LEN
-from tools.common import load_json, log_error, save_json, sha256_file, utcnow
+from tools.common import log_error, save_json, utcnow
 
 # ---------------------------------------------------------------------------
 # Optional dependency

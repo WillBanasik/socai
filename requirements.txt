@@ -3,9 +3,16 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 python-dotenv>=1.0.0
 markdown>=3.5.0
+lxml>=4.9.0
+
+# DNS enumeration (exposure tests, SPF/DMARC analysis)
+dnspython>=2.6.0
 
 # Optional – headless browser (recommended)
 playwright>=1.43.0
+
+# PowerPoint report generation
+python-pptx>=0.6.21
 
 # Optional – PE file analysis
 # pefile>=2023.2.7
@@ -18,6 +25,9 @@ playwright>=1.43.0
 
 # Optional – local GeoIP lookups (requires MAXMIND_LICENSE_KEY in .env)
 # geoip2>=4.8.0
+
+# Optional – infostealer log parsing (dark web tools)
+# stealer-parser>=0.3.0
 
 # MCP server
 mcp>=1.1.0

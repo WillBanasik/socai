@@ -114,7 +114,10 @@ def _detect_sample_type(sample_path: Path) -> str:
     try:
         with open(sample_path, "rb") as f:
             header = f.read(16)
-    except (FileNotFoundError, PermissionError):
+    except (FileNotFoundError, PermissionError) as exc:
+        log_error("", "sandbox_session:detect_sample_type", str(exc),
+                  severity="warning", traceback=True,
+                  context={"sample_path": str(sample_path)})
         return "unknown"
 
     sigs = {
@@ -162,7 +165,10 @@ def _is_container_running(session_id: str) -> bool:
             capture_output=True, text=True, timeout=10,
         )
         return result.stdout.strip().lower() == "true"
-    except Exception:
+    except Exception as exc:
+        log_error("", "sandbox_session:is_container_running", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id})
         return False
 
 
@@ -175,8 +181,10 @@ def _ensure_network() -> None:
         )
         if result.returncode == 0:
             return  # Already exists
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error("", "sandbox_session:ensure_network_inspect", str(exc),
+                  severity="warning", traceback=True,
+                  context={"network": SANDBOX_NETWORK_NAME})
 
     try:
         subprocess.run(
@@ -293,8 +301,10 @@ def _start_container(
                  f"/sandbox/workspace/{sample_path.name}"],
                 capture_output=True, text=True, timeout=10,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error("", "sandbox_session:copy_sample_to_workspace", str(exc),
+                      severity="warning", traceback=True,
+                      context={"session_id": session_id, "sample": sample_path.name})
 
     return container_id
 
@@ -307,15 +317,19 @@ def _stop_container(session_id: str) -> None:
             ["docker", "stop", "--time", "10", name],
             capture_output=True, text=True, timeout=30,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error("", "sandbox_session:stop_container", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id, "step": "docker_stop"})
     try:
         subprocess.run(
             ["docker", "rm", "-f", name],
             capture_output=True, text=True, timeout=15,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error("", "sandbox_session:remove_container", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id, "step": "docker_rm"})
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +351,10 @@ def _load_session(session_id: str) -> dict | None:
         return None
     try:
         return json.loads(p.read_text())
-    except (json.JSONDecodeError, FileNotFoundError):
+    except (json.JSONDecodeError, FileNotFoundError) as exc:
+        log_error("", "sandbox_session:load_session", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id})
         return None
 
 
@@ -370,8 +387,10 @@ def _copy_telemetry_from_container(session_id: str, dest_dir: Path) -> dict:
             )
             if result.returncode == 0 and (dest_dir / filename).exists():
                 files_copied[filename] = (dest_dir / filename).stat().st_size
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error("", "sandbox_session:copy_telemetry_file", str(exc),
+                      severity="info", traceback=True,
+                      context={"session_id": session_id, "filename": filename})
 
     # Copy dropped files directory
     dropped_dest = dest_dir / "dropped_files"
@@ -384,8 +403,10 @@ def _copy_telemetry_from_container(session_id: str, dest_dir: Path) -> dict:
             files_copied["dropped_files"] = sum(
                 f.stat().st_size for f in dropped_dest.iterdir() if f.is_file()
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error("", "sandbox_session:copy_dropped_files", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id})
 
     return files_copied
 
@@ -407,8 +428,10 @@ def _collect_artefacts(session_id: str, case_id: str, telemetry_dir: Path) -> di
         for line in strace_parsed.read_text(errors="replace").splitlines():
             try:
                 records.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as exc:
+                log_error(case_id, "sandbox_session:parse_strace_line", str(exc),
+                          severity="info", traceback=True,
+                          context={"session_id": session_id})
         # Cap at 50 MB equivalent
         strace_data = records[:50000]
         artefacts["strace_log"] = save_json(art_dir / "strace_log.json", strace_data)
@@ -435,8 +458,10 @@ def _collect_artefacts(session_id: str, case_id: str, telemetry_dir: Path) -> di
         try:
             net_data = json.loads(net_parsed.read_text())
             artefacts["network_log"] = save_json(art_dir / "network_log.json", net_data)
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as exc:
+            log_error(case_id, "sandbox_session:parse_network_log", str(exc),
+                      severity="warning", traceback=True,
+                      context={"session_id": session_id, "file": str(net_parsed)})
 
     # Honeypot log
     hp_log = telemetry_dir / "honeypot_log.jsonl"
@@ -445,8 +470,10 @@ def _collect_artefacts(session_id: str, case_id: str, telemetry_dir: Path) -> di
         for line in hp_log.read_text(errors="replace").splitlines():
             try:
                 records.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as exc:
+                log_error(case_id, "sandbox_session:parse_honeypot_line", str(exc),
+                          severity="info", traceback=True,
+                          context={"session_id": session_id})
         if records:
             artefacts["honeypot_log"] = save_json(art_dir / "honeypot_log.json", records)
 
@@ -458,8 +485,10 @@ def _collect_artefacts(session_id: str, case_id: str, telemetry_dir: Path) -> di
             artefacts["filesystem_changes"] = save_json(
                 art_dir / "filesystem_changes.json", changes,
             )
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as exc:
+            log_error(case_id, "sandbox_session:parse_filesystem_changes", str(exc),
+                      severity="warning", traceback=True,
+                      context={"session_id": session_id, "file": str(sys_changes)})
 
     # Process tree (JSONL → JSON array)
     proc_tree = telemetry_dir / "process_tree.jsonl"
@@ -468,8 +497,10 @@ def _collect_artefacts(session_id: str, case_id: str, telemetry_dir: Path) -> di
         for line in proc_tree.read_text(errors="replace").splitlines():
             try:
                 records.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as exc:
+                log_error(case_id, "sandbox_session:parse_process_tree_line", str(exc),
+                          severity="info", traceback=True,
+                          context={"session_id": session_id})
         if records:
             artefacts["process_tree"] = save_json(art_dir / "process_tree.json", records)
 
@@ -520,8 +551,10 @@ def _extract_dns_queries(telemetry_dir: Path) -> list[dict]:
                 if domain and domain not in seen:
                     seen.add(domain)
                     queries.append({"domain": domain, "source": "pcap"})
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as exc:
+            log_error("", "sandbox_session:extract_dns_network_parsed", str(exc),
+                      severity="warning", traceback=True,
+                      context={"file": str(net_parsed)})
 
     # From honeypot log
     hp_log = telemetry_dir / "honeypot_log.jsonl"
@@ -538,8 +571,9 @@ def _extract_dns_queries(telemetry_dir: Path) -> list[dict]:
                             "source": "honeypot",
                             "ts": event.get("ts"),
                         })
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as exc:
+                log_error("", "sandbox_session:extract_dns_honeypot_line", str(exc),
+                          severity="info", traceback=True)
 
     return queries
 
@@ -561,8 +595,10 @@ def _extract_strings(telemetry_dir: Path) -> dict:
             if f.is_file() and f.stat().st_size < 1_000_000:
                 try:
                     all_text += f.read_text(errors="replace")[:200000]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log_error("", "sandbox_session:extract_strings_dropped", str(exc),
+                              severity="info", traceback=True,
+                              context={"file": str(f)})
 
     if not all_text:
         return result
@@ -595,8 +631,10 @@ def _extract_session_entities(case_id: str, artefacts: dict, telemetry_dir: Path
             entities["urls"].update(_RE_URL.findall(text))
             entities["hashes_sha256"].update(_RE_HASH_SHA256.findall(text))
             entities["hashes_md5"].update(_RE_HASH_MD5.findall(text))
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error(case_id, "sandbox_session:scan_entities_from_json", str(exc),
+                      severity="warning", traceback=True,
+                      context={"file": str(json_file)})
 
     # Convert sets to sorted lists
     entity_dict = {k: sorted(v) for k, v in entities.items()}
@@ -624,8 +662,9 @@ def _extract_session_entities(case_id: str, artefacts: dict, telemetry_dir: Path
                     "exe": rec.get("exe", ""),
                     "cmdline": rec.get("cmdline", ""),
                 })
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as exc:
+                log_error(case_id, "sandbox_session:parse_process_tree_entity_line", str(exc),
+                          severity="info", traceback=True)
 
     # Network connection events
     net_parsed = telemetry_dir / "network_parsed.json"
@@ -649,8 +688,10 @@ def _extract_session_entities(case_id: str, artefacts: dict, telemetry_dir: Path
                     "event_type": "dns_query",
                     "domain": q.get("query", ""),
                 })
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as exc:
+            log_error(case_id, "sandbox_session:parse_network_for_entities", str(exc),
+                      severity="warning", traceback=True,
+                      context={"file": str(net_parsed)})
 
     save_json(logs_dir / "mde_sandbox_detonation.parsed.json", parsed_rows)
 
@@ -692,6 +733,9 @@ def start_session(
     try:
         sample_hash = sha256_file(sample_path)
     except Exception as exc:
+        log_error(case_id, "sandbox_session:hash_sample", str(exc),
+                  severity="error", traceback=True,
+                  context={"sample_path": str(sample_path)})
         return {"status": "error", "reason": f"Cannot hash sample: {exc}"}
 
     sample_type = _detect_sample_type(sample_path)
@@ -705,6 +749,9 @@ def start_session(
             interactive=interactive,
         )
     except RuntimeError as exc:
+        log_error(case_id, "sandbox_session:start_container", str(exc),
+                  severity="error", traceback=True,
+                  context={"session_id": session_id, "sample": str(sample_path)})
         return {"status": "error", "reason": str(exc)}
 
     state = {
@@ -795,20 +842,26 @@ def stop_session(session_id: str) -> dict:
             ft = telemetry_dir / "file_type.txt"
             if ft.exists():
                 file_type = ft.read_text().strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error(case_id, "sandbox_session:read_file_type", str(exc),
+                      severity="info", traceback=True,
+                      context={"session_id": session_id})
         try:
             sc = telemetry_dir / "sample_category.txt"
             if sc.exists():
                 sample_category = sc.read_text().strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error(case_id, "sandbox_session:read_sample_category", str(exc),
+                      severity="info", traceback=True,
+                      context={"session_id": session_id})
         try:
             ee = telemetry_dir / "execution_error.txt"
             if ee.exists():
                 execution_error = ee.read_text().strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error(case_id, "sandbox_session:read_execution_error", str(exc),
+                      severity="info", traceback=True,
+                      context={"session_id": session_id})
 
         # Calculate duration
         duration = 0
@@ -818,8 +871,10 @@ def stop_session(session_id: str) -> dict:
             from tools.common import utcnow as _utcnow
             _now = datetime.fromisoformat(_utcnow().replace("Z", "+00:00"))
             duration = int((_now - start).total_seconds())
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error(case_id, "sandbox_session:calculate_duration", str(exc),
+                      severity="info", traceback=True,
+                      context={"session_id": session_id})
 
         # Write sandbox manifest
         manifest = {
@@ -903,8 +958,10 @@ def list_sessions() -> list[dict]:
                 # Persist the updated status so we don't re-check Docker every call
                 try:
                     p.write_text(json.dumps(state, indent=2, default=str))
-                except OSError:
-                    pass
+                except OSError as exc:
+                    log_error("", "sandbox_session:list_sessions_persist_status", str(exc),
+                              severity="warning", traceback=True,
+                              context={"session_file": str(p)})
             sessions.append({
                 "session_id": state.get("session_id", "?"),
                 "case_id": state.get("case_id", ""),
@@ -916,8 +973,10 @@ def list_sessions() -> list[dict]:
                 "started_at": state.get("started_at", ""),
                 "stopped_at": state.get("stopped_at", ""),
             })
-        except (json.JSONDecodeError, FileNotFoundError):
-            pass
+        except (json.JSONDecodeError, FileNotFoundError) as exc:
+            log_error("", "sandbox_session:list_sessions_read", str(exc),
+                      severity="warning", traceback=True,
+                      context={"session_file": str(p)})
     return sessions
 
 
@@ -955,10 +1014,16 @@ def exec_in_sandbox(session_id: str, command: str, *, timeout: int = 30) -> dict
             "return_code": result.returncode,
             "_message": result.stdout[:3000] if result.stdout else result.stderr[:3000],
         }
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        log_error(state.get("case_id", ""), "sandbox_session:exec_in_sandbox", f"Command timed out after {timeout}s",
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id, "command": command[:200]})
         output = {"status": "error", "reason": f"Command timed out after {timeout}s.",
                   "_message": f"Command timed out after {timeout}s."}
     except Exception as exc:
+        log_error(state.get("case_id", ""), "sandbox_session:exec_in_sandbox", str(exc),
+                  severity="error", traceback=True,
+                  context={"session_id": session_id, "command": command[:200]})
         output = {"status": "error", "reason": str(exc), "_message": f"Exec failed: {exc}"}
 
     # Log the command

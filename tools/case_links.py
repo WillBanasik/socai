@@ -62,7 +62,9 @@ def _load_links_index() -> dict:
         return {}
     try:
         return load_json(LINKS_INDEX_FILE)
-    except Exception:
+    except Exception as exc:
+        log_error("", "case_links.load_links_index", str(exc),
+                  severity="warning", traceback=True, context={"path": str(LINKS_INDEX_FILE)})
         return {}
 
 
@@ -76,7 +78,9 @@ def _load_case_meta(case_id: str) -> dict | None:
         return None
     try:
         return load_json(path)
-    except Exception:
+    except Exception as exc:
+        log_error("", "case_links.load_case_meta", str(exc),
+                  severity="warning", traceback=True, context={"case_id": case_id, "path": str(path)})
         return None
 
 
@@ -180,7 +184,8 @@ def link_cases(
         # Determine canonical case
         if not canonical:
             # Default: most recent case is canonical (it likely has the most data)
-            canonical = max(case_a, case_b, key=lambda c: _load_case_meta(c).get("created_at", ""))
+            _metas = {case_a: meta_a, case_b: meta_b}
+            canonical = max(case_a, case_b, key=lambda c: _metas[c].get("created_at", ""))
         duplicate = case_a if canonical == case_b else case_b
 
         # Mark the duplicate case
@@ -378,6 +383,8 @@ def merge_cases(source_ids: list[str], target_id: str, *, close_sources: bool = 
                         existing = merged_iocs.setdefault(itype, set())
                         existing.update(vals)
             except Exception as exc:
+                log_error(target_id, "case_links.merge_cases.load_iocs", str(exc),
+                          severity="warning", traceback=True, context={"source_case": src_id})
                 errors.append(f"Failed to load IOCs from {src_id}: {exc}")
 
         # Merge findings from session context
@@ -389,6 +396,8 @@ def merge_cases(source_ids: list[str], target_id: str, *, close_sources: bool = 
                     f["source_case"] = src_id
                     merged_findings.append(f)
             except Exception as exc:
+                log_error(target_id, "case_links.merge_cases.load_context", str(exc),
+                          severity="warning", traceback=True, context={"source_case": src_id})
                 errors.append(f"Failed to load context from {src_id}: {exc}")
 
         # Link as duplicate
@@ -411,7 +420,9 @@ def merge_cases(source_ids: list[str], target_id: str, *, close_sources: bool = 
         if target_iocs_path.exists():
             try:
                 existing_iocs = load_json(target_iocs_path).get("iocs", {})
-            except Exception:
+            except Exception as exc:
+                log_error(target_id, "case_links.merge_cases.load_target_iocs", str(exc),
+                          severity="warning", traceback=True, context={"path": str(target_iocs_path)})
                 pass
         for itype, vals in merged_iocs.items():
             existing_set = set(existing_iocs.get(itype, []))
@@ -560,6 +571,8 @@ def find_by_external_ref(ref_key: str, ref_value: str) -> str | None:
             refs = meta.get("external_refs", {})
             if refs.get(ref_key) == ref_value:
                 return meta.get("case_id", case_dir.name)
-        except Exception:
+        except Exception as exc:
+            log_error("", "case_links.find_by_external_ref", str(exc),
+                      severity="warning", traceback=True, context={"path": str(meta_path)})
             continue
     return None

@@ -54,9 +54,17 @@ def _safe_load(path: Path) -> dict | None:
 
 
 def _load_playbook(client: str) -> dict | None:
-    """Load client playbook from config/clients/<client>.json."""
-    playbook_path = CLIENT_PLAYBOOKS_DIR / f"{client.lower()}.json"
-    return _safe_load(playbook_path)
+    """Load client playbook from config/clients/<client>/playbook.json or legacy flat layout."""
+    slug = client.lower().replace(" ", "_")
+    candidates = [
+        CLIENT_PLAYBOOKS_DIR / slug / "playbook.json",
+        CLIENT_PLAYBOOKS_DIR / f"{slug}.json",
+    ]
+    for path in candidates:
+        data = _safe_load(path)
+        if data is not None:
+            return data
+    return None
 
 
 def _match_alert_override(playbook: dict, title: str) -> dict | None:
@@ -70,13 +78,20 @@ def _match_alert_override(playbook: dict, title: str) -> dict | None:
 
 
 def _check_crown_jewels(playbook: dict, malicious_iocs: list[str]) -> bool:
-    """Check if any malicious IOC target host is a crown jewel."""
+    """Check if any malicious IOC target host is a crown jewel.
+
+    Supports wildcard patterns (e.g. ``"karel*chudej*"``) via fnmatch.
+    """
+    from fnmatch import fnmatch
+
     crown_hosts = [h.lower() for h in playbook.get("crown_jewels", {}).get("hosts", [])]
     if not crown_hosts:
         return False
     for ioc in malicious_iocs:
-        if ioc.lower() in crown_hosts:
-            return True
+        ioc_lower = ioc.lower()
+        for pattern in crown_hosts:
+            if fnmatch(ioc_lower, pattern):
+                return True
     return False
 
 

@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import BASE_DIR
+from tools.common import log_error
 
 KQL_PLAYBOOKS_DIR = BASE_DIR / "config" / "kql_playbooks"
 
@@ -69,7 +70,10 @@ def validate_playbook_tables(playbook: dict, workspace: str = "") -> dict:
     try:
         from config.sentinel_schema import validate_tables
         return validate_tables(playbook.get("tables", []), workspace=workspace)
-    except Exception:
+    except Exception as exc:
+        log_error("", "kql_playbooks.validate_tables", str(exc),
+                  severity="warning", traceback=True,
+                  context={"playbook": playbook.get("id", ""), "workspace": workspace})
         return {"valid": True, "warnings": [], "missing_tables": [], "unknown_tables": []}
 
 

@@ -28,7 +28,7 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  85 tools, 30 resources │
+│  100 tools, 40 resources │
 │  21 prompts, JSONL logs │
 │  Background scheduler   │
 └─────────────────────────┘
@@ -130,15 +130,15 @@ python3 -c "from api.auth import create_token_for_role; print(create_token_for_r
 
 When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg-soc-analyst`, `sg-soc-senior`) to these role names in the auth config.
 
-## Tools (88)
+## Tools (100)
 
-### Tier 1 -- Core Investigation (26)
+### Tier 1 -- Core Investigation (27)
 
 | Tool | Permission | Description |
 |---|---|---|
-| `new_investigation` | — | Reset conversation boundaries for new case/client |
+| `new_investigation` | — | Reset conversation boundaries and session tracking for new case/client |
 | `lookup_client` | `investigations:read` | Confirm client and platform config |
-| `update_client_knowledge_base` | `investigations:submit` | Update client knowledge base with investigation insights |
+| `update_client_knowledge` | `investigations:submit` | Update client knowledge base with investigation insights |
 | `create_case` | `investigations:submit` | Create new case in triage status (auto-generates ID) |
 | `promote_case` | `investigations:submit` | Promote case from triage to active |
 | `discard_case` | `investigations:submit` | Discard triage case (false alarm) |
@@ -155,13 +155,15 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `generate_report` | `investigations:submit` | Collect case context for report (use `write_mdr_report` prompt to generate) |
 | `prepare_mdr_report` | `investigations:submit` | Collect context for MDR report (redirects to prompt workflow) |
 | `prepare_pup_report` | `investigations:submit` | Collect context for PUP/PUA report (redirects to prompt workflow) |
-| `generate_queries` | `investigations:submit` | Generate SIEM hunt queries |
+| `generate_queries` | `investigations:submit` | Generate SIEM hunt queries (KQL/Splunk/LogScale) incl. contextual CrowdStrike queries |
+| `load_ngsiem_reference` | `sentinel:query` | Load CQL/LogScale syntax reference (rules, columns, grammar, syntax sections) |
 | `classify_attack` | `investigations:read` | Deterministic attack-type classification |
 | `plan_investigation` | `investigations:read` | Full investigation plan with phases and dependencies |
 | `quick_enrich` | `investigations:read` | Caseless ad-hoc IOC enrichment (no case required) |
 | `query_opencti` | `investigations:read` | Direct OpenCTI queries (IOCs, CVEs, keyword search) |
 | `extract_iocs_from_text` | — | Extract IOCs from raw text (caseless) |
-| `search_confluence` | `investigations:read` | Search/browse/read Confluence pages (CQL title search, browse recent, read by page ID) |
+| `lookup_soc_process` | `investigations:read` | Look up SOC operational processes (incident handling, P1/P2, service desk, time tracking) |
+| `search_confluence` | `investigations:read` | Search/browse published ET/EV threat articles on Confluence wiki (NOT for SOC processes) |
 
 ### Tier 2 -- Extended Analysis (26)
 
@@ -179,8 +181,8 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `check_article_dedup` | `campaigns:read` | Pre-write dedup check across local index, Confluence, and OpenCTI |
 | `generate_threat_article` | `investigations:submit` | Collect context for threat article (use `write_threat_article` prompt) |
 | `save_threat_article` | `investigations:submit` | Persist a locally-generated threat article (dedup check, audit). No LLM call. |
-| `publish_article_to_opencti` | `investigations:submit` | Publish article to OpenCTI as STIX report (dedup, bundle, indicators) |
-| `generate_opencti_posting_package` | `investigations:read` | Generate OpenCTI posting package (HTML with STIX, indicators, hunt queries) |
+| `post_opencti_report` | `investigations:submit` | Publish article to OpenCTI as STIX report (dedup, bundle, indicators) |
+| `generate_opencti_package` | `investigations:read` | Generate OpenCTI posting package (HTML with STIX, indicators, hunt queries) |
 | `web_search` | `investigations:submit` | OSINT web search (Brave/DuckDuckGo) |
 | `prepare_executive_summary` | `investigations:submit` | Collect context for executive summary (use `write_executive_summary` prompt) |
 | `parse_logs` | `investigations:submit` | Parse CSV/JSON/JSONL logs, extract entities |
@@ -200,9 +202,9 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 |---|---|---|
 | `generate_investigation_matrix` | `investigations:write` | Generate Rumsfeld reasoning matrix (use `build_investigation_matrix` prompt) |
 | `review_report_quality` | `investigations:read` | Analytical standards quality gate on case report |
-| `run_determination_analysis` | `investigations:write` | Evidence-chain disposition analysis (use `run_determination` prompt) |
-| `list_follow_up_proposals` | `investigations:read` | List follow-up investigation proposals for evidence gaps |
-| `execute_follow_up_proposal` | `investigations:write` | Execute an approved follow-up proposal |
+| `run_determination` | `investigations:write` | Evidence-chain disposition analysis (use `run_determination` prompt) |
+| `list_followups` | `investigations:read` | List follow-up investigation proposals for evidence gaps |
+| `execute_followup` | `investigations:write` | Execute an approved follow-up proposal |
 
 ### Intelligence -- Semantic Memory, Baselines, GeoIP (6)
 
@@ -215,7 +217,33 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `geoip_lookup` | `enrichment:run` | Fast offline IP geolocation via local MaxMind GeoLite2 |
 | `refresh_geoip` | `admin` | Download/update local MaxMind GeoLite2-City database |
 
-### Tier 3 -- Advanced / Restricted (31)
+### Dark Web Intelligence (6)
+
+| Tool | Permission | Description |
+|---|---|---|
+| `hudsonrock_lookup` | `investigations:read` | Hudson Rock infostealer exposure lookup (email, domain, or IP) |
+| `xposed_breach_check` | `investigations:read` | XposedOrNot breach database lookup (email or domain) |
+| `parse_stealer_logs_tool` | `investigations:submit` | Parse infostealer log archives (.rar/.zip/.7z) |
+| `darkweb_exposure_summary` | `investigations:submit` | Aggregate dark web exposure summary across all sources for a case |
+| `ahmia_darkweb_search` | `investigations:read` | Search indexed .onion sites via Ahmia |
+| `intelx_search_tool` | `investigations:read` | Intelligence X search across pastes, darknet, leaks, documents |
+
+### Log Coverage (3)
+
+| Tool | Permission | Description |
+|---|---|---|
+| `check_log_coverage` | `investigations:read` | Check log source coverage and gaps for a client |
+| `can_investigate_attack` | `investigations:read` | Check whether client has sufficient logs for a given attack type |
+| `refresh_log_coverage` | `investigations:write` | Force fresh log source collection from Sentinel |
+
+### Exposure Testing (2)
+
+| Tool | Permission | Description |
+|---|---|---|
+| `run_client_exposure_test` | `investigations:write` | External attack surface assessment (DNS, certs, email security, typosquats) |
+| `get_client_exposure_report` | `investigations:read` | Return latest exposure test results for a client |
+
+### Tier 3 -- Advanced / Restricted (25)
 
 | Tool | Permission | Description |
 |---|---|---|
@@ -245,7 +273,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `memory_dump_guide` | `investigations:submit` | MDE Live Response dump collection guidance |
 | `analyse_memory_dump` | `investigations:submit` | Process memory dump analysis (strings, IOCs, risk scoring) |
 
-## Resources (30)
+## Resources (36)
 
 | URI | Description |
 |---|---|
@@ -269,12 +297,18 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://cases/{case_id}/followups` | Follow-up investigation proposals |
 | `socai://clients` | Client registry with platform scope |
 | `socai://clients/{client_name}` | Full client configuration |
-| `socai://clients/{name}/playbook` | Client response playbook |
+| `socai://clients/{client_name}/playbook` | Client response playbook |
+| `socai://clients/{client_name}/knowledge` | Client knowledge base (environment, security stack, network, identity, historical patterns) |
+| `socai://clients/{client_name}/sentinel` | Sentinel workspace reference (workspace ID, available tables, key query patterns) |
 | `socai://enrichment-providers` | Configured TI providers and availability per IOC type |
 | `socai://ioc-index/stats` | IOC index summary with tier breakdown |
 | `socai://playbooks` | KQL playbook index |
 | `socai://playbooks/{id}` | Full playbook with stages |
 | `socai://sentinel-queries` | Sentinel composite query scenarios |
+| `socai://logscale-syntax` | LogScale (Humio) query language reference — operators, functions, pitfalls |
+| `socai://ngsiem-rules` | NGSIEM detection rule authoring — syntax conventions, patterns, anti-patterns, log source tags |
+| `socai://ngsiem-columns` | NGSIEM field schema per connector — ECS + vendor fields for each data source |
+| `socai://cql-grammar` | Complete CQL function grammar — 194 functions with signatures and docs |
 | `socai://pipeline-profiles` | Attack-type routing profiles |
 | `socai://articles` | Threat article index |
 | `socai://landscape` | Threat landscape summary |
@@ -355,13 +389,19 @@ mcp_server/
                        #   unhandled exception hook, SSE connection lifecycle middleware
     auth.py            # SocaiTokenVerifier, _require_scope
     config.py          # Env var configuration
-    tools.py           # 88 MCP tool wrappers
-    resources.py       # 30 MCP resource implementations
+    tools.py           # 99 MCP tool wrappers
+    resources.py       # 32 MCP resource implementations
     prompts.py         # 21 MCP prompt implementations
     health.py          # /healthz liveness probe (scheduler, filesystem, uptime)
     watchdog.py        # systemd watchdog integration (sd_notify, WATCHDOG=1 loop)
     usage.py           # Tool invocation logging (JSONL + stderr); emits tool_call,
-                       #   tool_result, tool_error events with result previews
+                       #   tool_result, tool_error events with result previews.
+                       #   Caller identity from JWT, investigation session tracking
+                       #   (session_id links tool calls within one investigation).
+                       #   TOOL_TAXONOMY maps each tool to category + goal.
+                       #   Auto-captures ordered tool sequences per session; emits
+                       #   workflow_summary events to metrics.jsonl on session expiry
+                       #   (1h inactivity) or server shutdown (flush_all_sessions).
     logging_config.py  # Structured JSONL logger (RotatingFileHandler, 10 MB × 3 backups)
                        #   setup_mcp_logger() + mcp_log(event, **fields)
                        #   Output: registry/mcp_server.jsonl + stderr
@@ -395,6 +435,33 @@ The MCP server writes structured JSONL events to `registry/mcp_server.jsonl` (10
 tail -f registry/mcp_server.jsonl | python3 -m json.tool
 ```
 
+### Investigation Metrics
+
+Separate from server logs, the pipeline writes structured investigation metrics to `registry/metrics.jsonl` (append-only, no rotation needed — ~5 MB/month at 50 cases/day). These enable analyst performance comparison and operational insights.
+
+**Metric events:**
+
+| Event | When | Key fields |
+|---|---|---|
+| `case_phase_change` | Case status transitions | phase, prev_status, analyst, client, severity |
+| `enrichment_complete` | `enrich()` finishes | duration_ms, total_iocs, enriched_iocs, ioc_coverage_pct, cache_hits, tiered stats |
+| `verdict_scored` | `score_verdicts()` finishes | ioc_count, malicious/suspicious/clean counts, confidence_dist (HIGH/MEDIUM/LOW) |
+| `report_saved` | `save_report()` persists a report | report_type, auto_closed, disposition, char_count, completeness_pct |
+| `investigation_summary` | Case closes | disposition, severity, attack_type, analyst, durations (total/triage/investigation minutes), phase_timestamps |
+
+**Phase timestamps:** Each case's `case_meta.json` now contains a `phase_timestamps` object tracking `created_at`, `triage_at`, `active_at`, `closed_at`. These enable precise measurement of triage duration, investigation duration, and total time-to-close.
+
+**Tool usage tracking:** `mcp_usage.jsonl` now includes the caller's email (from JWT) and a `session_id` that links all tool calls within one investigation (1-hour inactivity timeout creates a new session). The `new_investigation` tool resets session tracking.
+
+**Query script:**
+```bash
+python3 scripts/metrics_report.py                      # full summary
+python3 scripts/metrics_report.py --compare            # analyst comparison table
+python3 scripts/metrics_report.py --event enrichment_complete
+python3 scripts/metrics_report.py --analyst will --since 2026-03-01
+python3 scripts/metrics_report.py --json               # raw JSON output
+```
+
 ## Production Deployment
 
 ### Architecture
@@ -413,7 +480,7 @@ Analyst's Claude Desktop (VPN / corporate network)
     ▼
 ┌──────────────────────────┐
 │  mcp_server (port 8001)  │  ← SOCAI_MCP_HOST=127.0.0.1
-│  88 tools, 30 resources  │
+│  100 tools, 40 resources  │
 │  JWT RBAC, role system   │
 │  Background scheduler    │
 └──────────────────────────┘

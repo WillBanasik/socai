@@ -466,6 +466,152 @@ def register_resources(mcp: FastMCP) -> None:
         return _json({"scenarios": list_scenarios()})
 
     # ------------------------------------------------------------------
+    # LogScale Syntax Reference
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://logscale-syntax")
+    def logscale_syntax() -> str:
+        """CrowdStrike LogScale (Humio) query language reference.
+
+        Complete syntax reference for generating LogScale queries —
+        operators, functions, field conventions, CrowdStrike Falcon
+        sensor fields, and critical pitfalls.  Consult this before
+        writing or reviewing any LogScale query.
+        """
+        _require_scope("sentinel:query")
+
+        import pathlib
+        ref_path = pathlib.Path(__file__).resolve().parent.parent / "config" / "logscale_syntax.md"
+        if ref_path.exists():
+            return ref_path.read_text(encoding="utf-8")
+        return "LogScale syntax reference not found."
+
+    # ------------------------------------------------------------------
+    # SOC Process Documentation
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://incident-handling")
+    def incident_handling() -> str:
+        """Incident handling process — role priorities, SOAR queue workflow, and escalation rules.
+
+        Covers analyst role levels (L1-L3), priority ceilings per role,
+        alert sorting criteria, SOAR filter usage, and morning clean-up procedure.
+        Read this to understand queue management and escalation paths.
+        """
+        _require_scope("investigations:read")
+
+        import pathlib
+        doc_path = pathlib.Path(__file__).resolve().parent.parent / "docs" / "incident-handling.md"
+        if doc_path.exists():
+            return doc_path.read_text(encoding="utf-8")
+        return "Incident handling documentation not found."
+
+    @mcp.resource("socai://service-requests")
+    def service_requests() -> str:
+        """Service request process — SD queue monitoring, ticket handling, and Teams escalation.
+
+        Covers Service Desk queues to monitor, ticket lifecycle (security incident,
+        request, auto-reply), merging tickets safely, blueprint usage, closure notices,
+        and Teams channel responsibilities.
+        """
+        _require_scope("investigations:read")
+
+        import pathlib
+        doc_path = pathlib.Path(__file__).resolve().parent.parent / "docs" / "service-requests.md"
+        if doc_path.exists():
+            return doc_path.read_text(encoding="utf-8")
+        return "Service requests documentation not found."
+
+    @mcp.resource("socai://time-tracking")
+    def time_tracking() -> str:
+        """Time tracking process — Kantata project categories, overtime logging, and on-call hours.
+
+        Covers XDR team time entry categories, overtime multipliers (1.5x/2x),
+        on-call day logging, ad-hoc overtime approval template, and leave logging.
+        """
+        _require_scope("investigations:read")
+
+        import pathlib
+        doc_path = pathlib.Path(__file__).resolve().parent.parent / "docs" / "time-tracking.md"
+        if doc_path.exists():
+            return doc_path.read_text(encoding="utf-8")
+        return "Time tracking documentation not found."
+
+    @mcp.resource("socai://critical-incident-management")
+    def critical_incident_management() -> str:
+        """Critical/High incident management — P1/P2 checklists, war rooms, and escalation.
+
+        Covers manager and analyst checklists for P1/P2 incidents, client call guidelines,
+        P1 classification criteria, technical report structure (initial access, compromised
+        assets, lateral movement, exfiltration, containment), and IR activation criteria.
+        """
+        _require_scope("investigations:read")
+
+        import pathlib
+        doc_path = pathlib.Path(__file__).resolve().parent.parent / "docs" / "critical-incident-management.md"
+        if doc_path.exists():
+            return doc_path.read_text(encoding="utf-8")
+        return "Critical incident management documentation not found."
+
+    # ------------------------------------------------------------------
+    # NGSIEM / LogScale Detection References
+    # ------------------------------------------------------------------
+
+    @mcp.resource("socai://ngsiem-rules")
+    def ngsiem_rules() -> str:
+        """NGSIEM (LogScale/CQL) detection rule authoring rules.
+
+        Syntax conventions, proven query patterns, anti-patterns, ECS field
+        naming, log source tag mapping (#Vendor + #event.module), pipeline
+        structure, DaC template fields, and worked examples (Kerberoasting,
+        port scan, AWS IAM escalation).  Read this before writing or
+        reviewing any NGSIEM detection rule.
+        """
+        _require_scope("sentinel:query")
+
+        import pathlib
+        ref_path = pathlib.Path(__file__).resolve().parent.parent / "config" / "ngsiem" / "ngsiem_rules.md"
+        if ref_path.exists():
+            return ref_path.read_text(encoding="utf-8")
+        return "NGSIEM rules reference not found."
+
+    @mcp.resource("socai://ngsiem-columns")
+    def ngsiem_columns() -> str:
+        """NGSIEM field schema per connector / data source.
+
+        Lists every field (ECS + vendor-specific) available per log source:
+        Fortinet FortiGate, Azure AD sign-in, ClearPass, Windows events,
+        Check Point, Cribl, DNS, and more.  Includes common metadata,
+        tag fields, and discovery queries.  Use this to pick the correct
+        field names when building LogScale queries.
+        """
+        _require_scope("sentinel:query")
+
+        import pathlib
+        ref_path = pathlib.Path(__file__).resolve().parent.parent / "config" / "ngsiem" / "ngsiem_columns.yaml"
+        if ref_path.exists():
+            return ref_path.read_text(encoding="utf-8")
+        return "NGSIEM columns schema not found."
+
+    @mcp.resource("socai://cql-grammar")
+    def cql_grammar() -> str:
+        """Complete CQL function grammar — 194 functions across 12 categories.
+
+        Every LogScale/CQL function with label, description, documentation,
+        and insert-text snippet.  Categories: aggregate, filtering, time,
+        transformation, parsing, array, math, text, network, encoding,
+        flow, lookup.  Use this as the authoritative function reference
+        when writing or reviewing CQL queries.
+        """
+        _require_scope("sentinel:query")
+
+        import pathlib
+        ref_path = pathlib.Path(__file__).resolve().parent.parent / "config" / "ngsiem" / "cql_grammar.json"
+        if ref_path.exists():
+            return ref_path.read_text(encoding="utf-8")
+        return "CQL grammar reference not found."
+
+    # ------------------------------------------------------------------
     # Client Response Playbooks
     # ------------------------------------------------------------------
 
@@ -495,12 +641,18 @@ def register_resources(mcp: FastMCP) -> None:
             "containment_capabilities": data.get("containment_capabilities", []),
             "remediation_actions": data.get("remediation_actions", []),
             "crown_jewels": data.get("crown_jewels", {}),
+            "contacts": data.get("contacts", []),
             "response_notes": [
                 r.get("action_to_be_taken", "")
                 for r in data.get("response", [])
                 if r.get("action_to_be_taken")
             ],
         }
+        # Include environment-specific fields if present
+        if "environments" in data:
+            playbook["environments"] = data["environments"]
+        if "escalation_matrix_ot" in data:
+            playbook["escalation_matrix_ot"] = data["escalation_matrix_ot"]
         return _json(playbook)
 
     @mcp.resource("socai://clients/{client_name}/knowledge")
@@ -832,7 +984,8 @@ def register_resources(mcp: FastMCP) -> None:
                         "run_kql_batch": "Execute multiple KQL queries in parallel.",
                         "load_kql_playbook": "Load a KQL investigation playbook template.",
                         "generate_sentinel_query": "Generate composite Sentinel queries from scenario templates.",
-                        "generate_queries": "Generate hunt queries for KQL/Splunk/LogScale from case IOCs. Returns in-memory (not saved).",
+                        "generate_queries": "Generate hunt queries for KQL/Splunk/LogScale from case IOCs. Now includes contextual queries (process tree, DNS, network, file writes, detections) when case has CrowdStrike pivot data.",
+                        "load_ngsiem_reference": "Load CQL/LogScale syntax reference material. Call BEFORE writing any CrowdStrike/NGSIEM query. Sections: rules, columns, grammar, syntax. No case required.",
                     },
                 },
                 "case_management": {
@@ -894,6 +1047,23 @@ def register_resources(mcp: FastMCP) -> None:
                         "ingest_mde_package": "Ingest MDE investigation package. Parses logs, EVTX, prefetch.",
                     },
                 },
+                "soc_processes": {
+                    "description": "SOC operational processes and policies. Use lookup_soc_process for ALL process/policy questions — NOT search_confluence.",
+                    "tools": {
+                        "lookup_soc_process": "Look up SOC processes: incident handling, P1/P2 critical incidents, service desk, time tracking. Accepts topic name or keywords (e.g. 'p1', 'escalation', 'overtime').",
+                    },
+                },
+                "dark_web_intelligence": {
+                    "description": "Check dark web sources for credential theft, breach exposure, infostealer data, and dark web mentions. Use during account compromise, credential theft, or when assessing user/domain exposure.",
+                    "tools": {
+                        "hudsonrock_lookup": "Check infostealer exposure for email/domain/IP — was credential harvested by malware? (Hudson Rock Cavalier)",
+                        "xposed_breach_check": "Check historical breach databases — which breaches was this email/domain in? (XposedOrNot)",
+                        "ahmia_darkweb_search": "Search indexed .onion sites for keywords, IOCs, or threat actor references (Ahmia.fi, Tor required for full search).",
+                        "intelx_search": "Search dark web, paste sites, data leaks, and documents for a specific indicator (Intelligence X).",
+                        "parse_stealer_logs": "Parse infostealer log archives (.rar/.zip/.7z) into structured data with credential redaction.",
+                        "darkweb_exposure_summary": "Aggregate all dark web exposure data for a case — runs Hudson Rock + XposedOrNot for all case indicators.",
+                    },
+                },
             },
             "prompts": {
                 "description": "Prompts load system instructions + case context into your session. You do the reasoning, then call a save tool.",
@@ -938,18 +1108,29 @@ def register_resources(mcp: FastMCP) -> None:
                 },
                 "client_and_config": {
                     "socai://clients": "Client registry.",
-                    "socai://clients/{name}": "Full client config.",
-                    "socai://clients/{name}/playbook": "Client response playbook.",
-                    "socai://clients/{name}/knowledge": "Client knowledge base — environment, security stack, network, identity, historical patterns.",
-                    "socai://clients/{name}/sentinel": "Sentinel workspace reference — workspace ID, available tables, key query patterns.",
+                    "socai://clients/{client_name}": "Full client config.",
+                    "socai://clients/{client_name}/playbook": "Client response playbook.",
+                    "socai://clients/{client_name}/knowledge": "Client knowledge base — environment, security stack, network, identity, historical patterns.",
+                    "socai://clients/{client_name}/sentinel": "Sentinel workspace reference — workspace ID, available tables, key query patterns.",
                     "socai://playbooks": "KQL playbook index.",
                     "socai://sentinel-queries": "Composite Sentinel query scenarios.",
+                    "socai://logscale-syntax": "LogScale (Humio) query language reference — operators, functions, pitfalls.",
+                    "socai://ngsiem-rules": "NGSIEM detection rule authoring — syntax conventions, patterns, anti-patterns, log source tags.",
+                    "socai://ngsiem-columns": "NGSIEM field schema per connector — ECS + vendor fields for each data source.",
+                    "socai://cql-grammar": "Complete CQL function grammar — 194 functions with signatures and docs.",
                     "socai://enrichment-providers": "Available enrichment providers.",
                 },
                 "intelligence": {
                     "socai://ioc-index/stats": "IOC index — recurring indicators across cases.",
                     "socai://articles": "Threat article index.",
                     "socai://landscape": "Cross-case threat landscape.",
+                },
+                "soc_processes": {
+                    "_routing": "ALWAYS check these local resources FIRST for any SOC process, policy, escalation, or P1/P2 question. Only use search_confluence if the topic is not covered here.",
+                    "socai://incident-handling": "Role priorities (L1-L3), SOAR queue workflow, alert sorting, escalation rules.",
+                    "socai://service-requests": "Service Desk queues, ticket lifecycle, merging, blueprint, Teams channels.",
+                    "socai://time-tracking": "Kantata time categories, overtime logging (1.5x/2x), on-call hours.",
+                    "socai://critical-incident-management": "P1/P2 checklists, war rooms, P1 classification, IR activation, technical report structure.",
                 },
                 "meta": {
                     "socai://capabilities": "This capability map.",

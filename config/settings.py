@@ -20,6 +20,8 @@ ERROR_LOG        = BASE_DIR / "registry" / "error_log.jsonl"
 MCP_USAGE_LOG    = BASE_DIR / "registry" / "mcp_usage.jsonl"
 MCP_SERVER_LOG   = BASE_DIR / "registry" / "mcp_server.jsonl"
 MCP_SERVER_PID   = BASE_DIR / "registry" / "mcp_server.pid"
+METRICS_LOG      = BASE_DIR / "registry" / "metrics.jsonl"
+QUICK_ENRICH_DIR = BASE_DIR / "registry" / "quick_enrichments"
 
 # MCP server logging
 MCP_LOG_LEVEL    = os.getenv("SOCAI_MCP_LOG_LEVEL", "INFO")
@@ -62,6 +64,12 @@ HYBRID_KEY       = os.getenv("HYBRID_ANALYSIS_API_KEY", "")  # Hybrid Analysis
 CENSYS_TOKEN     = os.getenv("CENSYS_TOKEN", "")      # Personal Access Token from censys.io → API Access
 WHOISXML_KEY     = os.getenv("WHOISXML_API_KEY", "")
 
+# Dark web intelligence
+HUDSONROCK_KEY   = os.getenv("HUDSONROCK_API_KEY", "")
+XPOSEDORNOT_KEY  = os.getenv("XPOSEDORNOT_API_KEY", "")  # optional; email lookups are keyless
+INTELX_KEY       = os.getenv("INTELX_API_KEY", "")       # free tier at intelx.io/account?tab=developer
+
+
 # Web search fallback (Brave Search API; DuckDuckGo used if no key)
 BRAVE_SEARCH_KEY = os.getenv("SOCAI_BRAVE_SEARCH_KEY", "")
 
@@ -74,7 +82,7 @@ OPSEC_PROXY = os.getenv("SOCAI_OPSEC_PROXY", "")
 # Enrichment performance
 ENRICH_CACHE_FILE = BASE_DIR / "registry" / "enrichment_cache.json"
 ENRICH_CACHE_TTL  = int(os.getenv("SOCAI_ENRICH_CACHE_TTL", "24"))   # hours; 0 to disable
-ENRICH_WORKERS    = int(os.getenv("SOCAI_ENRICH_WORKERS", "10"))      # thread pool size
+ENRICH_WORKERS    = int(os.getenv("SOCAI_ENRICH_WORKERS", "25"))      # thread pool size
 
 # Cross-case IOC index
 IOC_INDEX_FILE    = BASE_DIR / "registry" / "ioc_index.json"
@@ -119,6 +127,16 @@ CASE_MEMORY_INDEX_FILE = BASE_DIR / "registry" / "case_memory.json"
 # Per-client behavioural baselines
 # ---------------------------------------------------------------------------
 BASELINES_DIR = BASE_DIR / "registry" / "baselines"
+
+# ---------------------------------------------------------------------------
+# Log source coverage mapping
+# ---------------------------------------------------------------------------
+COVERAGE_DIR = BASE_DIR / "registry" / "coverage"
+
+# ---------------------------------------------------------------------------
+# Client exposure testing
+# ---------------------------------------------------------------------------
+EXPOSURE_DIR = BASE_DIR / "registry" / "exposure"
 
 # ---------------------------------------------------------------------------
 # Local GeoIP database (MaxMind GeoLite2)

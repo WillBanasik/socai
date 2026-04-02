@@ -112,7 +112,10 @@ def _relative_artefact_paths(case_id: str, paths: dict) -> dict | None:
             continue
         try:
             result[label] = Path(p).relative_to(case_root).as_posix()
-        except ValueError:
+        except ValueError as exc:
+            log_error(case_id, "browser_session:relative_artefact_paths", str(exc),
+                      severity="info", traceback=True,
+                      context={"label": label, "path": str(p)})
             continue
     return result or None
 
@@ -207,14 +210,22 @@ def _stop_container(session_id: str) -> bool:
             print(f"[browser] Warning: docker stop failed for {name}: {result.stderr.strip()}")
             return False
         return True
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        log_error("", "browser_session:stop_container_timeout", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id})
         print(f"[browser] Warning: docker stop timed out for {name} — forcing kill")
         try:
             subprocess.run(["docker", "kill", name], capture_output=True, timeout=10)
-        except Exception:
-            pass
+        except Exception as exc_kill:
+            log_error("", "browser_session:kill_container", str(exc_kill),
+                      severity="warning", traceback=True,
+                      context={"session_id": session_id})
         return False
     except Exception as exc:
+        log_error("", "browser_session:stop_container", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id})
         print(f"[browser] Warning: failed to stop container {name}: {exc}")
         return False
 
@@ -228,7 +239,10 @@ def _copy_from_container(session_id: str, src: str, dest: Path) -> bool:
             capture_output=True, text=True, timeout=30,
         )
         return result.returncode == 0 and dest.exists()
-    except Exception:
+    except Exception as exc:
+        log_error("", "browser_session:copy_from_container", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id, "src": src, "dest": str(dest)})
         return False
 
 
@@ -242,8 +256,10 @@ def _get_pcap_size(session_id: str) -> int:
         )
         if result.returncode == 0:
             return int(result.stdout.strip())
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error("", "browser_session:get_pcap_size", str(exc),
+                  severity="info", traceback=True,
+                  context={"session_id": session_id})
     return -1
 
 
@@ -266,7 +282,10 @@ def _has_vnc_clients(session_id: str) -> bool:
         # ss prints a header line + one line per connection
         lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
         return len(lines) > 1  # more than just the header
-    except Exception:
+    except Exception as exc:
+        log_error("", "browser_session:has_vnc_clients", str(exc),
+                  severity="info", traceback=True,
+                  context={"session_id": session_id})
         return True  # fail-open
 
 
@@ -308,8 +327,10 @@ def _parse_pcap(pcap_path: Path) -> dict:
                         "query": query,
                         "src": dns_match.group(1),
                     })
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error("", "browser_session:parse_pcap_dns", str(exc),
+                  severity="warning", traceback=True,
+                  context={"pcap": str(pcap_path)})
 
     # TCP connections (SYN packets)
     try:
@@ -330,8 +351,10 @@ def _parse_pcap(pcap_path: Path) -> dict:
                     "dst_ip": conn_match.group(3),
                     "dst_port": int(conn_match.group(4)),
                 })
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error("", "browser_session:parse_pcap_tcp", str(exc),
+                  severity="warning", traceback=True,
+                  context={"pcap": str(pcap_path)})
 
     # HTTP requests (plaintext port 80)
     try:
@@ -353,14 +376,18 @@ def _parse_pcap(pcap_path: Path) -> dict:
                     "host": match.group(3),
                     "url": f"http://{match.group(3)}{match.group(2)}",
                 })
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error("", "browser_session:parse_pcap_http", str(exc),
+                  severity="warning", traceback=True,
+                  context={"pcap": str(pcap_path)})
 
     # TLS SNI extraction (Server Name Indication from ClientHello)
     try:
         result["tls_sni"] = _extract_tls_sni(pcap_path)
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error("", "browser_session:parse_pcap_tls_sni", str(exc),
+                  severity="warning", traceback=True,
+                  context={"pcap": str(pcap_path)})
 
     # Pcap stats
     try:
@@ -368,7 +395,10 @@ def _parse_pcap(pcap_path: Path) -> dict:
         result["pcap_stats"] = {
             "file_size_bytes": stat.st_size,
         }
-    except Exception:
+    except Exception as exc:
+        log_error("", "browser_session:pcap_stats", str(exc),
+                  severity="info", traceback=True,
+                  context={"pcap": str(pcap_path)})
         result["pcap_stats"] = {}
 
     return result
@@ -420,8 +450,10 @@ def _extract_tls_sni(pcap_path: Path) -> list[dict]:
                 seen.add(sni)
                 sni_entries.append({"domain": sni, "dst_ip": current_dst})
 
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error("", "browser_session:extract_tls_sni", str(exc),
+                  severity="warning", traceback=True,
+                  context={"pcap": str(pcap_path)})
 
     return sni_entries
 
@@ -430,7 +462,9 @@ def _parse_sni_from_hex(hex_str: str) -> str | None:
     """Parse SNI domain from raw TLS ClientHello hex bytes."""
     try:
         data = bytes.fromhex(hex_str)
-    except ValueError:
+    except ValueError as exc:
+        log_error("", "browser_session:parse_sni_hex_decode", str(exc),
+                  severity="info", traceback=True)
         return None
 
     # Find TLS handshake record (content type 0x16, handshake type 0x01 = ClientHello)
@@ -470,10 +504,12 @@ def _parse_sni_from_hex(hex_str: str) -> str | None:
                     c.isalnum() or c in "-." for c in domain
                 ):
                     return domain
-            except (UnicodeDecodeError, ValueError):
-                pass
-        except (struct.error, IndexError):
-            pass
+            except (UnicodeDecodeError, ValueError) as exc:
+                log_error("", "browser_session:parse_sni_domain_decode", str(exc),
+                          severity="info", traceback=True)
+        except (struct.error, IndexError) as exc:
+            log_error("", "browser_session:parse_sni_struct", str(exc),
+                      severity="info", traceback=True)
 
         idx = data.find(b"\x00\x00", idx + 1)
 
@@ -495,7 +531,10 @@ def _load_session_state(session_id: str) -> dict | None:
         return None
     try:
         return json.loads(path.read_text())
-    except Exception:
+    except Exception as exc:
+        log_error("", "browser_session:load_session_state", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id})
         return None
 
 
@@ -512,7 +551,10 @@ def _list_session_states() -> list[dict]:
     for f in sorted(SESSIONS_DIR.glob("*.json")):
         try:
             sessions.append(json.loads(f.read_text()))
-        except Exception:
+        except Exception as exc:
+            log_error("", "browser_session:list_session_states", str(exc),
+                      severity="warning", traceback=True,
+                      context={"session_file": str(f)})
             continue
     return sessions
 
@@ -647,6 +689,9 @@ def _shutdown_active_sessions() -> None:
             stop_session(sid, stop_reason="process_exit")
             print(f"[browser] Session {sid} stopped cleanly on shutdown")
         except Exception as exc:
+            log_error("", "browser_session:shutdown_stop_session", str(exc),
+                      severity="error", traceback=True,
+                      context={"session_id": sid})
             print(f"[browser] Warning: failed to stop {sid} on shutdown: {exc}")
             # Last resort: force-kill the container
             _stop_container(sid)
@@ -680,6 +725,9 @@ def _idle_watchdog(session_id: str, monitor: _IdleMonitor,
         result = stop_session(session_id, stop_reason=reason)
         _session_results[session_id] = result
     except Exception as exc:
+        log_error("", "browser_session:idle_watchdog_stop", str(exc),
+                  severity="error", traceback=True,
+                  context={"session_id": session_id, "reason": reason})
         print(f"[browser] Auto-stop error: {exc}")
         _session_results[session_id] = {"status": "error", "reason": str(exc)}
     done_event.set()
@@ -728,6 +776,9 @@ def start_session(
                 stop_session(prev_id, stop_reason="replaced")
                 print(f"[browser] Previous session {prev_id} stopped — telemetry preserved")
             except Exception as exc:
+                log_error(case_id, "browser_session:stop_previous_session", str(exc),
+                          severity="warning", traceback=True,
+                          context={"prev_session_id": prev_id})
                 print(f"[browser] Warning: failed to stop previous session {prev_id}: {exc}")
                 _stop_container(prev_id)
                 s["status"] = "orphaned"
@@ -761,6 +812,9 @@ def start_session(
     try:
         container_id = _start_container(session_id, url, telemetry_dir=telemetry_dir)
     except RuntimeError as exc:
+        log_error(case_id, "browser_session:start_container", str(exc),
+                  severity="error", traceback=True,
+                  context={"session_id": session_id, "url": url})
         return {"status": "error", "reason": str(exc)}
 
     print(f"[browser] Container started: {container_id[:12]}")
@@ -777,7 +831,10 @@ def start_session(
             if resp.status == 200:
                 ready = True
                 break
-        except Exception:
+        except Exception as exc:
+            log_error(case_id, "browser_session:novnc_readiness_poll", str(exc),
+                      severity="info", traceback=True,
+                      context={"session_id": session_id, "port": novnc_port})
             time.sleep(1)
 
     if not ready:
@@ -1017,8 +1074,10 @@ def _stop_session_inner(
         from datetime import datetime, timezone
         started = datetime.fromisoformat(state["started_at"].replace("Z", "+00:00"))
         duration_sec = int((datetime.now(timezone.utc) - started).total_seconds())
-    except Exception:
-        pass
+    except Exception as exc:
+        log_error(case_id, "browser_session:compute_duration", str(exc),
+                  severity="info", traceback=True,
+                  context={"session_id": session_id})
 
     manifest = {
         "status": "ok",
@@ -1124,6 +1183,9 @@ def cleanup_orphaned() -> int:
                 cleaned += 1
                 continue
         except Exception as exc:
+            log_error("", "browser_session:cleanup_orphaned", str(exc),
+                      severity="warning", traceback=True,
+                      context={"session_id": sid})
             print(f"[browser] Graceful cleanup failed for {sid}: {exc}")
         # Fallback: force-kill the container, mark state
         _stop_container(sid)
@@ -1300,6 +1362,10 @@ if __name__ == "__main__":
                 else:
                     signal.pause()
             except KeyboardInterrupt:
+                log_error("", "browser_session:cli_keyboard_interrupt",
+                          "User interrupted session via Ctrl+C",
+                          severity="info", traceback=False,
+                          context={"session_id": session_id})
                 print("\n")
             # Stop (idempotent if watchdog already handled it)
             state = _load_session_state(session_id)

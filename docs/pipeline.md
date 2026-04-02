@@ -11,27 +11,37 @@ Case creation is **deferred** — the analyst investigates caseless during triag
 ```
 ── Caseless tools (no case_id required) ──
 1. lookup_client          → confirm client and platform config
-2. get_client_baseline    → load behavioural profile for this client (optional, recommended)
+2. get_client_baseline    → load behavioural profile for this client
 3. classify_attack        → deterministic attack-type classification
 4. plan_investigation     → advisory step-by-step plan (optional)
-5. recall_cases           → exact IOC/keyword search in prior cases
-6. recall_semantic        → semantic similarity search (finds similar past investigations by context)
-7. quick_enrich           → fast IOC lookups, no case required
+5. quick_enrich           → ad-hoc IOC lookups with tiered enrichment (depth="auto"/"fast"/"full")
+                             Returns enrichment_id for later import into a case.
+                             RFC-1918 / private IPs tagged "private_internal" instantly (no providers).
+6. recall_cases           → exact IOC/keyword search in prior cases
+7. recall_semantic        → semantic similarity search
 8. extract_iocs_from_text → IOC extraction from raw text
-9. run_kql                → Sentinel queries via playbook
+9. run_kql_batch          → Sentinel queries in parallel (prefer over sequential run_kql)
 
-── Case-bound tools (call create_case first, or defer to deliverable phase) ──
-10. enrich_iocs           → extract and enrich IOCs (writes to case)
-11. add_evidence          → attach raw alert data to case
-12. capture_urls          → screenshot and capture web evidence (if URLs)
-13. detect_phishing       → brand impersonation detection (if URLs)
-14. analyse_email         → email header/content analysis (if email)
+── Case creation (with optional enrichment import) ──
+10. create_case            → create case; pass enrichment_id to auto-import quick_enrich results
+                             (eliminates separate import_enrichment call)
+
+── Case-bound tools ──
+11. enrich_iocs           → extract and enrich IOCs (writes to case); depth="auto"/"fast"/"full";
+                             auto-runs triage + client baseline to skip routine IOCs
+12. import_enrichment     → import saved quick_enrich results (if not auto-imported via create_case)
+13. add_evidence          → attach raw alert data to case
+14. capture_urls          → capture web evidence + auto-run phishing detection (detect_phishing=True)
+15. analyse_email         → email header/content analysis (if email)
+16. analyse_pe            → PE static analysis + auto-run YARA scan (run_yara=True)
 
 ── Deliverable phase (case auto-created + promoted if needed) ──
-15. prepare_mdr_report    → MDR report (auto-creates case if needed, auto-closes)
+17. prepare_mdr_report    → MDR report (auto-creates case if needed, auto-closes)
     prepare_pup_report    → PUP report (auto-creates case if needed, auto-closes)
     prepare_fp_ticket     → FP ticket (auto-creates case if needed, auto-closes)
 ```
+
+**Typical analyst flow:** `quick_enrich` (caseless IOC lookup) → if malicious, `create_case(enrichment_id=...)` → case-bound analysis → deliverable. The enrichment results carry over without re-running provider calls.
 
 The exact sequence depends on attack type. `classify_attack` returns the recommended tool order. `plan_investigation` returns a full plan with phases, dependencies, and skip conditions.
 
@@ -82,6 +92,7 @@ Prompts handle: report generation, analytical reasoning, disposition analysis, q
 - `write_artefact()` and `save_json()` automatically append a SHA-256 + timestamp record to `registry/audit.log` — never call `audit()` separately after these functions (it would create duplicate entries)
 - Every `except` block must call `log_error(case_id, step, error, *, severity)` — errors are logged to `registry/error_log.jsonl`
 - Returns a JSON-serialisable manifest dict
+- Key tools (`enrich`, `score_verdicts`, `save_report`, `index_case`) emit structured metrics to `registry/metrics.jsonl` via `log_metric()` — duration, IOC coverage, verdict confidence, report completeness, investigation phase timing
 
 ## Attack-Type Classification
 
@@ -128,16 +139,18 @@ Cases auto-close when the analyst collects their deliverable. The close logic li
 | PUP report | `prepare_pup_report()` | `write_pup_report` → `save_report` | `pup_pua` |
 | FP ticket | `fp_ticket()` | `write_fp_closure` → `save_report` | `false_positive` |
 
-Each path calls `index_case(case_id, status="closed", ...)` on successful generation/save. If the tool fails, the case remains open.
+Each path calls `index_case(case_id, status="closed", ...)` on successful generation/save. If the tool fails, the case remains open. On close, `index_case` emits an `investigation_summary` metric with computed durations (total, triage, investigation minutes) from `phase_timestamps`.
 
 ## Client Playbook Resolution
 
-When a case has a `client` field and a matching playbook exists in `config/clients/<client>.json`, the `response_actions` tool generates a structured response plan:
+When a case has a `client` field and a matching playbook exists in `config/clients/<client>/playbook.json` (or legacy `<client>.json`), the `response_actions` tool generates a structured response plan:
 
 1. **Severity mapping** — `critical/high` → P1, `medium` → P2, `low` → P3
-2. **Crown jewel check** — if any malicious IOC matches a crown jewel host, escalate to P1
+2. **Crown jewel check** — if any malicious IOC matches a crown jewel host (supports wildcard patterns via fnmatch), escalate to P1
 3. **Alert override** — `response[]` entries with `alert_name` matched against case title
 4. **Escalation matrix** — filtered by resolved priority; collects permitted actions per asset type
 5. **Contact process** — from default `response[]` entry or alert-specific override
+
+Multi-environment clients (e.g. Sentinel/MDE + CrowdStrike + OT) define an `environments` map and optional `escalation_matrix_ot` for environment-specific overrides (e.g. no containment in OT).
 
 The tool is purely deterministic (no LLM call). Output is consumed by the MDR report's "Approved Response Actions" section. The client playbook is also exposed as a resource (`socai://clients/{name}/playbook`) so the `write_response_plan` prompt can reference it directly.

@@ -54,7 +54,9 @@ def _load_meta() -> dict:
         return {}
     try:
         return json.loads(_META_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
+        log_error("", "geoip.load_meta", str(exc),
+                  severity="warning", traceback=True, context={"path": str(_META_PATH)})
         return {}
 
 
@@ -62,7 +64,9 @@ def _save_meta(meta: dict) -> None:
     try:
         _META_PATH.parent.mkdir(parents=True, exist_ok=True)
         _META_PATH.write_text(json.dumps(meta, default=str, indent=2), encoding="utf-8")
-    except Exception:
+    except Exception as exc:
+        log_error("", "geoip.save_meta", str(exc),
+                  severity="warning", traceback=True, context={"path": str(_META_PATH)})
         pass
 
 
@@ -111,7 +115,9 @@ def refresh_geoip_db(force: bool = False) -> dict:
                         "updated": False,
                         "note": "Database is current (updated within 7 days).",
                     }
-            except Exception:
+            except Exception as exc:
+                log_error("", "geoip.refresh.parse_date", str(exc),
+                          severity="info", traceback=True, context={"last_updated": last_updated})
                 pass
 
     try:
@@ -186,7 +192,9 @@ def lookup_ip(ip: str) -> dict:
     try:
         import geoip2.database  # type: ignore
         import geoip2.errors    # type: ignore
-    except ImportError:
+    except ImportError as exc:
+        log_error("", "geoip.lookup_ip.import", str(exc),
+                  severity="info", traceback=True, context={"ip": ip})
         return {
             "available": False,
             "ip": ip,

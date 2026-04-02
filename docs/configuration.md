@@ -11,7 +11,7 @@ All settings in `config/settings.py`; secrets in `.env` (git-ignored, auto-loade
 | `SOCAI_SPA_DWELL` | `5000` | Extra wait (ms) after `networkidle` if page text is empty |
 | `SOCAI_STRINGS_MIN` | `6` | Min string length for static analysis |
 | `SOCAI_ENRICH_CACHE_TTL` | `24` | Enrichment cache TTL (hours); `0` = disabled |
-| `SOCAI_ENRICH_WORKERS` | `10` | Thread pool size for parallel enrichment (all tiers) |
+| `SOCAI_ENRICH_WORKERS` | `25` | Thread pool size for parallel enrichment (all tiers) |
 | `MAXMIND_LICENSE_KEY` | — | MaxMind license key for local GeoIP (free at maxmind.com/en/geolite2/signup) |
 | `SOCAI_CONF_AUTO_CLOSE` | `0.20` | Confidence threshold; benign cases below this are auto-closed |
 | `SOCAI_TRIAGE_ESCALATION_THRESHOLD` | `1` | Known-malicious IOC count to trigger severity escalation |
@@ -50,11 +50,17 @@ All LLM reasoning (report generation, analytical judgement, disposition analysis
 | `HYBRID_ANALYSIS_API_KEY` | Hybrid Analysis | SHA256 only (overview endpoint) |
 | `WHOISXML_API_KEY` | WHOISXML API | domain (age, registrant, newly-registered flag) |
 | `CENSYS_TOKEN` | Censys Platform API v3 | IPv4, domain — Bearer PAT |
-| `ABUSECH_API_KEY` | URLhaus + ThreatFox + MalwareBazaar | IPv4, domain, URL, MD5, SHA256 — **registration broken as of 2026-03** |
+| `ABUSECH_API_KEY` | URLhaus + ThreatFox + MalwareBazaar | IPv4, domain, URL, MD5, SHA256 |
 | `EMAILREP_API_KEY` | EmailRep.io | email (optional; keyless tier rate-limited) |
+| — | PhishTank | domain, URL — known-phishing database (keyless, no signup) |
+| — | crt.sh | domain — certificate transparency log search (keyless, no signup) |
+| `SECURITYTRAILS_API_KEY` | SecurityTrails | domain — subdomains, DNS history (paid; not currently active) |
 | `ANYRUN_API_KEY` | Any.Run | SHA256 — sandbox hash lookup + detonation |
 | `JOESANDBOX_API_KEY` | Joe Sandbox | SHA256 — sandbox hash lookup + detonation |
 | `SOCAI_BRAVE_SEARCH_KEY` | Brave Search | Web search fallback (optional; DuckDuckGo used if unset) |
+| `HUDSONROCK_API_KEY` | Hudson Rock Cavalier | email, domain, IP — infostealer exposure (free tier) |
+| `XPOSEDORNOT_API_KEY` | XposedOrNot | domain breaches (optional; email lookups are keyless) |
+| `INTELX_API_KEY` | Intelligence X | dark web, pastes, leaks, documents — free tier at intelx.io/account?tab=developer |
 
 ### Provider Notes
 
@@ -63,13 +69,26 @@ All LLM reasoning (report generation, analytical judgement, disposition analysis
 - **Hybrid Analysis:** `/api/v2/search/hash` POST is broken upstream — use `/api/v2/overview/{sha256}` (GET). MD5/SHA1 not supported.
 - **Abuse.ch:** Account registration non-functional as of 2026-03; key cannot be obtained.
 
-### Tiered IPv4 Enrichment
+### Tiered Enrichment
 
-IPv4 addresses use a 3-tier enrichment model to reduce API calls:
+All IOC types (IPv4, domain, URL, hash) use a tiered enrichment model to reduce API calls. The `depth` parameter on `enrich_iocs` controls escalation:
 
-- **Tier 0 (ASN pre-screen):** Team Cymru DNS (free, no key) identifies IPs owned by Microsoft, AWS, Google, Cloudflare, Akamai CDN, Fastly, Apple, Meta. These are tagged `infra_clean` and skip all enrichment. Configure via `KNOWN_INFRA_ASNS` and `_INFRA_ORG_KEYWORDS` in `tools/enrich.py`.
-- **Tier 1 (Fast):** AbuseIPDB, URLhaus, ThreatFox, OpenCTI. IPs clean after Tier 1 stop here.
-- **Tier 2 (Deep):** VT, Shodan, GreyNoise, ProxyCheck, Censys, OTX. Only for IPs showing signal in Tier 1 or returning no data.
+- **`"auto"`** (default) — Tier 1 first, escalate to Tier 2 only on signal (malicious/suspicious/unknown/newly-registered)
+- **`"fast"`** — Tier 1 only, never escalates. Use for obvious FPs, bulk triage, low severity.
+- **`"full"`** — All tiers for every IOC. Use for high-severity incidents, targeted attacks, novel IOCs.
+
+Before enrichment, `extract_and_enrich()` automatically runs triage (skips IOCs with 3+ cached providers) and client baseline filtering (skips IOCs routine for the client). Both are best-effort.
+
+**IPv4 tiers:**
+- **Tier 0 (ASN pre-screen):** Team Cymru DNS (free, no key) identifies IPs owned by Microsoft, AWS, Google, Cloudflare, Akamai CDN, Fastly, Apple, Meta. Tagged `infra_clean`, skip all enrichment.
+- **Tier 1 (Fast):** AbuseIPDB, URLhaus, ThreatFox, OpenCTI.
+- **Tier 2 (Deep):** VT, Shodan, GreyNoise, ProxyCheck, Censys, OTX.
+
+**Domain tiers:** Tier 1: URLhaus, ThreatFox, OpenCTI, WhoisXML, PhishTank. Tier 2: VT, URLScan, Censys, OTX, crt.sh.
+
+**URL tiers:** Tier 1: URLhaus, ThreatFox, OpenCTI, PhishTank. Tier 2: VT, URLScan, OTX.
+
+**Hash tiers:** Tier 1: MalwareBazaar, ThreatFox, OpenCTI. Tier 2: VT, Intezer, OTX (+ Hybrid Analysis for SHA256).
 
 Hosting providers (Linode/Akamai hosting, DigitalOcean, OCI) are deliberately **not** pre-screened since attackers use them. Only CDN-specific ASNs are filtered. Requires `dnspython` for ASN resolution (falls back to ipinfo.io free tier if unavailable).
 
@@ -98,7 +117,7 @@ See `docs/mcp-server.md` for env vars, RBAC, tools, resources, prompts, and depl
 
 ## Client Playbooks
 
-Client-specific response playbooks are stored in `config/clients/<client_name>.json`. These drive the `response-actions` tool, which produces a deterministic response plan based on case evidence.
+Client-specific response playbooks are stored in `config/clients/<client_name>/playbook.json` (directory layout) or `config/clients/<client_name>.json` (legacy flat layout). These drive the `response_actions` tool, which produces a deterministic response plan based on case evidence.
 
 | Setting | Value |
 |---------|-------|
@@ -107,7 +126,9 @@ Client-specific response playbooks are stored in `config/clients/<client_name>.j
 
 **CLI flags:** `--client <name>` on applicable subcommands. Falls back to `SOCAI_DEFAULT_CLIENT`.
 
-**Schema:** See `config/client_playbook.example.json` for documented fields: `client_name`, `response[]`, `crown_jewels`, `contacts[]`, `escalation_matrix[]`.
+**Schema:** `client_name`, `response[]`, `crown_jewels` (supports wildcard patterns via fnmatch), `contacts[]`, `escalation_matrix[]` (with `activity_blocked`, `sd_ticket`, `phone_call`, `response_action` fields), `containment_capabilities[]`, `remediation_actions[]`.
+
+**Multi-environment playbooks:** For clients with multiple platforms/environments (e.g. Sentinel + MDE, CrowdStrike workstations, OT), add an `environments` map describing each environment and its platforms. Use `escalation_matrix_ot` for environment-specific escalation overrides (e.g. OT environments where no containment is permitted).
 
 ## Client Configuration
 
@@ -117,8 +138,10 @@ Config: `config/client_entities.json` (git-ignored) — unified `clients` list. 
 
 | Field | Required | Description |
 |---|---|---|
-| `name` | Yes | Canonical client name (case-insensitive matching) |
+| `name` | Yes | Canonical client name (case-insensitive matching, underscores for spaces) |
 | `platforms` | No | Nested object mapping platform → config (see below) |
+| `aliases` | No | List of alternative names for fuzzy matching (e.g. `["hbm", "heidelberg cement"]`). `lookup_client` checks these when the exact name doesn't match. |
+| `notes` | No | Free-text description for fuzzy matching and context (industry, key domains, subsidiaries) |
 | `workspace_id` | No | Legacy; migrated to `platforms.sentinel.workspace_id` |
 
 **Platform scope** (`platforms` object):
@@ -164,6 +187,21 @@ python3 scripts/generate_sentinel_reference.py --all
 # Preview without writing
 python3 scripts/generate_sentinel_reference.py performanta --dry-run
 ```
+
+## NGSIEM / LogScale Reference
+
+`config/ngsiem/` contains the CrowdStrike LogScale (NGSIEM) query reference system, exposed via four MCP resources:
+
+| File | MCP Resource | Contents |
+|------|-------------|----------|
+| `config/logscale_syntax.md` | `socai://logscale-syntax` | General CQL syntax: operators, precedence, conditionals, joins, regex, pitfalls |
+| `config/ngsiem/ngsiem_rules.md` | `socai://ngsiem-rules` | Detection rule authoring: pipe-per-line, `#Vendor`+`#event.module` tags, ECS fields, anti-patterns, worked examples |
+| `config/ngsiem/ngsiem_columns.yaml` | `socai://ngsiem-columns` | Field schema per connector (24 connectors): ECS + vendor fields |
+| `config/ngsiem/cql_grammar.json` | `socai://cql-grammar` | Complete function grammar: 194 functions across 12 categories |
+
+These files are loaded on demand by the `load_ngsiem_reference` MCP tool, which Claude Desktop calls before writing any CrowdStrike/LogScale/NGSIEM query. The files are also available as MCP resources for direct reading. Referenced by `generate_queries`, HITL investigation prompt, and FP tuning prompts.
+
+**Adding a new connector:** Follow the template in `ngsiem_columns.yaml` — use the discovery queries in the file header to find connector IDs and field names.
 
 ## Confluence (Read-Only)
 

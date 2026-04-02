@@ -166,15 +166,59 @@ def triage(case_id: str, urls: list[str] | None = None) -> dict:
     return _run_action(case_id, "triage", _do)
 
 
-def extract_and_enrich(case_id: str, include_private: bool = False) -> dict:
-    """Extract IOCs, enrich, score verdicts, update IOC index."""
+def extract_and_enrich(
+    case_id: str,
+    include_private: bool = False,
+    depth: str = "auto",
+) -> dict:
+    """Extract IOCs, enrich, score verdicts, update IOC index.
+
+    Args:
+        depth: Enrichment depth — "auto" (smart tiering), "fast" (Tier 1 only),
+               or "full" (all tiers regardless of signal).
+    """
     def _do():
         from tools.extract_iocs import extract_iocs
         from tools.enrich import enrich
         from tools.score_verdicts import score_verdicts, update_ioc_index
 
         ioc_result = extract_iocs(case_id, include_private=include_private)
-        enrich_result = enrich(case_id)
+
+        # --- Phase 1: Triage-first — skip well-characterised IOCs ---
+        skip_iocs: set[str] = set()
+        try:
+            from tools.triage import triage as _triage
+            triage_result = _triage(case_id)
+            if triage_result.get("status") == "ok":
+                skip_iocs.update(triage_result.get("skip_enrichment_iocs", []))
+                if skip_iocs:
+                    print(f"[enrich] Triage: skipping {len(skip_iocs)} IOC(s) "
+                          f"with sufficient cached coverage.")
+        except Exception:
+            pass  # triage is best-effort; don't block enrichment
+
+        # --- Phase 1: Client baseline — skip IOCs that are routine for client ---
+        try:
+            from tools.common import load_json
+            meta = load_json(CASES_DIR / case_id / "case_meta.json")
+            client = meta.get("client", "")
+            if client:
+                from tools.client_baseline import get_client_baseline
+                baseline = get_client_baseline(client)
+                known_mal = set(baseline.get("known_malicious", []))
+                if baseline.get("case_count", 0) >= 3:
+                    for ioc_type, ioc_map in baseline.get("iocs", {}).items():
+                        for ioc_val, info in ioc_map.items():
+                            seen = info.get("seen", 0) if isinstance(info, dict) else 0
+                            if seen >= 3 and ioc_val not in known_mal:
+                                skip_iocs.add(ioc_val)
+                    if skip_iocs:
+                        print(f"[enrich] Baseline: {len(skip_iocs)} IOC(s) are "
+                              f"routine for client '{client}' — included in skip set.")
+        except Exception:
+            pass  # baseline is best-effort
+
+        enrich_result = enrich(case_id, skip_iocs=skip_iocs or None, depth=depth)
         verdict_result = score_verdicts(case_id)
         idx_result = update_ioc_index(case_id)
 

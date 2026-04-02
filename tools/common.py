@@ -78,6 +78,7 @@ import hashlib
 import json
 import os
 import threading
+import traceback as _tb
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -528,15 +529,26 @@ def defang_report(text: str, malicious_iocs: set[str] | None = None) -> str:
     """Defang all *malicious_iocs* wherever they appear in *text*.
 
     Only IOCs in the provided set are defanged — clean IOCs are left intact.
-    Replacements are applied longest-first to avoid partial matches.
+    Uses a single compiled regex pass for O(M) instead of O(N×M).
     """
     if not malicious_iocs:
         return text
-    for ioc in sorted(malicious_iocs, key=len, reverse=True):
+
+    # Build replacement map: original → defanged (longest-first for regex)
+    replacements: dict[str, str] = {}
+    for ioc in malicious_iocs:
         defanged = defang_ioc(ioc)
         if defanged != ioc:
-            text = text.replace(ioc, defanged)
-    return text
+            replacements[ioc] = defanged
+
+    if not replacements:
+        return text
+
+    # Build single regex pattern with alternation, longest-first
+    pattern = _re.compile(
+        "|".join(_re.escape(k) for k in sorted(replacements, key=len, reverse=True))
+    )
+    return pattern.sub(lambda m: replacements[m.group(0)], text)
 
 
 # ---------------------------------------------------------------------------
@@ -598,7 +610,7 @@ def log_error(
     error: str,
     *,
     severity: str = "error",
-    traceback: str = "",
+    traceback: str | bool = "",
     context: dict | None = None,
 ) -> None:
     """Append a structured error record to registry/error_log.jsonl.
@@ -607,8 +619,13 @@ def log_error(
       error   — operation failed entirely
       warning — degraded operation (fallback triggered, single provider failed)
       info    — environment signal (optional import missing, cache miss)
+
+    ``traceback`` accepts a string (explicit traceback text) or ``True``
+    to auto-capture the current exception traceback.
     """
     os.makedirs(Path(ERROR_LOG).parent, exist_ok=True)
+    if traceback is True:
+        traceback = _tb.format_exc() or ""
     record: dict = {
         "ts": utcnow(),
         "case_id": case_id,
@@ -622,6 +639,37 @@ def log_error(
         record["context"] = context
     with _error_lock:
         with open(ERROR_LOG, "a") as fh:
+            fh.write(json.dumps(record, default=str) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Metrics log
+# ---------------------------------------------------------------------------
+
+_metrics_lock = threading.Lock()
+
+
+def log_metric(event: str, *, case_id: str = "", **fields) -> None:
+    """Append a structured metric record to registry/metrics.jsonl.
+
+    Parameters
+    ----------
+    event : str
+        Metric event type.  One of: case_phase_change, enrichment_complete,
+        verdict_scored, report_saved, investigation_summary.
+    case_id : str
+        Case ID (empty for system-level metrics).
+    **fields
+        Arbitrary key-value pairs specific to the event type.
+    """
+    from config.settings import METRICS_LOG
+    os.makedirs(Path(METRICS_LOG).parent, exist_ok=True)
+    record: dict = {"ts": utcnow(), "event": event}
+    if case_id:
+        record["case_id"] = case_id
+    record.update(fields)
+    with _metrics_lock:
+        with open(METRICS_LOG, "a") as fh:
             fh.write(json.dumps(record, default=str) + "\n")
 
 

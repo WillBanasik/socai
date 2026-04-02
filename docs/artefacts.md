@@ -12,12 +12,15 @@ All persistent state is on the filesystem. There is no database.
 | `registry/enrichment_cache.json` | Cross-run enrichment cache; keyed by `provider\|ioc`, TTL-controlled |
 | `registry/ioc_index.json` | Cross-case IOC index; keyed by IOC value; tracks `first_seen`, `last_seen`, `cases[]`, composite verdict |
 | `registry/campaigns.json` | Cross-case campaign clusters; updated by `campaign_cluster` |
+| `registry/metrics.jsonl` | Append-only investigation metrics; case phase changes, enrichment duration/coverage, verdict confidence, report completeness, investigation summaries |
+| `registry/mcp_usage.jsonl` | Append-only MCP tool invocation log; caller, tool, category, goal, params, duration_ms, session_id |
+| `registry/quick_enrichments/<enrichment_id>.json` | Saved caseless enrichment results from `quick_enrich`; import via `enrichment_id` on `create_case` or `import_enrichment` |
 
 ## Per-Case Files
 
 | File | Purpose |
 |------|---------|
-| `cases/<ID>/case_meta.json` | Metadata: status, severity, attack_type, reference_id, report path, IOC totals |
+| `cases/<ID>/case_meta.json` | Metadata: status, severity, attack_type, reference_id, report path, IOC totals, phase_timestamps (created_at, triage_at, active_at, closed_at) |
 | `cases/<ID>/iocs/iocs.json` | Canonical IOC list; consumed by `enrich` and `correlate` |
 | `cases/<ID>/chat_history_{email}.json` | Per-user LLM chat history (Anthropic API message format) |
 | `cases/<ID>/artefacts/enrichment/enrichment.json` | Raw per-provider enrichment results; includes `tiered_enrichment` stats and `asn_prescreen` entries for infra-skipped IPs |
@@ -31,6 +34,12 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/sandbox/sandbox_results.json` | Sandbox provider results per file hash |
 | `cases/<ID>/artefacts/sandbox/sandbox_iocs.json` | Supplementary IOCs from sandbox analysis |
 | `cases/<ID>/artefacts/anomalies/anomaly_report.json` | Behavioural anomaly detection findings |
+| `cases/<ID>/artefacts/darkweb/hudsonrock_results.json` | Hudson Rock infostealer lookup results (credentials REDACTED) |
+| `cases/<ID>/artefacts/darkweb/xposedornot_results.json` | XposedOrNot breach exposure results |
+| `cases/<ID>/artefacts/darkweb/darkweb_summary.json` | Aggregated dark web exposure summary |
+| `cases/<ID>/artefacts/darkweb/ahmia_results.json` | Ahmia.fi dark web search results |
+| `cases/<ID>/artefacts/darkweb/intelx_results.json` | Intelligence X search results (credentials REDACTED) |
+| `cases/<ID>/artefacts/darkweb/stealer_logs/parsed.json` | Parsed infostealer log output (credentials REDACTED) |
 | `cases/<ID>/artefacts/campaign/campaign_links.json` | Per-case campaign membership and shared IOCs |
 | `cases/<ID>/artefacts/fp_comms/fp_ticket.md` | FP suppression ticket (platform-specific) |
 | `cases/<ID>/artefacts/fp_comms/fp_ticket_manifest.json` | FP ticket generation metadata |
@@ -111,6 +120,16 @@ All persistent state is on the filesystem. There is no database.
 |------|---------|
 | `registry/batches/<batch_id>.json` | Batch submission metadata |
 | `registry/batches/<batch_id>_results.json` | Collected batch results |
+
+## Client Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `config/client_entities.json` | Client registry: name, platforms, aliases, notes (git-ignored) |
+| `config/clients/<name>/knowledge.md` | Environment context: org, identity, network, security stack, FP patterns (git-ignored) |
+| `config/clients/<name>/playbook.json` | Response playbook: escalation matrix, containment, remediation, contacts (git-ignored) |
+| `config/clients/<name>/sentinel.md` | Sentinel reference: workspace ID, tables, column types, query patterns (git-ignored) |
+| `registry/baselines/<name>.json` | Auto-built client baseline: IOC recurrence, attack types, dispositions |
 
 ## Notes
 

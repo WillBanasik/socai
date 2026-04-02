@@ -218,9 +218,13 @@ def register_prompts(mcp: FastMCP) -> None:
 
         lines.append("## Investigation Stages")
         lines.append("")
-        lines.append("Execute each stage using `load_kql_playbook` then `run_kql`. "
-                      "Check Stage 1 results before running subsequent stages. "
-                      "**Use `max_rows=200` or higher on `run_kql`** for stages that "
+        lines.append("**Efficiency:** When you have multiple independent queries "
+                      "(e.g. sign-in logs + audit logs + MFA status), submit them "
+                      "together via `run_kql_batch` instead of calling `run_kql` "
+                      "sequentially — this runs queries in parallel and is 2-3× faster. "
+                      "Only use sequential `run_kql` when one query's results inform "
+                      "the next query's parameters. "
+                      "**Use `max_rows=200` or higher** for stages that "
                       "return summarised data — this minimises round-trips and gives you "
                       "the full analytical picture in a single call.")
         lines.append("")
@@ -311,6 +315,14 @@ def register_prompts(mcp: FastMCP) -> None:
             "- Determine the business impact and data sensitivity",
             "- Check for related alerts in the same timeframe",
             "",
+            "### 4.5. Dark Web Exposure (if account compromise suspected)",
+            "If the alert involves credential theft, account compromise, or a",
+            "compromised user, check dark web sources before reaching a verdict:",
+            "- `hudsonrock_lookup` — infostealer exposure for user email",
+            "- `xposed_breach_check` — historical breach data for user email",
+            "Positive results indicate the compromise may be credential-based",
+            "and strengthen a TP determination.",
+            "",
             "### 5. Verdict",
             "Determine the Sentinel incident classification using this decision guide:",
             "",
@@ -361,6 +373,8 @@ def register_prompts(mcp: FastMCP) -> None:
             Original detection query.
         platform : str
             Detection platform (e.g. "sentinel", "crowdstrike", "splunk").
+            For CrowdStrike/NGSIEM, call ``load_ngsiem_reference`` first
+            for correct syntax and field names.
         """
         lines = [
             "# False-Positive Ticket Generation Workflow",
@@ -496,7 +510,7 @@ def register_prompts(mcp: FastMCP) -> None:
             "Caseless enrichment:",
             "- `quick_enrich` — fast IOC lookups (no case required)",
             "- `extract_iocs_from_text` — IOC extraction (no case required)",
-            "- `run_kql` / `run_kql_batch` — Sentinel queries (no case required)",
+            "- `run_kql_batch` — Sentinel queries in parallel (prefer over sequential `run_kql`)",
             "- `recall_cases` — prior investigation search (no case required)",
             "",
             "Case-bound (call `create_case` first, or defer to Phase 4):",
@@ -505,6 +519,12 @@ def register_prompts(mcp: FastMCP) -> None:
             "- `capture_urls` → `detect_phishing` — for URL/phishing cases",
             "- `analyse_email` — for email-based alerts",
             "- `start_sandbox_session` — for file/malware cases (if warranted)",
+            "",
+            "Dark web intelligence (use when account compromise or credential theft suspected):",
+            "- `hudsonrock_lookup` — check infostealer exposure for user email/domain (no case required)",
+            "- `xposed_breach_check` — check historical breach databases for email/domain (no case required)",
+            "- `intelx_search` — search dark web, pastes, and leaks for indicators (no case required)",
+            "- `darkweb_exposure_summary` — aggregate dark web exposure for a case (case-bound)",
             "",
             "**CP2 — EVIDENCE REVIEW**",
             "Present to the analyst:",
@@ -592,6 +612,7 @@ def register_prompts(mcp: FastMCP) -> None:
             "- Always call recall_cases before enrichment",
             "- Reports auto-close cases via save_report (after prepare_mdr_report, prepare_pup_report, prepare_fp_ticket)",
             "- Keep it concise — lead with findings, not process narration",
+            "- Before writing or reviewing LogScale/NGSIEM queries, call `load_ngsiem_reference` (sections=[\"rules\", \"syntax\"]) to load authoring conventions, anti-patterns, and correct CQL syntax. Add \"columns\" when you need field names for a specific log source",
         ])
 
         return "\n".join(lines)
@@ -1090,9 +1111,11 @@ def register_prompts(mcp: FastMCP) -> None:
         alert_data : str
             Raw alert JSON or text.
         platform : str
-            Detection platform override.
+            Detection platform override (sentinel, crowdstrike, splunk).
+            For CrowdStrike/NGSIEM, call ``load_ngsiem_reference`` first
+            for correct syntax and field names.
         query_text : str
-            Original detection query (KQL/SPL).
+            Original detection query (KQL/SPL/CQL).
         """
         from tools.fp_tuning_ticket import _SYSTEM_PROMPT as prompt
         from tools.fp_tuning_ticket import _build_context
@@ -1843,6 +1866,24 @@ def register_prompts(mcp: FastMCP) -> None:
             "**Priority signals:** emails that were delivered then ZAP'd (Phish ZAP,",
             "Malware ZAP) — user may have interacted before removal. Clicked-through",
             "URLs with threat classifications are HIGH priority.",
+            "",
+            "---",
+            "",
+            "## PHASE 5.5 — CREDENTIAL BREACH EXPOSURE",
+            "",
+            "Check if the user's credentials have been exposed in dark web sources:",
+            "",
+            "- Call `hudsonrock_lookup` with the user's email to check for infostealer",
+            "  malware exposure (stolen browser credentials, session tokens, cookies).",
+            "- Call `xposed_breach_check` with the user's email to check which data",
+            "  breaches have exposed their credentials historically.",
+            "- If either returns positive results, this significantly increases the",
+            "  risk of credential-based compromise and should be prominently noted",
+            "  in the summary.",
+            "",
+            "**Priority signals:** infostealer exposure (credentials actively harvested",
+            "by malware) is higher severity than historical breach exposure (may be",
+            "stale/rotated). Recent compromise dates (< 90 days) are critical.",
             "",
             "---",
             "",

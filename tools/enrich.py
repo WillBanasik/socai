@@ -16,6 +16,8 @@ Active providers:
   - ThreatFox      → IP, domain, URL, MD5, SHA256 — Abuse.ch C2/malware IOC database (free account key: ABUSECH_API_KEY)
   - MalwareBazaar  → MD5, SHA256 — Abuse.ch malware sample hash database (free account key: ABUSECH_API_KEY)
   - EmailRep.io    → email — reputation, blacklist, breach, disposable check (keyless / optional EMAILREP_API_KEY)
+  - crt.sh         → domain — certificate transparency log search, subdomain discovery (keyless)
+  - PhishTank       → URL/domain — community phishing URL database, known-phish verdict (keyless)
 
 To add a new provider: implement a function with signature
   def provider_name(ioc: str, ioc_type: str) -> dict
@@ -40,9 +42,10 @@ from config.settings import (
     ABUSEIPDB_KEY, ABUSECH_KEY, CASES_DIR, CENSYS_TOKEN, EMAILREP_KEY,
     ENRICH_CACHE_FILE, ENRICH_CACHE_TTL, ENRICH_WORKERS, GREYNOISE_KEY,
     HYBRID_KEY, INTEZER_KEY, OPENCTI_KEY, OPENCTI_URL, OTX_KEY,
-    PROXYCHECK_KEY, SHODAN_KEY, URLSCAN_KEY, VIRUSTOTAL_KEY, WHOISXML_KEY,
+    PROXYCHECK_KEY, SHODAN_KEY,
+    URLSCAN_KEY, VIRUSTOTAL_KEY, WHOISXML_KEY,
 )
-from tools.common import KNOWN_CLEAN_DOMAINS, get_session, load_json, log_error, utcnow, write_artefact
+from tools.common import KNOWN_CLEAN_DOMAINS, get_session, load_json, log_error, save_json, utcnow, write_artefact
 
 
 # ---------------------------------------------------------------------------
@@ -1326,14 +1329,132 @@ def _emailrep_lookup(ioc: str, ioc_type: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# crt.sh — Certificate Transparency log search (keyless)
+# ---------------------------------------------------------------------------
+
+def _crtsh_lookup(ioc: str, ioc_type: str) -> dict:
+    """crt.sh — certificate transparency log search for subdomains and cert metadata."""
+    if ioc_type != "domain":
+        return {"provider": "crtsh", "status": "skipped", "ioc": ioc}
+
+    try:
+        resp = get_session().get(
+            "https://crt.sh/",
+            params={"q": f"%.{ioc}", "output": "json"},
+            timeout=20,
+        )
+    except Exception as exc:
+        return {"provider": "crtsh", "status": "error", "ioc": ioc, "error": str(exc)}
+
+    if resp.status_code == 429:
+        return {"provider": "crtsh", "status": "rate_limited", "ioc": ioc}
+    if resp.status_code != 200:
+        return {"provider": "crtsh", "status": f"http_{resp.status_code}", "ioc": ioc}
+
+    try:
+        entries = resp.json()
+    except Exception:
+        return {"provider": "crtsh", "status": "error", "ioc": ioc,
+                "error": "Invalid JSON from crt.sh"}
+
+    if not entries:
+        return {"provider": "crtsh", "status": "ok", "ioc": ioc, "verdict": "clean",
+                "total_certs": 0, "unique_subdomains": [], "issuers": []}
+
+    # Extract unique subdomains from name_value field (may contain wildcard and multi-line)
+    subdomains: set[str] = set()
+    issuers: set[str] = set()
+    for entry in entries:
+        for name in entry.get("name_value", "").splitlines():
+            name = name.strip().lstrip("*.")
+            if name and name != ioc:
+                subdomains.add(name.lower())
+        issuer = entry.get("issuer_name", "")
+        if issuer:
+            issuers.add(issuer)
+
+    sorted_subs = sorted(subdomains)
+
+    return {
+        "provider": "crtsh",
+        "status": "ok",
+        "ioc": ioc,
+        "verdict": "informational",
+        "total_certs": len(entries),
+        "unique_subdomains": sorted_subs[:100],
+        "subdomain_count": len(sorted_subs),
+        "issuers": sorted(issuers)[:10],
+        "crtsh_link": f"https://crt.sh/?q=%.{ioc}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# PhishTank — known-phishing URL database (keyless)
+# ---------------------------------------------------------------------------
+
+def _phishtank_lookup(ioc: str, ioc_type: str) -> dict:
+    """PhishTank — community phishing URL database. Keyless, no signup required."""
+    if ioc_type not in ("url", "domain"):
+        return {"provider": "phishtank", "status": "skipped", "ioc": ioc}
+
+    # For domains, wrap in a URL so the API can match
+    lookup_url = ioc if ioc_type == "url" else f"http://{ioc}/"
+
+    try:
+        resp = get_session().post(
+            "https://checkurl.phishtank.com/checkurl/",
+            data={"url": lookup_url, "format": "json"},
+            headers={"User-Agent": "socai/1.0"},
+            timeout=15,
+        )
+    except Exception as exc:
+        return {"provider": "phishtank", "status": "error", "ioc": ioc, "error": str(exc)}
+
+    if resp.status_code == 429:
+        return {"provider": "phishtank", "status": "rate_limited", "ioc": ioc}
+    if resp.status_code != 200:
+        return {"provider": "phishtank", "status": f"http_{resp.status_code}", "ioc": ioc}
+
+    try:
+        data = resp.json().get("results", {})
+    except Exception:
+        return {"provider": "phishtank", "status": "error", "ioc": ioc,
+                "error": "Invalid JSON from PhishTank"}
+
+    in_database = data.get("in_database", False)
+    is_phish = data.get("valid", False)  # True = confirmed phish by community vote
+
+    if not in_database:
+        return {
+            "provider": "phishtank",
+            "status": "ok",
+            "ioc": ioc,
+            "verdict": "clean",
+            "in_database": False,
+        }
+
+    return {
+        "provider": "phishtank",
+        "status": "ok",
+        "ioc": ioc,
+        "verdict": "malicious" if is_phish else "suspicious",
+        "in_database": True,
+        "verified_phish": is_phish,
+        "phish_id": data.get("phish_id"),
+        "phishtank_link": data.get("phish_detail_page", ""),
+    }
+
+
+
+# ---------------------------------------------------------------------------
 # Provider routing
 # ---------------------------------------------------------------------------
 
 # Full provider list (used for non-tiered IOC types: hashes, email, cve, etc.)
 PROVIDERS: dict[str, list] = {
     "ipv4":   [_vt_lookup, _abuseipdb_lookup, _shodan_lookup, _greynoise_lookup, _proxycheck_lookup, _urlhaus_lookup, _threatfox_lookup, _censys_lookup, _otx_lookup, _opencti_lookup],
-    "domain": [_vt_lookup, _urlscan_lookup, _urlhaus_lookup, _threatfox_lookup, _censys_lookup, _otx_lookup, _whoisxml_lookup, _opencti_lookup],
-    "url":    [_vt_lookup, _urlscan_lookup, _urlhaus_lookup, _threatfox_lookup, _otx_lookup, _opencti_lookup],
+    "domain": [_vt_lookup, _urlscan_lookup, _urlhaus_lookup, _threatfox_lookup, _censys_lookup, _otx_lookup, _whoisxml_lookup, _opencti_lookup, _crtsh_lookup, _phishtank_lookup],
+    "url":    [_vt_lookup, _urlscan_lookup, _urlhaus_lookup, _threatfox_lookup, _otx_lookup, _opencti_lookup, _phishtank_lookup],
     "md5":    [_vt_lookup, _intezer_lookup, _malwarebazaar_lookup, _threatfox_lookup, _otx_lookup, _opencti_lookup],
     "sha1":   [_vt_lookup, _intezer_lookup, _otx_lookup, _opencti_lookup],
     "sha256": [_vt_lookup, _intezer_lookup, _malwarebazaar_lookup, _threatfox_lookup, _hybrid_lookup, _otx_lookup, _opencti_lookup],
@@ -1346,11 +1467,11 @@ PROVIDERS_IP_FAST: list = [_abuseipdb_lookup, _urlhaus_lookup, _threatfox_lookup
 PROVIDERS_IP_DEEP: list = [_vt_lookup, _shodan_lookup, _greynoise_lookup, _proxycheck_lookup, _censys_lookup, _otx_lookup]
 
 # Tiered enrichment for domains — fast/free first, deep only if signal detected
-PROVIDERS_DOMAIN_FAST: list = [_urlhaus_lookup, _threatfox_lookup, _opencti_lookup, _whoisxml_lookup]
-PROVIDERS_DOMAIN_DEEP: list = [_vt_lookup, _urlscan_lookup, _censys_lookup, _otx_lookup]
+PROVIDERS_DOMAIN_FAST: list = [_urlhaus_lookup, _threatfox_lookup, _opencti_lookup, _whoisxml_lookup, _phishtank_lookup]
+PROVIDERS_DOMAIN_DEEP: list = [_vt_lookup, _urlscan_lookup, _censys_lookup, _otx_lookup, _crtsh_lookup]
 
 # Tiered enrichment for URLs — fast/free first, deep only if signal detected
-PROVIDERS_URL_FAST: list = [_urlhaus_lookup, _threatfox_lookup, _opencti_lookup]
+PROVIDERS_URL_FAST: list = [_urlhaus_lookup, _threatfox_lookup, _opencti_lookup, _phishtank_lookup]
 PROVIDERS_URL_DEEP: list = [_vt_lookup, _urlscan_lookup, _otx_lookup]
 
 # Tiered enrichment for hashes — fast/free first, deep only if unknown or suspicious
@@ -1380,6 +1501,8 @@ _PROVIDER_NAMES: dict = {
     _otx_lookup:            "otx",
     _hybrid_lookup:         "hybrid_analysis",
     _whoisxml_lookup:       "whoisxml",
+    _crtsh_lookup:          "crtsh",
+    _phishtank_lookup:   "phishtank",
 }
 
 
@@ -1702,9 +1825,23 @@ def _apply_llm_escalation(
     return escalate_list
 
 
-def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = None) -> dict:
+def enrich(
+    case_id: str,
+    max_per_type: int = 20,
+    skip_iocs: set[str] | None = None,
+    depth: str = "auto",
+) -> dict:
     """
-    Tiered enrichment pipeline:
+    Tiered enrichment pipeline.
+
+    Args:
+        depth: Controls tier escalation behaviour.
+            "auto" — default smart logic: Tier 1 first, escalate to Tier 2 on
+                     signal (malicious/suspicious/unknown/newly-registered).
+            "fast" — Tier 1 only, never escalate to Tier 2. Use for low-severity,
+                     obvious false positives, or bulk triage.
+            "full" — All tiers for every IOC regardless of Tier 1 results.
+                     Use for high-severity targeted attacks or novel IOCs.
 
     For IPv4 addresses:
       Tier 0 — ASN pre-screen: bulk DNS lookup to identify IPs owned by major
@@ -1740,6 +1877,8 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
 
     All results are cached in registry/enrichment_cache.json with TTL.
     """
+    import time as _time
+    _enrich_t0 = _time.monotonic()
     iocs_path = CASES_DIR / case_id / "iocs" / "iocs.json"
     if not iocs_path.exists():
         return {"error": f"iocs.json not found at {iocs_path}", "case_id": case_id}
@@ -1868,13 +2007,11 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
         if candidate_ips:
             print(f"[enrich] Tier 1: Fast enrichment for {len(candidate_ips)} IP(s) "
                   f"across {len(local_ip_fast)} provider(s)...")
-            with _cache_lock:
-                lcache = _cache_load()
             tier1_tasks: list[tuple] = []
             for ip in candidate_ips:
                 for fn in local_ip_fast:
                     provider_name = _fn_provider_name(fn)
-                    cached = _cache_get(lcache, ip, provider_name)
+                    cached = _cache_get(cache, ip, provider_name)
                     if cached is not None:
                         entry = dict(cached)
                         entry["from_cache"] = True
@@ -1885,20 +2022,25 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
                     else:
                         tier1_tasks.append((fn, ip, "ipv4"))
 
-            tier1_results = _run_tasks_parallel(case_id, tier1_tasks, lcache)
+            tier1_results = _run_tasks_parallel(case_id, tier1_tasks, cache)
             results.extend(tier1_results)
             calls += len(tier1_tasks)
 
             with _cache_lock:
                 lcache = _cache_load()
 
-            # --- Tier 2: Deep providers ---
-            escalate_ips = [ip for ip in candidate_ips
-                           if _ip_needs_deep_enrichment(ip, tier1_results + results)]
-            escalate_ips = _apply_llm_escalation(
-                case_id, escalate_ips, candidate_ips,
-                tier1_results + results, "ipv4", _case_meta,
-            )
+            # --- Tier 2: Deep providers (depth-aware) ---
+            if depth == "fast":
+                escalate_ips = []
+            elif depth == "full":
+                escalate_ips = list(candidate_ips)
+            else:
+                escalate_ips = [ip for ip in candidate_ips
+                               if _ip_needs_deep_enrichment(ip, tier1_results + results)]
+                escalate_ips = _apply_llm_escalation(
+                    case_id, escalate_ips, candidate_ips,
+                    tier1_results + results, "ipv4", _case_meta,
+                )
 
             tier1_only = len(candidate_ips) - len(escalate_ips)
             stats["tier1_only"] = tier1_only
@@ -1963,13 +2105,11 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
         # --- Tier 1 ---
         print(f"[enrich] Domain Tier 1: Fast enrichment for {len(filtered_domains)} domain(s) "
               f"across {len(local_domain_fast)} provider(s)...")
-        with _cache_lock:
-            lcache = _cache_load()
         tier1_tasks: list[tuple] = []
         for domain in filtered_domains:
             for fn in local_domain_fast:
                 provider_name = _fn_provider_name(fn)
-                cached_entry = _cache_get(lcache, domain, provider_name)
+                cached_entry = _cache_get(cache, domain, provider_name)
                 if cached_entry is not None:
                     entry = dict(cached_entry)
                     entry["from_cache"] = True
@@ -1980,20 +2120,25 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
                 else:
                     tier1_tasks.append((fn, domain, "domain"))
 
-        tier1_results = _run_tasks_parallel(case_id, tier1_tasks, lcache)
+        tier1_results = _run_tasks_parallel(case_id, tier1_tasks, cache)
         results.extend(tier1_results)
         calls += len(tier1_tasks)
 
         with _cache_lock:
             lcache = _cache_load()
 
-        # --- Tier 2 ---
-        escalate_domains = [d for d in filtered_domains
-                            if _domain_needs_deep_enrichment(d, tier1_results + results)]
-        escalate_domains = _apply_llm_escalation(
-            case_id, escalate_domains, filtered_domains,
-            tier1_results + results, "domain", _case_meta,
-        )
+        # --- Tier 2 (depth-aware) ---
+        if depth == "fast":
+            escalate_domains = []
+        elif depth == "full":
+            escalate_domains = list(filtered_domains)
+        else:
+            escalate_domains = [d for d in filtered_domains
+                                if _domain_needs_deep_enrichment(d, tier1_results + results)]
+            escalate_domains = _apply_llm_escalation(
+                case_id, escalate_domains, filtered_domains,
+                tier1_results + results, "domain", _case_meta,
+            )
 
         tier1_only = len(filtered_domains) - len(escalate_domains)
         stats["tier1_only"] = tier1_only
@@ -2058,13 +2203,11 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
         # --- Tier 1 ---
         print(f"[enrich] URL Tier 1: Fast enrichment for {len(filtered_urls)} URL(s) "
               f"across {len(local_url_fast)} provider(s)...")
-        with _cache_lock:
-            lcache = _cache_load()
         tier1_tasks: list[tuple] = []
         for url in filtered_urls:
             for fn in local_url_fast:
                 provider_name = _fn_provider_name(fn)
-                cached_entry = _cache_get(lcache, url, provider_name)
+                cached_entry = _cache_get(cache, url, provider_name)
                 if cached_entry is not None:
                     entry = dict(cached_entry)
                     entry["from_cache"] = True
@@ -2075,20 +2218,25 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
                 else:
                     tier1_tasks.append((fn, url, "url"))
 
-        tier1_results = _run_tasks_parallel(case_id, tier1_tasks, lcache)
+        tier1_results = _run_tasks_parallel(case_id, tier1_tasks, cache)
         results.extend(tier1_results)
         calls += len(tier1_tasks)
 
         with _cache_lock:
             lcache = _cache_load()
 
-        # --- Tier 2 ---
-        escalate_urls = [u for u in filtered_urls
-                         if _url_needs_deep_enrichment(u, tier1_results + results)]
-        escalate_urls = _apply_llm_escalation(
-            case_id, escalate_urls, filtered_urls,
-            tier1_results + results, "url", _case_meta,
-        )
+        # --- Tier 2 (depth-aware) ---
+        if depth == "fast":
+            escalate_urls = []
+        elif depth == "full":
+            escalate_urls = list(filtered_urls)
+        else:
+            escalate_urls = [u for u in filtered_urls
+                             if _url_needs_deep_enrichment(u, tier1_results + results)]
+            escalate_urls = _apply_llm_escalation(
+                case_id, escalate_urls, filtered_urls,
+                tier1_results + results, "url", _case_meta,
+            )
 
         tier1_only = len(filtered_urls) - len(escalate_urls)
         stats["tier1_only"] = tier1_only
@@ -2157,13 +2305,11 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
             # --- Tier 1 ---
             print(f"[enrich] Hash Tier 1: Fast enrichment for {len(hash_list)} {hash_type}(s) "
                   f"across {len(local_hash_fast)} provider(s)...")
-            with _cache_lock:
-                lcache = _cache_load()
             tier1_tasks = []
             for h in hash_list:
                 for fn in local_hash_fast:
                     provider_name = _fn_provider_name(fn)
-                    cached_entry = _cache_get(lcache, h, provider_name)
+                    cached_entry = _cache_get(cache, h, provider_name)
                     if cached_entry is not None:
                         entry = dict(cached_entry)
                         entry["from_cache"] = True
@@ -2174,20 +2320,25 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
                     else:
                         tier1_tasks.append((fn, h, hash_type))
 
-            tier1_results = _run_tasks_parallel(case_id, tier1_tasks, lcache)
+            tier1_results = _run_tasks_parallel(case_id, tier1_tasks, cache)
             results.extend(tier1_results)
             calls += len(tier1_tasks)
 
             with _cache_lock:
                 lcache = _cache_load()
 
-            # --- Tier 2 ---
-            escalate_hashes = [h for h in hash_list
-                               if _hash_needs_deep_enrichment(h, tier1_results + results)]
-            escalate_hashes = _apply_llm_escalation(
-                case_id, escalate_hashes, hash_list,
-                tier1_results + results, hash_type, _case_meta,
-            )
+            # --- Tier 2 (depth-aware) ---
+            if depth == "fast":
+                escalate_hashes = []
+            elif depth == "full":
+                escalate_hashes = list(hash_list)
+            else:
+                escalate_hashes = [h for h in hash_list
+                                   if _hash_needs_deep_enrichment(h, tier1_results + results)]
+                escalate_hashes = _apply_llm_escalation(
+                    case_id, escalate_hashes, hash_list,
+                    tier1_results + results, hash_type, _case_meta,
+                )
 
             tier1_only = len(hash_list) - len(escalate_hashes)
             stats["tier1_only"] += tier1_only
@@ -2307,6 +2458,7 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
     output = {
         "case_id": case_id,
         "ts": utcnow(),
+        "depth": depth,
         "total_lookups": len(all_results),
         "cache_hits": cache_hits,
         "live_calls": live_calls,
@@ -2333,6 +2485,22 @@ def enrich(case_id: str, max_per_type: int = 20, skip_iocs: set[str] | None = No
     if any(v for v in hash_tiered_stats.values()):
         print(f"[enrich] Tiered hash stats: {hash_tiered_stats['tier1_only']} clean after Tier 1, "
               f"{hash_tiered_stats['escalated_to_deep']} escalated to deep OSINT")
+    _enrich_duration_ms = int((_time.monotonic() - _enrich_t0) * 1000)
+    _total_iocs = sum(len(v) for v in iocs_data.get("iocs", {}).values() if isinstance(v, list))
+    _enriched_iocs = len({r["ioc"] for r in all_results if r.get("status") == "ok"})
+    from tools.common import log_metric
+    log_metric("enrichment_complete", case_id=case_id,
+               duration_ms=_enrich_duration_ms,
+               total_iocs=_total_iocs,
+               enriched_iocs=_enriched_iocs,
+               ioc_coverage_pct=round(_enriched_iocs / _total_iocs * 100, 1) if _total_iocs else 0,
+               cache_hits=cache_hits,
+               live_calls=live_calls,
+               total_lookups=len(all_results),
+               tiered_ip=tiered_stats,
+               tiered_domain=domain_tiered_stats,
+               tiered_url=url_tiered_stats,
+               tiered_hash=hash_tiered_stats)
     return output
 
 
@@ -2365,8 +2533,19 @@ def _detect_ioc_type(value: str) -> str | None:
     return None
 
 
-# Provider lists keyed by IOC type — both tiers, for quick_enrich
-_QUICK_PROVIDERS: dict[str, list] = {
+# Fast-only provider lists keyed by IOC type
+_FAST_PROVIDERS: dict[str, list] = {
+    "ipv4":   PROVIDERS_IP_FAST,
+    "domain": PROVIDERS_DOMAIN_FAST,
+    "url":    PROVIDERS_URL_FAST,
+    "sha256": PROVIDERS_HASH_FAST,
+    "sha1":   PROVIDERS_HASH_FAST,
+    "md5":    PROVIDERS_HASH_FAST,
+    "email":  [_emailrep_lookup],
+}
+
+# Full (all-tier) provider lists keyed by IOC type
+_FULL_PROVIDERS: dict[str, list] = {
     "ipv4":   PROVIDERS_IP_FAST + PROVIDERS_IP_DEEP,
     "domain": PROVIDERS_DOMAIN_FAST + PROVIDERS_DOMAIN_DEEP,
     "url":    PROVIDERS_URL_FAST + PROVIDERS_URL_DEEP,
@@ -2376,33 +2555,64 @@ _QUICK_PROVIDERS: dict[str, list] = {
     "email":  [_emailrep_lookup],
 }
 
+# Deep-only provider lists keyed by IOC type (for Tier 2 escalation)
+_DEEP_PROVIDERS: dict[str, list] = {
+    "ipv4":   PROVIDERS_IP_DEEP,
+    "domain": PROVIDERS_DOMAIN_DEEP,
+    "url":    PROVIDERS_URL_DEEP,
+    "sha256": PROVIDERS_HASH_SHA256_DEEP,
+    "sha1":   PROVIDERS_HASH_SHA1_DEEP,
+    "md5":    PROVIDERS_HASH_DEEP,
+}
 
-def quick_enrich(iocs: list[str], deep: bool = True) -> dict:
+# Escalation decision functions keyed by IOC type
+_NEEDS_DEEP: dict[str, callable] = {
+    "ipv4":   _ip_needs_deep_enrichment,
+    "domain": _domain_needs_deep_enrichment,
+    "url":    _url_needs_deep_enrichment,
+    "sha256": _hash_needs_deep_enrichment,
+    "sha1":   _hash_needs_deep_enrichment,
+    "md5":    _hash_needs_deep_enrichment,
+}
+
+
+def quick_enrich(iocs: list[str], depth: str = "auto") -> dict:
     """Enrich one or more raw IOC values without a case.
 
     Parameters
     ----------
     iocs : list[str]
         Raw IOC values (IPs, domains, URLs, hashes, emails).
-    deep : bool
-        If True (default) run both fast and deep providers.
-        If False, run fast providers only (quicker).
+    depth : str
+        ``"auto"`` — (default) Tier 0 ASN pre-screen (IPs), then Tier 1 fast
+        providers, then selectively escalate to Tier 2 deep OSINT only for
+        IOCs that show signal.
+        ``"fast"`` — Tier 1 only, no deep OSINT.
+        ``"full"`` — All tiers for every IOC.
 
     Returns
     -------
-    dict with keys: ``results`` (list of per-provider dicts), ``verdicts``
-    (composite verdict per IOC), ``ioc_count``, ``provider_calls``.
+    dict with keys: ``enrichment_id`` (for later import into a case),
+    ``results``, ``verdicts``, ``ioc_count``, ``provider_calls``,
+    ``tiered_stats``.
     """
+    import time as _time
     from tools.score_verdicts import _composite_verdict
+    from config.settings import QUICK_ENRICH_DIR
+
+    _t0 = _time.monotonic()
 
     if isinstance(iocs, str):
         iocs = [iocs]
 
     cache = _cache_load()
-    tasks: list[tuple] = []
-    skipped: list[dict] = []
+    all_results: list[dict] = []
+    unrecognised: list[dict] = []
+    cache_hits = 0
+    live_calls = 0
+    tiered_stats = {"infra_skipped": 0, "tier1_only": 0, "escalated_to_deep": 0}
 
-    # Classify each IOC and build task list
+    # Classify each IOC by type
     ioc_types: dict[str, str] = {}
     for raw in iocs:
         val = raw.strip()
@@ -2410,40 +2620,174 @@ def quick_enrich(iocs: list[str], deep: bool = True) -> dict:
             continue
         ioc_type = _detect_ioc_type(val)
         if not ioc_type:
-            skipped.append({"ioc": val, "error": "unrecognised_ioc_type"})
+            unrecognised.append({"ioc": val, "error": "unrecognised_ioc_type"})
             continue
         ioc_types[val] = ioc_type
 
-        providers = _QUICK_PROVIDERS.get(ioc_type, [])
-        if not deep:
-            # Fast-only: use just the fast tier
-            fast_map = {
-                "ipv4": PROVIDERS_IP_FAST, "domain": PROVIDERS_DOMAIN_FAST,
-                "url": PROVIDERS_URL_FAST, "sha256": PROVIDERS_HASH_FAST,
-                "sha1": PROVIDERS_HASH_FAST, "md5": PROVIDERS_HASH_FAST,
-                "email": [_emailrep_lookup],
-            }
-            providers = fast_map.get(ioc_type, providers)
+    # Short-circuit RFC-1918 / loopback IPs — no providers have data on
+    # private addresses, so tag them immediately and skip enrichment.
+    from tools.extract_iocs import _is_private_ip
+    private_ips: set[str] = set()
+    for val, ioc_type in list(ioc_types.items()):
+        if ioc_type == "ipv4" and _is_private_ip(val):
+            private_ips.add(val)
+            all_results.append({
+                "provider": "private_ip_check", "status": "ok",
+                "ioc": val, "ioc_type": "ipv4",
+                "verdict": "private_internal",
+                "detail": "RFC-1918 / loopback address — no OSINT data available",
+                "ts": utcnow(),
+            })
+            del ioc_types[val]
+    if private_ips:
+        print(f"[quick_enrich] Skipped {len(private_ips)} private/internal IP(s)")
 
-        for fn in providers:
-            provider_name = _fn_provider_name(fn)
-            cached = _cache_get(cache, val, provider_name)
-            if cached is not None:
-                cached["ioc_type"] = ioc_type
-                cached["ts"] = cached.get("ts", utcnow())
-                cached["_cached"] = True
-                skipped.append(cached)  # include cached results in output
-            else:
-                tasks.append((fn, val, ioc_type))
+    # Group IOCs by type for efficient tiered enrichment
+    by_type: dict[str, list[str]] = {}
+    for val, ioc_type in ioc_types.items():
+        by_type.setdefault(ioc_type, []).append(val)
 
-    # Run all lookups in parallel (caseless — empty case_id for log_error)
-    results = _run_tasks_parallel("", tasks, cache)
+    # -----------------------------------------------------------------
+    # depth="fast" — Tier 1 only, flat parallel
+    # -----------------------------------------------------------------
+    if depth == "fast":
+        tasks: list[tuple] = []
+        for val, ioc_type in ioc_types.items():
+            for fn in _FAST_PROVIDERS.get(ioc_type, []):
+                pname = _fn_provider_name(fn)
+                cached = _cache_get(cache, val, pname)
+                if cached is not None:
+                    entry = dict(cached)
+                    entry.update(ioc_type=ioc_type, ts=utcnow(), _cached=True)
+                    all_results.append(entry)
+                    cache_hits += 1
+                else:
+                    tasks.append((fn, val, ioc_type))
+        results = _run_tasks_parallel("", tasks, cache)
+        all_results.extend(results)
+        live_calls = len(tasks)
 
-    # Merge cached + live results
-    all_results = [r for r in skipped if "error" not in r or r.get("status") == "ok"] + results
+    # -----------------------------------------------------------------
+    # depth="full" — All providers, flat parallel
+    # -----------------------------------------------------------------
+    elif depth == "full":
+        tasks = []
+        for val, ioc_type in ioc_types.items():
+            for fn in _FULL_PROVIDERS.get(ioc_type, []):
+                pname = _fn_provider_name(fn)
+                cached = _cache_get(cache, val, pname)
+                if cached is not None:
+                    entry = dict(cached)
+                    entry.update(ioc_type=ioc_type, ts=utcnow(), _cached=True)
+                    all_results.append(entry)
+                    cache_hits += 1
+                else:
+                    tasks.append((fn, val, ioc_type))
+        results = _run_tasks_parallel("", tasks, cache)
+        all_results.extend(results)
+        live_calls = len(tasks)
+
+    # -----------------------------------------------------------------
+    # depth="auto" — Tiered: Tier 0 (ASN) → Tier 1 → selective Tier 2
+    # -----------------------------------------------------------------
+    else:
+        # --- Tier 0: ASN pre-screen for IPs ---
+        ip_candidates = by_type.get("ipv4", [])
+        infra_ips: set[str] = set()
+        if ip_candidates:
+            asn_data = _asn_lookup_bulk(ip_candidates)
+            for ip in ip_candidates:
+                info = asn_data.get(ip)
+                if info:
+                    owner = _classify_ip_infra(ip, info)
+                    if owner:
+                        infra_ips.add(ip)
+                        all_results.append({
+                            "provider": "asn_prescreen", "status": "infra_clean",
+                            "ioc": ip, "ioc_type": "ipv4",
+                            "verdict": "infra_clean", "owner": owner,
+                            "asn": info.get("asn"), "prefix": info.get("prefix"),
+                            "ts": utcnow(),
+                        })
+            if infra_ips:
+                tiered_stats["infra_skipped"] = len(infra_ips)
+                print(f"[quick_enrich] Tier 0: Skipped {len(infra_ips)} IP(s) "
+                      f"belonging to known infrastructure.")
+            # Remove infra IPs from candidate list
+            by_type["ipv4"] = [ip for ip in ip_candidates if ip not in infra_ips]
+
+        # --- Tier 1: Fast providers for all types ---
+        tier1_tasks: list[tuple] = []
+        with _cache_lock:
+            lcache = _cache_load()
+        for ioc_type, vals in by_type.items():
+            for val in vals:
+                for fn in _FAST_PROVIDERS.get(ioc_type, []):
+                    pname = _fn_provider_name(fn)
+                    cached = _cache_get(lcache, val, pname)
+                    if cached is not None:
+                        entry = dict(cached)
+                        entry.update(ioc_type=ioc_type, ts=utcnow(), _cached=True)
+                        all_results.append(entry)
+                        cache_hits += 1
+                    else:
+                        tier1_tasks.append((fn, val, ioc_type))
+
+        tier1_results = _run_tasks_parallel("", tier1_tasks, lcache)
+        all_results.extend(tier1_results)
+        live_calls += len(tier1_tasks)
+
+        # --- Tier 2: Selective deep enrichment based on Tier 1 signal ---
+        with _cache_lock:
+            lcache = _cache_load()
+
+        tier2_tasks: list[tuple] = []
+        combined = all_results  # includes cached + tier1 live results
+        for ioc_type, vals in by_type.items():
+            needs_deep_fn = _NEEDS_DEEP.get(ioc_type)
+            deep_providers = _DEEP_PROVIDERS.get(ioc_type, [])
+            if not needs_deep_fn or not deep_providers:
+                continue
+            for val in vals:
+                if needs_deep_fn(val, combined):
+                    tiered_stats["escalated_to_deep"] += 1
+                    for fn in deep_providers:
+                        pname = _fn_provider_name(fn)
+                        cached = _cache_get(lcache, val, pname)
+                        if cached is not None:
+                            entry = dict(cached)
+                            entry.update(ioc_type=ioc_type, ts=utcnow(), _cached=True)
+                            all_results.append(entry)
+                            cache_hits += 1
+                        else:
+                            tier2_tasks.append((fn, val, ioc_type))
+                else:
+                    tiered_stats["tier1_only"] += 1
+
+        if tier2_tasks:
+            tier2_results = _run_tasks_parallel("", tier2_tasks, lcache)
+            all_results.extend(tier2_results)
+            live_calls += len(tier2_tasks)
+
+        if tiered_stats["tier1_only"]:
+            print(f"[quick_enrich] Tier 1: {tiered_stats['tier1_only']} IOC(s) "
+                  f"clean — skipped deep enrichment.")
+        if tiered_stats["escalated_to_deep"]:
+            print(f"[quick_enrich] Tier 2: Escalated {tiered_stats['escalated_to_deep']} "
+                  f"IOC(s) to deep OSINT.")
 
     # Score composite verdicts per IOC
     verdicts: dict[str, dict] = {}
+    # Private IPs get a direct verdict (no providers to score)
+    for ip in private_ips:
+        verdicts[ip] = {
+            "ioc": ip,
+            "ioc_type": "ipv4",
+            "verdict": "private_internal",
+            "confidence": "high",
+            "providers_checked": 0,
+            "provider_verdicts": {"private_ip_check": "private_internal"},
+        }
     for ioc_val, ioc_type in ioc_types.items():
         ioc_results = [r for r in all_results
                        if r.get("ioc") == ioc_val and r.get("status") == "ok"]
@@ -2462,12 +2806,147 @@ def quick_enrich(iocs: list[str], deep: bool = True) -> dict:
             "provider_verdicts": provider_verdicts,
         }
 
-    return {
+    _duration_ms = int((_time.monotonic() - _t0) * 1000)
+
+    # Persist results so they can be imported into a case later
+    enrichment_id = f"QE_{utcnow().replace('-', '').replace(':', '').replace('T', '_').split('.')[0]}"
+    QUICK_ENRICH_DIR.mkdir(parents=True, exist_ok=True)
+    output = {
+        "enrichment_id": enrichment_id,
+        "ts": utcnow(),
+        "depth": depth,
+        "duration_ms": _duration_ms,
+        "ioc_count": len(ioc_types) + len(private_ips),
+        "provider_calls": live_calls,
+        "cache_hits": cache_hits,
+        "tiered_stats": tiered_stats,
         "results": all_results,
         "verdicts": verdicts,
-        "skipped": [s for s in skipped if "error" in s and s.get("status") != "ok"],
-        "ioc_count": len(ioc_types),
-        "provider_calls": len(tasks),
+        "unrecognised": unrecognised,
+    }
+    save_json(QUICK_ENRICH_DIR / f"{enrichment_id}.json", output)
+
+    print(f"[quick_enrich] {len(all_results)} result(s) for {len(ioc_types)} IOC(s) "
+          f"({cache_hits} cached, {live_calls} live, {_duration_ms}ms) — "
+          f"saved as {enrichment_id}")
+
+    return output
+
+
+def import_enrichment(enrichment_id: str, case_id: str) -> dict:
+    """Import saved quick_enrich results into a case.
+
+    Copies the enrichment data into the case's enrichment directory,
+    writes an iocs.json from the verdicts, then runs score_verdicts
+    and update_ioc_index.
+
+    Parameters
+    ----------
+    enrichment_id : str
+        The enrichment ID returned by quick_enrich (e.g. ``QE_20260402_143012``).
+    case_id : str
+        The case to import into.
+
+    Returns
+    -------
+    dict with import status, verdict summary counts.
+    """
+    from config.settings import QUICK_ENRICH_DIR, CASES_DIR
+    from tools.score_verdicts import score_verdicts, update_ioc_index
+
+    qe_path = QUICK_ENRICH_DIR / f"{enrichment_id}.json"
+    if not qe_path.exists():
+        return {"error": f"Quick enrichment '{enrichment_id}' not found."}
+
+    case_dir = CASES_DIR / case_id
+    if not case_dir.exists():
+        return {"error": f"Case '{case_id}' does not exist."}
+
+    qe_data = load_json(qe_path)
+
+    # Write enrichment.json into case
+    enrich_dir = case_dir / "artefacts" / "enrichment"
+    enrich_dir.mkdir(parents=True, exist_ok=True)
+
+    # Re-key with case_id
+    enrich_output = {
+        "case_id": case_id,
+        "imported_from": enrichment_id,
+        "ts": utcnow(),
+        "depth": qe_data.get("depth", "auto"),
+        "total_lookups": len(qe_data.get("results", [])),
+        "cache_hits": qe_data.get("cache_hits", 0),
+        "live_calls": qe_data.get("provider_calls", 0),
+        "tiered_enrichment": qe_data.get("tiered_stats", {}),
+        "results": qe_data.get("results", []),
+    }
+    write_artefact(enrich_dir / "enrichment.json",
+                   json.dumps(enrich_output, indent=2))
+
+    # Build iocs.json from verdicts so score_verdicts can read it
+    iocs_dir = case_dir / "iocs"
+    iocs_dir.mkdir(parents=True, exist_ok=True)
+    iocs_path = iocs_dir / "iocs.json"
+
+    # Only write iocs.json if it doesn't already exist (don't overwrite
+    # IOCs extracted from case artefacts)
+    if not iocs_path.exists():
+        iocs_by_type: dict[str, list[str]] = {}
+        for v in qe_data.get("verdicts", {}).values():
+            ioc_type = v.get("ioc_type", "")
+            ioc_val = v.get("ioc", "")
+            if ioc_type and ioc_val:
+                iocs_by_type.setdefault(ioc_type, []).append(ioc_val)
+        total = sum(len(v) for v in iocs_by_type.values())
+        save_json(iocs_path, {"iocs": iocs_by_type, "total": total,
+                              "imported_from": enrichment_id})
+
+    # Write pre-computed verdict summary if available (skip re-scoring)
+    qe_verdicts = qe_data.get("verdicts", {})
+    if qe_verdicts:
+        # Build verdict_summary.json directly from quick_enrich verdicts
+        high_priority = [v["ioc"] for v in qe_verdicts.values()
+                         if v.get("verdict") == "malicious"]
+        needs_review = [v["ioc"] for v in qe_verdicts.values()
+                        if v.get("verdict") == "suspicious"]
+        clean_iocs = [v["ioc"] for v in qe_verdicts.values()
+                      if v.get("verdict") in ("clean", "infra_clean", "private_internal")]
+        verdict_summary = {
+            "case_id": case_id,
+            "imported_from": enrichment_id,
+            "ts": utcnow(),
+            "ioc_count": len(qe_verdicts),
+            "high_priority": high_priority,
+            "needs_review": needs_review,
+            "clean": clean_iocs,
+            "iocs": {v["ioc"]: {
+                "ioc_type": v.get("ioc_type", ""),
+                "verdict": v.get("verdict", "unknown"),
+                "confidence": v.get("confidence", "LOW"),
+                "providers": v.get("provider_verdicts", {}),
+            } for v in qe_verdicts.values()},
+        }
+        save_json(enrich_dir / "verdict_summary.json", verdict_summary)
+        verdict_result = verdict_summary
+        mal, sus, clean = len(high_priority), len(needs_review), len(clean_iocs)
+    else:
+        # No pre-computed verdicts — fall back to full scoring
+        verdict_result = score_verdicts(case_id)
+        mal = len(verdict_result.get("high_priority", [])) if verdict_result else 0
+        sus = len(verdict_result.get("needs_review", [])) if verdict_result else 0
+        clean = len(verdict_result.get("clean", [])) if verdict_result else 0
+
+    # Always update IOC index for cross-case recall
+    idx_result = update_ioc_index(case_id)
+
+    return {
+        "status": "imported",
+        "enrichment_id": enrichment_id,
+        "case_id": case_id,
+        "iocs_imported": qe_data.get("ioc_count", 0),
+        "malicious": mal,
+        "suspicious": sus,
+        "clean": clean,
     }
 
 

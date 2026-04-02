@@ -55,7 +55,7 @@ def create_access_token(email: str, role: str, permissions: list[str]) -> str:
         "sub": email,
         "role": role,
         "permissions": permissions,
-        "exp": expire,
+        "exp": int(expire.timestamp()),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 

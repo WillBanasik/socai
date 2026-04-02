@@ -8,6 +8,7 @@ Runs periodic maintenance tasks in a single daemon thread:
   case_memory_rebuild     6 hours     Keep BM25 case memory index fresh
   geoip_refresh           7 days      Update MaxMind GeoLite2-City database
   baseline_refresh        24 hours    Rebuild per-client behavioural baselines
+  coverage_refresh        24 hours    Refresh log source coverage per client
 
 Started by the MCP server lifespan (server.py).  Safe to call start_scheduler()
 multiple times — only one thread runs (singleton guard).
@@ -109,6 +110,7 @@ def start_scheduler() -> None:
         ]
 
         # Baseline refresh — only if clients are configured
+        client_names: list[str] = []
         try:
             from config.settings import CLIENT_ENTITIES
             from tools.common import load_json
@@ -120,6 +122,20 @@ def start_scheduler() -> None:
                     results = {name: build_client_baseline(name) for name in _names}
                     return {"refreshed": list(results.keys())}
                 tasks.append(("baseline_refresh", 24 * 3600, _refresh_all_baselines))
+        except Exception:
+            pass
+
+        # Coverage refresh — daily log source coverage collection per client
+        try:
+            if client_names:
+                def _refresh_all_coverage(_names=client_names):
+                    from tools.log_coverage import collect_log_sources, build_coverage_graph
+                    results = {}
+                    for name in _names:
+                        r = collect_log_sources(name)
+                        results[name] = r.get("status", "error")
+                    return {"refreshed": list(results.keys())}
+                tasks.append(("coverage_refresh", 24 * 3600, _refresh_all_coverage))
         except Exception:
             pass
 

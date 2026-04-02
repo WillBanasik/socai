@@ -169,11 +169,26 @@ def score_verdicts(case_id: str) -> dict:
             reconciliation = reconcile_verdict_conflicts(conflicting[:10])
             if reconciliation:
                 output["llm_verdict_reconciliation"] = reconciliation
-        except Exception:
+        except Exception as exc:
+            log_error(case_id, "score_verdicts.llm_reconciliation", str(exc),
+                      severity="warning", traceback=True,
+                      context={"conflicting_count": len(conflicting)})
             pass
 
     out_path = CASES_DIR / case_id / "artefacts" / "enrichment" / "verdict_summary.json"
     save_json(out_path, output)
+    from tools.common import log_metric
+    log_metric("verdict_scored", case_id=case_id,
+               ioc_count=len(ioc_scores),
+               malicious_count=len(high_priority),
+               suspicious_count=len(needs_review),
+               clean_count=len(clean_iocs),
+               confidence_dist={
+                   "HIGH": sum(1 for s in ioc_scores.values() if s.get("confidence") == "HIGH"),
+                   "MEDIUM": sum(1 for s in ioc_scores.values() if s.get("confidence") == "MEDIUM"),
+                   "LOW": sum(1 for s in ioc_scores.values() if s.get("confidence") == "LOW"),
+               },
+               conflicting_iocs=len(conflicting))
     print(
         f"[score_verdicts] {len(high_priority)} malicious, "
         f"{len(needs_review)} suspicious, {len(clean_iocs)} clean "

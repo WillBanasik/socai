@@ -122,7 +122,8 @@ def _ensure_case(
             _do_promote(case_id)
         return case_id
 
-    # No case_id — auto-create
+    # No case_id — auto-create; fall back to DEFAULT_CLIENT
+    client = client or DEFAULT_CLIENT
     if not client:
         raise ToolError(
             "Client name is required when auto-creating a case. "
@@ -175,8 +176,16 @@ def _register_tier1(mcp: FastMCP) -> None:
         """Use when the analyst says "new case", "start fresh", or "different investigation".
 
         This is a semantic marker — it signals that the analyst is starting a
-        fresh investigation context. No server-side state is changed.
+        fresh investigation context.  Clears tool-sequence session tracking
+        for this caller so the next case gets a fresh session ID.
         """
+        from mcp_server.auth import _get_caller_email
+        from mcp_server.usage import _sessions, _session_lock
+        caller = _get_caller_email()
+        with _session_lock:
+            to_remove = [k for k, v in _sessions.items() if v["caller"] == caller]
+            for k in to_remove:
+                del _sessions[k]
         return _json({
             "status": "ok",
             "message": "Ready for a new investigation.",
@@ -229,8 +238,13 @@ def _register_tier1(mcp: FastMCP) -> None:
             for ent in entities:
                 name = ent.get("name", "").lower()
                 notes = ent.get("notes", "").lower()
+                aliases = [a.lower() for a in ent.get("aliases", [])]
                 # Substring match on name
                 if query in name or name in query:
+                    suggestions.append(ent.get("name", ""))
+                    continue
+                # Alias match (exact or substring)
+                if any(query == a or query in a or a in query for a in aliases):
                     suggestions.append(ent.get("name", ""))
                     continue
                 # Domain/keyword match against notes and known_infrastructure
@@ -829,6 +843,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         client: str = "",
         classification: str = "",
         plan: str = "",
+        enrichment_id: str = "",
     ) -> str:
         """Use when the analyst says "create a case", "new case", "start an investigation",
         or when you need a case before calling case-bound tools like ``enrich_iocs``
@@ -843,6 +858,10 @@ def _register_tier1(mcp: FastMCP) -> None:
         status. It is auto-promoted to active when a deliverable tool or
         ``add_finding`` runs, or you can call ``promote_case`` / ``discard_case``
         manually.
+
+        **Typical flow:** analyst runs ``quick_enrich`` → IOCs are malicious →
+        create case with ``enrichment_id`` → results auto-imported, no separate
+        ``import_enrichment`` call needed.
 
         Parameters
         ----------
@@ -860,6 +879,10 @@ def _register_tier1(mcp: FastMCP) -> None:
             Attack type from classify_attack (e.g. "phishing", "malware").
         plan : str
             Investigation plan text to save as analyst notes.
+        enrichment_id : str
+            If provided, auto-imports results from a prior ``quick_enrich``
+            call into the new case — saves a separate ``import_enrichment``
+            call. Pass the ``enrichment_id`` returned by ``quick_enrich``.
         """
         _require_scope("investigations:submit")
 
@@ -898,6 +921,20 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         if client:
             _set_client_boundary(client)
+
+        # Auto-import quick_enrich results if enrichment_id provided
+        if enrichment_id:
+            try:
+                from tools.enrich import import_enrichment as _import_enrich
+                import_result = await asyncio.to_thread(
+                    lambda: _import_enrich(enrichment_id, case_id)
+                )
+                result["imported_enrichment"] = import_result
+            except Exception as exc:
+                result["imported_enrichment"] = {
+                    "error": f"Auto-import failed: {exc}",
+                    "enrichment_id": enrichment_id,
+                }
 
         return _json(result)
 
@@ -967,6 +1004,11 @@ def _register_tier1(mcp: FastMCP) -> None:
         """Use when the analyst says "close this case", "mark as false positive",
         "this is a true positive", or after you have summarised the findings and
         the investigation is complete.
+
+        **Before calling this tool**, always call ``get_case_status`` first to
+        check the current status and disposition. This avoids asking the analyst
+        for information the case already contains (e.g. if it is already closed
+        or already has a disposition set).
 
         ``read_report`` is read-only — it does NOT close the case. Use this
         tool when the investigation is complete and you want to set a specific
@@ -1153,7 +1195,11 @@ def _register_tier1(mcp: FastMCP) -> None:
         return _json(result)
 
     @mcp.tool(title="Enrich IOCs")
-    async def enrich_iocs(case_id: str, include_private: bool = False) -> str:
+    async def enrich_iocs(
+        case_id: str,
+        include_private: bool = False,
+        depth: str = "auto",
+    ) -> str:
         """Use when the analyst says "enrich these IOCs", "look up this IP/domain/hash",
         "what do we know about these indicators?", or after adding new evidence to a
         case that introduced new IOCs.
@@ -1165,8 +1211,13 @@ def _register_tier1(mcp: FastMCP) -> None:
         CVEs), then enriches them against multiple threat intelligence sources:
         VirusTotal, AbuseIPDB, URLhaus, ThreatFox, OpenCTI, Shodan, GreyNoise,
         URLScan, MalwareBazaar, Intezer, Censys, OTX, Hybrid Analysis, WhoisXML,
-        and ProxyCheck. Produces a scored verdict (malicious/suspicious/clean) for
-        each IOC.
+        PhishTank, crt.sh, and ProxyCheck. Produces a scored verdict
+        (malicious/suspicious/clean) for each IOC.
+
+        Before enrichment, triage automatically skips IOCs that already have
+        sufficient cached coverage, and the client baseline filters out IOCs
+        that are routine for this client — so API quota is spent where it
+        matters most.
 
         This tool re-runs extraction and enrichment from scratch — safe to call
         multiple times as new evidence is added. Results are saved to the case
@@ -1177,14 +1228,43 @@ def _register_tier1(mcp: FastMCP) -> None:
         case_id : str
             Case identifier.
         include_private : bool
-            Include RFC-1918 IPs.
+            Include RFC-1918 private IPs (10.x, 172.16-31.x, 192.168.x) in
+            extraction. Default False. Only set True for forensic log
+            correlation (e.g., lateral movement analysis) — OSINT providers
+            have no data on internal addresses, so enriching them wastes
+            API calls and returns nothing useful.
+        depth : str
+            Controls how deep enrichment goes. Choose based on the situation:
+
+            ``"auto"`` — **Default. Use for most cases.** Runs fast/free
+            providers first, then automatically escalates to deep OSINT only
+            for IOCs that show signal (malicious, suspicious, newly registered,
+            or unknown). Best balance of speed and coverage.
+
+            ``"fast"`` — **Tier 1 only, no deep OSINT.** Use when:
+            • The alert is clearly a false positive or benign positive
+            • Bulk triaging multiple low-severity alerts
+            • Re-enriching a case where you only need a quick refresh
+            • The IOCs are common/expected (e.g., internal tools, known SaaS)
+
+            ``"full"`` — **All tiers for every IOC.** Use when:
+            • High-severity incident (targeted attack, data breach, ransomware)
+            • Novel/unfamiliar IOCs that need maximum intelligence
+            • The analyst explicitly requests a thorough deep-dive
+            • Initial enrichment returned inconclusive results and you need
+              the full picture before writing the report
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
+        if depth not in ("auto", "fast", "full"):
+            from mcp.server.fastmcp.exceptions import ToolError
+            raise ToolError(f"Invalid depth '{depth}'. Must be 'auto', 'fast', or 'full'.")
 
         from api import actions
         result = await asyncio.to_thread(
-            lambda: actions.extract_and_enrich(case_id, include_private=include_private)
+            lambda: actions.extract_and_enrich(
+                case_id, include_private=include_private, depth=depth,
+            )
         )
         return _json(_pop_message(result))
 
@@ -1314,17 +1394,25 @@ def _register_tier1(mcp: FastMCP) -> None:
         tables: list[str] | None = None,
     ) -> str:
         """Use when the analyst says "give me hunt queries", "detection rules",
-        "SIEM queries", "KQL for this", "Splunk queries", or "how do I hunt for
-        this in our logs?".
+        "SIEM queries", "KQL for this", "Splunk queries", "CrowdStrike query",
+        "NGSIEM detection", "CQL query", "Falcon query", "LogScale query",
+        or "how do I hunt for this in our logs?".
 
         Generates ready-to-run threat hunting queries based on the case's IOCs
         and observed attack patterns. Supports KQL (Azure Sentinel), Splunk SPL,
-        and LogScale (CrowdStrike). Queries are tailored to the specific threat
-        — e.g. phishing IOCs produce email and proxy queries, malware IOCs
-        produce process and file event queries.
+        and LogScale (CrowdStrike/NGSIEM). Queries are tailored to the specific
+        threat — e.g. phishing IOCs produce email and proxy queries, malware
+        IOCs produce process and file event queries.
 
         Prerequisites: the case must have IOCs (run ``enrich_iocs`` first or
         ensure the pipeline has completed).
+
+        **Ad-hoc LogScale/CrowdStrike/NGSIEM queries (no case):** If the
+        analyst wants you to write a CrowdStrike, LogScale, NGSIEM, or CQL
+        query without a case, do NOT call this tool. Instead, call
+        ``load_ngsiem_reference`` first (sections=["rules", "syntax"])
+        to load the syntax rules, then write the query conversationally.
+        Add "columns" when you need field names for a specific log source.
 
         Parameters
         ----------
@@ -1343,6 +1431,164 @@ def _register_tier1(mcp: FastMCP) -> None:
             lambda: actions.generate_queries(case_id, platforms=platforms, tables=tables)
         )
         return _json(_pop_message(result))
+
+    @mcp.tool(title="Load NGSIEM Reference", annotations={"readOnlyHint": True})
+    def load_ngsiem_reference(
+        sections: list[str] | None = None,
+    ) -> str:
+        """Load CQL/LogScale/NGSIEM syntax reference for writing queries.
+
+        Call this BEFORE writing any CrowdStrike, LogScale, NGSIEM, CQL,
+        or Falcon query. Trigger phrases: "crowdstrike query",
+        "logscale query", "NGSIEM detection", "CQL query", "falcon query",
+        "write me a detection rule", "help with CQL syntax".
+
+        Returns authoritative syntax rules, field schemas, function
+        signatures, proven patterns, and anti-patterns.
+
+        Parameters
+        ----------
+        sections : list[str]
+            Which references to load. Options:
+
+            - ``"rules"``   — authoring conventions, anti-patterns,
+              tag-based source filtering, ECS field naming, worked
+              examples (Kerberoasting, port scan, AWS IAM).
+            - ``"columns"`` — field schema per connector (ECS + vendor
+              fields for Fortinet, Azure AD, Windows, Check Point, etc.)
+            - ``"grammar"`` — all 194 CQL function signatures. Large
+              (57 KB) — only request when you need a specific function.
+            - ``"syntax"``  — general CQL syntax reference (operators,
+              precedence, conditionals, joins, regex, 16 pitfalls).
+
+            Defaults to ``["rules", "syntax"]`` (covers most query
+            writing). Add ``"columns"`` when building queries for a
+            specific log source.
+        """
+        _require_scope("sentinel:query")
+
+        import pathlib
+        base = pathlib.Path(__file__).resolve().parent.parent / "config"
+
+        section_map = {
+            "rules":   base / "ngsiem" / "ngsiem_rules.md",
+            "columns": base / "ngsiem" / "ngsiem_columns.yaml",
+            "grammar": base / "ngsiem" / "cql_grammar.json",
+            "syntax":  base / "logscale_syntax.md",
+        }
+
+        if sections is None:
+            sections = ["rules", "syntax"]
+
+        parts = []
+        for s in sections:
+            path = section_map.get(s)
+            if path and path.exists():
+                parts.append(f"--- {s.upper()} ---\n\n{path.read_text(encoding='utf-8')}")
+            elif path:
+                parts.append(f"--- {s.upper()} --- (file not found)")
+            else:
+                valid = ", ".join(f'"{k}"' for k in section_map)
+                parts.append(f"--- {s.upper()} --- (unknown section; valid: {valid})")
+
+        return "\n\n".join(parts)
+
+    @mcp.tool(title="Lookup SOC Process", annotations={"readOnlyHint": True})
+    def lookup_soc_process(
+        topic: str,
+    ) -> str:
+        """Look up SOC operational processes, policies, and procedures.
+
+        Use this tool when the analyst asks about incident handling, escalation,
+        P1/P2 process, critical incidents, war rooms, service desk tickets,
+        time tracking, overtime, on-call, or any SOC operational procedure.
+
+        Trigger phrases: "what's our process for X?", "P1 handling",
+        "escalation process", "how do we handle critical incidents?",
+        "service desk procedure", "time tracking", "SOP for Y",
+        "do we have a runbook for X?", "war room process".
+
+        **This tool replaces Confluence for all SOC process questions.**
+        Only use ``search_confluence`` for published ET/EV threat articles.
+
+        Parameters
+        ----------
+        topic : str
+            Which process to look up. Options:
+
+            - ``"incident-handling"`` — role priorities (L1-L3), SOAR queue
+              workflow, alert sorting, escalation rules, morning clean-up.
+            - ``"critical-incident-management"`` — P1/P2 checklists, war
+              rooms, P1 classification, IR activation, technical report
+              structure.
+            - ``"service-requests"`` — Service Desk queues, ticket lifecycle,
+              merging, blueprint, Teams channels.
+            - ``"time-tracking"`` — Kantata categories, overtime logging
+              (1.5x/2x), on-call hours.
+            - ``"all"`` — returns all process documents.
+
+            Also accepts partial matches: "p1", "critical", "escalation",
+            "war room" → critical-incident-management. "service desk",
+            "tickets" → service-requests. "overtime", "kantata", "on-call"
+            → time-tracking. "soar", "queue", "triage" → incident-handling.
+        """
+        _require_scope("investigations:read")
+
+        import pathlib
+        docs_dir = pathlib.Path(__file__).resolve().parent.parent / "docs"
+
+        doc_map = {
+            "incident-handling": docs_dir / "incident-handling.md",
+            "critical-incident-management": docs_dir / "critical-incident-management.md",
+            "service-requests": docs_dir / "service-requests.md",
+            "time-tracking": docs_dir / "time-tracking.md",
+        }
+
+        # Fuzzy topic matching
+        topic_lower = topic.lower().strip()
+        alias_map = {
+            "p1": "critical-incident-management",
+            "p2": "critical-incident-management",
+            "critical": "critical-incident-management",
+            "war room": "critical-incident-management",
+            "escalation": "critical-incident-management",
+            "ir activation": "critical-incident-management",
+            "service desk": "service-requests",
+            "tickets": "service-requests",
+            "teams": "service-requests",
+            "overtime": "time-tracking",
+            "kantata": "time-tracking",
+            "on-call": "time-tracking",
+            "oncall": "time-tracking",
+            "soar": "incident-handling",
+            "queue": "incident-handling",
+            "triage": "incident-handling",
+            "alert sorting": "incident-handling",
+        }
+
+        if topic_lower == "all":
+            resolved = list(doc_map.keys())
+        elif topic_lower in doc_map:
+            resolved = [topic_lower]
+        elif topic_lower in alias_map:
+            resolved = [alias_map[topic_lower]]
+        else:
+            # Substring match against aliases
+            matched = set()
+            for alias, key in alias_map.items():
+                if alias in topic_lower or topic_lower in alias:
+                    matched.add(key)
+            resolved = list(matched) if matched else list(doc_map.keys())
+
+        parts = []
+        for key in resolved:
+            path = doc_map[key]
+            if path.exists():
+                parts.append(f"--- {key.upper().replace('-', ' ')} ---\n\n{path.read_text(encoding='utf-8')}")
+            else:
+                parts.append(f"--- {key.upper().replace('-', ' ')} --- (document not found at {path})")
+
+        return "\n\n".join(parts)
 
     @mcp.tool(title="Classify Attack Type", annotations={"readOnlyHint": True})
     def classify_attack(
@@ -1420,7 +1666,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         def _kql(playbook_id: str, description: str) -> list[dict]:
             return [
                 {"tool": "load_kql_playbook", "reason": f"Load the '{playbook_id}' playbook — contains optimised, multi-stage KQL queries for {description}", "playbook": playbook_id, "condition": "if Sentinel access (Advanced Hunting tables)"},
-                {"tool": "run_kql", "reason": "Execute each playbook stage in order — check Stage 1 results before proceeding to Stage 2", "depends_on": "load_kql_playbook", "condition": "if Sentinel access (Advanced Hunting tables)"},
+                {"tool": "run_kql_batch", "reason": "Execute independent playbook stages in parallel via run_kql_batch for speed — only use sequential run_kql when one stage's results inform the next", "depends_on": "load_kql_playbook", "condition": "if Sentinel access (Advanced Hunting tables)"},
             ]
 
         # Sentinel composite queries — single-execution full-picture queries
@@ -1435,10 +1681,10 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         tool_sequences = {
             "phishing": _prefix + [
-                {"tool": "capture_urls", "reason": "Capture suspicious pages for analysis"},
-                {"tool": "detect_phishing", "reason": "Check for brand impersonation", "depends_on": "capture_urls"},
+                {"tool": "capture_urls", "reason": "Capture suspicious pages and auto-detect phishing (detect_phishing=True by default)"},
                 {"tool": "analyse_email", "reason": "Parse .eml headers and content", "condition": "if .eml available"},
                 {"tool": "enrich_iocs", "reason": "Enrich all extracted IOCs"},
+                {"tool": "xposed_breach_check", "reason": "Check if targeted user email has prior breach exposure", "condition": "if recipient email available"},
                 {"tool": "recall_cases", "reason": "Check for prior related investigations"},
                 {"tool": "correlate", "reason": "Cross-reference IOCs across artefacts"},
             ] + _kql("phishing", "email delivery, URL clicks, credential harvest")
@@ -1461,6 +1707,8 @@ def _register_tier1(mcp: FastMCP) -> None:
             ],
             "account_compromise": _prefix + [
                 {"tool": "enrich_iocs", "reason": "Enrich IPs, domains from sign-in data"},
+                {"tool": "hudsonrock_lookup", "reason": "Check if user credentials were harvested by infostealer malware", "condition": "if user email available"},
+                {"tool": "xposed_breach_check", "reason": "Check if user email appears in historical data breaches", "condition": "if user email available"},
                 {"tool": "recall_cases", "reason": "Check for prior related investigations"},
             ] + _kql("account-compromise", "sign-ins, MFA, post-compromise audit")
               + _composite("suspicious-signin", "sign-ins, MFA, post-auth activity, alerts") + [
@@ -1888,7 +2136,7 @@ def _register_tier1(mcp: FastMCP) -> None:
     @mcp.tool(title="Quick IOC Enrichment", annotations={"readOnlyHint": True})
     async def quick_enrich(
         iocs: list[str],
-        deep: bool = True,
+        depth: str = "auto",
     ) -> str:
         """Use for fast, ad-hoc IOC lookups — no case required.  Trigger
         phrases: "enrich this IP", "look up this hash", "is this domain
@@ -1896,32 +2144,81 @@ def _register_tier1(mcp: FastMCP) -> None:
         IOC values and wants immediate reputation data.
 
         Accepts raw IOC values (IPs, domains, URLs, hashes, emails) and
-        auto-detects the type.  Runs all configured providers in parallel
-        and returns per-IOC composite verdicts (malicious / suspicious /
-        clean / unknown) with confidence levels.
+        auto-detects the type.  Uses the same tiered enrichment pipeline
+        as case-bound enrichment: Tier 0 ASN pre-screen (IPs) → Tier 1
+        fast providers → selective Tier 2 deep OSINT escalation on signal.
 
-        This tool does NOT create or modify a case — results are returned
-        inline only.  For case-bound enrichment that persists artefacts,
-        use ``enrich_iocs`` instead.
+        Returns per-IOC composite verdicts (malicious / suspicious / clean
+        / unknown) with confidence levels and an ``enrichment_id`` that can
+        be imported into a case later via ``import_enrichment``.
+
+        **Typical flow:** analyst pastes IOCs → ``quick_enrich`` returns
+        verdicts → if malicious, analyst creates a case → uses
+        ``import_enrichment`` to pull results into the case without
+        re-running enrichment.
 
         Parameters
         ----------
         iocs : list[str]
             One or more raw IOC values.  Examples:
             ``["20.23.78.212", "evil-domain.com", "abc123..."]``
-        deep : bool
-            True (default) = run both fast and deep provider tiers.
-            False = fast providers only (quicker, fewer API calls).
+        depth : str
+            ``"auto"`` — **(default)** Tier 0 ASN pre-screen (IPs), then
+            Tier 1 fast providers, then selectively escalate to Tier 2
+            deep OSINT only for IOCs that show signal. Best balance of
+            speed and coverage.
+
+            ``"fast"`` — Tier 1 only, no deep OSINT. Use for quick triage
+            or when you just need a fast reputation check.
+
+            ``"full"`` — All tiers for every IOC. Use when you want
+            maximum intelligence on every IOC.
         """
         _require_scope("investigations:read")
+
+        if depth not in ("auto", "fast", "full"):
+            from mcp.server.fastmcp.exceptions import ToolError
+            raise ToolError(f"Invalid depth '{depth}'. Must be 'auto', 'fast', or 'full'.")
 
         from tools.enrich import quick_enrich as _quick_enrich
 
         result = await asyncio.to_thread(
-            lambda: _quick_enrich(iocs, deep=deep)
+            lambda: _quick_enrich(iocs, depth=depth)
         )
         return _json(result)
 
+
+    @mcp.tool(title="Import Enrichment into Case")
+    async def import_enrichment(
+        enrichment_id: str,
+        case_id: str,
+    ) -> str:
+        """Use when the analyst has already run ``quick_enrich`` (ad-hoc IOC
+        lookup) and now wants to pull those results into a case — e.g.
+        "import that enrichment into the case", "add those results to the
+        case", "use the enrichment I just ran".
+
+        Copies the saved enrichment data into the case's enrichment
+        directory, writes IOCs, scores verdicts, and updates the shared
+        IOC index — all without re-running enrichment against providers.
+
+        Parameters
+        ----------
+        enrichment_id : str
+            The enrichment ID returned by ``quick_enrich``
+            (e.g. ``QE_20260402_143012``).
+        case_id : str
+            The case to import into.
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from tools.enrich import import_enrichment as _import
+
+        result = await asyncio.to_thread(
+            lambda: _import(enrichment_id, case_id)
+        )
+        return _json(result)
 
     @mcp.tool(title="Query OpenCTI", annotations={"readOnlyHint": True, "openWorldHint": True})
     async def query_opencti(
@@ -2022,21 +2319,25 @@ def _register_tier1(mcp: FastMCP) -> None:
         page_id: str = "",
         limit: int = 15,
     ) -> str:
-        """Use when the analyst says "what's on Confluence?", "check Confluence for X",
-        "find the policy on Y", "show me the Confluence page about Z", "check the wiki",
-        "do we have a runbook for X?", "SOP for Y", "what's our process for Z?",
-        or asks about published documentation, policies, processes, or threat hunting
-        articles that live on the team wiki.
+        """Search or browse published ET (Emerging Threats) and EV (Emerging
+        Vulnerabilities) articles on the team Confluence wiki.
 
-        Confluence is the team's internal knowledge base. It holds published threat
-        articles, SOC policies, processes, runbooks, and documentation. This tool
-        searches or retrieves pages from the configured Confluence space.
+        Use this tool when the analyst says "check Confluence", "what's on the
+        wiki?", or asks about previously published ET/EV articles. Its primary
+        purpose is browsing and retrieving published threat intelligence articles.
 
-        **IMPORTANT — "articles" is ambiguous.** When the analyst asks about "articles"
-        without specifying Confluence, clarify before acting:
+        **DO NOT use this tool for SOC process, policy, escalation, P1/P2, or
+        runbook questions.** Those are all served by local resources:
+        - Incident handling / SOAR / escalation → ``socai://incident-handling``
+        - P1/P2 / critical incidents / war rooms → ``socai://critical-incident-management``
+        - Service Desk / tickets / Teams → ``socai://service-requests``
+        - Time tracking / Kantata / overtime → ``socai://time-tracking``
+        - Client playbooks → ``socai://clients/{name}/playbook``
+
+        **"Articles" disambiguation:**
         - "Check Confluence for articles on X" → use this tool
-        - "Find articles about X" → could mean Confluence (published) OR online
-          discovery (``search_threat_articles`` / ``web_search``). Ask which they mean.
+        - "Find articles about X" (no Confluence mention) → could mean this tool
+          OR online discovery (``search_threat_articles`` / ``web_search``). Ask.
         - "Search for new threat articles" → online discovery, NOT this tool
 
         Modes:
@@ -2412,19 +2713,24 @@ def _query_opencti_inner(
 def _register_tier2(mcp: FastMCP) -> None:
 
     @mcp.tool(title="Capture URLs")
-    async def capture_urls(case_id: str, urls: list[str]) -> str:
+    async def capture_urls(
+        case_id: str,
+        urls: list[str],
+        detect_phishing: bool = True,
+    ) -> str:
         """Use when the analyst says "capture this page", "screenshot this URL",
-        "grab the page source", or when you need to collect web evidence before
-        running phishing detection.
+        "grab the page source", or when you need to collect web evidence for
+        phishing analysis.
 
         Visits each URL and captures: screenshot, full HTML source, HTTP response
         headers, and redirect chain. All artefacts are saved to the case directory.
 
+        **Phishing detection runs automatically** after captures complete (set
+        ``detect_phishing=False`` to skip). This eliminates a separate tool call
+        — you get captures AND phishing verdicts in one step.
+
         **To view screenshots:** call ``read_case_file`` with the screenshot path
         (e.g. ``artefacts/web/<domain>/screenshot.png``) — images render directly in chat.
-
-        **This tool is a prerequisite for ``detect_phishing``** — phishing detection
-        analyses the captured page content, so you must capture URLs first.
 
         If the target site blocks automated browsers (Cloudflare, CAPTCHA), use
         ``start_browser_session`` instead for manual interaction via a disposable
@@ -2436,6 +2742,9 @@ def _register_tier2(mcp: FastMCP) -> None:
             Case identifier.
         urls : list[str]
             URLs to capture.
+        detect_phishing : bool
+            If True (default), automatically runs phishing detection on
+            captured pages. Set False to skip (e.g. for non-phishing evidence).
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
@@ -2444,6 +2753,16 @@ def _register_tier2(mcp: FastMCP) -> None:
         result = await asyncio.to_thread(
             lambda: actions.capture_urls(case_id, urls)
         )
+
+        if detect_phishing:
+            try:
+                phishing_result = await asyncio.to_thread(
+                    lambda: actions.detect_phishing(case_id)
+                )
+                result["phishing_detection"] = phishing_result
+            except Exception:
+                result["phishing_detection"] = {"error": "Phishing detection failed — run detect_phishing separately"}
+
         return _json(_pop_message(result))
 
     @mcp.tool(title="Detect Phishing")
@@ -3751,7 +4070,7 @@ def _register_tier3(mcp: FastMCP) -> None:
                 return {"query": query[:200], "error": str(exc), "row_count": 0, "rows": []}
 
         results = []
-        max_workers = min(4, len(queries))
+        max_workers = min(8, len(queries))
         loop = asyncio.get_running_loop()
 
         def _batch():
@@ -4306,7 +4625,11 @@ def _register_tier3(mcp: FastMCP) -> None:
         return _json({"sessions": list_sessions()})
 
     @mcp.tool(title="Analyse PE Files")
-    async def analyse_pe(case_id: str) -> str:
+    async def analyse_pe(
+        case_id: str,
+        run_yara: bool = True,
+        generate_yara_rules: bool = False,
+    ) -> str:
         """Use when the analyst says "analyse the binary", "PE analysis", "check the
         executable", "static analysis", or after extracting PE files (EXE, DLL, SYS)
         from a ZIP or email attachment.
@@ -4322,21 +4645,39 @@ def _register_tier3(mcp: FastMCP) -> None:
         - File hashes (MD5, SHA1, SHA256) and strings extraction
         - Optional LLM-powered malware classification
 
-        Requires the ``pefile`` library. Returns skip manifest if not installed.
+        **YARA scanning runs automatically** after PE analysis (set
+        ``run_yara=False`` to skip). This gives you PE analysis AND
+        signature matching in a single tool call.
 
-        After PE analysis, use ``yara_scan`` for rule-based detection, optionally
-        with ``generate_rules=True`` to create custom YARA rules from the findings.
+        Requires the ``pefile`` library. Returns skip manifest if not installed.
 
         Parameters
         ----------
         case_id : str
             Case identifier.
+        run_yara : bool
+            If True (default), automatically runs YARA scan after PE analysis.
+            Set False to skip YARA scanning.
+        generate_yara_rules : bool
+            If True, generate custom YARA rules from PE analysis findings.
+            Only applies when ``run_yara=True``. Default False.
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(lambda: actions.pe_analysis_action(case_id))
+
+        if run_yara:
+            try:
+                yara_result = await asyncio.to_thread(
+                    lambda: actions.yara_scan_action(
+                        case_id, generate_rules=generate_yara_rules)
+                )
+                result["yara_scan"] = yara_result
+            except Exception:
+                result["yara_scan"] = {"error": "YARA scan failed — run yara_scan separately"}
+
         return _json(_pop_message(result))
 
     @mcp.tool(title="YARA Scan")
@@ -4629,6 +4970,485 @@ def _register_intelligence(mcp: FastMCP) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dark web intelligence
+# ---------------------------------------------------------------------------
+
+def _register_darkweb(mcp: FastMCP) -> None:
+
+    @mcp.tool(title="Hudson Rock Infostealer Lookup",
+              annotations={"readOnlyHint": False, "openWorldHint": True})
+    async def hudsonrock_lookup(
+        query: Annotated[str, "Email address, domain, or IP/CIDR to search."],
+        query_type: Annotated[str, "One of: 'email', 'domain', 'ip'. "
+                                   "Default 'auto' detects from value."] = "auto",
+        case_id: Annotated[str, "Case ID to save results to (optional)."] = "",
+        domain_detail: Annotated[bool, "For domain queries: True for detailed "
+                                       "employee/user/third-party breakdown, "
+                                       "False (default) for overview stats."] = False,
+    ) -> str:
+        """Use when the analyst says "check Hudson Rock", "infostealer exposure",
+        "has this email been compromised by a stealer?", "check dark web for
+        this domain", "any stolen credentials for this user?", or when
+        investigating account compromise and you need to check if credentials
+        were harvested by infostealer malware.
+
+        Hudson Rock Cavalier searches data from infostealer malware infections.
+        Returns: stealer family, date compromised, computer name, OS, malware
+        path.  Credentials are ALWAYS redacted -- passwords are never shown.
+
+        Useful during:
+        - Account compromise investigations (was the password stolen by malware?)
+        - Domain exposure assessments (how many employees are in stealer logs?)
+        - IP-based pivot (which compromised machines connected from this IP?)
+
+        Parameters
+        ----------
+        query : str
+            Email, domain, or IP to search.
+        query_type : str
+            'email', 'domain', 'ip', or 'auto' (default -- auto-detects).
+        case_id : str
+            If provided, saves results to case artefacts.
+        domain_detail : bool
+            For domain queries only: detailed breakdown (True) or overview (False).
+        """
+        _require_scope("investigations:read")
+        if case_id:
+            _check_client_boundary(case_id)
+
+        from tools.darkweb import (
+            _detect_type,
+            hudsonrock_domain_search,
+            hudsonrock_email_search,
+            hudsonrock_ip_search,
+        )
+
+        qtype = query_type if query_type != "auto" else _detect_type(query)
+
+        if qtype == "email":
+            result = await asyncio.to_thread(
+                lambda: hudsonrock_email_search([query], case_id=case_id)
+            )
+        elif qtype == "domain":
+            stype = "detailed" if domain_detail else "overview"
+            result = await asyncio.to_thread(
+                lambda: hudsonrock_domain_search(query, search_type=stype, case_id=case_id)
+            )
+        elif qtype == "ip":
+            result = await asyncio.to_thread(
+                lambda: hudsonrock_ip_search([query], case_id=case_id)
+            )
+        else:
+            raise ToolError(f"Cannot detect IOC type for '{query}'. "
+                            "Specify query_type='email', 'domain', or 'ip'.")
+        return _json(result)
+
+    @mcp.tool(title="Breach Exposure Check (XposedOrNot)",
+              annotations={"readOnlyHint": False, "openWorldHint": True})
+    async def xposed_breach_check(
+        query: Annotated[str, "Email address or domain to check for breach exposure."],
+        query_type: Annotated[str, "One of: 'email', 'domain'. "
+                                   "Default 'auto' detects from value."] = "auto",
+        case_id: Annotated[str, "Case ID to save results to (optional)."] = "",
+    ) -> str:
+        """Use when the analyst says "check for breaches", "has this email been
+        breached?", "breach exposure", "XposedOrNot", "what breaches was this
+        domain in?", or when you need to understand an email or domain's
+        historical breach exposure.
+
+        XposedOrNot aggregates data breach records.  Returns: breach names,
+        risk scores, exposed data types (passwords, emails, phone numbers, etc.),
+        paste exposure, and industry breakdown.
+
+        Complements Hudson Rock (infostealer-specific) -- use both together for
+        comprehensive dark web exposure assessment.
+
+        Email lookups are keyless (no API key needed).  Domain lookups require
+        XPOSEDORNOT_API_KEY in .env.
+
+        Parameters
+        ----------
+        query : str
+            Email address or domain to check.
+        query_type : str
+            'email', 'domain', or 'auto' (default -- auto-detects).
+        case_id : str
+            If provided, saves results to case artefacts.
+        """
+        _require_scope("investigations:read")
+        if case_id:
+            _check_client_boundary(case_id)
+
+        from tools.darkweb import (
+            _detect_type,
+            xposedornot_domain_check,
+            xposedornot_email_check,
+        )
+
+        qtype = query_type if query_type != "auto" else _detect_type(query)
+
+        if qtype == "email":
+            result = await asyncio.to_thread(
+                lambda: xposedornot_email_check(query, case_id=case_id)
+            )
+        elif qtype == "domain":
+            result = await asyncio.to_thread(
+                lambda: xposedornot_domain_check(query, case_id=case_id)
+            )
+        else:
+            raise ToolError(f"XposedOrNot supports email and domain lookups. "
+                            f"Got type '{qtype}' for '{query}'.")
+        return _json(result)
+
+    @mcp.tool(title="Parse Stealer Logs")
+    async def parse_stealer_logs_tool(
+        case_id: Annotated[str, "Case ID containing stealer log archives."],
+        archive_path: Annotated[str, "Path to archive within case dir (optional -- "
+                                      "auto-discovers .rar/.zip/.7z if empty)."] = "",
+    ) -> str:
+        """Use when the analyst says "parse these stealer logs", "analyse
+        infostealer dump", "extract credentials from stealer archive", or when
+        a case has infostealer log archives that need structured analysis.
+
+        Parses .rar/.zip/.7z infostealer log archives using lexfo/stealer-parser.
+        Extracts: saved browser credentials (REDACTED), cookies, autofill data,
+        browser history, system information, installed software, stealer family
+        identification.
+
+        All credentials are REDACTED before storage or display.  Only metadata
+        (domain, username pattern, browser, stealer family) is preserved.
+
+        Requires: stealer-parser package (pip install stealer-parser).
+
+        Parameters
+        ----------
+        case_id : str
+            Case ID with stealer log archives.
+        archive_path : str
+            Explicit archive path, or empty to auto-scan case artefacts.
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from tools.darkweb import parse_stealer_logs
+
+        result = await asyncio.to_thread(
+            lambda: parse_stealer_logs(case_id, archive_path=archive_path)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Dark Web Exposure Summary")
+    async def darkweb_exposure_summary(
+        case_id: Annotated[str, "Case ID to assess dark web exposure for."],
+        emails: Annotated[str, "Comma-separated email addresses to check "
+                                "(optional -- auto-extracts from case IOCs if empty)."] = "",
+        domains: Annotated[str, "Comma-separated domains to check (optional)."] = "",
+        ips: Annotated[str, "Comma-separated IPs to check (optional)."] = "",
+    ) -> str:
+        """Use when the analyst says "dark web exposure summary", "full dark web
+        check for this case", "comprehensive credential exposure assessment",
+        or when you want to run all dark web intelligence sources at once
+        for a case.
+
+        Aggregates results from Hudson Rock (infostealer data) and XposedOrNot
+        (breach data) for all relevant indicators in the case.  If no indicators
+        are explicitly provided, extracts emails, domains, and IPs from the
+        case's iocs.json.
+
+        Produces a unified summary including:
+        - Total compromised accounts across all sources
+        - Stealer families detected
+        - Breach names and exposed data types
+        - Risk assessment per indicator
+        - Timeline of compromise dates
+
+        Saved to: cases/<case_id>/artefacts/darkweb/darkweb_summary.json
+
+        Parameters
+        ----------
+        case_id : str
+            Case identifier.
+        emails : str
+            Comma-separated email addresses (auto-extracted from case if empty).
+        domains : str
+            Comma-separated domains (auto-extracted from case if empty).
+        ips : str
+            Comma-separated IPs (auto-extracted from case if empty).
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from tools.darkweb import darkweb_summary
+
+        email_list = [e.strip() for e in emails.split(",") if e.strip()] if emails else None
+        domain_list = [d.strip() for d in domains.split(",") if d.strip()] if domains else None
+        ip_list = [i.strip() for i in ips.split(",") if i.strip()] if ips else None
+
+        result = await asyncio.to_thread(
+            lambda: darkweb_summary(case_id, emails=email_list,
+                                    domains=domain_list, ips=ip_list)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Dark Web Search (Ahmia)",
+              annotations={"readOnlyHint": False, "openWorldHint": True})
+    async def ahmia_darkweb_search(
+        query: Annotated[str, "Search term — email, domain, username, keyword, "
+                              "or any text to search for on indexed .onion sites."],
+        max_results: Annotated[int, "Maximum results to return (default 20)."] = 20,
+        case_id: Annotated[str, "Case ID to save results to (optional)."] = "",
+    ) -> str:
+        """Use when the analyst says "search the dark web", "search onion sites",
+        "check Tor for this", "dark web search", "is this .onion indexed",
+        or when you need to find references to an IOC or keyword on Tor
+        hidden services.
+
+        Two modes depending on configuration:
+        - **With SOCAI_OPSEC_PROXY (Tor SOCKS5):** Full text search of
+          indexed .onion site content via the Ahmia .onion address.
+        - **Without proxy:** Fetches Ahmia's full list of indexed .onion
+          domains and greps for matches.  Useful for checking if a known
+          .onion address is in Ahmia's index.
+
+        No API key required.
+
+        Useful for:
+        - Checking if a known .onion address is indexed by Ahmia
+        - Full dark web content search (requires Tor proxy)
+        - Discovering .onion sites related to a threat actor or campaign
+
+        Parameters
+        ----------
+        query : str
+            Search term (email, domain, username, keyword, etc.).
+        max_results : int
+            Maximum results (default 20).
+        case_id : str
+            If provided, saves results to case artefacts.
+        """
+        _require_scope("investigations:read")
+        if case_id:
+            _check_client_boundary(case_id)
+
+        from tools.darkweb import ahmia_search
+
+        result = await asyncio.to_thread(
+            lambda: ahmia_search(query, max_results=max_results, case_id=case_id)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Intelligence X Search",
+              annotations={"readOnlyHint": False, "openWorldHint": True})
+    async def intelx_search_tool(
+        query: Annotated[str, "Strong selector — email, domain, IP, URL, "
+                              "phone number, Bitcoin address, etc."],
+        max_results: Annotated[int, "Maximum results to return (default 20)."] = 20,
+        buckets: Annotated[str, "Comma-separated data sources to search: "
+                                "'pastes', 'darknet', 'leaks', 'documents'. "
+                                "Empty searches all."] = "",
+        case_id: Annotated[str, "Case ID to save results to (optional)."] = "",
+    ) -> str:
+        """Use when the analyst says "search Intelligence X", "search IntelX",
+        "search dark web for this IOC", "check pastes and leaks", "deep web
+        search", or when you need to search across dark web content, paste
+        sites, data leaks, and documents for a specific indicator.
+
+        Intelligence X indexes content from the dark web, paste sites, data
+        leaks, and public documents.  Searches by strong selectors (email,
+        domain, IP, URL, phone, Bitcoin address, etc.).
+
+        Requires INTELX_API_KEY for best results (free tier at
+        intelx.io/account?tab=developer).  Falls back to public API
+        (very limited) if no key is set.
+
+        Returns: matching records with source bucket, date, name, and
+        relevance score.  Credentials in results are automatically redacted.
+
+        Parameters
+        ----------
+        query : str
+            Strong selector (email, domain, IP, URL, phone, etc.).
+        max_results : int
+            Maximum results (default 20).
+        buckets : str
+            Comma-separated data sources (empty = all).
+        case_id : str
+            If provided, saves results to case artefacts.
+        """
+        _require_scope("investigations:read")
+        if case_id:
+            _check_client_boundary(case_id)
+
+        from tools.darkweb import intelx_search
+
+        bucket_list = [b.strip() for b in buckets.split(",") if b.strip()] if buckets else None
+
+        result = await asyncio.to_thread(
+            lambda: intelx_search(query, max_results=max_results,
+                                  buckets=bucket_list, case_id=case_id)
+        )
+        return _json(result)
+
+
+# ---------------------------------------------------------------------------
+# Log source coverage tools
+# ---------------------------------------------------------------------------
+
+def _register_coverage(mcp: FastMCP) -> None:
+
+    @mcp.tool(title="Check Log Coverage", annotations={"readOnlyHint": True})
+    async def check_log_coverage(
+        client_name: Annotated[str, "Client name (case-insensitive)."],
+    ) -> str:
+        """Use when the analyst asks "what logs do we have for this client?",
+        "what's our visibility?", "what's missing?", or "check log source health".
+
+        Returns coverage scores by domain (identity, endpoint, email, etc.),
+        gaps (missing or unhealthy log sources), and health issues.
+        Auto-collects from Sentinel if data is older than 24 hours.
+
+        Parameters
+        ----------
+        client_name : str
+            Client name (case-insensitive).
+        """
+        _require_scope("investigations:read")
+
+        from tools.log_coverage import get_coverage
+        cov = await asyncio.to_thread(lambda: get_coverage(client_name))
+
+        if not isinstance(cov, dict) or "scores" not in cov:
+            return _json(cov)
+
+        # Return a focused summary (full data is large)
+        return _json({
+            "client": cov.get("client"),
+            "collected_at": cov.get("collected_at"),
+            "scores": cov.get("scores"),
+            "gaps": cov.get("gaps", []),
+            "health_issues": cov.get("health_issues", []),
+            "source_count": cov.get("source_count", 0),
+        })
+
+    @mcp.tool(title="Check Investigation Capability", annotations={"readOnlyHint": True})
+    async def can_investigate_attack(
+        client_name: Annotated[str, "Client name."],
+        attack_type: Annotated[str, "Attack type from classify_attack (phishing, malware, "
+                                    "account_compromise, privilege_escalation, "
+                                    "data_exfiltration, lateral_movement, pup_pua, generic)."] = "generic",
+    ) -> str:
+        """Use after classify_attack and before running queries to check
+        whether the client has sufficient log coverage for this attack type.
+
+        Returns which coverage domains are available, which are missing,
+        and what investigation limitations exist.
+
+        Parameters
+        ----------
+        client_name : str
+            Client name.
+        attack_type : str
+            Attack type (default: generic).
+        """
+        _require_scope("investigations:read")
+
+        from tools.log_coverage import can_investigate
+        result = await asyncio.to_thread(lambda: can_investigate(client_name, attack_type))
+        return _json(result)
+
+    @mcp.tool(title="Refresh Log Coverage")
+    async def refresh_log_coverage(
+        client_name: Annotated[str, "Client name."],
+        full: Annotated[bool, "Include 365-day retention analysis (slower)."] = False,
+    ) -> str:
+        """Force a fresh log source collection for a client. Use when
+        coverage data is stale or after a client onboards new log sources.
+
+        Parameters
+        ----------
+        client_name : str
+            Client name.
+        full : bool
+            Include retention analysis (default: False).
+        """
+        _require_scope("investigations:write")
+
+        from tools.log_coverage import collect_log_sources
+        result = await asyncio.to_thread(lambda: collect_log_sources(client_name, full=full))
+        return _json(result)
+
+
+# ---------------------------------------------------------------------------
+# Exposure testing tools
+# ---------------------------------------------------------------------------
+
+def _register_exposure(mcp: FastMCP) -> None:
+
+    @mcp.tool(title="Run Exposure Test")
+    async def run_client_exposure_test(
+        client_name: Annotated[str, "Client name."],
+        domains: Annotated[str, "Comma-separated domains to test (auto-detected if empty)."] = "",
+        include_typosquats: Annotated[bool, "Include typosquat detection (can be slow)."] = True,
+    ) -> str:
+        """Run an external attack surface assessment for a client.
+
+        Discovers the client's web-facing footprint via DNS enumeration,
+        certificate transparency, subdomain discovery, and OSINT enrichment.
+        Assesses email security (SPF/DMARC/DKIM), service exposure, credential
+        leaks, and typosquat domains.
+
+        Parameters
+        ----------
+        client_name : str
+            Client name.
+        domains : str
+            Comma-separated domains (auto-detected from knowledge.md if empty).
+        include_typosquats : bool
+            Include typosquat detection (default: True).
+        """
+        _require_scope("investigations:write")
+
+        from tools.exposure_test import run_exposure_test
+        domain_list = [d.strip() for d in domains.split(",") if d.strip()] or None
+        result = await asyncio.to_thread(
+            lambda: run_exposure_test(client_name, domains=domain_list,
+                                      include_typosquats=include_typosquats)
+        )
+        return _json(result)
+
+    @mcp.tool(title="Get Exposure Report", annotations={"readOnlyHint": True})
+    async def get_client_exposure_report(
+        client_name: Annotated[str, "Client name."],
+    ) -> str:
+        """Return the latest exposure test results for a client.
+
+        Returns scores, findings, subdomain map, email security posture,
+        and typosquat data from the most recent test run.
+
+        Parameters
+        ----------
+        client_name : str
+            Client name.
+        """
+        _require_scope("investigations:read")
+
+        from tools.exposure_test import get_exposure_report
+        data = await asyncio.to_thread(lambda: get_exposure_report(client_name))
+
+        if not isinstance(data, dict) or "scores" not in data:
+            return _json(data)
+
+        return _json({
+            "client": data.get("client"),
+            "tested_at": data.get("tested_at"),
+            "domains_tested": data.get("domains_tested"),
+            "scores": data.get("scores"),
+            "findings": data.get("findings"),
+            "summary": data.get("summary"),
+        })
+
+
+# ---------------------------------------------------------------------------
 # Registration entry point
 # ---------------------------------------------------------------------------
 
@@ -4639,3 +5459,6 @@ def register_tools(mcp: FastMCP) -> None:
     _register_tier2_rumsfeld(mcp)
     _register_tier3(mcp)
     _register_intelligence(mcp)
+    _register_darkweb(mcp)
+    _register_coverage(mcp)
+    _register_exposure(mcp)

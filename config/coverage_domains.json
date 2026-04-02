@@ -1,0 +1,128 @@
+{
+  "version": "1.0",
+  "description": "Coverage domain reference model for log source mapping. Each domain defines required tables (minimum viable visibility) and enhanced tables (deeper telemetry).",
+  "domains": {
+    "identity": {
+      "label": "Identity & Access",
+      "description": "Authentication, authorisation, directory changes, MFA, risk events",
+      "weight": 1.0,
+      "required_tables": [
+        "SigninLogs",
+        "AADNonInteractiveUserSignInLogs",
+        "AuditLogs"
+      ],
+      "enhanced_tables": [
+        "AADServicePrincipalSignInLogs",
+        "AADManagedIdentitySignInLogs",
+        "AADRiskyUsers",
+        "AADUserRiskEvents",
+        "IdentityLogonEvents",
+        "IdentityDirectoryEvents",
+        "BehaviorAnalytics"
+      ],
+      "gap_impact": "No visibility into user authentication, sign-in anomalies, or directory changes. Cannot investigate account compromise, impossible travel, or brute-force attacks."
+    },
+    "endpoint": {
+      "label": "Endpoint",
+      "description": "Process execution, file activity, network connections, registry, device logon",
+      "weight": 1.0,
+      "required_tables": [
+        "DeviceProcessEvents",
+        "DeviceFileEvents",
+        "DeviceNetworkEvents"
+      ],
+      "enhanced_tables": [
+        "DeviceLogonEvents",
+        "DeviceEvents",
+        "DeviceRegistryEvents",
+        "DeviceImageLoadEvents",
+        "DeviceInfo",
+        "SecurityEvent"
+      ],
+      "gap_impact": "No visibility into process execution, file writes, or network connections on endpoints. Cannot investigate malware, LOLBin abuse, or lateral movement."
+    },
+    "email": {
+      "label": "Email Security",
+      "description": "Email delivery, URLs in email, attachments, post-delivery actions",
+      "weight": 0.9,
+      "required_tables": [
+        "EmailEvents"
+      ],
+      "enhanced_tables": [
+        "EmailUrlInfo",
+        "EmailAttachmentInfo",
+        "EmailPostDeliveryEvents",
+        "UrlClickEvents"
+      ],
+      "gap_impact": "No visibility into email delivery or phishing campaigns. Cannot trace malicious URLs/attachments from email to endpoint."
+    },
+    "cloud_apps": {
+      "label": "Cloud & SaaS",
+      "description": "M365 activity, cloud app events, Graph API, shadow IT",
+      "weight": 0.7,
+      "required_tables": [
+        "CloudAppEvents"
+      ],
+      "enhanced_tables": [
+        "OfficeActivity",
+        "McasShadowItReporting",
+        "MicrosoftGraphActivityLogs"
+      ],
+      "gap_impact": "No visibility into cloud application usage or M365 activity. Cannot detect data exfiltration via SaaS, shadow IT, or suspicious app behaviour."
+    },
+    "network": {
+      "label": "Network",
+      "description": "Firewall, proxy, CEF syslog, network traffic",
+      "weight": 0.8,
+      "required_tables": [
+        "CommonSecurityLog"
+      ],
+      "enhanced_tables": [
+        "Syslog",
+        "NetworkAccessTraffic"
+      ],
+      "gap_impact": "No firewall or proxy logs. Cannot detect C2 beaconing, network-based data exfiltration, or anomalous outbound connections."
+    },
+    "alerts": {
+      "label": "Alerts & Incidents",
+      "description": "Security alerts, incidents, threat intel indicators",
+      "weight": 0.6,
+      "required_tables": [
+        "SecurityAlert",
+        "SecurityIncident"
+      ],
+      "enhanced_tables": [
+        "AlertInfo",
+        "AlertEvidence",
+        "Anomalies",
+        "ThreatIntelIndicators"
+      ],
+      "gap_impact": "No centralised alert or incident data. Cannot correlate alerts across detection sources or match against threat intelligence."
+    },
+    "azure_infra": {
+      "label": "Azure Infrastructure",
+      "description": "Azure control plane activity, DevOps auditing",
+      "weight": 0.5,
+      "required_tables": [
+        "AzureActivity"
+      ],
+      "enhanced_tables": [
+        "AzureDevOpsAuditing"
+      ],
+      "gap_impact": "No visibility into Azure resource changes or DevOps pipeline activity. Cannot detect unauthorised infrastructure modifications."
+    },
+    "device_mgmt": {
+      "label": "Device Management",
+      "description": "Intune compliance, device inventory, audit logs",
+      "weight": 0.4,
+      "required_tables": [
+        "IntuneDevices"
+      ],
+      "enhanced_tables": [
+        "IntuneAuditLogs",
+        "IntuneOperationalLogs"
+      ],
+      "gap_impact": "No visibility into device compliance or Intune management actions. Limited ability to assess device posture during investigations."
+    }
+  }
+}

@@ -251,6 +251,90 @@ def cmd_sandbox(args: argparse.Namespace) -> None:
         print(json.dumps(result, indent=2))
 
 
+def cmd_exposure(args: argparse.Namespace) -> None:
+    from tools.exposure_test import run_exposure_test, generate_exposure_html
+    domains = [d.strip() for d in args.domains.split(",")] if args.domains else None
+    result = run_exposure_test(
+        args.client, domains=domains,
+        include_typosquats=not args.no_typosquats,
+    )
+    if result.get("status") != "ok":
+        print(f"[exposure] error: {result.get('reason', 'unknown')}")
+        return
+
+    scores = result.get("scores", {})
+    summary = result.get("summary", {})
+    overall = scores.get("overall", 0)
+
+    print(f"\n  {args.client} — Exposure Score: {int(overall)}/100")
+    print(f"  Findings: {summary.get('critical_findings', 0)} critical, "
+          f"{summary.get('high_findings', 0)} high, "
+          f"{summary.get('finding_count', 0)} total")
+    print(f"  Subdomains: {summary.get('live_subdomains', 0)} live / "
+          f"{summary.get('subdomains_discovered', 0)} discovered")
+    print(f"  Unique IPs: {summary.get('unique_ips', 0)}")
+    print(f"  Typosquats: {summary.get('active_typosquats', 0)} registered")
+
+    print(f"\n  Category Scores (higher = more exposed):")
+    for cat, val in scores.get("by_category", {}).items():
+        bar = "#" * (val // 5) + "-" * (20 - val // 5)
+        print(f"    {cat.replace('_', ' '):<24} [{bar}] {val}")
+
+    if args.html:
+        html_result = generate_exposure_html(args.client)
+        if html_result.get("status") == "ok":
+            print(f"\n  HTML report: {html_result['path']}")
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+
+
+def cmd_coverage(args: argparse.Namespace) -> None:
+    from tools.log_coverage import (
+        collect_log_sources, get_coverage, generate_coverage_html, compare_clients,
+    )
+    if args.refresh:
+        result = collect_log_sources(args.client, full=args.full)
+        if result.get("status") != "ok":
+            print(f"[coverage] error: {result.get('reason', 'unknown')}")
+            return
+        print(f"Collected {result.get('source_count', 0)} sources for {args.client}")
+
+    cov = get_coverage(args.client)
+    if not isinstance(cov, dict) or "scores" not in cov:
+        print(f"[coverage] {cov.get('reason', 'no data')}")
+        return
+
+    scores = cov["scores"]
+    print(f"\n  {args.client} — Overall: {int(scores['overall'] * 100)}%")
+    print(f"  Sources: {scores.get('healthy_sources', 0)} healthy, "
+          f"{scores.get('stale_sources', 0)} stale, "
+          f"{scores.get('degraded_sources', 0)} degraded, "
+          f"{scores.get('dead_sources', 0)} dead "
+          f"({scores.get('total_sources', 0)} total)")
+    print(f"\n  Domains:")
+    for d, s in scores.get("by_domain", {}).items():
+        bar = "#" * int(s * 20) + "-" * (20 - int(s * 20))
+        print(f"    {d:<16} [{bar}] {int(s * 100)}%")
+
+    gaps = cov.get("gaps", [])
+    high_gaps = [g for g in gaps if g.get("severity") in ("high", "critical")]
+    if high_gaps:
+        print(f"\n  High/Critical Gaps ({len(high_gaps)}):")
+        for g in high_gaps[:10]:
+            print(f"    [{g['severity'].upper()}] {g['domain']}/{g['table']} — {g.get('type', '').replace('_', ' ')}")
+
+    if args.html:
+        html_result = generate_coverage_html(args.client)
+        if html_result.get("status") == "ok":
+            print(f"\n  HTML report: {html_result['path']}")
+        else:
+            print(f"  HTML generation failed: {html_result.get('reason', '?')}")
+
+    if args.json:
+        print(json.dumps(cov, indent=2, default=str))
+
+
 def cmd_anomalies(args: argparse.Namespace) -> None:
     from tools.detect_anomalies import detect_anomalies
     result = detect_anomalies(args.case)
@@ -1316,6 +1400,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_sb.add_argument("--detonate", action="store_true",
                       help="Submit files for live sandbox detonation")
 
+    # coverage
+    p_cov = sub.add_parser("coverage", help="Log source coverage mapping for a client.")
+    p_cov.add_argument("--client", required=True, help="Client name")
+    p_cov.add_argument("--refresh", action="store_true", help="Force fresh collection from Sentinel")
+    p_cov.add_argument("--html", action="store_true", help="Generate interactive HTML report")
+    p_cov.add_argument("--full", action="store_true", help="Include 365-day retention analysis (slower)")
+
+    # exposure
+    p_exp = sub.add_parser("exposure", help="External attack surface exposure test for a client.")
+    p_exp.add_argument("--client", required=True, help="Client name")
+    p_exp.add_argument("--domains", default=None, help="Comma-separated domains (auto-detected if omitted)")
+    p_exp.add_argument("--no-typosquats", action="store_true", dest="no_typosquats",
+                       help="Skip typosquat detection (faster)")
+    p_exp.add_argument("--html", action="store_true", help="Generate interactive HTML report")
+
     # anomalies
     p_an = sub.add_parser("anomalies", help="Detect behavioural anomalies in parsed logs.")
     p_an.add_argument("--case", required=True)
@@ -1641,6 +1740,8 @@ def main() -> None:
         "landscape":      cmd_landscape,
         "campaigns":      cmd_campaigns,
         "sandbox":        cmd_sandbox,
+        "coverage":       cmd_coverage,
+        "exposure":       cmd_exposure,
         "anomalies":      cmd_anomalies,
         "errors":         cmd_errors,
         "mcp-usage":      cmd_mcp_usage,

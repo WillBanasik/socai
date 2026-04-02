@@ -370,8 +370,10 @@ def _extract_entities(rows: list[dict]) -> dict:
         if eid:
             try:
                 entities["event_ids"].add(str(int(eid)))
-            except (ValueError, TypeError):
-                pass
+            except (ValueError, TypeError) as exc:
+                log_error("", "velociraptor_ingest:extract_entities",
+                          str(exc), severity="info", traceback=True,
+                          context={"field": "eventid", "value": str(eid)})
 
     return {k: sorted(v) for k, v in entities.items()}
 
@@ -393,7 +395,10 @@ def _parse_jsonl(text: str) -> list[dict]:
                 rows.append(obj)
             elif isinstance(obj, list):
                 rows.extend(o for o in obj if isinstance(o, dict))
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            log_error("", "velociraptor_ingest:parse_jsonl",
+                      str(exc), severity="warning", traceback=True,
+                      context={"line_preview": line[:200]})
             continue
     return rows
 
@@ -409,8 +414,9 @@ def _parse_json_array(text: str) -> list[dict]:
                 if key in data and isinstance(data[key], list):
                     return [r for r in data[key] if isinstance(r, dict)]
             return [data]
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as exc:
+        log_error("", "velociraptor_ingest:parse_json_array",
+                  str(exc), severity="warning", traceback=True)
     return []
 
 
@@ -419,7 +425,9 @@ def _parse_csv_text(text: str) -> list[dict]:
     try:
         reader = csv.DictReader(io.StringIO(text))
         return [row for row in reader]
-    except Exception:
+    except Exception as exc:
+        log_error("", "velociraptor_ingest:parse_csv",
+                  str(exc), severity="warning", traceback=True)
         return []
 
 
@@ -526,6 +534,8 @@ def _extract_collector_zip(
                 collection_meta = json.loads(raw)
                 write_artefact(vr_dir / "collection_context.json", raw)
             except Exception as exc:
+                log_error(case_id, "velociraptor_ingest:parse_collection_context",
+                          str(exc), severity="warning", traceback=True)
                 warnings.append(f"Failed to parse collection_context.json: {exc}")
 
         # 2. Process results/ directory (VQL outputs)
@@ -555,7 +565,7 @@ def _extract_collector_zip(
 
             except Exception as exc:
                 log_error(case_id, "velociraptor_ingest.result_file",
-                          str(exc), severity="warning",
+                          str(exc), severity="warning", traceback=True,
                           context={"file": name})
                 warnings.append(f"Error processing {name}: {exc}")
 
@@ -581,7 +591,7 @@ def _extract_collector_zip(
                 })
             except Exception as exc:
                 log_error(case_id, "velociraptor_ingest.upload_extract",
-                          str(exc), severity="warning",
+                          str(exc), severity="warning", traceback=True,
                           context={"file": name})
                 warnings.append(f"Error extracting {name}: {exc}")
 
@@ -641,7 +651,10 @@ def _normalise_and_write(
     for row in rows:
         try:
             normalised_rows.append(normaliser(row))
-        except Exception:
+        except Exception as exc:
+            log_error(case_id, "velociraptor_ingest:normalise_row",
+                      str(exc), severity="warning", traceback=True,
+                      context={"artefact": artefact_name})
             normalised_rows.append(_norm_generic(row))
 
     entities = _extract_entities(normalised_rows)
@@ -739,8 +752,14 @@ def velociraptor_ingest(
                                 r = _normalise_and_write(artefact_name, rows, case_id, fmt)
                                 artefacts_processed.append(r)
                         except Exception as exc:
+                            log_error(case_id, "velociraptor_ingest:zip_vql_file",
+                                      str(exc), severity="warning", traceback=True,
+                                      context={"file": name})
                             warnings.append(f"Error processing {name}: {exc}")
         except zipfile.BadZipFile as exc:
+            log_error(case_id, "velociraptor_ingest:open_zip",
+                      str(exc), severity="error", traceback=True,
+                      context={"source": str(source)})
             return {"status": "error", "reason": f"Bad ZIP file: {exc}"}
 
     # Mode B: Single file
@@ -796,6 +815,9 @@ def velociraptor_ingest(
                 write_artefact(vr_dir / "collection_context.json",
                                ctx_file.read_bytes())
             except Exception as exc:
+                log_error(case_id, "velociraptor_ingest:dir_collection_context",
+                          str(exc), severity="warning", traceback=True,
+                          context={"file": str(ctx_file)})
                 warnings.append(f"Failed to parse collection_context.json: {exc}")
     else:
         return {"status": "error", "reason": f"Unsupported source: {source_path}"}

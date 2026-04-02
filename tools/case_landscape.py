@@ -29,13 +29,13 @@ Usage:
 from __future__ import annotations
 
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import BASE_DIR, CASES_DIR, IOC_INDEX_FILE, REGISTRY_FILE
+from config.settings import BASE_DIR, IOC_INDEX_FILE, REGISTRY_FILE
 from tools.common import load_json, log_error, save_json, utcnow
 
 LINKS_INDEX_FILE = BASE_DIR / "registry" / "case_links.json"

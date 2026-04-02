@@ -97,6 +97,36 @@ Each task run is logged as a `scheduler_task` event in `registry/mcp_server.json
 
 ---
 
+## Investigation Metrics
+
+`tools/common.py` provides `log_metric()` for structured investigation metrics collection, enabling analyst performance comparison and operational insights.
+
+**Function:**
+
+- `log_metric(event, *, case_id="", **fields)` — append a structured metric event to `registry/metrics.jsonl`. Thread-safe via `_metrics_lock`. Same pattern as `audit()` and `log_error()`.
+
+**Metric event types:**
+
+| Event | Emitted by | Key fields |
+|---|---|---|
+| `case_phase_change` | `case_create()`, `index_case()` | phase, prev_status, analyst, client, severity |
+| `enrichment_complete` | `enrich()` | duration_ms, total_iocs, enriched_iocs, ioc_coverage_pct, cache_hits, tiered stats per IOC type |
+| `verdict_scored` | `score_verdicts()` | ioc_count, malicious/suspicious/clean counts, confidence_dist (HIGH/MEDIUM/LOW), conflicting_iocs |
+| `report_saved` | `save_report_to_case()` | report_type, auto_closed, disposition, char_count, sections_present, completeness_pct |
+| `investigation_summary` | `index_case()` (on close) | disposition, severity, attack_type, analyst, ioc_totals, durations (total/triage/investigation minutes), phase_timestamps |
+
+**Phase timestamps:** Case metadata (`case_meta.json`) now includes a `phase_timestamps` sub-object that accumulates `created_at`, `triage_at`, `active_at`, `closed_at` as the case moves through lifecycle stages. `promote_case()` backfills `triage_at` from `created_at`.
+
+**Query script:** `scripts/metrics_report.py` — standalone CLI for reading `metrics.jsonl`. Supports `--event`, `--case`, `--analyst`, `--since` filters, `--compare` for side-by-side analyst comparison, and `--json` for raw output.
+
+**Workflow analytics:** `workflow_summary` events are auto-captured by the MCP session tracker (`mcp_server/usage.py`). Each event contains the full ordered tool sequence with per-step timing, categories, goals, and friction signals (unnecessary prerequisites, retries after error, long gaps, abandoned workflows, repeated lookups). Query via `scripts/workflow_report.py` — supports `--friction`, `--sequences`, `--tools`, `--trends`, `--json`.
+
+**Tool taxonomy:** Every MCP tool is classified in `TOOL_TAXONOMY` (`mcp_server/usage.py`) by category (`lookup`, `enrichment`, `triage`, `analysis`, `delivery`, `admin`, `query`, `intel`, `sandbox`, `infra`) and goal (`quick_answer`, `investigate`, `deliver`, `maintain`). New tools must be registered here for workflow analytics.
+
+**Output:** `registry/metrics.jsonl` (append-only JSONL; ~7 events per case + workflow_summary events on session expiry)
+
+---
+
 ## Web Capture
 
 `tools/web_capture.py` exposes two public functions:
@@ -112,6 +142,8 @@ Each capture produces: `page.html`, `page.txt`, `screenshot.png`, `redirect_chai
 - `hop_XX/` subdirectories — intermediate redirect hops captured in separate tabs
 
 **SPA handling:** If `page.innerText` is empty after `networkidle`, Playwright waits `SOCAI_SPA_DWELL` ms and re-captures. This handles Ember/React/Vue apps that fetch content after the shell loads.
+
+**Auto-phishing detection:** The MCP `capture_urls` tool has `detect_phishing=True` by default. After URL capture completes, phishing detection runs automatically on the captured pages — brand impersonation, fake login forms, credential harvesting patterns. Set `detect_phishing=False` to skip (e.g. for non-phishing evidence collection).
 
 **Cloudflare detection:** After every capture, `_detect_cloudflare()` checks title, HTML, and body text for challenge/block signals. The `capture_manifest.json` gains `cloudflare_blocked: bool` and `cloudflare_challenge: str` fields. Challenge types: `js_challenge`, `managed_challenge` (Turnstile), `captcha` (hCaptcha), `block` (HTTP 403/1020). Blocked captures are surfaced as a dedicated section in the investigation report.
 
@@ -179,7 +211,36 @@ To add a brand: append to `_BRANDS` in `detect_phishing_page.py` with `name`, `p
 
 ## Enrichment Pipeline
 
-`tools/enrich.py` uses a **tiered enrichment model** with **cross-type parallelism**. All four IOC type groups (IPv4, domain, URL, hash) run concurrently via `ThreadPoolExecutor(max_workers=4)`. Within each type group, the tier sequence remains sequential (Tier 1 results inform Tier 2 escalation decisions). Within each tier, individual provider calls run concurrently via a second `ThreadPoolExecutor` (default 10 workers, `SOCAI_ENRICH_WORKERS`). Provider functions have the signature `(ioc: str, ioc_type: str) -> dict`. Results with `status: "ok"` are cached in `registry/enrichment_cache.json` with a configurable TTL (default 24 hours, `SOCAI_ENRICH_CACHE_TTL`; set to `0` to disable).
+`tools/enrich.py` uses a **tiered enrichment model** with **cross-type parallelism**. All four IOC type groups (IPv4, domain, URL, hash) run concurrently via `ThreadPoolExecutor(max_workers=4)`. Within each type group, the tier sequence remains sequential (Tier 1 results inform Tier 2 escalation decisions). Within each tier, individual provider calls run concurrently via a second `ThreadPoolExecutor` (default 25 workers, `SOCAI_ENRICH_WORKERS`). Provider functions have the signature `(ioc: str, ioc_type: str) -> dict`. Results with `status: "ok"` are cached in `registry/enrichment_cache.json` with a configurable TTL (default 24 hours, `SOCAI_ENRICH_CACHE_TTL`; set to `0` to disable).
+
+### Depth Parameter
+
+The `depth` parameter controls tier escalation behaviour:
+
+| Depth | Behaviour | When to use |
+|-------|-----------|-------------|
+| `"auto"` | Smart tiering — Tier 1 first, escalate to Tier 2 on signal | Default. Most cases. |
+| `"fast"` | Tier 1 only, never escalates to Tier 2 | Obvious FP/BP, bulk triage, low severity, quick refresh |
+| `"full"` | All tiers for every IOC regardless of Tier 1 results | High-severity incident, targeted attack, novel IOCs, analyst requests deep-dive |
+
+Exposed via the MCP `enrich_iocs` tool, `quick_enrich` tool, and `api/actions.extract_and_enrich()`.
+
+### Caseless Enrichment (`quick_enrich`)
+
+`quick_enrich(iocs, depth="auto")` enriches raw IOC values without a case. Uses the same tiered pipeline as case-bound enrichment. Returns verdicts + an `enrichment_id` persisted to `registry/quick_enrichments/`.
+
+**RFC-1918 short-circuit:** Private IPs (`10.x`, `172.16-31.x`, `192.168.x`, `127.x`) are tagged `verdict="private_internal"` instantly — zero provider calls, zero ASN lookups.
+
+**Import into case:** Pass `enrichment_id` to `create_case(enrichment_id=...)` for auto-import, or call `import_enrichment(enrichment_id, case_id)` separately. Pre-computed verdicts are written directly (no re-scoring). The global IOC index is updated for cross-case recall.
+
+### Triage-First Enrichment
+
+`extract_and_enrich()` automatically runs two pre-enrichment optimisations before calling `enrich()`:
+
+1. **Triage pass** — calls `triage()` to check the enrichment cache. IOCs with 3+ fresh cached provider results are added to the skip set.
+2. **Client baseline pass** — loads the client's historical profile via `get_client_baseline()`. IOCs seen in 3+ prior cases for this client and never flagged as malicious are added to the skip set.
+
+Both are best-effort — if either fails, enrichment proceeds normally. The combined skip set is passed to `enrich(skip_iocs=...)`.
 
 ### IPv4 Tiered Enrichment
 
@@ -189,23 +250,85 @@ To add a brand: append to `_BRANDS` in `detect_phishing_page.py` with `name`, `p
 | **1** | Fast/free | AbuseIPDB, URLhaus, ThreatFox, OpenCTI | Quick abuse signal. If clean (no reports, no matches), stop here. |
 | **2** | Deep OSINT | VirusTotal, Shodan, GreyNoise, ProxyCheck, Censys, OTX | Full investigation. Only for IPs that showed signal in Tier 1 (suspicious/malicious verdict, abuse reports > 0, threat matches) or returned no data. |
 
-**Escalation logic:** An IP reaches Tier 2 only if `_ip_needs_deep_enrichment()` returns True — any fast provider flagged suspicious/malicious, AbuseIPDB reports > 0, or ThreatFox/URLhaus returned matches. Clean IPs after Tier 1 stop there.
+**Escalation logic:** An IP reaches Tier 2 only if `_ip_needs_deep_enrichment()` returns True — any fast provider flagged suspicious/malicious, AbuseIPDB reports > 0, or ThreatFox/URLhaus returned matches. Clean IPs after Tier 1 stop there. Overridden by `depth="fast"` (never escalate) or `depth="full"` (always escalate).
 
 **Infrastructure ASNs:** Defined in `KNOWN_INFRA_ASNS` (ASN → owner name) with keyword fallback via `_INFRA_ORG_KEYWORDS`. Hosting providers (Linode/Akamai hosting, DigitalOcean, OCI) are deliberately **not** skipped since attackers use them — only CDN-specific Akamai ASNs are filtered.
 
-### Domain / URL / Hash Tiered Enrichment
+### Domain Tiered Enrichment
 
-Domains, URLs, and hashes (MD5, SHA1, SHA256) each follow the same Tier 1 → Tier 2 escalation pattern as IPv4 (without the ASN pre-screen). Tier 1 fast providers run first; only IOCs that show signal are escalated to Tier 2 deep providers. All three types run concurrently with IPv4 via the cross-type `ThreadPoolExecutor`.
+| Tier | Providers | Purpose |
+|------|-----------|---------|
+| **1** | URLhaus, ThreatFox, OpenCTI, WhoisXML, PhishTank | Quick threat intel + domain age + known-phishing check |
+| **2** | VirusTotal, URLScan, Censys, OTX, crt.sh | Full investigation + CT log subdomain discovery |
+
+Escalation: newly registered domains (< 30 days), any malicious/suspicious verdict, or no data.
+
+### URL Tiered Enrichment
+
+| Tier | Providers | Purpose |
+|------|-----------|---------|
+| **1** | URLhaus, ThreatFox, OpenCTI, PhishTank | Quick blocklist + known-phishing check |
+| **2** | VirusTotal, URLScan, OTX | Full scan + screenshot |
+
+### Hash Tiered Enrichment
+
+| Tier | Providers | Purpose |
+|------|-----------|---------|
+| **1** | MalwareBazaar, ThreatFox, OpenCTI | Quick malware DB lookup |
+| **2** | VirusTotal, Intezer, OTX (+ Hybrid Analysis for SHA256) | Full analysis + genetic classification |
+
+Hash escalation is **inverted**: unknown files (not in any malware DB) escalate because absence of data is suspicious for a file hash. Known-clean files in fast DBs stop at Tier 1.
 
 ### Other IOC Types
 
-Emails and CVEs use standard parallel enrichment — all registered providers for that type run concurrently. These run after the cross-type parallel block completes.
+Emails (EmailRep, OpenCTI) and CVEs (OpenCTI) use standard parallel enrichment — all registered providers for that type run concurrently. These run after the cross-type parallel block completes.
 
 ### General
 
-The `enrich()` function accepts an optional `skip_iocs: set[str]` parameter. When provided (typically from triage results), these IOCs are excluded from the enrichment work list.
+The Intezer access token is fetched **once per `enrich()` call** and reused across all hash lookups via `functools.partial`. The `_PROVIDER_NAMES` dict maps function objects to canonical provider name strings — used for cache key lookup. When adding a new provider function, register it in `PROVIDERS`, `_PROVIDER_NAMES`, and in the appropriate tier list (`PROVIDERS_*_FAST` / `PROVIDERS_*_DEEP`).
 
-The Intezer access token is fetched **once per `enrich()` call** and reused across all hash lookups via `functools.partial`. The `_PROVIDER_NAMES` dict maps function objects to canonical provider name strings — used for cache key lookup. When adding a new provider function, register it in `PROVIDERS`, `_PROVIDER_NAMES`, and (for IPv4) in `PROVIDERS_IP_FAST` or `PROVIDERS_IP_DEEP`.
+## Dark Web Intelligence
+
+`tools/darkweb.py` provides agent-invocable dark web lookups (NOT automatic enrichment). The agent decides when to invoke these during investigations.
+
+### MCP Tools
+
+| Tool | Trigger phrases | IOC types | Provider |
+|------|----------------|-----------|----------|
+| `hudsonrock_lookup` | "check Hudson Rock", "infostealer exposure", "stolen credentials" | email, domain, IP | Hudson Rock Cavalier API (free tier) |
+| `xposed_breach_check` | "check for breaches", "breach exposure", "has this email been breached" | email, domain | XposedOrNot API (keyless for email) |
+| `ahmia_darkweb_search` | "search the dark web", "search onion sites", "dark web search" | any keyword/IOC | Ahmia.fi (no auth, no Tor) |
+| `intelx_search_tool` | "search Intelligence X", "search pastes and leaks", "deep web search" | email, domain, IP, URL, phone | Intelligence X (free tier) |
+| `parse_stealer_logs_tool` | "parse stealer logs", "analyse infostealer dump" | file archives | lexfo/stealer-parser |
+| `darkweb_exposure_summary` | "dark web exposure summary", "full dark web check" | all (auto-extracts from case IOCs) | All providers |
+
+### Credential Sanitisation
+
+Hudson Rock returns credential data including passwords. All passwords are automatically redacted at the tool layer (`_redact_credentials`) before results are saved to artefacts or returned to the agent. Passwords appear as `[REDACTED-Nchars]`. Email local-parts in credential entries are truncated (`j***@example.com`). The full unredacted response is never stored or returned.
+
+### Artefacts
+
+Results are saved to `cases/<ID>/artefacts/darkweb/`:
+- `hudsonrock_results.json` — infostealer compromise data (redacted)
+- `xposedornot_results.json` — breach exposure data
+- `darkweb_summary.json` — aggregated exposure summary
+- `stealer_logs/parsed.json` — parsed infostealer log output (redacted)
+
+### Configuration
+
+| Env var | Required | Notes |
+|---------|----------|-------|
+| `HUDSONROCK_API_KEY` | For Hudson Rock tools | Free tier at hudsonrock.com/free-api-key |
+| `XPOSEDORNOT_API_KEY` | For domain breach checks only | Email breach checks are keyless |
+| `INTELX_API_KEY` | For Intelligence X (recommended) | Free tier at intelx.io/account?tab=developer; public API (very limited) used if unset |
+
+Ahmia.fi requires no API key or configuration.
+
+### Reference Material
+
+- [deepdarkCTI](https://github.com/fastfire/deepdarkCTI) — curated dark web CTI source lists
+- [Credential monitoring comparison](https://github.com/infostealers-stats/Credential-and-breach-monitoring) — breach intel vendor comparison
+- [stealer-parser](https://github.com/lexfo/stealer-parser) — Python infostealer log parser (optional dependency)
 
 ## Verdict Scoring
 
@@ -251,6 +374,8 @@ The MCP `recall_cases` tool automatically passes the active client from conversa
 - Checks `ioc_index.json` for known malicious/suspicious/clean IOCs
 - Checks `enrichment_cache.json` for IOCs with 3+ fresh provider results (skip-enrichment candidates)
 - Recommends severity escalation when known-malicious IOCs exceed `SOCAI_TRIAGE_ESCALATION_THRESHOLD` (default 1)
+
+Triage is automatically called by `extract_and_enrich()` before enrichment. Its `skip_enrichment_iocs` list is combined with client baseline filtering and passed to `enrich(skip_iocs=...)` to reduce unnecessary API calls. The client baseline (`get_client_baseline()`) adds IOCs that are routine for the client (seen in 3+ prior cases, never flagged malicious) to the skip set.
 
 ## Email Analysis
 
@@ -360,6 +485,8 @@ Classification runs early in the investigation (before case creation). Results a
 - Analysis via prompt: use `write_pe_verdict` prompt for malicious likelihood, likely category, recommended next steps
 - Output: `artefacts/analysis/pe_analysis.json`
 
+**Auto-YARA scanning:** The MCP `analyse_pe` tool has `run_yara=True` by default. YARA scanning runs automatically after PE analysis — both results returned in a single tool call. Set `run_yara=False` to skip. Set `generate_yara_rules=True` to create custom rules from PE findings.
+
 ## YARA Scanning
 
 `tools/yara_scan.py` scans case files against YARA rules:
@@ -367,6 +494,7 @@ Classification runs early in the investigation (before case creation). Results a
 - Built-in rules: SuspiciousPE, PowerShellObfuscation, C2Patterns, Base64PEHeader, CommonRATStrings
 - External rules: `config/yara_rules/*.yar` and `*.yara`
 - Output: `artefacts/yara/yara_results.json`
+- Also runs automatically via `analyse_pe(run_yara=True)` — separate `yara_scan` call only needed if skipped during PE analysis
 
 ## EVTX Attack Chain Correlation
 
@@ -405,8 +533,10 @@ Outputs: `security_arch_review.md`, `security_arch_structured.json`, `security_a
 
 `tools/response_actions.py` generates a deterministic, client-specific response plan. No LLM call — purely rule-based resolution against the client playbook.
 
-- **Input:** `case_meta.json` (severity, client), `verdict_summary.json` (malicious/suspicious IOCs), `config/clients/<client>.json` (playbook)
+- **Input:** `case_meta.json` (severity, client), `verdict_summary.json` (malicious/suspicious IOCs), `config/clients/<client>/playbook.json` (playbook; also checks legacy flat layout `<client>.json`)
 - **Skip conditions:** no client field on case, no playbook file, or 0 malicious + 0 suspicious IOCs
+- **Crown jewel matching:** supports wildcard patterns (e.g. `"karel*chudej*"`) via `fnmatch`
+- **Multi-environment playbooks:** clients with multiple environments (e.g. Sentinel/MDE, CrowdStrike workstations, OT) use an `environments` map and optional `escalation_matrix_ot` for environment-specific escalation rules
 - **Resolution:** severity → priority mapping, crown jewel escalation, alert-name override, escalation matrix filtering
 - **Output:** `artefacts/response_actions/response_actions.json` + `response_actions.md`
 - **Pipeline step:** 13 (between CampaignAgent and auto-disposition)
@@ -475,9 +605,45 @@ Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 
 **Adding a scenario:** Create `config/kql_playbooks/sentinel/<name>.kql` with frontmatter between `// ---` markers and a single query body using `let`/`union isfuzzy=true` pattern. Register in `_composite_map` in `mcp_server/tools.py` to link to attack types.
 
-## LogScale Query Syntax
+## LogScale / NGSIEM Query Reference
 
-`config/logscale_syntax.md` is the authoritative CrowdStrike LogScale (Humio) query language reference. **All agents generating LogScale queries MUST consult this file** for correct syntax. Key pitfalls: OR binds tighter than AND (use parentheses), regex uses `/slashes/` not `=~`, no free-text search after aggregate, array params use `[square brackets]`.
+### `load_ngsiem_reference` tool
+
+The `load_ngsiem_reference` MCP tool loads CQL/LogScale syntax reference material on demand. Call it **before writing any CrowdStrike/NGSIEM query**. Sections:
+
+- `"rules"` — authoring conventions, anti-patterns, tag-based source filtering, ECS field naming, worked examples
+- `"columns"` — field schema per connector (ECS + vendor fields)
+- `"grammar"` — all 194 CQL function signatures (large — request only when needed)
+- `"syntax"` — general CQL syntax reference (operators, precedence, 18 pitfalls)
+
+Default: `["rules", "syntax"]`. Add `"columns"` when building queries for a specific log source.
+
+### Reference files
+
+Four files in `config/` back the tool and are also available as MCP resources:
+
+| Resource | File | Contents |
+|----------|------|----------|
+| `socai://logscale-syntax` | `config/logscale_syntax.md` | General CQL syntax: operators, field assignment, conditionals, joins, regex, tag field rules, 18 pitfalls |
+| `socai://ngsiem-rules` | `config/ngsiem/ngsiem_rules.md` | Detection rule authoring: pipe-per-line, tag-based source filtering (`#Vendor` + `#event.module`), ECS field naming, proven patterns, 13 anti-patterns, DaC template, worked examples |
+| `socai://ngsiem-columns` | `config/ngsiem/ngsiem_columns.yaml` | Field schema per connector (24 connectors): ECS + vendor fields for Fortinet, Azure AD, Windows, ClearPass, Check Point, Cisco, Darktrace, Delinea, Netskope, etc. |
+| `socai://cql-grammar` | `config/ngsiem/cql_grammar.json` | Complete CQL function grammar: 194 functions across 12 categories with signatures and docs |
+
+### Contextual CrowdStrike queries
+
+`generate_queries` now produces contextual investigation queries alongside IOC-hunt queries when CrowdStrike pivot data is available in the case:
+
+| Query | Pivot field | Template |
+|-------|------------|----------|
+| Process tree | `aid` + `TreeId` | ProcessRollup2 filtered by TreeId, sorted chronologically |
+| Child processes | `aid` + `ParentProcessId` | ProcessRollup2 filtered by parent PID |
+| DNS requests | `hostname` or `aid` | DnsRequest with domain, IP4Records, requesting process |
+| Network connections | `hostname` or `aid` | NetworkConnectIP4/IP6 with remote IP, port, process |
+| File writes | `hostname` or `aid` | NewExecutableWritten, ExecutableDeleted, RansomwareOpenFile |
+| Detections | `hostname` or `aid` | DetectionSummaryEvent with tactic, technique, severity |
+| User logons | `username` | UserLogon with logon type, domain, remote IP |
+
+Pivot values are extracted from case metadata and evidence text automatically via `_extract_cs_pivots()`.
 
 ## Output Schemas
 

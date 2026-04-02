@@ -93,8 +93,13 @@ def case_create(
         "artefacts": [],
         "iocs": [],
         "report_path": None,
+        "phase_timestamps": {"created_at": utcnow()},
     }
     save_json(case_dir / "case_meta.json", meta)
+    from tools.common import log_metric
+    log_metric("case_phase_change", case_id=case_id,
+               phase="created", status=status, analyst=analyst,
+               client=resolved_client, severity=severity)
 
     # Update registry
     REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)

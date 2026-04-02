@@ -21,6 +21,21 @@ python3 socai.py fp-tuning --case IV_CASE_001 --alert alert.json [--query rule.k
 # These now redirect to MCP prompt workflow — use the corresponding
 # MCP prompts in Claude Desktop and save with save_report.
 
+# Investigation metrics
+python3 scripts/metrics_report.py                      # full summary
+python3 scripts/metrics_report.py --compare            # analyst comparison
+python3 scripts/metrics_report.py --event enrichment_complete
+python3 scripts/metrics_report.py --json               # raw JSON
+
+# Workflow analytics (auto-captured from MCP tool calls)
+python3 scripts/workflow_report.py                      # full report
+python3 scripts/workflow_report.py --since 2026-03-25   # date filter
+python3 scripts/workflow_report.py --friction            # friction patterns only
+python3 scripts/workflow_report.py --sequences           # tool sequence patterns
+python3 scripts/workflow_report.py --tools               # per-tool timing + errors
+python3 scripts/workflow_report.py --trends              # daily trends
+python3 scripts/workflow_report.py --json                # raw JSON summary
+
 # MCP server
 python3 -m mcp_server                                         # SSE (default)
 SOCAI_MCP_TRANSPORT=streamable-http python3 -m mcp_server      # Streamable HTTP
@@ -41,6 +56,9 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **Pipeline:** HITL (human-in-the-loop) — analyst drives investigation step by step via MCP tools and prompts. Case creation is deferred — deliverable tools auto-create if needed. See `docs/pipeline.md`
 - **State:** all filesystem, no database. Registry in `registry/`, per-case in `cases/<ID>/`, articles in `articles/`
 - **Background scheduler** (`tools/scheduler.py`) — daemon thread started by MCP server; refreshes GeoIP (7d), rebuilds client baselines (24h), rebuilds case memory BM25 index (6h)
+- **Metrics** (`registry/metrics.jsonl`) — investigation lifecycle events with timing, coverage, confidence, and completeness metrics; query via `scripts/metrics_report.py`. Includes `workflow_summary` events (auto-captured tool sequences, friction signals) — query via `scripts/workflow_report.py`
+- **Workflow analytics** (`mcp_server/usage.py`) — auto-captures ordered tool sequences per session with timing, categories (via `TOOL_TAXONOMY`), and friction detection. Flushed to metrics on session expiry or server shutdown. New tools must be registered in `TOOL_TAXONOMY`
+- **Caseless enrichment** (`registry/quick_enrichments/`) — `quick_enrich` persists ad-hoc IOC lookups here. Import into a case via `enrichment_id` parameter on `create_case` or `import_enrichment` tool
 - **Intelligence layer** — `tools/case_memory.py` (BM25 semantic recall), `tools/client_baseline.py` (per-client profiles), `tools/geoip.py` (local MaxMind GeoLite2)
 - **Auto-close on Deliverable Collection** — `save_report` (after MCP prompt for MDR report, PUP report, etc.) and `fp_ticket` (`false_positive`). These tools auto-create and promote a case if one doesn't exist. Close logic in tool layer. Deliverable workflow: use MCP prompt to draft report, then `save_report` to persist and auto-close. `fp_tuning_ticket` does NOT auto-close. `read_report` is read-only (no auto-close). `close_case` is idempotent (no-op if already closed).
 
@@ -74,9 +92,16 @@ All investigative output — conversational analysis, reports, case artefacts �
 
 ## Enrichment & Lookup Preferences
 
-1. **Always use socai system tools first** — CLI (`socai.py enrich`, `socai.py triage`) or MCP tools (`enrich_iocs`, `triage`, `extract_iocs`)
-2. **Web search is a last resort** — only when system tools return nothing or query is pure OSINT context
-3. **Never use generic web lookups when a structured tool exists**
+1. **Always use socai system tools first** — CLI (`socai.py enrich`, `socai.py triage`) or MCP tools (`enrich_iocs`, `quick_enrich`, `triage`, `extract_iocs`)
+2. **Caseless first** — use `quick_enrich` for ad-hoc IOC lookups before creating a case. If IOCs are malicious, create a case with `enrichment_id` to auto-import results (no re-enrichment). RFC-1918 / private IPs are tagged `private_internal` instantly (no provider calls).
+3. **Choose enrichment depth based on the situation** — both `quick_enrich` and `enrich_iocs` accept a `depth` parameter:
+   - `"auto"` (default) — smart tiering: Tier 0 ASN pre-screen (IPs), Tier 1 fast providers, selective Tier 2 escalation on signal. Use for most cases.
+   - `"fast"` — Tier 1 only, no deep OSINT. Use for obvious FPs, low severity, PUP, bulk triage.
+   - `"full"` — all tiers for every IOC. Use for high-severity incidents, targeted attacks, novel IOCs.
+4. **Triage runs automatically before enrichment** — IOCs with sufficient cached coverage and IOCs that are routine for the client (via client baseline) are skipped automatically to save API quota.
+5. **Use combined tools for efficiency** — `capture_urls` auto-runs phishing detection (`detect_phishing=True` default). `analyse_pe` auto-runs YARA scanning (`run_yara=True` default). Use `run_kql_batch` for multiple independent queries instead of sequential `run_kql`.
+6. **Web search is a last resort** — only when system tools return nothing or query is pure OSINT context
+7. **Never use generic web lookups when a structured tool exists**
 
 ## Critical Conventions
 
@@ -93,6 +118,13 @@ All investigative output — conversational analysis, reports, case artefacts �
 
 ### Timestamps and utilities
 - Use `utcnow()` from `tools/common.py` — never `datetime.now()` or `datetime.utcnow()`
+
+### Metrics logging
+- Use `log_metric(event, *, case_id, **fields)` from `tools/common.py` for investigation metrics
+- Metrics are written to `registry/metrics.jsonl` (thread-safe JSONL append, same pattern as `audit()`)
+- Event types: `case_phase_change`, `enrichment_complete`, `verdict_scored`, `report_saved`, `investigation_summary`
+- Pipeline tools emit metrics automatically — don't call `log_metric()` for events already emitted by `enrich()`, `score_verdicts()`, `save_report()`, or `index_case()`
+- Query with: `python3 scripts/metrics_report.py` (summary), `--compare` (analyst comparison), `--json` (raw)
 
 ### Report defanging
 - Malicious + suspicious IOCs are defanged in final reports via `defang_report()` in `tools/common.py`
@@ -118,3 +150,7 @@ Read these only when working on the relevant area:
 | `docs/sandbox.md` | Sandbox detonation: setup, network modes, artefacts, safety, interactive mode |
 | `docs/mcp-server.md` | MCP server: auth, RBAC, tools, resources, prompts, deployment |
 | `docs/roadmap.md` | Planned features: tiered incident model, SOAR/Zoho integration |
+| `docs/incident-handling.md` | SOC process: role priorities, SOAR queue workflow, escalation rules |
+| `docs/service-requests.md` | SOC process: SD queue monitoring, ticket lifecycle, Teams channels |
+| `docs/time-tracking.md` | SOC process: Kantata categories, overtime logging, on-call hours |
+| `docs/critical-incident-management.md` | SOC process: P1/P2 checklists, war rooms, P1 flow diagram, IR activation |

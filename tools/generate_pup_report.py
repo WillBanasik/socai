@@ -282,8 +282,10 @@ def _build_context(case_id: str) -> str:
         for ioc_type, vals in ioc_dict.items():
             if vals:
                 parts.append(f"### {ioc_type.upper()} ({len(vals)})")
-                for v in vals[:50]:
+                for v in vals[:10]:
                     parts.append(f"  - {v}")
+                if len(vals) > 10:
+                    parts.append(f"  - ... and {len(vals) - 10} more")
         parts.append("")
 
     # Verdict summary
@@ -299,7 +301,7 @@ def _build_context(case_id: str) -> str:
         ioc_details = verdict.get("iocs", {})
         if ioc_details:
             parts.append("\n### Per-IOC Verdict Detail")
-            for ioc_val, info in list(ioc_details.items())[:30]:
+            for ioc_val, info in list(ioc_details.items())[:15]:
                 providers = ", ".join(
                     f"{p}:{v}" for p, v in info.get("providers", {}).items()
                 )

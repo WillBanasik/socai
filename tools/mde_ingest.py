@@ -90,7 +90,9 @@ def _parse_csv_text(text: str) -> list[dict]:
         text = text.lstrip("\ufeff")
         reader = csv.DictReader(io.StringIO(text))
         return [row for row in reader]
-    except Exception:
+    except Exception as exc:
+        log_error("", "mde_ingest:parse_csv_text", str(exc),
+                  severity="warning", traceback=True)
         return []
 
 
@@ -595,8 +597,10 @@ def _extract_entities(rows: list[dict]) -> dict:
         if eid:
             try:
                 entities["event_ids"].add(str(int(eid)))
-            except (ValueError, TypeError):
-                pass
+            except (ValueError, TypeError) as exc:
+                log_error("", "mde_ingest:extract_entities", str(exc),
+                          severity="info", traceback=True,
+                          context={"field": "eventid", "value": str(eid)})
 
         # DNS cache record names (domains)
         rname = row_lower.get("recordname")
@@ -630,7 +634,10 @@ def _normalise_and_write(
     for row in rows:
         try:
             normalised_rows.append(normaliser(row))
-        except Exception:
+        except Exception as exc:
+            log_error(case_id, "mde_ingest:normalise_row", str(exc),
+                      severity="warning", traceback=True,
+                      context={"artefact": artefact_name})
             normalised_rows.append(_norm_generic(row))
 
     entities = _extract_entities(normalised_rows)
@@ -724,7 +731,10 @@ def _read_zip_text(zf: zipfile.ZipFile, name: str, pwd: bytes | None) -> str:
     for enc in ("utf-16", "utf-8-sig", "utf-8", "latin-1"):
         try:
             return raw.decode(enc)
-        except (UnicodeDecodeError, UnicodeError):
+        except (UnicodeDecodeError, UnicodeError) as exc:
+            log_error("", "mde_ingest:read_zip_text", str(exc),
+                      severity="info", traceback=True,
+                      context={"file": name, "encoding": enc})
             continue
     return raw.decode("utf-8", errors="ignore")
 
@@ -787,6 +797,8 @@ def mde_ingest(
                             "source": name, "dest": str(dest), "size": len(data),
                         })
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:extract_collection_summary", str(exc),
+                                  severity="warning", traceback=True)
                         warnings.append(f"Failed to extract CollectionSummaryReport: {exc}")
 
             # ----- System Information -----
@@ -803,6 +815,8 @@ def mde_ingest(
                             )
                             artefacts_processed.append(r)
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:parse_system_info", str(exc),
+                                  severity="warning", traceback=True)
                         warnings.append(f"Error parsing System Information: {exc}")
 
             # ----- Processes -----
@@ -817,6 +831,8 @@ def mde_ingest(
                             )
                             artefacts_processed.append(r)
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:parse_processes", str(exc),
+                                  severity="warning", traceback=True)
                         warnings.append(f"Error parsing Processes: {exc}")
 
             # ----- Services -----
@@ -831,6 +847,8 @@ def mde_ingest(
                             )
                             artefacts_processed.append(r)
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:parse_services", str(exc),
+                                  severity="warning", traceback=True)
                         warnings.append(f"Error parsing Services: {exc}")
 
             # ----- Scheduled tasks -----
@@ -845,6 +863,8 @@ def mde_ingest(
                             )
                             artefacts_processed.append(r)
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:parse_scheduled_tasks", str(exc),
+                                  severity="warning", traceback=True)
                         warnings.append(f"Error parsing Scheduled tasks: {exc}")
 
             # ----- Installed programs -----
@@ -860,6 +880,8 @@ def mde_ingest(
                             )
                             artefacts_processed.append(r)
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:parse_installed_programs", str(exc),
+                                  severity="warning", traceback=True)
                         warnings.append(f"Error parsing Installed programs: {exc}")
 
             # ----- Network connections -----
@@ -907,6 +929,9 @@ def mde_ingest(
                             "size": len(text),
                         })
                 except Exception as exc:
+                    log_error(case_id, "mde_ingest:parse_network_connections", str(exc),
+                              severity="warning", traceback=True,
+                              context={"file": Path(name).name})
                     warnings.append(f"Error parsing Network connections/{Path(name).name}: {exc}")
 
             # ----- Security event log (.evtx) -----
@@ -924,6 +949,8 @@ def mde_ingest(
                         })
                         print(f"[mde] Extracted security EVTX: {Path(name).name} ({len(data)} bytes)")
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:extract_security_evtx", str(exc),
+                                  severity="warning", traceback=True)
                         warnings.append(f"Error extracting Security event log: {exc}")
 
             # ----- Autoruns -----
@@ -935,6 +962,9 @@ def mde_ingest(
                         rows = _parse_autoruns_registry(text, Path(name).name)
                         all_autorun_rows.extend(rows)
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:parse_autoruns", str(exc),
+                                  severity="warning", traceback=True,
+                                  context={"file": Path(name).name})
                         warnings.append(f"Error parsing Autoruns/{Path(name).name}: {exc}")
             if all_autorun_rows:
                 r = _normalise_and_write(
@@ -968,6 +998,9 @@ def mde_ingest(
                             "size": len(data),
                         })
                 except Exception as exc:
+                    log_error(case_id, "mde_ingest:parse_prefetch", str(exc),
+                              severity="warning", traceback=True,
+                              context={"file": Path(name).name})
                     warnings.append(f"Error processing Prefetch/{Path(name).name}: {exc}")
 
             # ----- SMB sessions -----
@@ -979,6 +1012,8 @@ def mde_ingest(
                         rows = _parse_smb_sessions_txt(text)
                         all_smb_rows.extend(rows)
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:parse_smb_sessions", str(exc),
+                                  severity="warning", traceback=True)
                         warnings.append(f"Error parsing SMB sessions: {exc}")
             if all_smb_rows:
                 r = _normalise_and_write(
@@ -995,6 +1030,8 @@ def mde_ingest(
                         rows = _parse_temp_dir_listing(text, Path(name).stem)
                         all_temp_rows.extend(rows)
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:parse_temp_directories", str(exc),
+                                  severity="warning", traceback=True)
                         warnings.append(f"Error parsing Temp Directories: {exc}")
             if all_temp_rows:
                 r = _normalise_and_write(
@@ -1011,6 +1048,8 @@ def mde_ingest(
                         rows = _parse_users_groups_txt(text, Path(name).name)
                         all_ug_rows.extend(rows)
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:parse_users_groups", str(exc),
+                                  severity="warning", traceback=True)
                         warnings.append(f"Error parsing Users and Groups: {exc}")
             if all_ug_rows:
                 r = _normalise_and_write(
@@ -1032,13 +1071,18 @@ def mde_ingest(
                             "size": len(data),
                         })
                     except Exception as exc:
+                        log_error(case_id, "mde_ingest:extract_wd_support_logs", str(exc),
+                                  severity="warning", traceback=True)
                         warnings.append(f"Error extracting WdSupportLogs: {exc}")
 
     except zipfile.BadZipFile as exc:
+        log_error(case_id, "mde_ingest:open_zip", str(exc),
+                  severity="error", traceback=True,
+                  context={"source": str(source)})
         return {"status": "error", "reason": f"Bad ZIP file: {exc}"}
     except Exception as exc:
         log_error(case_id, "mde_ingest", str(exc), severity="error",
-                  context={"source": str(source)})
+                  traceback=True, context={"source": str(source)})
         return {"status": "error", "reason": str(exc)}
 
     # Build manifest

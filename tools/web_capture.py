@@ -90,14 +90,16 @@ class _BrowserPool:
         if self._sync_browser is not None:
             try:
                 self._sync_browser.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log_error("", "web_capture.browser_pool.close_browser", str(exc),
+                          severity="warning", traceback=True)
             self._sync_browser = None
         if self._sync_pw is not None:
             try:
                 self._sync_pw.stop()
-            except Exception:
-                pass
+            except Exception as exc:
+                log_error("", "web_capture.browser_pool.stop_playwright", str(exc),
+                          severity="warning", traceback=True)
             self._sync_pw = None
         self._use_count = 0
 
@@ -373,8 +375,9 @@ def _capture_with_playwright(url: str) -> dict:
     finally:
         try:
             context.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error("", "web_capture.playwright.close_context", str(exc),
+                      severity="warning", traceback=True, context={"url": url})
 
     return data
 
@@ -658,7 +661,9 @@ def _write_capture_artefacts(url: str, case_id: str, data: dict) -> dict:
     final_hostname = _safe_dirname(data["final_url"]).split("_")[0]  # strip port
     try:
         parsed_host = urllib.parse.urlparse(data["final_url"]).hostname
-    except Exception:
+    except Exception as exc:
+        log_error(case_id, "web_capture.parse_hostname", str(exc),
+                  severity="info", traceback=True, context={"final_url": data["final_url"]})
         parsed_host = final_hostname
     if parsed_host and data["final_url"].startswith("https"):
         tls_cert = _extract_tls_cert(parsed_host)
@@ -739,8 +744,9 @@ def _web_capture_batch_sync(urls: list[str], case_id: str) -> list[dict]:
     finally:
         try:
             context.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error(case_id, "web_capture_batch.close_context", str(exc),
+                      severity="warning", traceback=True)
     return results
 
 
@@ -802,8 +808,9 @@ async def _async_capture_page(url: str, context, semaphore) -> dict:
                                         "content_type": ct,
                                         "body": body,
                                     })
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            log_error("", "web_capture.async_xhr_intercept", str(exc),
+                                      severity="warning", traceback=True, context={"url": response.url})
 
             def _on_frame_navigated(frame):
                 if frame.parent_frame is None:
@@ -857,6 +864,8 @@ async def _async_capture_page(url: str, context, semaphore) -> dict:
                         "screenshot_bytes": await inter_page.screenshot(full_page=True),
                     })
                 except Exception as e:
+                    log_error("", "web_capture.async_intermediate_hop", str(e),
+                              severity="warning", traceback=True, context={"url": inter_url, "hop": i + 1})
                     intermediate_captures.append({
                         "url": inter_url,
                         "hop_index": i + 1,
