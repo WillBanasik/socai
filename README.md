@@ -1,4 +1,4 @@
-# SOC-AI
+# SOCAI
 
 AI-augmented Security Operations Centre platform. Analyst-driven, human-in-the-loop investigation pipeline powered by Claude Desktop via MCP.
 
