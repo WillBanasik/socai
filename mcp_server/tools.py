@@ -179,6 +179,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         fresh investigation context.  Clears tool-sequence session tracking
         for this caller so the next case gets a fresh session ID.
         """
+        _require_scope("investigations:read")
         from mcp_server.auth import _get_caller_email
         from mcp_server.usage import _sessions, _session_lock
         caller = _get_caller_email()
@@ -3708,7 +3709,7 @@ def _register_tier2_rumsfeld(mcp: FastMCP) -> None:
 
         Returns guidance on how to generate the matrix.
         """
-        _require_scope("investigations:write")
+        _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
         return _json({
@@ -3749,7 +3750,7 @@ def _register_tier2_rumsfeld(mcp: FastMCP) -> None:
         then call ``add_finding`` with your conclusion
         to persist it, or call ``add_finding`` with your conclusion.
         """
-        _require_scope("investigations:write")
+        _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
         return _json({
@@ -3790,7 +3791,7 @@ def _register_tier2_rumsfeld(mcp: FastMCP) -> None:
             case_id: The case to execute against
             proposal_id: The proposal ID (e.g. "p_001")
         """
-        _require_scope("investigations:write")
+        _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
         from api.actions import execute_followup_proposal as _exec
@@ -4910,7 +4911,7 @@ def _register_intelligence(mcp: FastMCP) -> None:
         client_name : str
             Client name (case-insensitive).
         """
-        _require_scope("investigations:write")
+        _require_scope("investigations:submit")
 
         result = await asyncio.to_thread(
             lambda: __import__("tools.client_baseline", fromlist=["build_client_baseline"])
@@ -4936,7 +4937,7 @@ def _register_intelligence(mcp: FastMCP) -> None:
         ip : str
             IPv4 or IPv6 address.
         """
-        _require_scope("enrichment:run")
+        _require_scope("investigations:read")
 
         result = await asyncio.to_thread(
             lambda: __import__("tools.geoip", fromlist=["lookup_ip"])
@@ -5371,7 +5372,7 @@ def _register_coverage(mcp: FastMCP) -> None:
         full : bool
             Include retention analysis (default: False).
         """
-        _require_scope("investigations:write")
+        _require_scope("investigations:submit")
 
         from tools.log_coverage import collect_log_sources
         result = await asyncio.to_thread(lambda: collect_log_sources(client_name, full=full))
@@ -5406,7 +5407,7 @@ def _register_exposure(mcp: FastMCP) -> None:
         include_typosquats : bool
             Include typosquat detection (default: True).
         """
-        _require_scope("investigations:write")
+        _require_scope("investigations:submit")
 
         from tools.exposure_test import run_exposure_test
         domain_list = [d.strip() for d in domains.split(",") if d.strip()] or None
