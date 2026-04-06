@@ -6,7 +6,7 @@ Investigations are human-in-the-loop (HITL). The analyst drives each step via MC
 
 ### Typical Tool Sequence
 
-Case creation is **deferred** — the analyst investigates caseless during triage and assessment. The case materialises automatically when a deliverable tool is called (`prepare_mdr_report`, `prepare_pup_report`, `prepare_fp_ticket`). Analysts can still call `create_case` manually at any point.
+Case creation is **deferred** — the analyst investigates caseless during triage and assessment. The case materialises automatically when a deliverable tool is called (`prepare_mdr_report`, `prepare_pup_report`, `prepare_fp_ticket`, `prepare_fp_tuning_ticket`). Analysts can still call `create_case` manually at any point.
 
 ```
 ── Caseless tools (no case_id required) ──
@@ -36,9 +36,10 @@ Case creation is **deferred** — the analyst investigates caseless during triag
 16. analyse_pe            → PE static analysis + auto-run YARA scan (run_yara=True)
 
 ── Deliverable phase (case auto-created + promoted if needed) ──
-17. prepare_mdr_report    → MDR report (auto-creates case if needed, auto-closes)
-    prepare_pup_report    → PUP report (auto-creates case if needed, auto-closes)
-    prepare_fp_ticket     → FP ticket (auto-creates case if needed, auto-closes)
+17. prepare_mdr_report         → MDR report (auto-creates case if needed, auto-closes)
+    prepare_pup_report         → PUP report (auto-creates case if needed, auto-closes)
+    prepare_fp_ticket          → FP ticket (auto-creates case if needed, auto-closes)
+    prepare_fp_tuning_ticket   → SIEM tuning ticket (auto-creates case if needed, auto-closes)
 ```
 
 **Typical analyst flow:** `quick_enrich` (caseless IOC lookup) → if malicious, `create_case(enrichment_id=...)` → case-bound analysis → deliverable. The enrichment results carry over without re-running provider calls.

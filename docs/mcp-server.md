@@ -130,9 +130,9 @@ python3 -c "from api.auth import create_token_for_role; print(create_token_for_r
 
 When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg-soc-analyst`, `sg-soc-senior`) to these role names in the auth config.
 
-## Tools (100)
+## Tools (103)
 
-### Tier 1 -- Core Investigation (27)
+### Tier 1 -- Core Investigation (29)
 
 | Tool | Permission | Description |
 |---|---|---|
@@ -160,6 +160,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `classify_attack` | `investigations:read` | Deterministic attack-type classification |
 | `plan_investigation` | `investigations:read` | Full investigation plan with phases and dependencies |
 | `quick_enrich` | `investigations:read` | Caseless ad-hoc IOC enrichment (no case required) |
+| `import_enrichment` | `investigations:submit` | Import caseless enrichment results into a case (avoids re-enrichment) |
 | `query_opencti` | `investigations:read` | Direct OpenCTI queries (IOCs, CVEs, keyword search) |
 | `extract_iocs_from_text` | — | Extract IOCs from raw text (caseless) |
 | `lookup_soc_process` | `investigations:read` | Look up SOC operational processes (incident handling, P1/P2, service desk, time tracking) |
@@ -243,12 +244,13 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `run_client_exposure_test` | `investigations:write` | External attack surface assessment (DNS, certs, email security, typosquats) |
 | `get_client_exposure_report` | `investigations:read` | Return latest exposure test results for a client |
 
-### Tier 3 -- Advanced / Restricted (25)
+### Tier 3 -- Advanced / Restricted (26)
 
 | Tool | Permission | Description |
 |---|---|---|
 | `run_kql` | `sentinel:query` | Execute KQL query against Sentinel |
 | `load_kql_playbook` | `sentinel:query` | Load KQL playbook stages |
+| `load_cql_playbook` | `sentinel:query` | Load CQL (LogScale) playbook stages |
 | `generate_sentinel_query` | `sentinel:query` | Generate composite Sentinel queries |
 | `run_kql_batch` | `sentinel:query` | Execute multiple KQL queries concurrently (max 4 workers) |
 | `security_arch_review` | `investigations:submit` | Security architecture review (collects context; use `write_security_arch_review` prompt) |
@@ -273,14 +275,14 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `memory_dump_guide` | `investigations:submit` | MDE Live Response dump collection guidance |
 | `analyse_memory_dump` | `investigations:submit` | Process memory dump analysis (strings, IOCs, risk scoring) |
 
-## Resources (36)
+## Resources (44)
 
 | URI | Description |
 |---|---|
 | `socai://capabilities` | Structured overview of all tools, prompts, and resources |
 | `socai://cases` | All cases from registry |
 | `socai://cases/{case_id}/meta` | Case metadata |
-| `socai://cases/{case_id}/report` | Investigation report |
+| `socai://cases/{case_id}/report` | Final HTML report (MDR, PUP, or legacy — whichever exists) |
 | `socai://cases/{case_id}/iocs` | Extracted IOCs |
 | `socai://cases/{case_id}/verdicts` | Verdict summary |
 | `socai://cases/{case_id}/enrichment` | Enrichment data |
@@ -300,10 +302,14 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://clients/{client_name}/playbook` | Client response playbook |
 | `socai://clients/{client_name}/knowledge` | Client knowledge base (environment, security stack, network, identity, historical patterns) |
 | `socai://clients/{client_name}/sentinel` | Sentinel workspace reference (workspace ID, available tables, key query patterns) |
+| `socai://templates/mdr-report` | MDR report HTML template — 5-section structure, Gold Analyst Instruction Set, CSS styling |
+| `socai://templates/pup-report` | PUP/PUA report HTML template — lightweight 5-section structure, CSS styling |
 | `socai://enrichment-providers` | Configured TI providers and availability per IOC type |
 | `socai://ioc-index/stats` | IOC index summary with tier breakdown |
 | `socai://playbooks` | KQL playbook index |
-| `socai://playbooks/{id}` | Full playbook with stages |
+| `socai://playbooks/{id}` | Full KQL playbook with stages |
+| `socai://cql-playbooks` | CQL (LogScale) playbook index |
+| `socai://cql-playbooks/{playbook_id}` | Full CQL playbook with stages |
 | `socai://sentinel-queries` | Sentinel composite query scenarios |
 | `socai://logscale-syntax` | LogScale (Humio) query language reference — operators, functions, pitfalls |
 | `socai://ngsiem-rules` | NGSIEM detection rule authoring — syntax conventions, patterns, anti-patterns, log source tags |
@@ -313,17 +319,22 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://articles` | Threat article index |
 | `socai://landscape` | Threat landscape summary |
 | `socai://role` | Current analyst role, permissions, and behavioural instructions |
+| `socai://incident-handling` | SOC process: role priorities, SOAR queue workflow, escalation rules |
+| `socai://service-requests` | SOC process: SD queue monitoring, ticket lifecycle, Teams channels |
+| `socai://time-tracking` | SOC process: Kantata categories, overtime logging, on-call hours |
+| `socai://critical-incident-management` | SOC process: P1/P2 checklists, war rooms, P1 flow diagram, IR activation |
 
-## Prompts (21)
+## Prompts (22)
 
-### Guided Workflows (5)
+### Guided Workflows (6)
 
 | Prompt | Description |
 |---|---|
 | `hitl_investigation` | Guided step-by-step investigation (client gate → intake → playbook → disposition → output) |
 | `triage_alert` | Guided alert triage workflow |
 | `write_fp_ticket` | FP ticket generation workflow |
-| `kql_investigation` | Unified KQL playbook prompt (select playbook: phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, ioc-hunt) |
+| `kql_investigation` | Unified KQL playbook prompt (select playbook: bec, phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, ioc-hunt) |
+| `cql_investigation` | Unified CQL (LogScale) playbook prompt (select playbook: account-compromise, ioc-hunt, lateral-movement, malware-execution) |
 | `user_security_check` | Broad-scope user account security review (identity validation → alerts → sign-in risk → email threats → activity audit → risk assessment) |
 
 ### Report Generation (8)
