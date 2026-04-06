@@ -214,6 +214,18 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
     Group cases sharing IOCs into campaigns.
     If case_id is provided, also writes per-case campaign links.
     """
+    # --- Guard: block clustering on closed cases ---
+    if case_id:
+        meta_path = CASES_DIR / case_id / "case_meta.json"
+        if meta_path.exists():
+            try:
+                _meta = load_json(meta_path)
+                if _meta.get("status") == "closed":
+                    return {"error": f"Case {case_id} is closed — cannot cluster a closed case.",
+                            "case_id": case_id}
+            except Exception:
+                pass
+
     ioc_index = _load_optional(IOC_INDEX_FILE)
     if not ioc_index:
         return {"status": "no_data", "reason": "ioc_index.json not found or empty", "campaigns": []}

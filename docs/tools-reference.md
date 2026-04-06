@@ -423,10 +423,10 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 `tools/fp_ticket.py` collects case context for False Positive closure comments:
 - Identifies alerting platform from alert data structure (Sentinel, CrowdStrike, Defender, Entra, Cloud Apps) — or accepts `--platform` override
 - **Live workspace query** (`--live-query`): enables read-only KQL against the alert's Log Analytics workspace via `az monitor log-analytics query`. Max 1 query per ticket, 50 rows each, 60s timeout.
-- Output format: plain-text closure comment (max 2 sentences) tailored to alert type (IOC-based, identity, endpoint, lateral movement, data access) — no markdown, no tuning suggestions
+- Output format: HTML closure comment (max 2 sentences) tailored to alert type (IOC-based, identity, endpoint, lateral movement, data access) — no tuning suggestions
 - **Auto-closes** the case with disposition `false_positive` on successful save
 - Use the `write_fp_closure` prompt followed by `save_report` to generate and persist
-- Outputs: `artefacts/fp_comms/fp_ticket.md` + `fp_ticket_manifest.json`
+- Outputs: `artefacts/fp_comms/fp_ticket.html` + `fp_ticket_manifest.json`
 
 ## PUP/PUA Report Generation
 
@@ -441,9 +441,9 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 
 ### Report
 
-`generate_pup_report(case_id)` collects context from case artefacts for a PUP-specific report. The report focuses on software identification, scope assessment, risk level, and removal steps — lighter than a full MDR report. Use the `write_pup_report` prompt followed by `save_report` to generate and persist.
+`generate_pup_report(case_id)` collects context from case artefacts for a PUP-specific report. The report covers: summary, path & file details, access vector, actions taken, and recommendations — lighter than a full MDR report. Use the `write_pup_report` prompt followed by `save_report` to generate and persist. Read `socai://templates/pup-report` for the HTML skeleton.
 
-- Output: `cases/<ID>/reports/pup_report.md` + `pup_report_manifest.json`
+- Output: `cases/<ID>/reports/pup_report.html` + `pup_report_manifest.json`
 - **Auto-closes** the case with disposition `pup_pua` on successful generation
 - CLI: `python3 socai.py pup-report --case IV_CASE_001`
 
@@ -519,15 +519,17 @@ Classification runs early in the investigation (before case creation). Results a
 - 6 sections: What happened, Who affected, Risk rating (RAG), What's been done, Next steps, Business risk
 - Constraints: no CVE IDs, no IPs, no hashes, no tool names, no unexplained acronyms, reading age 14, max 500 words
 - Use the `write_executive_summary` prompt followed by `save_report` to generate and persist
-- Output: `artefacts/executive_summary/executive_summary.md` + manifest
+- Output: `artefacts/executive_summary/executive_summary.html` + manifest
 
 ## Security Architecture Review
 
-`tools/security_arch_review.py` collects case context for a security architecture review. Produces a six-section markdown report: Threat Profile (MITRE ATT&CK), Control Gap Analysis, Microsoft Stack Recommendations, CrowdStrike Falcon Recommendations, Prioritised Remediation Table, Detection Engineering Notes.
+`tools/security_arch_review.py` collects case context for a security architecture review. Produces a six-section HTML report: Threat Profile (MITRE ATT&CK), Control Gap Analysis, Microsoft Stack Recommendations, CrowdStrike Falcon Recommendations, Prioritised Remediation Table, Detection Engineering Notes.
 
 Use the `write_security_arch_review` prompt followed by `save_report` to generate and persist. The local Claude session has the full investigation context for better analysis.
 
-Outputs: `security_arch_review.md`, `security_arch_structured.json`, `security_arch_manifest.json`
+**Recommended flow:** Run sec arch review *before* the MDR report. The MDR report's `_build_context()` automatically loads the sec arch findings and the `write_mdr_report` prompt instructs Claude Desktop to distil the control gap analysis and platform-specific recommendations into the Client-Responsible Remediation subsection — producing specific, actionable hardening steps rather than generic advice.
+
+Outputs: `security_arch_review.html`, `security_arch_structured.json`, `security_arch_manifest.json`
 
 ## Response Actions
 
@@ -544,7 +546,7 @@ Outputs: `security_arch_review.md`, `security_arch_structured.json`, `security_a
 
 ## Report Generation
 
-`generate_report.py` collects all available artefact JSON files (all optional) as context for report generation. Use the `write_mdr_report` prompt followed by `save_report` to generate and persist. Report section order after the executive summary:
+`generate_report.py` collects all available artefact JSON files (all optional) as context for report generation. Use the `write_mdr_report` prompt followed by `save_report` to generate and persist as HTML. Read `socai://templates/mdr-report` for the HTML skeleton and CSS styling. Report section order after the executive summary:
 
 1. Triage — Known IOCs Detected (if triage found known-malicious/suspicious)
 2. Brand Impersonation Detected (if phishing_detection.json has findings)
@@ -1012,6 +1014,6 @@ See `docs/sandbox.md` for full setup guide and safety details.
 
 Two MCP tools persist output generated by the local Claude agent:
 
-- **`save_report`** — persists a report generated via any `write_*` prompt. Handles IOC defanging, HTML conversion, auto-close (for MDR/PUP/FP deliverables), and audit logging. No LLM call.
+- **`save_report`** — persists a report generated via any `write_*` prompt. Accepts HTML directly (or markdown for legacy compatibility). Handles IOC defanging, auto-close (for MDR/PUP/FP deliverables), and audit logging. No LLM call. Reports are immediately available via `socai://cases/{id}/report` after saving.
 - **`save_threat_article`** — persists a threat article to the article index. Handles dedup, markdown + HTML output. No LLM call.
 - **`add_finding`** — persists structured analytical output (determination, investigation matrix, quality gate review) to case artefacts. Used as the save mechanism for analysis prompts (`run_determination`, `build_investigation_matrix`, `review_report`, etc.).

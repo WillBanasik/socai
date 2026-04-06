@@ -49,24 +49,28 @@ The exact sequence depends on attack type. `classify_attack` returns the recomme
 
 All LLM reasoning — report writing, disposition analysis, quality review — is handled by the analyst's local Claude Desktop agent. The MCP server provides prompts that load system instructions and case data into the local session, and save tools that persist the output.
 
-**Workflow:** Select MCP prompt (e.g. `write_mdr_report`) -> local Claude generates the report with full conversation context -> call `save_report` / `save_threat_article` to persist (handles defanging, HTML conversion, auto-close, audit).
+**Workflow:** Select MCP prompt (e.g. `write_mdr_report`) -> local Claude generates the report as a complete HTML document using the template CSS -> call `save_report` / `save_threat_article` to persist (handles defanging, auto-close, audit). Read `socai://templates/mdr-report` or `socai://templates/pup-report` for the HTML skeleton and styling.
+
+**Recommended flow for enhanced recommendations:** Run `write_security_arch_review` before `write_mdr_report`. The sec arch review analyses control gaps and produces platform-specific hardening recommendations (CA policies, ASR rules, Sentinel analytics, CrowdStrike prevention). When the MDR report is generated, `_build_context()` automatically loads the sec arch findings, and the prompt instructs Claude Desktop to distil them into the Client-Responsible Remediation subsection. If sec arch hasn't been run, the MDR report still works — it just has standard recommendations.
 
 **Why local:** The analyst's session has the full investigation conversation, producing better output than a cold context-free call. The analyst can iterate ("rewrite section 3") without re-invoking tools.
+
+**All reports are HTML.** Prompts include the CSS styling inline. Template resources (`socai://templates/mdr-report`, `socai://templates/pup-report`) provide complete HTML skeletons. `save_report` accepts HTML directly — if markdown is passed (legacy), it is converted automatically.
 
 Note: The server-side tool names (`prepare_mdr_report`, `prepare_pup_report`, `prepare_fp_ticket`, etc.) still exist as MCP tools but now redirect to the prompt workflow — they collect case data and return it for the local agent to process, rather than making direct API calls.
 
 ### Report Prompts
 
-| Prompt | Auto-closes | Save tool |
-|---|---|---|
-| `write_mdr_report` | Yes (preserves disposition) | `save_report` |
-| `write_pup_report` | Yes (`pup_pua`) | `save_report` |
-| `write_fp_closure` | Yes (`false_positive`) | `save_report` |
-| `write_fp_tuning` | No | `save_report` |
-| `write_executive_summary` | No | `save_report` |
-| `write_security_arch_review` | No | `save_report` |
-| `write_threat_article` | N/A | `save_threat_article` |
-| `write_response_plan` | No | `save_report` |
+| Prompt | Auto-closes | Disposition | Save tool |
+|---|---|---|---|
+| `write_mdr_report` | Yes | Preserves existing | `save_report` |
+| `write_pup_report` | Yes | `pup_pua` | `save_report` |
+| `write_fp_closure` | Yes | `false_positive` | `save_report` |
+| `write_fp_tuning` | Yes | `false_positive` | `save_report` |
+| `write_executive_summary` | No | — | `save_report` |
+| `write_security_arch_review` | No | — | `save_report` |
+| `write_threat_article` | N/A | — | `save_threat_article` |
+| `write_response_plan` | No | — | `save_report` |
 
 ### Analysis Prompts
 
@@ -117,7 +121,7 @@ The classified `attack_type` and `attack_type_confidence` are stored in `case_me
 
 ### PUP/PUA Short-Circuit
 
-When classified as `pup_pua`, the workflow short-circuits after enrichment. `generate_pup_report()` produces a lightweight PUP-specific report covering: software identification, scope assessment, risk evaluation, and removal steps. The report is saved to `cases/<ID>/reports/pup_report.md`. The case is auto-closed with disposition `pup_pua` when the PUP report is generated (handled inside the tool).
+When classified as `pup_pua`, the workflow short-circuits after enrichment. Use the `write_pup_report` prompt to produce a lightweight HTML report covering: summary, path & file details, access vector, actions taken, and recommendations. The report is saved to `cases/<ID>/reports/pup_report.html` via `save_report`. The case is auto-closed with disposition `pup_pua`.
 
 ## Auto-disposition
 
@@ -131,15 +135,18 @@ Alternatively, when a deliverable is needed, case creation is deferred entirely 
 
 ## Auto-close on Deliverable Collection
 
-Cases auto-close when the analyst collects their deliverable. The close logic lives in the tool layer so it works consistently across all entry points (CLI, MCP server, client-side save):
+Deliverable reports auto-close the case when saved via `save_report`. Executive summary and security arch review are supplementary outputs that do NOT auto-close. The close logic lives in the tool layer so it works consistently across all entry points (CLI, MCP server, client-side save):
 
-| Deliverable | Server Tool | Client-Side Prompt + Save | Disposition |
+| Deliverable | Client-Side Prompt + Save | Auto-closes | Disposition |
 |---|---|---|---|
-| MDR report | `prepare_mdr_report()` | `write_mdr_report` → `save_report` | Preserves existing |
-| PUP report | `prepare_pup_report()` | `write_pup_report` → `save_report` | `pup_pua` |
-| FP ticket | `fp_ticket()` | `write_fp_closure` → `save_report` | `false_positive` |
+| MDR report | `write_mdr_report` → `save_report` | Yes | Preserves existing |
+| PUP report | `write_pup_report` → `save_report` | Yes | `pup_pua` |
+| FP ticket | `write_fp_closure` → `save_report` | Yes | `false_positive` |
+| FP tuning ticket | `write_fp_tuning` → `save_report` | Yes | `false_positive` |
+| Executive summary | `write_executive_summary` → `save_report` | No | — |
+| Security arch review | `write_security_arch_review` → `save_report` | No | — |
 
-Each path calls `index_case(case_id, status="closed", ...)` on successful generation/save. If the tool fails, the case remains open. On close, `index_case` emits an `investigation_summary` metric with computed durations (total, triage, investigation minutes) from `phase_timestamps`.
+Each auto-close path calls `index_case(case_id, status="closed", ...)` on successful save. If the tool fails, the case remains open. On close, `index_case` emits an `investigation_summary` metric with computed durations (total, triage, investigation minutes) from `phase_timestamps`.
 
 ## Client Playbook Resolution
 

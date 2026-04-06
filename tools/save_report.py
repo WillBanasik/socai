@@ -57,8 +57,8 @@ _REPORT_TYPES = {
     "fp_tuning_ticket": {
         "path": "artefacts/fp_comms/fp_tuning_ticket.html",
         "title_prefix": "FP Tuning Ticket",
-        "auto_close": False,
-        "disposition": None,
+        "auto_close": True,
+        "disposition": "false_positive",
         "defang": False,
     },
     "executive_summary": {
@@ -145,18 +145,30 @@ def save_report_to_case(
             log_error(case_id, "save_report.defang", str(exc),
                       severity="warning", traceback=tb.format_exc())
 
-    # Prepend header
     ts = utcnow()
-    header = (
-        f"# {cfg['title_prefix']} — {case_id}\n\n"
-        f"_Generated: {ts} | Source: Claude Desktop (client-side)_\n\n---\n\n"
-    )
-    full_text = header + report_text
-
-    # Write HTML report
     out_path = case_dir / cfg["path"]
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    write_report(out_path, full_text, title=f"{cfg['title_prefix']} — {case_id}")
+
+    # Detect whether input is already HTML or markdown
+    _stripped = report_text.lstrip()
+    is_html = (
+        _stripped.startswith("<!DOCTYPE")
+        or _stripped.startswith("<html")
+        or _stripped.startswith("<head")
+    )
+
+    if is_html:
+        # Already HTML — write directly (no conversion)
+        from tools.common import write_artefact
+        write_artefact(out_path, report_text)
+    else:
+        # Markdown — convert to styled HTML via write_report
+        header = (
+            f"# {cfg['title_prefix']} — {case_id}\n\n"
+            f"_Generated: {ts} | Source: Claude Desktop (client-side)_\n\n---\n\n"
+        )
+        full_text = header + report_text
+        write_report(out_path, full_text, title=f"{cfg['title_prefix']} — {case_id}")
 
 
     # Auto-close if applicable

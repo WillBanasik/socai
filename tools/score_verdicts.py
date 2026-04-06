@@ -86,6 +86,18 @@ def score_verdicts(case_id: str) -> dict:
     Aggregate per-provider verdicts from enrichment.json into verdict_summary.json.
     Returns the summary dict (also written to disk).
     """
+    # --- Guard: block verdict scoring on closed cases ---
+    meta_path = CASES_DIR / case_id / "case_meta.json"
+    if meta_path.exists():
+        try:
+            from tools.common import load_json as _load
+            _meta = _load(meta_path)
+            if _meta.get("status") == "closed":
+                print(f"[score_verdicts] Case {case_id} is closed — skipping verdict scoring.")
+                return {"error": f"Case {case_id} is closed.", "case_id": case_id}
+        except Exception:
+            pass
+
     enrich_path = CASES_DIR / case_id / "artefacts" / "enrichment" / "enrichment.json"
     if not enrich_path.exists():
         print(f"[score_verdicts] enrichment.json not found — skipping verdict scoring.")

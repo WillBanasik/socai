@@ -1,0 +1,554 @@
+// ---
+// name: BEC Investigation & Response
+// description: >
+//   Full BEC (Business Email Compromise) lifecycle playbook. Containment first,
+//   investigation second.
+//
+//   Stage 1 establishes the phishing delivery scope and identifies clickers.
+//   Stage 2 (MANDATORY, IMMEDIATE) extracts MDO block entities — URLs and
+//   sender addresses. The analyst MUST submit these blocks in MDO before
+//   continuing with the investigation. This is the first containment action.
+//   Stage 3 checks ZAP remediation status and exposure time.
+//   Stage 4 checks for credential compromise via post-phishing sign-ins.
+//   Stage 5 hunts for BEC persistence mechanisms on compromised accounts.
+//   Stage 6 assesses attacker email activity (send-as, BEC payloads).
+//   Stage 7 scopes the attacker IP across the entire tenant.
+//
+//   CRITICAL: MDO blocks (Stage 2) are the FIRST containment action. Run
+//   Stage 1, then IMMEDIATELY run Stage 2 and instruct the analyst to submit
+//   the blocks. Only then proceed with Stages 3-7 for the full investigation.
+//   Do not close the case until the analyst confirms blocks are in place.
+// parameters:
+//   - name: target_ids
+//     type: string
+//     description: Comma-separated NetworkMessageIds (LLM formats into KQL dynamic list)
+//   - name: upn
+//     type: string
+//     description: Compromised or target UserPrincipalName (for post-compromise stages)
+//   - name: sender
+//     type: string
+//     description: Malicious sender email address (from Stage 1)
+//   - name: url
+//     type: string
+//     description: Malicious URL (from Stage 1)
+//   - name: attacker_ip
+//     type: string
+//     description: Attacker source IP (from Stage 4; used in Stages 5-7)
+//   - name: lookback
+//     type: string
+//     description: Time range to investigate (default 14d)
+//     default: 14d
+// stages:
+//   - stage: 1
+//     name: Phishing delivery scope & clickers
+//     description: >
+//       Full email campaign scope — all recipients, delivery status, URL clicks,
+//       attachments. Identifies who received, who clicked, who clicked through.
+//       Returns one row per recipient UPN with aggregated evidence.
+//     run: always
+//   - stage: 2
+//     name: MDO block entities (MANDATORY — RUN IMMEDIATELY AFTER STAGE 1)
+//     description: >
+//       FIRST CONTAINMENT ACTION. Extracts the exact URLs and sender addresses
+//       that MUST be blocked in Microsoft Defender for Office 365 NOW, before
+//       continuing the investigation. Present these to the analyst and instruct
+//       them to submit blocks via MDO portal (Tenant Allow/Block Lists) or
+//       PowerShell (New-TenantAllowBlockListItems) immediately. Do not proceed
+//       to Stage 3 until the analyst confirms blocks are submitted. Returns
+//       distinct malicious URLs, sender addresses, sender domains, and sender IPs.
+//     run: always — IMMEDIATELY after Stage 1. Do NOT defer.
+//   - stage: 3
+//     name: ZAP and remediation status
+//     description: >
+//       Check post-delivery remediation for all campaign emails. Identifies
+//       emails that ZAP missed, emails still in mailboxes, and forwarded
+//       copies that bypass ZAP. Calculates exposure time per recipient.
+//     run: always (after Stage 2 blocks are submitted)
+//   - stage: 4
+//     name: Post-phishing sign-in analysis
+//     description: >
+//       For each user who clicked, check for sign-ins from unfamiliar IPs within
+//       4 hours of click. Detects AiTM token theft, credential reuse, and
+//       attacker pivot to compromised accounts. Flags risk level and CA status.
+//     run: when Stage 1 shows URL clicks
+//   - stage: 5
+//     name: BEC persistence hunt
+//     description: >
+//       Hunt for inbox rules (especially DeleteMessage=True / StopProcessingRules),
+//       mail forwarding changes, mailbox permission grants, and OAuth consent
+//       on compromised accounts. These are the primary BEC persistence TTPs.
+//     run: when Stage 4 confirms compromised accounts
+//   - stage: 6
+//     name: Attacker email activity
+//     description: >
+//       Check whether the attacker sent emails from compromised accounts —
+//       Send, SendAs, SendOnBehalf operations. Detects BEC payoff phase
+//       (invoice fraud, payment redirection, internal phishing).
+//     run: when Stage 4 confirms compromised accounts
+//   - stage: 7
+//     name: Attacker IP tenant sweep
+//     description: >
+//       Scope the attacker IP across the entire tenant. Identifies all accounts
+//       the attacker attempted or succeeded in accessing — not just the accounts
+//       from the original alert. Critical for finding unreported compromises.
+//     run: when attacker IP is identified from Stage 4
+// definitions:
+//   - term: BEC Persistence
+//     definition: >
+//       Techniques an attacker uses to maintain access to a compromised mailbox:
+//       inbox rules that delete evidence (DeleteMessage=True), mail forwarding
+//       to external addresses, mailbox delegation grants, and OAuth app consent.
+//   - term: AiTM Token Theft
+//     definition: >
+//       Adversary-in-the-Middle attack where the phishing page proxies the real
+//       Microsoft login, capturing the session token after MFA completion. The
+//       attacker replays the stolen token — MFA is not re-challenged because
+//       the token already satisfies the authentication requirement.
+//   - term: Exposure Time
+//     definition: >
+//       Duration between email delivery to inbox and remediation (ZAP, admin
+//       purge, or user deletion). ExposureMinutes = -1 means never remediated.
+//   - term: MDO Tenant Block
+//     definition: >
+//       A block entry in Microsoft Defender for Office 365 Tenant Allow/Block
+//       List that prevents delivery of emails from a specific sender address
+//       or containing a specific URL. Blocks should be submitted for all
+//       confirmed malicious senders and URLs before case closure.
+// tables:
+//   - EmailEvents
+//   - EmailAttachmentInfo
+//   - EmailUrlInfo
+//   - UrlClickEvents
+//   - EmailPostDeliveryEvents
+//   - SigninLogs
+//   - AADNonInteractiveUserSignInLogs
+//   - OfficeActivity
+//   - AADServicePrincipalSignInLogs
+//   - CloudAppEvents
+//   - SecurityAlert
+// ---
+
+
+// ============================================================================
+// STAGE 1 — Phishing delivery scope & clickers
+// ============================================================================
+// Parameters: target_ids (comma-separated NetworkMessageIds)
+// Run: ALWAYS — starting point for every BEC investigation.
+// Returns: one row per recipient UPN with delivery, click, and attachment data.
+
+let targetIds = dynamic([{{target_ids}}]);
+let EmailCore = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | project
+        NetworkMessageId,
+        EmailTimestamp = Timestamp,
+        Subject,
+        SenderFromAddress,
+        SenderDisplayName,
+        SenderFromDomain,
+        SenderMailFromAddress,
+        SenderMailFromDomain,
+        SenderIP = SenderIPv4,
+        RecipientEmailAddress,
+        RecipientObjectId,
+        AuthenticationDetails,
+        DeliveryAction,
+        DeliveryLocation,
+        ThreatTypes,
+        ThreatNames,
+        DetectionMethods,
+        EmailDirection,
+        InternetMessageId;
+let Attachments = EmailAttachmentInfo
+    | where NetworkMessageId in (targetIds)
+    | summarize
+        AttachmentSHA256 = make_set(SHA256),
+        AttachmentNames = make_set(FileName)
+      by NetworkMessageId;
+let Urls = EmailUrlInfo
+    | where NetworkMessageId in (targetIds)
+    | summarize Urls = make_set(Url) by NetworkMessageId;
+let Clicks = UrlClickEvents
+    | where NetworkMessageId in (targetIds)
+    | summarize
+        ClickedUrls = make_set(Url),
+        ClickedThrough = make_set_if(Url, IsClickedThrough == true),
+        ClickCount = count(),
+        FirstClick = min(Timestamp),
+        LastClick = max(Timestamp),
+        ClickIPs = make_set(IPAddress)
+      by NetworkMessageId, AccountUpn;
+EmailCore
+| join kind=leftouter Attachments on NetworkMessageId
+| join kind=leftouter Urls on NetworkMessageId
+| join kind=leftouter (Clicks | project-away AccountUpn) on NetworkMessageId
+| summarize
+    MessageCount = dcount(NetworkMessageId),
+    MessageIds = make_set(NetworkMessageId),
+    Subjects = make_set(Subject),
+    Senders = make_set(SenderFromAddress),
+    SenderDomains = make_set(SenderFromDomain),
+    MailFrom = make_set(SenderMailFromAddress),
+    SenderIPs = make_set(SenderIP),
+    DeliveryActions = make_set(DeliveryAction),
+    DeliveryLocations = make_set(DeliveryLocation),
+    ThreatTypes = make_set(ThreatTypes),
+    DetectionMethods = make_set(DetectionMethods),
+    AttachmentSHA256 = make_set(AttachmentSHA256),
+    AttachmentNames = make_set(AttachmentNames),
+    Urls = make_set(Urls),
+    ClickedUrls = make_set(ClickedUrls),
+    ClickedThrough = make_set(ClickedThrough),
+    ClickCount = sum(ClickCount),
+    FirstEmailSeen = min(EmailTimestamp),
+    LastEmailSeen = max(EmailTimestamp),
+    FirstClick = min(FirstClick),
+    LastClick = max(LastClick),
+    ClickIPs = make_set(ClickIPs)
+  by UPN = RecipientEmailAddress
+| extend Clicked = isnotempty(FirstClick)
+| sort by Clicked desc, ClickCount desc, UPN asc
+
+
+// ============================================================================
+// STAGE 2 — MDO block entities (MANDATORY — RUN IMMEDIATELY AFTER STAGE 1)
+// ============================================================================
+// Parameters: target_ids (comma-separated NetworkMessageIds)
+// Run: ALWAYS — IMMEDIATELY after Stage 1. This is the FIRST containment action.
+//
+// *** STOP AND PRESENT THESE TO THE ANALYST BEFORE CONTINUING ***
+//
+// ANALYST ACTION REQUIRED:
+// Submit blocks in Microsoft Defender for Office 365 NOW:
+//   1. MDO Portal > Policies > Tenant Allow/Block Lists > URLs > Add block
+//   2. MDO Portal > Policies > Tenant Allow/Block Lists > Senders > Add block
+//   3. Or via PowerShell: New-TenantAllowBlockListItems
+//
+// Block all URLs, sender addresses, and sender domains returned below.
+// Set block expiry to 90 days minimum (review and extend if campaign persists).
+// Do NOT proceed to Stage 3 until blocks are confirmed submitted.
+
+let targetIds = dynamic([{{target_ids}}]);
+// Malicious URLs to block
+let MaliciousUrls = EmailUrlInfo
+    | where NetworkMessageId in (targetIds)
+    | distinct Url
+    | extend BlockType = "URL", BlockAction = "Add to MDO Tenant Allow/Block List > URLs";
+// Sender addresses to block
+let MaliciousSenders = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | where EmailDirection == "Inbound"
+    | distinct SenderFromAddress, SenderMailFromAddress, SenderFromDomain
+    | extend BlockType = "Sender", BlockAction = "Add to MDO Tenant Allow/Block List > Senders";
+// Sender IPs (for transport rule blocking if needed)
+let SenderIPs = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | where EmailDirection == "Inbound"
+    | where isnotempty(SenderIPv4)
+    | distinct SenderIPv4
+    | extend BlockType = "SenderIP", BlockAction = "Consider transport rule block if IP is dedicated attacker infra";
+// Combine all block entities
+union
+    (MaliciousUrls | project Entity = Url, BlockType, BlockAction),
+    (MaliciousSenders | project Entity = SenderFromAddress, BlockType, BlockAction),
+    (MaliciousSenders | project Entity = SenderFromDomain, BlockType,
+        BlockAction = "Block entire domain if compromised third-party (not shared hosting)"),
+    (SenderIPs | project Entity = SenderIPv4, BlockType, BlockAction)
+| distinct Entity, BlockType, BlockAction
+| sort by BlockType asc, Entity asc
+
+
+// ============================================================================
+// STAGE 3 — ZAP and remediation status
+// ============================================================================
+// Parameters: target_ids (comma-separated NetworkMessageIds)
+// Run: always (after Stage 2 blocks are submitted).
+// Purpose: check which emails were remediated, which remain in mailboxes,
+//          and calculate exposure time. Forwarded copies are NOT covered by ZAP.
+
+let targetIds = dynamic([{{target_ids}}]);
+let Delivered = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | where DeliveryAction == "Delivered"
+    | project
+        DeliveryTime = Timestamp,
+        NetworkMessageId,
+        RecipientEmailAddress,
+        Subject,
+        DeliveryLocation,
+        SenderFromAddress;
+let PostDelivery = EmailPostDeliveryEvents
+    | where NetworkMessageId in (targetIds)
+    | project
+        NetworkMessageId,
+        RecipientEmailAddress,
+        ActionType,
+        ActionTrigger,
+        ActionResult,
+        RemediationTime = Timestamp;
+Delivered
+| join kind=leftouter PostDelivery on NetworkMessageId, RecipientEmailAddress
+| extend
+    Remediated = isnotempty(RemediationTime),
+    ExposureMinutes = iff(isnotempty(RemediationTime),
+        datetime_diff('minute', RemediationTime, DeliveryTime), -1),
+    RemediationType = coalesce(ActionType, "None"),
+    RemediationTrigger = coalesce(ActionTrigger, "None")
+| project
+    RecipientEmailAddress,
+    DeliveryTime,
+    DeliveryLocation,
+    Remediated,
+    RemediationType,
+    RemediationTrigger,
+    RemediationTime,
+    ExposureMinutes,
+    Subject,
+    SenderFromAddress,
+    NetworkMessageId
+| sort by Remediated asc, ExposureMinutes desc
+
+
+// ============================================================================
+// STAGE 4 — Post-phishing sign-in analysis
+// ============================================================================
+// Parameters: upn (compromised user UPN), attacker_ip (optional — filter to known bad IP)
+// Run: when Stage 1 shows URL clicks.
+// Purpose: detect AiTM token theft, credential reuse, new device sign-ins.
+// Covers both interactive and non-interactive sign-ins within 4h of click.
+
+let TargetUPN = "{{upn}}";
+let AttackerIP = "{{attacker_ip}}";
+let Lookback = {{lookback}};
+// Interactive sign-ins — anomalous locations, new devices, risk flags
+let Interactive = SigninLogs
+    | where TimeGenerated > ago(Lookback)
+    | where UserPrincipalName =~ TargetUPN
+    | where isempty(AttackerIP) or IPAddress == AttackerIP
+    | extend
+        City = tostring(LocationDetails.city),
+        Country = tostring(LocationDetails.countryOrRegion),
+        DeviceName = tostring(DeviceDetail.displayName),
+        DeviceOS = tostring(DeviceDetail.operatingSystem),
+        Browser = tostring(DeviceDetail.browser),
+        IsManaged = tostring(DeviceDetail.isManaged),
+        IsCompliant = tostring(DeviceDetail.isCompliant),
+        TrustType = tostring(DeviceDetail.trustType),
+        MfaMethod = tostring(MfaDetail.authMethod),
+        ErrorCode = tostring(Status.errorCode),
+        FailureReason = tostring(Status.failureReason)
+    | project
+        TimeGenerated, UserPrincipalName, IPAddress,
+        City, Country,
+        AppDisplayName, ResourceDisplayName,
+        ResultType, ErrorCode, FailureReason,
+        RiskLevelDuringSignIn, RiskState, RiskDetail,
+        ConditionalAccessStatus, AuthenticationRequirement,
+        MfaMethod,
+        DeviceName, DeviceOS, Browser, IsManaged, IsCompliant, TrustType,
+        SessionId = CorrelationId,
+        SignInType = "Interactive";
+// Non-interactive sign-ins — token replay, app access
+let NonInteractive = AADNonInteractiveUserSignInLogs
+    | where TimeGenerated > ago(Lookback)
+    | where UserPrincipalName =~ TargetUPN
+    | where isempty(AttackerIP) or IPAddress == AttackerIP
+    | extend
+        City = tostring(LocationDetails.city),
+        Country = tostring(LocationDetails.countryOrRegion),
+        ErrorCode = tostring(Status.errorCode),
+        FailureReason = tostring(Status.failureReason)
+    | project
+        TimeGenerated, UserPrincipalName, IPAddress,
+        City, Country,
+        AppDisplayName, ResourceDisplayName,
+        ResultType, ErrorCode, FailureReason,
+        RiskLevelDuringSignIn, RiskState, RiskDetail = "",
+        ConditionalAccessStatus, AuthenticationRequirement,
+        MfaMethod = "",
+        DeviceName = "", DeviceOS = "", Browser = "",
+        IsManaged = "", IsCompliant = "", TrustType = "",
+        SessionId = CorrelationId,
+        SignInType = "NonInteractive";
+union Interactive, NonInteractive
+| sort by TimeGenerated asc
+| take 500
+
+
+// ============================================================================
+// STAGE 5 — BEC persistence hunt
+// ============================================================================
+// Parameters: upn (compromised account UPN), attacker_ip (optional)
+// Run: when Stage 4 confirms compromised accounts.
+// Purpose: find inbox rules, mail forwarding, mailbox permissions, OAuth consent.
+
+let TargetUPN = "{{upn}}";
+let AttackerIP = "{{attacker_ip}}";
+let Lookback = {{lookback}};
+// Section A: Inbox rules (the #1 BEC persistence mechanism)
+let InboxRules = CloudAppEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountId =~ TargetUPN or AccountDisplayName has split(TargetUPN, "@")[0]
+    | where ActionType in ("New-InboxRule", "Set-InboxRule", "Enable-InboxRule",
+        "UpdateInboxRules", "Remove-InboxRule", "Disable-InboxRule")
+    | extend RawParams = tostring(RawEventData)
+    | project Timestamp, ActionType, AccountId, IPAddress,
+        RawParams = substring(RawParams, 0, 2000)
+    | extend Section = "A_InboxRules";
+// Section B: Mail forwarding configuration
+let Forwarding = CloudAppEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountId =~ TargetUPN or AccountDisplayName has split(TargetUPN, "@")[0]
+    | where ActionType == "Set-Mailbox"
+    | where tostring(RawEventData) has_any ("ForwardingSmtpAddress", "ForwardingAddress",
+        "DeliverToMailboxAndForward", "RedirectTo")
+    | extend RawParams = tostring(RawEventData)
+    | project Timestamp, ActionType, AccountId, IPAddress,
+        RawParams = substring(RawParams, 0, 2000)
+    | extend Section = "B_Forwarding";
+// Section C: Mailbox permission grants (SendAs, FullAccess, delegation)
+let Permissions = CloudAppEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountId =~ TargetUPN or AccountDisplayName has split(TargetUPN, "@")[0]
+    | where ActionType has_any ("MailboxPermission", "RecipientPermission",
+        "FolderPermission", "MailboxLogin")
+    | extend RawParams = tostring(RawEventData)
+    | project Timestamp, ActionType, AccountId, IPAddress,
+        RawParams = substring(RawParams, 0, 2000)
+    | extend Section = "C_Permissions";
+// Section D: OAuth / consent grants (illicit app consent for persistence)
+let OAuthConsent = CloudAppEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountId =~ TargetUPN or AccountDisplayName has split(TargetUPN, "@")[0]
+    | where ActionType in ("Consent to application.", "Add OAuth2PermissionGrant.",
+        "Add app role assignment to user.", "Add delegated permission grant.",
+        "Add service principal.", "Add service principal credentials.")
+    | extend RawParams = tostring(RawEventData)
+    | project Timestamp, ActionType, AccountId, IPAddress,
+        RawParams = substring(RawParams, 0, 2000)
+    | extend Section = "D_OAuthConsent";
+// Section E: MFA method changes (attacker registering their own MFA)
+let MFAChanges = CloudAppEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountId =~ TargetUPN or AccountDisplayName has split(TargetUPN, "@")[0]
+    | where ActionType has_any ("Update user.", "Register security info",
+        "User registered security info", "Delete security info",
+        "User deleted security info")
+    | where tostring(RawEventData) has_any ("StrongAuthentication", "PhoneNumber",
+        "AuthenticatorApp", "SecurityInfo", "Fido2")
+    | extend RawParams = tostring(RawEventData)
+    | project Timestamp, ActionType, AccountId, IPAddress,
+        RawParams = substring(RawParams, 0, 2000)
+    | extend Section = "E_MFAChanges";
+union isfuzzy=true
+    (InboxRules | extend SortTime = Timestamp),
+    (Forwarding | extend SortTime = Timestamp),
+    (Permissions | extend SortTime = Timestamp),
+    (OAuthConsent | extend SortTime = Timestamp),
+    (MFAChanges | extend SortTime = Timestamp)
+| sort by Section asc, SortTime asc
+
+
+// ============================================================================
+// STAGE 6 — Attacker email activity
+// ============================================================================
+// Parameters: upn (compromised account UPN), attacker_ip (optional)
+// Run: when Stage 4 confirms compromised accounts.
+// Purpose: detect BEC payoff — attacker sending emails from victim's account.
+
+let TargetUPN = "{{upn}}";
+let AttackerIP = "{{attacker_ip}}";
+let Lookback = {{lookback}};
+// Outbound emails sent from the compromised account
+let SentEmails = EmailEvents
+    | where Timestamp > ago(Lookback)
+    | where SenderFromAddress =~ TargetUPN or SenderMailFromAddress =~ TargetUPN
+    | where EmailDirection == "Outbound" or EmailDirection == "Intra-org"
+    | project
+        Timestamp,
+        Subject,
+        SenderFromAddress,
+        RecipientEmailAddress,
+        SenderIPv4,
+        EmailDirection,
+        ThreatTypes,
+        DeliveryAction,
+        NetworkMessageId;
+// Exchange Send/SendAs/SendOnBehalf operations (OfficeActivity)
+let SendOps = OfficeActivity
+    | where TimeGenerated > ago(Lookback)
+    | where OfficeWorkload == "Exchange"
+    | where UserId =~ TargetUPN
+    | where Operation in ("Send", "SendAs", "SendOnBehalf")
+    | where isempty(AttackerIP) or ClientIP has AttackerIP
+    | project
+        Timestamp = TimeGenerated,
+        Operation,
+        UserId,
+        ClientIP,
+        OfficeObjectId,
+        ExternalAccess;
+union
+    (SentEmails | extend Section = "A_SentEmails", SortTime = Timestamp),
+    (SendOps | extend Section = "B_SendOps", SortTime = Timestamp)
+| sort by Section asc, SortTime asc
+| take 200
+
+
+// ============================================================================
+// STAGE 7 — Attacker IP tenant sweep
+// ============================================================================
+// Parameters: attacker_ip
+// Run: when attacker IP is identified from Stage 4.
+// Purpose: find ALL accounts the attacker accessed across the entire tenant.
+
+let AttackerIP = "{{attacker_ip}}";
+let Lookback = {{lookback}};
+let Interactive = SigninLogs
+    | where TimeGenerated > ago(Lookback)
+    | where IPAddress == AttackerIP
+    | extend
+        City = tostring(LocationDetails.city),
+        Country = tostring(LocationDetails.countryOrRegion)
+    | summarize
+        InteractiveCount = count(),
+        SuccessCount = countif(ResultType == 0),
+        FailedCount = countif(ResultType != 0),
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated),
+        Apps = make_set(AppDisplayName),
+        ResultTypes = make_set(ResultType),
+        Locations = make_set(strcat(City, ", ", Country)),
+        RiskLevels = make_set(RiskLevelDuringSignIn),
+        CAStatuses = make_set(ConditionalAccessStatus)
+      by UserPrincipalName;
+let NonInteractive = AADNonInteractiveUserSignInLogs
+    | where TimeGenerated > ago(Lookback)
+    | where IPAddress == AttackerIP
+    | summarize
+        NonInteractiveCount = count(),
+        NISuccessCount = countif(ResultType == 0),
+        NIFirstSeen = min(TimeGenerated),
+        NILastSeen = max(TimeGenerated),
+        NIApps = make_set(AppDisplayName)
+      by UserPrincipalName;
+Interactive
+| join kind=leftouter NonInteractive on UserPrincipalName
+| project
+    UserPrincipalName,
+    InteractiveCount,
+    SuccessCount,
+    FailedCount,
+    NonInteractiveCount = coalesce(NonInteractiveCount, 0),
+    NISuccessCount = coalesce(NISuccessCount, 0),
+    TotalEvents = InteractiveCount + coalesce(NonInteractiveCount, 0),
+    FirstSeen,
+    LastSeen = max_of(LastSeen, coalesce(NILastSeen, datetime(null))),
+    Apps,
+    Locations,
+    RiskLevels,
+    CAStatuses,
+    ResultTypes
+| sort by SuccessCount desc, TotalEvents desc
+
+

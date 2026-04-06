@@ -325,6 +325,25 @@ def _build_context(case_id: str) -> str:
 
         parts.append("")
 
+    # Security architecture review (if produced before the MDR report)
+    sec_arch_html = case_dir / "artefacts" / "security_architecture" / "security_arch_review.html"
+    if sec_arch_html.exists():
+        try:
+            sec_arch_text = sec_arch_html.read_text(encoding="utf-8")
+            if len(sec_arch_text) > 12000:
+                sec_arch_text = sec_arch_text[:12000] + "\n\n[...truncated...]"
+            parts.append("## Security Architecture Review (pre-computed)")
+            parts.append(
+                "A security architecture review has been completed for this case. "
+                "Use its control gap analysis and platform-specific recommendations "
+                "to strengthen the Client-Responsible Remediation section of this report. "
+                "Translate architectural recommendations into actionable client steps."
+            )
+            parts.append(sec_arch_text)
+            parts.append("")
+        except Exception:
+            pass
+
     # IOC index — recurring IOCs from prior cases
     ioc_index = _safe_load(IOC_INDEX_FILE)
     if ioc_index and ioc_dict:

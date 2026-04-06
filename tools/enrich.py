@@ -29,6 +29,7 @@ Writes:
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import sys
 import threading
@@ -1654,7 +1655,7 @@ def _ip_needs_deep_enrichment(ip: str, fast_results: list[dict]) -> bool:
         if r.get("provider") == "abuseipdb" and (r.get("total_reports", 0) > 0):
             return True
         # ThreatFox / URLhaus: found = escalate
-        if r.get("provider") in ("threatfox", "urlhaus") and r.get("malware") or r.get("threat_type"):
+        if r.get("provider") in ("threatfox", "urlhaus") and (r.get("malware") or r.get("threat_type")):
             return True
 
     return False
@@ -1879,6 +1880,17 @@ def enrich(
     """
     import time as _time
     _enrich_t0 = _time.monotonic()
+    # --- Guard: block enrichment on closed cases ---
+    meta_path = CASES_DIR / case_id / "case_meta.json"
+    if meta_path.exists():
+        try:
+            _meta = load_json(meta_path)
+            if _meta.get("status") == "closed":
+                return {"error": f"Case {case_id} is closed — cannot enrich a closed case.",
+                        "case_id": case_id}
+        except Exception:
+            pass
+
     iocs_path = CASES_DIR / case_id / "iocs" / "iocs.json"
     if not iocs_path.exists():
         return {"error": f"iocs.json not found at {iocs_path}", "case_id": case_id}
@@ -2877,8 +2889,8 @@ def import_enrichment(enrichment_id: str, case_id: str) -> dict:
         "total_lookups": len(qe_data.get("results", [])),
         "cache_hits": qe_data.get("cache_hits", 0),
         "live_calls": qe_data.get("provider_calls", 0),
-        "tiered_enrichment": qe_data.get("tiered_stats", {}),
-        "results": qe_data.get("results", []),
+        "tiered_enrichment": copy.deepcopy(qe_data.get("tiered_stats", {})),
+        "results": copy.deepcopy(qe_data.get("results", [])),
     }
     write_artefact(enrich_dir / "enrichment.json",
                    json.dumps(enrich_output, indent=2))
@@ -2903,6 +2915,7 @@ def import_enrichment(enrichment_id: str, case_id: str) -> dict:
 
     # Write pre-computed verdict summary if available (skip re-scoring)
     qe_verdicts = qe_data.get("verdicts", {})
+    imported_depth = qe_data.get("depth", "auto")
     if qe_verdicts:
         # Build verdict_summary.json directly from quick_enrich verdicts
         high_priority = [v["ioc"] for v in qe_verdicts.values()
@@ -2914,6 +2927,7 @@ def import_enrichment(enrichment_id: str, case_id: str) -> dict:
         verdict_summary = {
             "case_id": case_id,
             "imported_from": enrichment_id,
+            "imported_depth": imported_depth,
             "ts": utcnow(),
             "ioc_count": len(qe_verdicts),
             "high_priority": high_priority,
@@ -2926,6 +2940,14 @@ def import_enrichment(enrichment_id: str, case_id: str) -> dict:
                 "providers": v.get("provider_verdicts", {}),
             } for v in qe_verdicts.values()},
         }
+        # Warn if imported from a shallow enrichment — verdicts may be incomplete
+        if imported_depth == "fast":
+            verdict_summary["shallow_import_warning"] = (
+                "Verdicts imported from depth='fast' quick_enrich (Tier 1 only). "
+                "Run enrich_iocs with depth='auto' or 'full' for deeper coverage."
+            )
+            print(f"[import_enrichment] WARNING: Importing shallow (depth=fast) "
+                  f"verdicts into {case_id} — Tier 2 providers were not consulted.")
         save_json(enrich_dir / "verdict_summary.json", verdict_summary)
         verdict_result = verdict_summary
         mal, sus, clean = len(high_priority), len(needs_review), len(clean_iocs)

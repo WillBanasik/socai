@@ -120,6 +120,7 @@ Analysts select these from the Claude Desktop prompt picker for structured workf
 - `triage_alert` — structured alert triage (classify → enrich → verdict → next steps).
 - `write_fp_ticket` — false-positive analysis and suppression ticket generation.
 - `kql_investigation` — unified KQL playbook prompt. Select a playbook ID: `phishing`, `account-compromise`, `malware-execution`, `privilege-escalation`, `data-exfiltration`, `lateral-movement`, or `ioc-hunt`.
+- `cql_investigation` — CQL (LogScale/NGSIEM) playbook prompt. Select a playbook ID: `malware-execution`, `lateral-movement`, `ioc-hunt`, or `account-compromise`. Use when the client has CrowdStrike LogScale instead of Sentinel.
 - `user_security_check` — broad-scope user account security review.
 
 ## Tool Categories

@@ -14,11 +14,11 @@ live-query resolution and prior-case recall.
 
 Unlike fp_ticket (2-sentence closure comment), the tuning ticket is a full
 engineering handoff document with root cause analysis, before/after query
-modifications, impact assessment, and recurrence data.  Does NOT auto-close
-the case.
+modifications, impact assessment, and recurrence data.  Auto-closes the case
+with disposition ``false_positive`` on save.
 
 Output (via save_report):
-  cases/<case_id>/artefacts/fp_comms/fp_tuning_ticket.md
+  cases/<case_id>/artefacts/fp_comms/fp_tuning_ticket.html
   cases/<case_id>/artefacts/fp_comms/fp_tuning_ticket_manifest.json
 """
 from __future__ import annotations

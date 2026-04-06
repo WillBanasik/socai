@@ -69,3 +69,13 @@ docs/critical-incident-management.md
 
 # Binary artefacts
 *.pptx
+*.zip
+
+# Stray pip artefacts
+=*
+
+# Security audit (contains internal findings, vulnerability details)
+docs/security-audit-*.md
+
+# Client-specific security reviews (contain internal client data)
+docs/uop-*

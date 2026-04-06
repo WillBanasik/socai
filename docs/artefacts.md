@@ -41,7 +41,7 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/darkweb/intelx_results.json` | Intelligence X search results (credentials REDACTED) |
 | `cases/<ID>/artefacts/darkweb/stealer_logs/parsed.json` | Parsed infostealer log output (credentials REDACTED) |
 | `cases/<ID>/artefacts/campaign/campaign_links.json` | Per-case campaign membership and shared IOCs |
-| `cases/<ID>/artefacts/fp_comms/fp_ticket.md` | FP suppression ticket (platform-specific) |
+| `cases/<ID>/artefacts/fp_comms/fp_ticket.html` | FP suppression ticket (platform-specific) |
 | `cases/<ID>/artefacts/fp_comms/fp_ticket_manifest.json` | FP ticket generation metadata |
 | `cases/<ID>/artefacts/timeline/timeline.json` | Forensic timeline with sorted events + LLM analysis |
 | `cases/<ID>/artefacts/analysis/pe_analysis.json` | Deep PE file analysis (imports, entropy, packers) |
@@ -49,14 +49,14 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/yara/generated_rules.yar` | LLM-generated case-specific YARA rules |
 | `cases/<ID>/artefacts/evtx/evtx_correlation.json` | Windows Event Log attack chain detection |
 | `cases/<ID>/artefacts/cve/cve_context.json` | CVE contextualisation (NVD, EPSS, KEV, OpenCTI) |
-| `cases/<ID>/artefacts/executive_summary/executive_summary.md` | Plain-English executive summary |
+| `cases/<ID>/artefacts/executive_summary/executive_summary.html` | Plain-English executive summary |
 | `cases/<ID>/artefacts/executive_summary/executive_summary_manifest.json` | Executive summary metadata |
-| `cases/<ID>/artefacts/security_architecture/security_arch_review.md` | Security architecture review |
+| `cases/<ID>/artefacts/security_architecture/security_arch_review.html` | Security architecture review |
 | `cases/<ID>/artefacts/security_architecture/security_arch_structured.json` | Structured analysis (TTPs, actions, risk) |
 | `cases/<ID>/artefacts/security_architecture/security_arch_manifest.json` | Security arch review metadata |
 | `cases/<ID>/artefacts/response_actions/response_actions.json` | Client-specific response plan (machine-readable) |
 | `cases/<ID>/artefacts/response_actions/response_actions.md` | Formatted response plan (human-readable) |
-| `cases/<ID>/reports/pup_report.md` | PUP/PUA investigation report (lightweight MDR variant) |
+| `cases/<ID>/reports/pup_report.html` | PUP/PUA investigation report (lightweight MDR variant) |
 | `cases/<ID>/artefacts/velociraptor/ingest_manifest.json` | Velociraptor ingest processing summary |
 | `cases/<ID>/artefacts/velociraptor/collection_context.json` | Copied from offline collector ZIP (if present) |
 | `cases/<ID>/artefacts/velociraptor/host_info.json` | Host metadata from `Generic.Client.Info` (if present) |

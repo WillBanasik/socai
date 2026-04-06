@@ -709,7 +709,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         ``artefacts/enrichment/verdict_summary.json``,
         ``artefacts/phishing/detection.json``, ``artefacts/captures/*.html``,
         ``artefacts/web/*/screenshot.png``, ``notes/analyst_input.md``,
-        ``reports/investigation_report.md``.
+        ``reports/mdr_report.html``, ``reports/pup_report.html``.
 
         **Image files** (PNG, JPG, GIF, WebP) are returned as rendered images
         that display directly in chat. Use this to view screenshots from web
@@ -1689,6 +1689,7 @@ def _register_tier1(mcp: FastMCP) -> None:
                 {"tool": "recall_cases", "reason": "Check for prior related investigations"},
                 {"tool": "correlate", "reason": "Cross-reference IOCs across artefacts"},
             ] + _kql("phishing", "email delivery, URL clicks, credential harvest")
+              + _kql("bec", "BEC lifecycle — persistence hunt, attacker email activity, tenant IP sweep, MDO block actions")
               + _composite("email-threat-zap", "email threats, ZAP, post-delivery activity") + [
                 {"tool": "generate_report", "reason": "Generate investigation narrative"},
                 {"tool": "prepare_mdr_report", "reason": "Prepare client-facing MDR deliverable"},
@@ -1712,6 +1713,7 @@ def _register_tier1(mcp: FastMCP) -> None:
                 {"tool": "xposed_breach_check", "reason": "Check if user email appears in historical data breaches", "condition": "if user email available"},
                 {"tool": "recall_cases", "reason": "Check for prior related investigations"},
             ] + _kql("account-compromise", "sign-ins, MFA, post-compromise audit")
+              + _kql("bec", "BEC lifecycle — persistence hunt, attacker email activity, tenant IP sweep, MDO block actions")
               + _composite("suspicious-signin", "sign-ins, MFA, post-auth activity, alerts") + [
                 {"tool": "correlate", "reason": "Cross-reference IOCs across artefacts"},
                 {"tool": "generate_report", "reason": "Generate investigation narrative"},
@@ -1808,6 +1810,26 @@ def _register_tier1(mcp: FastMCP) -> None:
             }
         else:
             result["kql_playbook"] = None
+
+        # CQL playbook directive (LogScale / NGSIEM alternative)
+        _cql_playbook_map = {
+            "malware": "malware-execution",
+            "lateral_movement": "lateral-movement",
+            "account_compromise": "account-compromise",
+        }
+        cql_playbook_id = _cql_playbook_map.get(attack_type)
+        if cql_playbook_id:
+            result["cql_playbook"] = {
+                "id": cql_playbook_id,
+                "instruction": (
+                    f"A CQL playbook exists for this attack type. "
+                    f"If the client uses CrowdStrike LogScale/NGSIEM (not Sentinel), "
+                    f"call load_cql_playbook('{cql_playbook_id}') instead of load_kql_playbook. "
+                    f"Check lookup_client platform list for 'ngsiem' or 'crowdstrike'."
+                ),
+            }
+        else:
+            result["cql_playbook"] = None
 
         # Sentinel composite queries — single-execution full-picture queries
         composite_scenarios = _composite_map.get(attack_type, [])
@@ -3933,6 +3955,60 @@ def _register_tier3(mcp: FastMCP) -> None:
             pass
         return _json(result)
 
+    @mcp.tool(title="Load CQL Playbook", annotations={"readOnlyHint": True})
+    def load_cql_playbook(
+        playbook_id: str | None = None,
+        stage: int | None = None,
+        sub_query: int | None = None,
+        params: dict | None = None,
+    ) -> str:
+        """Use when the client uses CrowdStrike LogScale / NGSIEM (not Sentinel).
+        Loads parameterised CQL investigation playbooks — the LogScale equivalent
+        of ``load_kql_playbook``.
+
+        **Usage pattern:**
+        1. Call with no arguments to list available CQL playbooks
+        2. Call with ``playbook_id`` to see its stages, sub-queries, and required parameters
+        3. Call with ``playbook_id`` + ``stage`` + ``params`` to render the full stage
+        4. Optionally add ``sub_query`` (0-based) to render a single sub-query within a stage
+        5. Copy the rendered CQL into the LogScale search interface
+
+        Parameters
+        ----------
+        playbook_id : str
+            Playbook identifier (e.g. "malware-execution").
+        stage : int
+            1-based stage number.
+        sub_query : int
+            0-based sub-query index within the stage (optional).
+        params : dict
+            Parameter substitutions for template rendering.
+        """
+        _require_scope("investigations:read")
+
+        from tools.cql_playbooks import (
+            list_playbooks, load_playbook, render_stage, render_sub_query,
+        )
+
+        if not playbook_id:
+            return _json({"playbooks": list_playbooks()})
+
+        pb = load_playbook(playbook_id)
+        if not pb:
+            return _json({"error": f"CQL Playbook {playbook_id!r} not found."})
+
+        if stage is None:
+            return _json(pb)
+
+        if sub_query is not None:
+            rendered = render_sub_query(pb, stage, sub_query, params or {})
+        else:
+            rendered = render_stage(pb, stage, params or {})
+
+        if not rendered:
+            return _json({"error": f"Stage {stage} (sub_query={sub_query}) not found."})
+        return _json({"query": rendered, "language": "cql"})
+
     @mcp.tool(title="Generate Sentinel Composite Query", annotations={"readOnlyHint": True})
     def generate_sentinel_query(
         scenario: str = "",
@@ -4258,17 +4334,18 @@ def _register_tier3(mcp: FastMCP) -> None:
         write_fp_closure, write_fp_tuning, write_executive_summary,
         write_security_arch_review) and generating the report content locally.
 
-        Persists a locally-generated report to disk with defanging, HTML
-        conversion, auto-close logic, and audit trail. No LLM call — all
-        the thinking was done by your local session.
+        Persists a locally-generated report to disk with defanging,
+        auto-close logic, and audit trail. Accepts HTML directly (markdown
+        fallback for legacy). No LLM call — all the thinking was done by
+        your local session.
 
         **Report types and auto-close behaviour:**
-        - ``mdr_report`` — auto-closes case (preserves existing disposition)
-        - ``pup_report`` — auto-closes case (disposition: pup_pua)
-        - ``fp_ticket`` — auto-closes case (disposition: false_positive)
-        - ``fp_tuning_ticket`` — does NOT auto-close
-        - ``executive_summary`` — does NOT auto-close
-        - ``security_arch_review`` — does NOT auto-close
+        - ``mdr_report`` — auto-closes (preserves existing disposition)
+        - ``pup_report`` — auto-closes (disposition: pup_pua)
+        - ``fp_ticket`` — auto-closes (disposition: false_positive)
+        - ``fp_tuning_ticket`` — auto-closes (disposition: false_positive)
+        - ``executive_summary`` — does NOT auto-close (supplementary output)
+        - ``security_arch_review`` — does NOT auto-close (supplementary output)
 
         Parameters
         ----------

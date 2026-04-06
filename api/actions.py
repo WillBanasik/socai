@@ -227,8 +227,8 @@ def extract_and_enrich(
         ioc_types = ioc_result.get("iocs", {})
         type_counts = {t: len(v) for t, v in ioc_types.items() if v and not t.startswith("_")}
 
-        enriched = enrich_result.get("enriched", 0) if enrich_result else 0
-        cached = enrich_result.get("cached", 0) if enrich_result else 0
+        enriched = enrich_result.get("live_calls", 0) if enrich_result else 0
+        cached = enrich_result.get("cache_hits", 0) if enrich_result else 0
 
         mal_count = len(verdict_result.get("high_priority", [])) if verdict_result else 0
         sus_count = len(verdict_result.get("needs_review", [])) if verdict_result else 0

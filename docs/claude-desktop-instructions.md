@@ -31,6 +31,10 @@ Do not memorise a fixed sequence. Follow this decision pattern:
 7. **Read `_hint` fields** — they guide polling, report reading, and closure
 8. **Deliver and close** — generating a deliverable (MDR report, PUP report, FP ticket) auto-creates a case if one doesn't exist and auto-closes it. Do not call `close_case` separately unless no deliverable is generated
 
+### BEC / Phishing — MDO Blocks Are the First Containment Action
+
+For any phishing or BEC investigation, **blocking the offending URLs and sender addresses in MDO is the first priority** — before continuing with the full investigation. Use the `bec` KQL playbook: run Stage 1 (delivery scope) then immediately Stage 2 (MDO block entities). Present the block list to the analyst and instruct them to submit blocks via MDO Tenant Allow/Block Lists (URLs + Senders) before proceeding. Investigation continues after blocks are confirmed.
+
 ### Case Creation Is Deferred
 
 You do not need to call `create_case` upfront. Caseless tools work without a case:
@@ -102,7 +106,7 @@ Valid disposition values: `true_positive`, `benign_positive`, `false_positive`, 
 
 ### PUP/PUA Short-Circuit
 
-When classified as `pup_pua`, short-circuit after enrichment. Use the `write_pup_report` prompt -> `save_report` to produce a lightweight report (identification, scope, risk, removal). Auto-closes with disposition `pup_pua`.
+When classified as `pup_pua`, short-circuit after enrichment. Use the `write_pup_report` prompt -> `save_report` to produce a lightweight HTML report (summary, path & file details, access vector, actions taken, recommendations). Read `socai://templates/pup-report` for the HTML skeleton. Auto-closes with disposition `pup_pua`.
 
 ---
 
@@ -110,7 +114,11 @@ When classified as `pup_pua`, short-circuit after enrichment. Use the `write_pup
 
 All LLM reasoning (report writing, disposition analysis, quality review) happens in YOUR local session. The MCP server provides prompts that load system instructions and case data, and save tools that persist the output.
 
-**Workflow:** Select MCP prompt -> you generate the content with full conversation context -> call the appropriate save tool to persist.
+**Workflow:** Select MCP prompt -> you generate the report as a **complete HTML document** using the template CSS and structure -> call `save_report` to persist. Read `socai://templates/mdr-report` or `socai://templates/pup-report` for the HTML skeleton and styling.
+
+**All reports are HTML.** Never produce markdown reports. The template resources provide the exact HTML structure, CSS styling, and section layout. `save_report` accepts HTML directly and writes it to disk.
+
+**Enhanced recommendations:** For TP/BP cases, run `write_security_arch_review` **before** `write_mdr_report`. The sec arch review analyses control gaps and produces platform-specific hardening recommendations (Conditional Access policies, ASR rules, Sentinel analytics rules, CrowdStrike prevention settings). The MDR report prompt automatically loads sec arch findings and instructs you to distil them into concrete, actionable items in the **Client-Responsible Remediation** subsection. This transforms generic advice ("review your CA policies") into specific actions ("deploy a CA policy requiring MFA for sign-ins from non-compliant devices targeting the Finance group").
 
 ### Report Prompts
 
@@ -119,7 +127,7 @@ All LLM reasoning (report writing, disposition analysis, quality review) happens
 | `write_mdr_report` | Yes | Preserves existing | `save_report` |
 | `write_pup_report` | Yes | `pup_pua` | `save_report` |
 | `write_fp_closure` | Yes | `false_positive` | `save_report` |
-| `write_fp_tuning` | No | — | `save_report` |
+| `write_fp_tuning` | Yes | `false_positive` | `save_report` |
 | `write_executive_summary` | No | — | `save_report` |
 | `write_security_arch_review` | No | — | `save_report` |
 | `write_threat_article` | N/A | — | `save_threat_article` |
@@ -173,7 +181,7 @@ Select these from the prompt picker when they match the task:
 
 ### Do Not Double-Close
 
-Report generation auto-closes the case. Do not call `close_case` after generating an MDR/PUP/FP report — it creates duplicate registry events.
+Deliverable reports (MDR, PUP, FP ticket, FP tuning) auto-close the case on save. Do not call `close_case` after saving a deliverable — it creates duplicate registry events. Executive summary and security arch review do NOT auto-close (they are supplementary outputs).
 
 ---
 
@@ -266,6 +274,7 @@ The `kql_investigation` prompt provides multi-stage Sentinel query playbooks. Av
 
 | Playbook ID | Use case |
 |---|---|
+| `bec` | **Full BEC lifecycle**: phishing scope → **MDO blocks (Stage 2 — FIRST containment action)** → ZAP status → credential harvest → persistence hunt → attacker email activity → tenant IP sweep |
 | `phishing` | Email delivery, URL clicks, credential harvest |
 | `account-compromise` | Sign-ins, on-prem AD, lockouts, MDI, UEBA, post-compromise audit |
 | `malware-execution` | Process tree, file events, persistence |
@@ -328,6 +337,15 @@ Resources are read-only data endpoints. Use them for quick lookups without invok
 | `socai://landscape` | Current threat landscape assessment |
 | `socai://role` | Your current RBAC role and permissions |
 
+### Report Templates
+
+| URI | Contents |
+|---|---|
+| `socai://templates/mdr-report` | MDR report HTML template — 5-section structure, Gold Analyst Instruction Set, CSS styling, HTML skeleton |
+| `socai://templates/pup-report` | PUP/PUA report HTML template — lightweight 5-section structure (Summary, Path & File Details, Access Vector, Actions Taken, Recommendations), CSS styling, HTML skeleton |
+
+**Always read a template resource** when writing a report — it contains the exact HTML structure, CSS, and section layout. Produce reports as complete HTML documents using the template skeleton, then pass the HTML to `save_report`.
+
 ### SOC Process Documentation
 
 | URI | Contents |
@@ -352,7 +370,7 @@ Read these when an analyst asks about SOC processes, role responsibilities, tick
 | `socai://cases/{id}/notes` | Analyst notes |
 | `socai://cases/{id}/evidence` | Raw evidence files |
 | `socai://cases/{id}/findings` | Analytical findings |
-| `socai://cases/{id}/report` | Investigation report |
+| `socai://cases/{id}/report` | Final HTML report (MDR, PUP, or legacy — whichever exists) |
 | `socai://cases/{id}/response-actions` | Response actions |
 | `socai://cases/{id}/fp-ticket` | FP closure comment |
 
@@ -388,7 +406,7 @@ The threat article workflow is: discover online -> summarise -> publish to Confl
 - **Defanging** — malicious and suspicious IOCs are defanged in all final reports. Hashes and file paths are never defanged. The save tools handle this automatically
 - **Be concise** — lead with findings, not process narration. Skip preamble
 - **Default to open cases** — when asked for recent/latest cases, show open cases only unless the analyst asks for all or closed
-- **HTML reports only** — reports are saved as HTML (no markdown files). The save tools handle conversion
+- **HTML reports only** — all reports must be produced as complete HTML documents using the template CSS from `socai://templates/mdr-report` or `socai://templates/pup-report`. Pass the HTML directly to `save_report`. Reports are always available to view via `socai://cases/{id}/report` or `read_report` after saving
 
 ---
 
@@ -402,7 +420,8 @@ The threat article workflow is: discover online -> summarise -> publish to Confl
 6. **Do not enrich client-owned domains.** They are known infrastructure and pollute results
 7. **Do not ignore client playbooks.** If a client has a playbook, its escalation matrix and crown jewels must inform your recommendations
 8. **Do not combine Sentinel classifications.** "True Positive Benign Positive" is invalid — pick exactly one
-9. **Do not call `close_case` after generating a deliverable.** The deliverable auto-closes. Only call `close_case` directly for cases that don't need a deliverable (e.g. clear-cut benign positives from triage)
+9. **Do not call `close_case` after saving a deliverable.** MDR, PUP, FP ticket, and FP tuning reports auto-close. Only call `close_case` directly for cases that don't need a deliverable (e.g. clear-cut benign positives from triage)
+10. **Do not defer MDO blocks during phishing/BEC investigations.** Blocking malicious URLs and sender addresses in MDO is the FIRST containment action — run before the full investigation. Use the `bec` playbook Stage 2 immediately after Stage 1
 
 ---
 

@@ -77,6 +77,15 @@ def _get_kql_playbooks() -> dict[str, str]:
         return {}
 
 
+def _get_cql_playbooks() -> dict[str, str]:
+    """Load available CQL playbook IDs and names from disk."""
+    try:
+        from tools.cql_playbooks import list_playbooks
+        return {p["id"]: p["name"] for p in list_playbooks()}
+    except Exception:
+        return {}
+
+
 # Cache on module load for the docstring; refreshed per-call in the prompt body
 _KQL_PLAYBOOKS = _get_kql_playbooks()
 
@@ -238,6 +247,157 @@ def register_prompts(mcp: FastMCP) -> None:
             rendered = render_stage(pb, i, params)
             if rendered:
                 lines.append("```kql")
+                lines.append(rendered)
+                lines.append("```")
+                lines.append("")
+
+        if pb.get("definitions"):
+            lines.append("## Definitions")
+            for defn in pb["definitions"]:
+                lines.append(f"- **{defn['term']}**: {defn['definition']}")
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Unified CQL Playbook prompt (LogScale / NGSIEM)
+    # ------------------------------------------------------------------
+
+    @mcp.prompt()
+    def cql_investigation(
+        playbook: str = "",
+        target_entity: str = "",
+        extra_params: str = "",
+    ) -> str:
+        """Multi-stage CQL investigation playbook for CrowdStrike LogScale / NGSIEM.
+
+        Available playbooks:
+        - **malware-execution** — process tree, file delivery, initial access (Falcon)
+        - **lateral-movement** — RDP/SMB pivots, credential access, blast radius (Falcon)
+        - **ioc-hunt** — IOC sweep across Falcon + Azure sign-in + firewall logs
+        - **account-compromise** — Azure sign-in, Windows events, endpoint logons
+
+        Tip: call `classify_attack` first to determine which playbook to use,
+        then select this prompt with the matching playbook ID.
+
+        Parameters
+        ----------
+        playbook : str
+            Playbook ID (e.g. "malware-execution", "lateral-movement").
+        target_entity : str
+            Primary target — hostname, UPN, or IOC value depending on playbook.
+        extra_params : str
+            Additional parameters as key=value pairs, comma-separated
+            (e.g. "source_host=DESKTOP-01,sha256=abc123").
+        """
+        from tools.cql_playbooks import load_playbook, render_stage
+
+        # Resolve playbook
+        available = _get_cql_playbooks()
+        playbook_id = playbook.strip().lower() if playbook else ""
+        if playbook_id not in available:
+            valid = ", ".join(f"`{k}`" for k in available)
+            return (
+                f"Unknown CQL playbook `{playbook_id}`. "
+                f"Valid playbooks: {valid}.\n\n"
+                "Tip: call `classify_attack` to determine which playbook matches your alert."
+            )
+
+        pb = load_playbook(playbook_id)
+        if not pb:
+            return f"CQL Playbook `{playbook_id}` not found on disk."
+
+        display_name = available[playbook_id]
+
+        # Build parameter dict from inputs
+        params: dict[str, str] = {}
+
+        # Map target_entity to the playbook's expected parameter
+        if target_entity:
+            _entity_map = {
+                "malware-execution": "device_name",
+                "lateral-movement": "source_host",
+                "ioc-hunt": "ioc_value",
+                "account-compromise": "upn",
+            }
+            param_name = _entity_map.get(playbook_id, "target_entity")
+            params[param_name] = target_entity
+            if playbook_id == "account-compromise" and "username" not in params:
+                username = target_entity.split("@")[0] if "@" in target_entity else target_entity
+                params["username"] = username
+
+        # Parse extra_params
+        if extra_params:
+            for pair in extra_params.split(","):
+                pair = pair.strip()
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    params[k.strip()] = v.strip()
+
+        # Render the playbook
+        lines = [
+            f"# {display_name} Investigation Playbook (CQL / LogScale)",
+            "",
+            f"**Playbook:** `{playbook_id}`",
+            f"**Target entity:** {target_entity or '(not specified)'}",
+            f"**Time scope:** Set via LogScale search time picker (no inline time filter in CQL)",
+            "",
+            "**Before proceeding:** Confirm the client via `lookup_client` and register "
+            "the alert via `add_evidence`. Call `classify_attack` if you have not already.",
+            "",
+            "## Discovery Queries (use these to debug CQL queries)",
+            "",
+            "If a query returns no results or wrong fields, run these first to find "
+            "the correct connector IDs, tags, and field names for the client's environment.",
+            "",
+            "**List all connectors** (find correct `#Vendor`, `#event.module`, `#event.dataset`):",
+            "```cql",
+            "*",
+            "| groupBy(@dataConnectionID, function=[",
+            "    collect([#Vendor, #event.dataset, #event.module, observer.vendor, observer.product]),",
+            "    count()",
+            "  ])",
+            "```",
+            "",
+            "**Sample event from a connector** (see all available field names):",
+            "```cql",
+            '@dataConnectionID = "CONNECTOR_ID_HERE"',
+            "| tail(1)",
+            "```",
+            "",
+            "## Overview",
+            pb.get("description", ""),
+            "",
+        ]
+
+        if pb.get("data_sources"):
+            lines.append("## Data Sources")
+            for ds in pb["data_sources"]:
+                lines.append(f"- {ds}")
+            lines.append("")
+
+        if pb.get("parameters"):
+            lines.append("## Playbook Parameters")
+            for param in pb["parameters"]:
+                lines.append(f"- **{param['name']}**: {param.get('description', '')}")
+            lines.append("")
+
+        lines.append("## Investigation Stages")
+        lines.append("")
+        lines.append("**Note:** Each stage may contain multiple sub-queries targeting "
+                      "different data sources. Run each sub-query separately in the "
+                      "LogScale search interface. Sub-queries marked UNAVAILABLE require "
+                      "data sources not present in LogScale — check the noted alternative.")
+        lines.append("")
+
+        for i, stage in enumerate(pb.get("stages", []), 1):
+            lines.append(f"### Stage {i} — {stage.get('name', stage.get('title', ''))}")
+            if stage.get("description"):
+                lines.append(stage["description"])
+            lines.append("")
+
+            rendered = render_stage(pb, i, params)
+            if rendered:
+                lines.append("```cql")
                 lines.append(rendered)
                 lines.append("```")
                 lines.append("")
@@ -1025,6 +1185,9 @@ def register_prompts(mcp: FastMCP) -> None:
         from tools.generate_pup_report import _build_context
         context = _build_context(case_id)
 
+        # Load CSS for inline inclusion in the prompt
+        from tools.common import _REPORT_CSS
+
         return (
             f"# PUP/PUA Report Generation — Instructions\n\n"
             f"{prompt}\n\n"
@@ -1032,13 +1195,21 @@ def register_prompts(mcp: FastMCP) -> None:
             f"# Case Data\n\n"
             f"{context}\n\n"
             f"---\n\n"
+            f"# Output Format — HTML\n\n"
+            f"Produce the report as a **complete HTML document**. Use the styling below "
+            f"and wrap each section in `<div class=\"section\">`. Use `<div class=\"meta\">` "
+            f"for the header metadata block. If you need the full HTML skeleton, read "
+            f"the `socai://templates/pup-report` resource.\n\n"
+            f"```css\n{_REPORT_CSS}```\n\n"
+            f"---\n\n"
             f"# Task\n\n"
-            f"Produce a PUP/PUA report for case **{case_id}** following the "
-            f"PUP/PUA Analyst Instruction Set above exactly.\n\n"
+            f"Produce a PUP/PUA report for case **{case_id}** as a complete HTML "
+            f"document following the 5-section structure: Summary, Path & File Details, "
+            f"Access Vector, Actions Taken, Recommendations.\n\n"
             f"When the report is complete, call `save_report` with:\n"
             f"- `case_id`: \"{case_id}\"\n"
             f"- `report_type`: \"pup_report\"\n"
-            f"- `report_text`: the full report markdown\n"
+            f"- `report_text`: the full HTML report\n"
         )
 
     @mcp.prompt()
@@ -1084,10 +1255,13 @@ def register_prompts(mcp: FastMCP) -> None:
             f"---\n\n"
             f"# Task\n\n"
             f"Write a two-sentence FP closure comment for case **{case_id}**.\n\n"
+            f"Produce the output as a complete HTML document using the socai report "
+            f"styling (`socai://templates/mdr-report` has the CSS). A minimal HTML "
+            f"page with the closure comment is sufficient.\n\n"
             f"When done, call `save_report` with:\n"
             f"- `case_id`: \"{case_id}\"\n"
             f"- `report_type`: \"fp_ticket\"\n"
-            f"- `report_text`: the closure comment\n"
+            f"- `report_text`: the full HTML\n"
         )
         return "".join(parts)
 
@@ -1137,10 +1311,12 @@ def register_prompts(mcp: FastMCP) -> None:
             f"---\n\n"
             f"# Task\n\n"
             f"Write a structured SIEM tuning ticket for case **{case_id}**.\n\n"
+            f"Produce the output as a complete HTML document using the socai report "
+            f"styling (`socai://templates/mdr-report` has the CSS).\n\n"
             f"When done, call `save_report` with:\n"
             f"- `case_id`: \"{case_id}\"\n"
             f"- `report_type`: \"fp_tuning_ticket\"\n"
-            f"- `report_text`: the full tuning ticket markdown\n"
+            f"- `report_text`: the full HTML\n"
         )
         return "".join(parts)
 
@@ -1171,10 +1347,12 @@ def register_prompts(mcp: FastMCP) -> None:
             f"Produce an executive summary for case **{case_id}** following the "
             f"instructions above. Target audience: non-technical business leadership. "
             f"Maximum 500 words. Use RAG (Red/Amber/Green) risk rating.\n\n"
+            f"Produce the output as a complete HTML document using the socai report "
+            f"styling (`socai://templates/mdr-report` has the CSS).\n\n"
             f"When the summary is complete, call `save_report` with:\n"
             f"- `case_id`: \"{case_id}\"\n"
             f"- `report_type`: \"executive_summary\"\n"
-            f"- `report_text`: the full summary markdown\n"
+            f"- `report_text`: the full HTML\n"
         )
 
     @mcp.prompt()
@@ -1203,10 +1381,12 @@ def register_prompts(mcp: FastMCP) -> None:
             f"# Task\n\n"
             f"Produce a security architecture review for case **{case_id}** "
             f"following the instructions above exactly.\n\n"
+            f"Produce the output as a complete HTML document using the socai report "
+            f"styling (`socai://templates/mdr-report` has the CSS).\n\n"
             f"When the review is complete, call `save_report` with:\n"
             f"- `case_id`: \"{case_id}\"\n"
             f"- `report_type`: \"security_arch_review\"\n"
-            f"- `report_text`: the full review markdown\n"
+            f"- `report_text`: the full HTML\n"
         )
 
     # ------------------------------------------------------------------
@@ -2010,6 +2190,33 @@ def register_prompts(mcp: FastMCP) -> None:
         # Load artefact context (same data the server-side report would see)
         artefact_context = _build_context(case_id)
 
+        # Load CSS for inline inclusion in the prompt
+        from tools.common import _REPORT_CSS
+
+        # Check whether a security architecture review exists for this case
+        from config.settings import CASES_DIR
+        _has_sec_arch = (
+            CASES_DIR / case_id / "artefacts" / "security_architecture"
+            / "security_arch_review.html"
+        ).exists()
+
+        sec_arch_note = ""
+        if _has_sec_arch:
+            sec_arch_note = (
+                "# Security Architecture Review Available\n\n"
+                "A security architecture review has been completed for this case "
+                "and is included in the artefact data above. Use its **control gap "
+                "analysis** and **platform-specific recommendations** (Conditional "
+                "Access policies, ASR rules, Sentinel analytics rules, CrowdStrike "
+                "prevention policy changes, etc.) to produce concrete, actionable "
+                "items in the **Client-Responsible Remediation** subsection of "
+                "Section 5 — Recommendations.\n\n"
+                "Translate the architectural recommendations into specific client "
+                "actions: name the policy, the setting, the rule, or the configuration "
+                "change. Do not repeat the sec arch review verbatim — distil the "
+                "most impactful remediations into the report.\n\n"
+                "---\n\n"
+            )
 
         return (
             f"# MDR Report Generation — Instructions\n\n"
@@ -2030,13 +2237,22 @@ def register_prompts(mcp: FastMCP) -> None:
             f"conversation findings take precedence (they represent the analyst's live "
             f"investigation).\n\n"
             f"---\n\n"
+            f"{sec_arch_note}"
+            f"# Output Format — HTML\n\n"
+            f"Produce the report as a **complete HTML document**. Use the styling below "
+            f"and wrap each section in `<div class=\"section\">`. Use `<div class=\"meta\">` "
+            f"for the header metadata block. If you need the full HTML skeleton, read "
+            f"the `socai://templates/mdr-report` resource.\n\n"
+            f"```css\n{_REPORT_CSS}```\n\n"
+            f"---\n\n"
             f"# Task\n\n"
-            f"Write the MDR incident report for case **{case_id}** following the mandatory "
-            f"5-section structure from the instructions above.\n\n"
+            f"Write the MDR incident report for case **{case_id}** as a complete HTML "
+            f"document following the mandatory 5-section structure from the instructions "
+            f"above.\n\n"
             f"When your report is complete, call `save_report` with:\n"
             f"- `case_id`: `{case_id}`\n"
             f"- `report_type`: `mdr_report`\n"
-            f"- `report_text`: the full markdown report\n"
+            f"- `report_text`: the full HTML report\n"
             f"- `disposition`: the appropriate disposition value "
             f"(`true_positive`, `benign_positive`, `false_positive`, `benign`, "
             f"`pup_pua`, `inconclusive`)\n"

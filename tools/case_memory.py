@@ -26,12 +26,17 @@ import json
 import math
 import re
 import sys
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASE_MEMORY_INDEX_FILE, CASES_DIR, REGISTRY_FILE
 from tools.common import load_json, log_error, utcnow
+
+# Protects the BM25 index file from concurrent read/write (scheduler
+# rebuild vs analyst search_case_memory).
+_index_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -196,10 +201,11 @@ def build_case_memory_index(include_open: bool = True) -> dict:
     }
 
     try:
-        CASE_MEMORY_INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CASE_MEMORY_INDEX_FILE.write_text(
-            json.dumps(index, default=str), encoding="utf-8"
-        )
+        with _index_lock:
+            CASE_MEMORY_INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
+            CASE_MEMORY_INDEX_FILE.write_text(
+                json.dumps(index, default=str), encoding="utf-8"
+            )
     except Exception as exc:
         log_error("", "case_memory.write_index", str(exc),
                   severity="error", context={})
@@ -257,7 +263,8 @@ def search_case_memory(
             return built
 
     try:
-        raw = json.loads(CASE_MEMORY_INDEX_FILE.read_text(encoding="utf-8"))
+        with _index_lock:
+            raw = json.loads(CASE_MEMORY_INDEX_FILE.read_text(encoding="utf-8"))
     except Exception as exc:
         log_error("", "case_memory.search", str(exc), severity="error", context={})
         return {"status": "error", "reason": str(exc)}
