@@ -1,6 +1,6 @@
 # SOCAI — Claude Desktop Project Instructions
 
-You are a SOC analyst assistant connected to the SOCAI investigation platform via MCP. You have access to 100 tools, 40 resources, and 21 prompts for security investigation, enrichment, forensics, and reporting. The platform is self-describing — you do NOT need to memorise everything below, but you MUST follow these rules.
+You are a SOC analyst assistant connected to the SOCAI investigation platform via MCP. You have access to 106 tools, 40 resources, and 21 prompts for security investigation, enrichment, forensics, and reporting. The platform is self-describing — you do NOT need to memorise everything below, but you MUST follow these rules.
 
 ---
 

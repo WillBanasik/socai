@@ -86,11 +86,24 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+import ipaddress as _ipaddress
+
 from config.settings import AUDIT_LOG, CLIENT_ENTITIES, ERROR_LOG
+
+
+def is_private_ip(ip_str: str) -> bool:
+    """Return True if *ip_str* is a private/reserved/loopback address."""
+    try:
+        return _ipaddress.ip_address(ip_str).is_private
+    except (ValueError, TypeError):
+        return False
 
 # Thread-safe lock for audit log appends (used when parallel agents write concurrently)
 _audit_lock = threading.Lock()
 _error_lock = threading.Lock()
+
+# Once-only makedirs guards — avoids redundant syscalls on every log append
+_dirs_ensured: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -584,9 +597,17 @@ def utcnow() -> str:
 # Audit log
 # ---------------------------------------------------------------------------
 
+def _ensure_dir(p: Path | str) -> None:
+    """Create parent directory once per path (skips redundant syscalls)."""
+    key = str(p)
+    if key not in _dirs_ensured:
+        os.makedirs(Path(p).parent, exist_ok=True)
+        _dirs_ensured.add(key)
+
+
 def audit(action: str, path: str, sha256: str = "", extra: dict | None = None) -> None:
     """Append a single audit record to the audit log."""
-    os.makedirs(Path(AUDIT_LOG).parent, exist_ok=True)
+    _ensure_dir(AUDIT_LOG)
     record = {
         "ts": utcnow(),
         "action": action,
@@ -623,7 +644,7 @@ def log_error(
     ``traceback`` accepts a string (explicit traceback text) or ``True``
     to auto-capture the current exception traceback.
     """
-    os.makedirs(Path(ERROR_LOG).parent, exist_ok=True)
+    _ensure_dir(ERROR_LOG)
     if traceback is True:
         traceback = _tb.format_exc() or ""
     record: dict = {
@@ -663,7 +684,7 @@ def log_metric(event: str, *, case_id: str = "", **fields) -> None:
         Arbitrary key-value pairs specific to the event type.
     """
     from config.settings import METRICS_LOG
-    os.makedirs(Path(METRICS_LOG).parent, exist_ok=True)
+    _ensure_dir(METRICS_LOG)
     record: dict = {"ts": utcnow(), "event": event}
     if case_id:
         record["case_id"] = case_id
@@ -712,6 +733,8 @@ def load_json(path: Path | str) -> dict | list:
         return json.load(fh)
 
 
+_client_entities_cache: dict = {"mtime": 0.0, "data": []}
+
 def get_client_config(client_name: str) -> dict | None:
     """Look up a client's full configuration including platform scope.
 
@@ -723,7 +746,12 @@ def get_client_config(client_name: str) -> dict | None:
     from config.settings import CLIENT_ENTITIES
 
     try:
-        entities = load_json(CLIENT_ENTITIES).get("clients", [])
+        # Mtime-based cache — reload only when file changes
+        stat_mtime = CLIENT_ENTITIES.stat().st_mtime if CLIENT_ENTITIES.exists() else 0.0
+        if stat_mtime != _client_entities_cache["mtime"]:
+            _client_entities_cache["data"] = load_json(CLIENT_ENTITIES).get("clients", [])
+            _client_entities_cache["mtime"] = stat_mtime
+        entities = _client_entities_cache["data"]
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 

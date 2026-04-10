@@ -81,6 +81,10 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/browser_session/screenshot_final.png` | Final browser state screenshot |
 | `cases/<ID>/logs/mde_browser_session.parsed.json` | Normalised browser session data for downstream pipeline (format: `pcap_capture`) |
 | `cases/<ID>/logs/mde_browser_session.entities.json` | Extracted entities from browser session (IPs, domains, URLs) |
+| `browser_sessions/<SID>/artefacts/session_manifest.json` | Caseless browser session summary (same layout as case-attached) |
+| `browser_sessions/<SID>/artefacts/capture.pcap` | Caseless browser session pcap (readable via `read_browser_session_file`) |
+| `browser_sessions/<SID>/artefacts/network_log.json` | Caseless browser session parsed network telemetry |
+| `browser_sessions/<SID>/artefacts/screenshot_final.png` | Caseless browser session final screenshot |
 | `cases/<ID>/artefacts/sandbox_detonation/sandbox_manifest.json` | Sandbox detonation session metadata, sample hashes, duration |
 | `cases/<ID>/artefacts/sandbox_detonation/strace_log.json` | Parsed syscall trace (categorised: file/network/process/permission) |
 | `cases/<ID>/artefacts/sandbox_detonation/network_capture.pcap` | Raw packet capture from sandbox |

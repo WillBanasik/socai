@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import KNOWN_CLEAN_DOMAINS, log_error, utcnow, write_artefact
+from tools.common import KNOWN_CLEAN_DOMAINS, is_private_ip, log_error, utcnow, write_artefact
 
 # ---------------------------------------------------------------------------
 # Regex patterns
@@ -56,16 +56,6 @@ _RE_SHA1   = re.compile(r"\b[0-9a-fA-F]{40}\b")
 _RE_SHA256 = re.compile(r"\b[0-9a-fA-F]{64}\b")
 _RE_EMAIL  = re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b")
 _RE_CVE    = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
-
-_PRIVATE_RANGES = [
-    re.compile(r"^10\."),
-    re.compile(r"^172\.(1[6-9]|2\d|3[01])\."),
-    re.compile(r"^192\.168\."),
-    re.compile(r"^127\."),
-    re.compile(r"^0\."),
-    re.compile(r"^169\.254\."),
-    re.compile(r"^::1$"),
-]
 
 _NOISE_DOMAINS: frozenset[str] = frozenset({
     "example.com", "localhost", "test.com", "domain.com",
@@ -108,7 +98,7 @@ def _read_file_text(fp: Path) -> str:
 
 
 def _is_private_ip(ip: str) -> bool:
-    return any(r.match(ip) for r in _PRIVATE_RANGES)
+    return is_private_ip(ip)
 
 
 def _extract_from_text(text: str, include_private: bool = False) -> dict:

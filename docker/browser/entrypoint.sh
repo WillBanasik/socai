@@ -27,7 +27,7 @@ sleep 0.5
 # -------------------------------------------------------------------------
 # 3. Packet capture (runs as root for raw socket access)
 # -------------------------------------------------------------------------
-tcpdump -i any -w "$TELEMETRY/capture.pcap" -s 0 -q 2>/dev/null &
+tcpdump -i any -w "$TELEMETRY/capture.pcap" -s 0 -q 'not (port 5900 or port 7900)' 2>/dev/null &
 TCPDUMP_PID=$!
 
 # -------------------------------------------------------------------------

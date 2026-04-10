@@ -29,7 +29,6 @@ Writes:
 from __future__ import annotations
 
 import base64
-import copy
 import json
 import sys
 import threading
@@ -1622,16 +1621,14 @@ def _run_tasks_parallel(case_id: str, tasks: list[tuple], cache: dict) -> list[d
                       context={"ioc": res.get("ioc"), "ioc_type": res.get("ioc_type"),
                                "provider": res.get("provider")})
 
-    # Persist to cache
+    # Update shared cache dict in memory (caller flushes to disk once)
     if results:
         with _cache_lock:
-            fresh_cache = _cache_load()
             for res in results:
                 provider = res.get("provider", "")
                 ioc_val = res.get("ioc", "")
                 if provider and ioc_val and "error" not in res and res.get("status") == "ok":
-                    _cache_set(fresh_cache, ioc_val, provider, res)
-            _cache_save(fresh_cache)
+                    _cache_set(cache, ioc_val, provider, res)
 
     return results
 
@@ -1804,28 +1801,6 @@ def _apply_deterministic_escalation(
     return escalate_list
 
 
-def _apply_llm_escalation(
-    case_id: str,
-    escalate_list: list[str],
-    candidate_list: list[str],
-    tier1_results: list[dict],
-    ioc_type: str,
-    case_meta: dict | None = None,
-) -> list[str]:
-    """Apply escalation rules and merge additional escalations.
-
-    Uses deterministic rules. The LLM director has been removed to
-    eliminate an Anthropic API call per enrichment run.
-
-    Never removes items from escalate_list, only adds.
-    """
-    escalate_list = _apply_deterministic_escalation(
-        case_id, escalate_list, candidate_list, tier1_results,
-        ioc_type, case_meta,
-    )
-    return escalate_list
-
-
 def enrich(
     case_id: str,
     max_per_type: int = 20,
@@ -1953,7 +1928,6 @@ def enrich(
         cache = _cache_load()
 
     all_results: list[dict] = []
-    _results_lock = threading.Lock()
     cache_hits = 0
     live_calls = 0
     tiered_stats = {"infra_skipped": 0, "tier1_only": 0, "escalated_to_deep": 0}
@@ -2038,9 +2012,6 @@ def enrich(
             results.extend(tier1_results)
             calls += len(tier1_tasks)
 
-            with _cache_lock:
-                lcache = _cache_load()
-
             # --- Tier 2: Deep providers (depth-aware) ---
             if depth == "fast":
                 escalate_ips = []
@@ -2049,7 +2020,7 @@ def enrich(
             else:
                 escalate_ips = [ip for ip in candidate_ips
                                if _ip_needs_deep_enrichment(ip, tier1_results + results)]
-                escalate_ips = _apply_llm_escalation(
+                escalate_ips = _apply_deterministic_escalation(
                     case_id, escalate_ips, candidate_ips,
                     tier1_results + results, "ipv4", _case_meta,
                 )
@@ -2068,7 +2039,7 @@ def enrich(
                 for ip in escalate_ips:
                     for fn in local_ip_deep:
                         provider_name = _fn_provider_name(fn)
-                        cached = _cache_get(lcache, ip, provider_name)
+                        cached = _cache_get(cache, ip, provider_name)
                         if cached is not None:
                             entry = dict(cached)
                             entry["from_cache"] = True
@@ -2079,7 +2050,7 @@ def enrich(
                         else:
                             tier2_tasks.append((fn, ip, "ipv4"))
 
-                tier2_results = _run_tasks_parallel(case_id, tier2_tasks, lcache)
+                tier2_results = _run_tasks_parallel(case_id, tier2_tasks, cache)
                 results.extend(tier2_results)
                 calls += len(tier2_tasks)
 
@@ -2136,9 +2107,6 @@ def enrich(
         results.extend(tier1_results)
         calls += len(tier1_tasks)
 
-        with _cache_lock:
-            lcache = _cache_load()
-
         # --- Tier 2 (depth-aware) ---
         if depth == "fast":
             escalate_domains = []
@@ -2147,7 +2115,7 @@ def enrich(
         else:
             escalate_domains = [d for d in filtered_domains
                                 if _domain_needs_deep_enrichment(d, tier1_results + results)]
-            escalate_domains = _apply_llm_escalation(
+            escalate_domains = _apply_deterministic_escalation(
                 case_id, escalate_domains, filtered_domains,
                 tier1_results + results, "domain", _case_meta,
             )
@@ -2166,7 +2134,7 @@ def enrich(
             for domain in escalate_domains:
                 for fn in local_domain_deep:
                     provider_name = _fn_provider_name(fn)
-                    cached_entry = _cache_get(lcache, domain, provider_name)
+                    cached_entry = _cache_get(cache, domain, provider_name)
                     if cached_entry is not None:
                         entry = dict(cached_entry)
                         entry["from_cache"] = True
@@ -2177,7 +2145,7 @@ def enrich(
                     else:
                         tier2_tasks.append((fn, domain, "domain"))
 
-            tier2_results = _run_tasks_parallel(case_id, tier2_tasks, lcache)
+            tier2_results = _run_tasks_parallel(case_id, tier2_tasks, cache)
             results.extend(tier2_results)
             calls += len(tier2_tasks)
 
@@ -2234,9 +2202,6 @@ def enrich(
         results.extend(tier1_results)
         calls += len(tier1_tasks)
 
-        with _cache_lock:
-            lcache = _cache_load()
-
         # --- Tier 2 (depth-aware) ---
         if depth == "fast":
             escalate_urls = []
@@ -2245,7 +2210,7 @@ def enrich(
         else:
             escalate_urls = [u for u in filtered_urls
                              if _url_needs_deep_enrichment(u, tier1_results + results)]
-            escalate_urls = _apply_llm_escalation(
+            escalate_urls = _apply_deterministic_escalation(
                 case_id, escalate_urls, filtered_urls,
                 tier1_results + results, "url", _case_meta,
             )
@@ -2264,7 +2229,7 @@ def enrich(
             for url in escalate_urls:
                 for fn in local_url_deep:
                     provider_name = _fn_provider_name(fn)
-                    cached_entry = _cache_get(lcache, url, provider_name)
+                    cached_entry = _cache_get(cache, url, provider_name)
                     if cached_entry is not None:
                         entry = dict(cached_entry)
                         entry["from_cache"] = True
@@ -2275,7 +2240,7 @@ def enrich(
                     else:
                         tier2_tasks.append((fn, url, "url"))
 
-            tier2_results = _run_tasks_parallel(case_id, tier2_tasks, lcache)
+            tier2_results = _run_tasks_parallel(case_id, tier2_tasks, cache)
             results.extend(tier2_results)
             calls += len(tier2_tasks)
 
@@ -2336,9 +2301,6 @@ def enrich(
             results.extend(tier1_results)
             calls += len(tier1_tasks)
 
-            with _cache_lock:
-                lcache = _cache_load()
-
             # --- Tier 2 (depth-aware) ---
             if depth == "fast":
                 escalate_hashes = []
@@ -2347,7 +2309,7 @@ def enrich(
             else:
                 escalate_hashes = [h for h in hash_list
                                    if _hash_needs_deep_enrichment(h, tier1_results + results)]
-                escalate_hashes = _apply_llm_escalation(
+                escalate_hashes = _apply_deterministic_escalation(
                     case_id, escalate_hashes, hash_list,
                     tier1_results + results, hash_type, _case_meta,
                 )
@@ -2366,7 +2328,7 @@ def enrich(
                 for h in escalate_hashes:
                     for fn in deep_providers:
                         provider_name = _fn_provider_name(fn)
-                        cached_entry = _cache_get(lcache, h, provider_name)
+                        cached_entry = _cache_get(cache, h, provider_name)
                         if cached_entry is not None:
                             entry = dict(cached_entry)
                             entry["from_cache"] = True
@@ -2377,7 +2339,7 @@ def enrich(
                         else:
                             tier2_tasks.append((fn, h, hash_type))
 
-                tier2_results = _run_tasks_parallel(case_id, tier2_tasks, lcache)
+                tier2_results = _run_tasks_parallel(case_id, tier2_tasks, cache)
                 results.extend(tier2_results)
                 calls += len(tier2_tasks)
 
@@ -2414,9 +2376,9 @@ def enrich(
                 log_error(case_id, f"enrich.{label}", str(exc),
                           severity="error", traceback=str(exc))
 
-    # Reload cache after parallel enrichment so remaining types see fresh entries
+    # Flush cache to disk once after all parallel enrichment threads complete
     with _cache_lock:
-        cache = _cache_load()
+        _cache_save(cache)
 
     # =====================================================================
     # All other IOC types — standard enrichment (email, CVE)
@@ -2463,6 +2425,10 @@ def enrich(
         type_results = _run_tasks_parallel(case_id, tasks, cache)
         all_results.extend(type_results)
         live_calls += len(tasks)
+
+    # Final cache flush (captures entries from "other IOC types" loop above)
+    with _cache_lock:
+        _cache_save(cache)
 
     # =====================================================================
     # Output
@@ -2730,13 +2696,11 @@ def quick_enrich(iocs: list[str], depth: str = "auto") -> dict:
 
         # --- Tier 1: Fast providers for all types ---
         tier1_tasks: list[tuple] = []
-        with _cache_lock:
-            lcache = _cache_load()
         for ioc_type, vals in by_type.items():
             for val in vals:
                 for fn in _FAST_PROVIDERS.get(ioc_type, []):
                     pname = _fn_provider_name(fn)
-                    cached = _cache_get(lcache, val, pname)
+                    cached = _cache_get(cache, val, pname)
                     if cached is not None:
                         entry = dict(cached)
                         entry.update(ioc_type=ioc_type, ts=utcnow(), _cached=True)
@@ -2745,14 +2709,11 @@ def quick_enrich(iocs: list[str], depth: str = "auto") -> dict:
                     else:
                         tier1_tasks.append((fn, val, ioc_type))
 
-        tier1_results = _run_tasks_parallel("", tier1_tasks, lcache)
+        tier1_results = _run_tasks_parallel("", tier1_tasks, cache)
         all_results.extend(tier1_results)
         live_calls += len(tier1_tasks)
 
         # --- Tier 2: Selective deep enrichment based on Tier 1 signal ---
-        with _cache_lock:
-            lcache = _cache_load()
-
         tier2_tasks: list[tuple] = []
         combined = all_results  # includes cached + tier1 live results
         for ioc_type, vals in by_type.items():
@@ -2765,7 +2726,7 @@ def quick_enrich(iocs: list[str], depth: str = "auto") -> dict:
                     tiered_stats["escalated_to_deep"] += 1
                     for fn in deep_providers:
                         pname = _fn_provider_name(fn)
-                        cached = _cache_get(lcache, val, pname)
+                        cached = _cache_get(cache, val, pname)
                         if cached is not None:
                             entry = dict(cached)
                             entry.update(ioc_type=ioc_type, ts=utcnow(), _cached=True)
@@ -2777,7 +2738,7 @@ def quick_enrich(iocs: list[str], depth: str = "auto") -> dict:
                     tiered_stats["tier1_only"] += 1
 
         if tier2_tasks:
-            tier2_results = _run_tasks_parallel("", tier2_tasks, lcache)
+            tier2_results = _run_tasks_parallel("", tier2_tasks, cache)
             all_results.extend(tier2_results)
             live_calls += len(tier2_tasks)
 
@@ -2821,6 +2782,10 @@ def quick_enrich(iocs: list[str], depth: str = "auto") -> dict:
     _duration_ms = int((_time.monotonic() - _t0) * 1000)
 
     # Persist results so they can be imported into a case later
+    # Flush cache to disk once after all enrichment
+    with _cache_lock:
+        _cache_save(cache)
+
     enrichment_id = f"QE_{utcnow().replace('-', '').replace(':', '').replace('T', '_').split('.')[0]}"
     QUICK_ENRICH_DIR.mkdir(parents=True, exist_ok=True)
     output = {
@@ -2889,8 +2854,8 @@ def import_enrichment(enrichment_id: str, case_id: str) -> dict:
         "total_lookups": len(qe_data.get("results", [])),
         "cache_hits": qe_data.get("cache_hits", 0),
         "live_calls": qe_data.get("provider_calls", 0),
-        "tiered_enrichment": copy.deepcopy(qe_data.get("tiered_stats", {})),
-        "results": copy.deepcopy(qe_data.get("results", [])),
+        "tiered_enrichment": qe_data.get("tiered_stats", {}),
+        "results": qe_data.get("results", []),
     }
     write_artefact(enrich_dir / "enrichment.json",
                    json.dumps(enrich_output, indent=2))

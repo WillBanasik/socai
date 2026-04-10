@@ -148,6 +148,9 @@ TOOL_TAXONOMY: dict[str, dict[str, str]] = {
     "start_browser_session":    {"category": "sandbox",     "goal": "investigate"},
     "stop_browser_session":     {"category": "sandbox",     "goal": "investigate"},
     "list_browser_sessions":    {"category": "sandbox",     "goal": "quick_answer"},
+    "read_browser_session_file": {"category": "sandbox",    "goal": "quick_answer"},
+    "list_browser_session_files": {"category": "sandbox",   "goal": "quick_answer"},
+    "import_browser_session":   {"category": "sandbox",     "goal": "investigate"},
 
     # Forensics ingestion
     "ingest_velociraptor":      {"category": "analysis",    "goal": "investigate"},

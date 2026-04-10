@@ -19,7 +19,7 @@ Shared API (api/)
 MCP Server (mcp_server/)
     ├── HTTPS SSE transport  → port 8001, separate process
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
-    ├── 100 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
+    ├── 106 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
     ├── 36 resources         → case data, clients, IOC index, playbooks, sentinel queries, NGSIEM/LogScale refs, articles, landscape
     ├── 21 prompts           → investigation, KQL, triage, FP, analysis, report generation, forensics
     ├── Save tools (2)       → save_report, save_threat_article (persist agent output)
@@ -55,9 +55,10 @@ Memory Guidance (tools/memory_guidance.py)
     └── Analyse mode  → .dmp file analysis (strings, PE headers, DLLs, risk scoring)
 
 Browser Session (tools/browser_session.py)
-    ├── Docker (socai-browser:latest)       → vanilla Chrome via noVNC (:7900), no automation markers
-    ├── tcpdump (passive capture)           → DNS, TCP, HTTP, TLS SNI extraction from pcap
-    └── Session lifecycle                   → start → analyst browses manually → stop → pcap collection
+    ├── Docker (socai-browser:latest)       → vanilla Chrome via noVNC (:7900), bridge networking, no automation markers
+    ├── tcpdump (passive capture)           → DNS, TCP, HTTP, TLS SNI extraction (parsed inside container)
+    ├── Session lifecycle                   → start → analyst browses manually → stop → pcap parsing → artefact collection
+    └── Caseless workflow                   → start without case_id → read/list session files → import into case later
 
 Confluence (tools/confluence_read.py)
     ├── Read-only client      → fine-grained API token, single space (MDR1)

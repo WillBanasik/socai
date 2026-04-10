@@ -28,7 +28,7 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  100 tools, 40 resources │
+│  106 tools, 40 resources │
 │  21 prompts, JSONL logs │
 │  Background scheduler   │
 └─────────────────────────┘
@@ -270,6 +270,9 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `start_browser_session` | `admin` | Stealth browser session (noVNC + tcpdump, no automation markers) |
 | `stop_browser_session` | `admin` | Stop browser session and collect pcap/entities |
 | `list_browser_sessions` | `admin` | List browser sessions |
+| `read_browser_session_file` | `admin` | Read artefact from a caseless browser session |
+| `list_browser_session_files` | `admin` | List artefacts in a browser session directory |
+| `import_browser_session` | `admin` | Import caseless session artefacts into an existing case |
 | `analyse_pe` | `investigations:submit` | Deep PE static analysis (entropy, imports, packing) |
 | `yara_scan` | `investigations:submit` | YARA rule scanning (built-in + external + LLM-generated) |
 | `memory_dump_guide` | `investigations:submit` | MDE Live Response dump collection guidance |
@@ -491,7 +494,7 @@ Analyst's Claude Desktop (VPN / corporate network)
     ▼
 ┌──────────────────────────┐
 │  mcp_server (port 8001)  │  ← SOCAI_MCP_HOST=127.0.0.1
-│  100 tools, 40 resources  │
+│  106 tools, 40 resources  │
 │  JWT RBAC, role system   │
 │  Background scheduler    │
 └──────────────────────────┘

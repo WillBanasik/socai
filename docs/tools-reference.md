@@ -861,16 +861,18 @@ This avoids analysis-evasion techniques used by sophisticated phishing kits and 
 
 ### Architecture
 
-- **Container**: `socai-browser:latest` (custom image: Debian + Google Chrome + noVNC + tcpdump) with `--network=host`
+- **Container**: `socai-browser:latest` (custom image: Debian + Google Chrome + noVNC + tcpdump) with bridge networking (`-p 7900:7900`)
 - **noVNC**: analyst accesses the browser at `http://127.0.0.1:7900` (no password)
 - **Chrome**: vanilla launch — no `--remote-debugging-port`, no automation flags
-- **tcpdump**: passive packet capture on all interfaces
+- **tcpdump**: passive packet capture with BPF filter excluding VNC/noVNC noise (`not (port 5900 or port 7900)`)
 
-One session at a time (fixed noVNC port due to `--network=host`). Single-session enforcement: starting a second session gracefully stops the first (preserving telemetry).
+One session at a time (fixed noVNC port). Single-session enforcement: starting a second session gracefully stops the first (preserving telemetry).
+
+Bridge networking gives the container its own network namespace — tcpdump only captures Chrome's traffic (DNS, HTTP, HTTPS), not host traffic or noVNC framebuffer data. VPN mode uses `--network=container:gluetun` instead.
 
 ### Network Telemetry
 
-Telemetry is captured passively via tcpdump inside the container. On session stop, the pcap is copied to the host and parsed into structured data:
+Telemetry is captured passively via tcpdump inside the container. On session stop, the pcap is parsed **inside the container** (via `docker exec`) before the container is destroyed. This avoids requiring tcpdump on the host. A host-side fallback exists if the container is already dead.
 
 - **DNS queries** — all domain lookups from the browser
 - **TCP connections** — SYN packets (connection initiation targets)
@@ -893,10 +895,11 @@ The disconnect detection is fail-open: if the check errors, the session stays al
 
 ### Session Lifecycle
 
-1. `start_session(url, case_id)` — starts Docker container with Chrome navigating to URL, starts idle monitor
+1. `start_session(url, case_id)` — starts Docker container with Chrome navigating to URL, starts idle monitor. `case_id` is optional (caseless sessions store artefacts under `browser_sessions/<session_id>/artefacts/`)
 2. Analyst browses manually via noVNC at `http://127.0.0.1:7900`
 3. Session ends via: closing the noVNC tab (auto-stop after grace period), idle timeout, max duration, or manual `stop_session(session_id)`
-4. On stop: copies pcap and screenshot from container, destroys container, parses pcap, writes artefacts
+4. On stop: parses pcap inside container, copies pcap and screenshot to host, destroys container, writes artefacts
+5. For caseless sessions: artefacts readable via `read_browser_session_file` / `list_browser_session_files`. Import into a case later via `import_browser_session(session_id, case_id)`
 
 ### Entity Extraction
 
@@ -927,14 +930,14 @@ python3 socai.py browser-list
 
 ### MCP Tools
 
-`start_browser_session`, `stop_browser_session`, `list_browser_sessions` — admin-scoped.
+`start_browser_session`, `stop_browser_session`, `list_browser_sessions`, `read_browser_session_file`, `list_browser_session_files`, `import_browser_session` — admin-scoped.
 
 ### Requirements
 
 - Docker must be installed and accessible (the current user must be in the `docker` group or have sudo)
 - `socai-browser:latest` image built: `docker build -t socai-browser:latest docker/browser/`
 - Port 7900 must be available
-- `tcpdump` installed on the host (for pcap parsing)
+- tcpdump on the host is **not required** — pcap parsing runs inside the container
 
 ## Sandbox Detonation
 

@@ -257,8 +257,9 @@ Disposable browser sessions require Docker installed and accessible.
 | Docker | Must be installed; current user in `docker` group or sudo |
 | Port | 7900 (noVNC) — must be free |
 | Image | `socai-browser:latest` — build with `docker build -t socai-browser:latest docker/browser/` |
-| Host tools | `tcpdump` (for pcap parsing on session stop) |
-| Network mode | `--network=host` (default) or `--network=container:gluetun` (VPN) |
+| Network mode | Bridge with `-p 7900:7900` (default) or `--network=container:gluetun` (VPN) |
+
+tcpdump on the host is **not required** — pcap parsing runs inside the container via `docker exec`.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -271,7 +272,7 @@ Disposable browser sessions require Docker installed and accessible.
 
 noVNC access: `http://127.0.0.1:7900` (no password). When using VPN mode, port 7900 must be published on the gluetun container instead.
 
-Session state files are stored in `browser_sessions/<session_id>.json`.
+Session state files are stored in `browser_sessions/<session_id>.json`. Caseless session artefacts are stored in `browser_sessions/<session_id>/artefacts/` and can be imported into a case via `import_browser_session`.
 
 ## Sandbox Detonation (Docker)
 

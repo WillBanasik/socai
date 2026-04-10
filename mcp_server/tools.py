@@ -51,6 +51,43 @@ def _check_workspace_boundary(workspace_id: str) -> None:  # noqa: ARG001
     """No-op — boundaries removed."""
 
 
+def _speculative_enrich_bg(
+    text: str,
+    *,
+    extra_iocs: list[str] | None = None,
+    thread_name: str = "spec_enrich",
+) -> None:
+    """Extract IOCs from *text* and pre-warm enrichment cache in a background thread.
+
+    Advisory only — failures are logged but never block the caller.
+    """
+    try:
+        from tools.extract_iocs import _extract_from_text
+
+        extracted = _extract_from_text(text)
+        raw_iocs: list[str] = []
+        for ioc_type in ("ipv4", "domain", "url", "sha256", "sha1", "md5"):
+            raw_iocs.extend(extracted.get(ioc_type, set()))
+        if extra_iocs:
+            raw_iocs.extend(extra_iocs)
+        raw_iocs = list(dict.fromkeys(raw_iocs))[:20]  # dedup, cap at 20
+        if not raw_iocs:
+            return
+        import threading as _thr
+
+        def _bg():
+            try:
+                from tools.enrich import quick_enrich
+                quick_enrich(raw_iocs, depth="fast")
+            except Exception as exc:
+                from tools.common import log_error
+                log_error("", "speculative_enrich", str(exc), severity="info")
+
+        _thr.Thread(target=_bg, daemon=True, name=thread_name).start()
+    except Exception:
+        pass  # advisory — never block caller
+
+
 def _resolve_workspace_code_from_id(workspace_id: str) -> str:
     """Reverse-lookup workspace code from GUID for schema validation."""
     try:
@@ -616,13 +653,21 @@ def _register_tier1(mcp: FastMCP) -> None:
         # Timeline
         timeline = _load("timeline.json")
 
-        # Error log (case-specific entries)
+        # Error log (case-specific entries — JSONL format)
         errors: list = []
         try:
             from config.settings import ERROR_LOG
             if ERROR_LOG.exists():
-                all_errors = load_json(ERROR_LOG)
-                errors = [e for e in all_errors if e.get("case_id") == case_id]
+                for line in ERROR_LOG.read_text().splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        if entry.get("case_id") == case_id:
+                            errors.append(entry)
+                    except json.JSONDecodeError:
+                        continue
         except Exception:
             pass
 
@@ -1099,25 +1144,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         )
 
         # Speculative enrichment — pre-warm cache with IOCs from evidence text
-        try:
-            from tools.extract_iocs import _extract_from_text
-            extracted = _extract_from_text(text)
-            raw_iocs: list[str] = []
-            for ioc_type in ("ipv4", "domain", "url", "sha256", "sha1", "md5"):
-                raw_iocs.extend(extracted.get(ioc_type, set()))
-            raw_iocs = list(dict.fromkeys(raw_iocs))[:20]
-            if raw_iocs:
-                import threading as _thr
-                def _bg_enrich():
-                    try:
-                        from tools.enrich import quick_enrich
-                        quick_enrich(raw_iocs, deep=False)
-                    except Exception:
-                        pass
-                _thr.Thread(target=_bg_enrich, daemon=True,
-                            name=f"spec_enrich_evidence_{case_id}").start()
-        except Exception:
-            pass  # advisory — never block add_evidence
+        _speculative_enrich_bg(text, thread_name=f"spec_enrich_evidence_{case_id}")
 
         return _json(_pop_message(result))
 
@@ -1860,28 +1887,10 @@ def _register_tier1(mcp: FastMCP) -> None:
         }
 
         # Speculative enrichment — pre-warm cache with IOCs from alert text
-        try:
-            from tools.extract_iocs import _extract_from_text
-            text_to_scan = f"{title}\n{notes}"
-            extracted = _extract_from_text(text_to_scan)
-            raw_iocs: list[str] = []
-            for ioc_type in ("ipv4", "domain", "url", "sha256", "sha1", "md5"):
-                raw_iocs.extend(extracted.get(ioc_type, set()))
-            if urls:
-                raw_iocs.extend(urls)
-            raw_iocs = list(dict.fromkeys(raw_iocs))[:20]  # dedup, cap at 20
-            if raw_iocs:
-                import threading as _thr
-                def _bg_enrich():
-                    try:
-                        from tools.enrich import quick_enrich
-                        quick_enrich(raw_iocs, deep=False)
-                    except Exception:
-                        pass  # advisory — silent failure
-                _thr.Thread(target=_bg_enrich, daemon=True,
-                            name="spec_enrich_classify").start()
-        except Exception:
-            pass  # advisory — never block classify_attack
+        _speculative_enrich_bg(
+            f"{title}\n{notes}", extra_iocs=urls,
+            thread_name="spec_enrich_classify",
+        )
 
         return _json(result)
 
@@ -4701,6 +4710,126 @@ def _register_tier3(mcp: FastMCP) -> None:
 
         from tools.browser_session import list_sessions
         return _json({"sessions": list_sessions()})
+
+    @mcp.tool(title="Read Browser Session File", annotations={"readOnlyHint": True})
+    def read_browser_session_file(session_id: str, file_path: str) -> str:
+        """Use when you need to read an artefact file from a browser session
+        that was started without a case_id.  For sessions attached to a case,
+        use ``read_case_file`` instead.
+
+        Common paths: ``artefacts/session_manifest.json``,
+        ``artefacts/network_log.json``, ``artefacts/dns_log.json``,
+        ``artefacts/screenshot_final.png``.
+
+        Image files (PNG, JPG) are returned as rendered images.
+
+        Parameters
+        ----------
+        session_id : str
+            Browser session identifier (12-char hex from ``start_browser_session``).
+        file_path : str
+            Relative path within ``browser_sessions/<session_id>/``.
+        """
+        _require_scope("admin")
+
+        import re as _re
+        if not _re.match(r"^[a-f0-9]{8,40}$", session_id):
+            return _json({"error": "Invalid session_id."})
+
+        from tools.browser_session import SESSIONS_DIR
+        session_dir = SESSIONS_DIR / session_id
+        if not session_dir.is_dir():
+            return _json({"error": f"Session not found: {session_id}"})
+
+        clean = Path(file_path).as_posix()
+        if ".." in clean or clean.startswith("/"):
+            return _json({"error": "Directory traversal not allowed."})
+
+        full_path = session_dir / clean
+        try:
+            full_path.resolve().relative_to(session_dir.resolve())
+        except ValueError:
+            return _json({"error": "Directory traversal not allowed."})
+        if not full_path.exists():
+            return _json({"error": f"File not found: {file_path}"})
+
+        _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        if full_path.suffix.lower() in _IMAGE_SUFFIXES:
+            from mcp.server.fastmcp.utilities.types import Image
+            max_image_bytes = 10 * 1024 * 1024
+            if full_path.stat().st_size > max_image_bytes:
+                return _json({"error": f"Image too large ({full_path.stat().st_size} bytes). Max 10 MB."})
+            return Image(path=full_path)
+
+        try:
+            content = full_path.read_text(encoding="utf-8", errors="replace")
+            if len(content) > 50000:
+                content = content[:50000] + "\n\n... [truncated]"
+            return content
+        except Exception as exc:
+            return _json({"error": f"Error reading {file_path}: {exc}"})
+
+    @mcp.tool(title="List Browser Session Files", annotations={"readOnlyHint": True})
+    def list_browser_session_files(session_id: str) -> str:
+        """Use to discover what artefact files exist in a browser session
+        directory.  Returns file paths and sizes.  Use the returned paths
+        with ``read_browser_session_file`` to read individual files.
+
+        Parameters
+        ----------
+        session_id : str
+            Browser session identifier.
+        """
+        _require_scope("admin")
+
+        import re as _re
+        if not _re.match(r"^[a-f0-9]{8,40}$", session_id):
+            return _json({"error": "Invalid session_id."})
+
+        from tools.browser_session import SESSIONS_DIR
+        session_dir = SESSIONS_DIR / session_id
+        if not session_dir.is_dir():
+            return _json({"error": f"Session not found: {session_id}"})
+
+        files = []
+        for p in sorted(session_dir.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(session_dir).as_posix()
+            try:
+                size = p.stat().st_size
+            except OSError:
+                size = 0
+            files.append({"path": rel, "size": size})
+
+        return _json({
+            "session_id": session_id,
+            "file_count": len(files),
+            "files": files,
+        })
+
+    @mcp.tool(title="Import Browser Session")
+    def import_browser_session(session_id: str, case_id: str) -> str:
+        """Use after a caseless browser session has been stopped and the analyst
+        decides the findings warrant a case.  Copies all session artefacts
+        (pcap, network log, screenshot, entities) into the case directory so
+        they are accessible via ``read_case_file`` and included in reports.
+
+        Only works for sessions that were started without a ``case_id``.
+        Sessions already attached to a case will be rejected.
+
+        Parameters
+        ----------
+        session_id : str
+            Completed browser session identifier.
+        case_id : str
+            Target case to import artefacts into.
+        """
+        _require_scope("admin")
+        _check_client_boundary(case_id)
+
+        from tools.browser_session import import_session
+        return _json(import_session(session_id, case_id))
 
     @mcp.tool(title="Analyse PE Files")
     async def analyse_pe(

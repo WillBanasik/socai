@@ -20,7 +20,6 @@ Usage (standalone):
 """
 from __future__ import annotations
 
-import ipaddress
 import os
 import sys
 from collections import defaultdict
@@ -30,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import load_json, log_error, utcnow
+from tools.common import is_private_ip, load_json, log_error, utcnow
 
 # ---------------------------------------------------------------------------
 # System prompt (used by MCP client-side prompts)
@@ -179,12 +178,7 @@ def _normalize_event(evt: dict) -> dict | None:
 
 def _is_private_ip(ip_str: str) -> bool:
     """Check whether an IP address is RFC 1918 / private."""
-    if not ip_str:
-        return False
-    try:
-        return ipaddress.ip_address(ip_str).is_private
-    except (ValueError, TypeError):
-        return False
+    return is_private_ip(ip_str)
 
 
 def _basename(proc: str) -> str:

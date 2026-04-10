@@ -120,6 +120,20 @@ def _relative_artefact_paths(case_id: str, paths: dict) -> dict | None:
     return result or None
 
 
+def _relative_session_paths(session_id: str, paths: dict) -> dict | None:
+    """Convert absolute paths to session-relative paths for ``read_browser_session_file``."""
+    session_root = SESSIONS_DIR / session_id
+    result = {}
+    for label, p in paths.items():
+        if p is None:
+            continue
+        try:
+            result[label] = Path(p).relative_to(session_root).as_posix()
+        except ValueError:
+            continue
+    return result or None
+
+
 # ---------------------------------------------------------------------------
 # Docker management
 # ---------------------------------------------------------------------------
@@ -146,7 +160,7 @@ def _check_novnc_port() -> int:
 
 
 def _start_container(session_id: str, url: str, telemetry_dir: Path | None = None) -> str:
-    """Start the browser container with --network=host.
+    """Start the browser container with bridge networking.
 
     Args:
         session_id: Unique session identifier.
@@ -156,15 +170,21 @@ def _start_container(session_id: str, url: str, telemetry_dir: Path | None = Non
             filesystem — surviving container crashes and OOM kills.
 
     Returns container ID.
+
+    Network modes:
+        - Default (bridge): container gets its own network namespace.
+          noVNC published via -p.  tcpdump only sees Chrome's traffic.
+        - VPN: --network=container:<gluetun> for Mullvad routing.
     """
     name = _container_name(session_id)
 
-    # VPN mode: route through gluetun container, expose noVNC via port publish.
-    # Host mode: direct network access (default for local use without VPN).
+    # VPN mode: route through gluetun container.
+    # Bridge mode (default): own namespace, publish noVNC port.  tcpdump
+    # captures only Chrome traffic — no host noise.
     if BROWSER_USE_VPN:
         network_args = [f"--network=container:{BROWSER_VPN_CONTAINER}"]
     else:
-        network_args = ["--network=host"]
+        network_args = ["-p", f"{NOVNC_PORT}:{NOVNC_PORT}"]
 
     cmd = [
         "docker", "run", "--rm", "-d",
@@ -514,6 +534,140 @@ def _parse_sni_from_hex(hex_str: str) -> str | None:
         idx = data.find(b"\x00\x00", idx + 1)
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Container-side pcap parsing (runs tcpdump via docker exec)
+# ---------------------------------------------------------------------------
+
+_NOISE_PORTS = {5900, 7900}
+
+
+def _parse_pcap_in_container(
+    session_id: str,
+    pcap_path: str = "/telemetry/capture.pcap",
+) -> dict:
+    """Parse pcap inside the running container via ``docker exec``.
+
+    Same extraction logic as ``_parse_pcap`` but avoids requiring tcpdump
+    on the host.  Must be called BEFORE ``_stop_container``.
+    """
+    name = _container_name(session_id)
+    result: dict = {
+        "dns_queries": [],
+        "tcp_connections": [],
+        "http_requests": [],
+        "tls_sni": [],
+    }
+
+    def _exec(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["docker", "exec", name, *args],
+            capture_output=True, text=True, timeout=timeout,
+        )
+
+    # DNS queries
+    try:
+        out = _exec(["tcpdump", "-r", pcap_path, "-n", "port 53", "-l"])
+        seen_dns: set[str] = set()
+        for line in out.stdout.splitlines():
+            dns_match = re.search(r"(\S+)\s+>\s+\S+:\s+.*\?\s+(\S+)", line)
+            if dns_match:
+                query = dns_match.group(2).rstrip(".")
+                if query and query not in seen_dns:
+                    seen_dns.add(query)
+                    result["dns_queries"].append({
+                        "query": query,
+                        "src": dns_match.group(1),
+                    })
+    except Exception as exc:
+        log_error("", "browser_session:container_parse_dns", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id})
+
+    # TCP connections (SYN packets)
+    try:
+        out = _exec([
+            "tcpdump", "-r", pcap_path, "-n",
+            "tcp[tcpflags] & (tcp-syn) != 0 and tcp[tcpflags] & (tcp-ack) == 0",
+        ])
+        for line in out.stdout.splitlines():
+            conn_match = re.search(
+                r"(\d+\.\d+\.\d+\.\d+)\.(\d+)\s+>\s+(\d+\.\d+\.\d+\.\d+)\.(\d+)",
+                line,
+            )
+            if conn_match:
+                dst_port = int(conn_match.group(4))
+                dst_ip = conn_match.group(3)
+                if dst_port not in _NOISE_PORTS and not dst_ip.startswith("127."):
+                    result["tcp_connections"].append({
+                        "src_ip": conn_match.group(1),
+                        "src_port": int(conn_match.group(2)),
+                        "dst_ip": dst_ip,
+                        "dst_port": dst_port,
+                    })
+    except Exception as exc:
+        log_error("", "browser_session:container_parse_tcp", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id})
+
+    # HTTP requests (plaintext port 80)
+    try:
+        out = _exec(["tcpdump", "-r", pcap_path, "-n", "-A", "tcp port 80"])
+        seen_http: set[str] = set()
+        for match in re.finditer(
+            r"(GET|POST|PUT|DELETE|HEAD)\s+(\S+)\s+HTTP/\d\.\d\r?\nHost:\s*(\S+)",
+            out.stdout,
+        ):
+            key = f"{match.group(1)} {match.group(3)}{match.group(2)}"
+            if key not in seen_http:
+                seen_http.add(key)
+                result["http_requests"].append({
+                    "method": match.group(1),
+                    "path": match.group(2),
+                    "host": match.group(3),
+                    "url": f"http://{match.group(3)}{match.group(2)}",
+                })
+    except Exception as exc:
+        log_error("", "browser_session:container_parse_http", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id})
+
+    # TLS SNI extraction via hex dump
+    try:
+        out = _exec([
+            "tcpdump", "-r", pcap_path, "-n", "-x",
+            "tcp port 443 and (tcp[((tcp[12:1] & 0xf0) >> 2)] = 0x16)",
+        ])
+        seen_sni: set[str] = set()
+        current_hex = ""
+        current_dst = ""
+        for line in out.stdout.splitlines():
+            hex_match = re.match(r"\s+0x[\da-f]+:\s+([\da-f ]+)", line)
+            if hex_match:
+                current_hex += hex_match.group(1).replace(" ", "")
+            else:
+                if current_hex:
+                    sni = _parse_sni_from_hex(current_hex)
+                    if sni and sni not in seen_sni:
+                        seen_sni.add(sni)
+                        result["tls_sni"].append({"domain": sni, "dst_ip": current_dst})
+                    current_hex = ""
+                ip_match = re.search(r">\s+(\d+\.\d+\.\d+\.\d+)\.443:", line)
+                if ip_match:
+                    current_dst = ip_match.group(1)
+        # Last packet
+        if current_hex:
+            sni = _parse_sni_from_hex(current_hex)
+            if sni and sni not in seen_sni:
+                seen_sni.add(sni)
+                result["tls_sni"].append({"domain": sni, "dst_ip": current_dst})
+    except Exception as exc:
+        log_error("", "browser_session:container_parse_tls_sni", str(exc),
+                  severity="warning", traceback=True,
+                  context={"session_id": session_id})
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -979,6 +1133,13 @@ def _stop_session_inner(
     out_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
+    # Parse pcap INSIDE the container (tcpdump is there, not on the host)
+    print("[browser] Parsing network capture...")
+    network_data = _parse_pcap_in_container(session_id)
+    _has_container_results = any(
+        network_data.get(k) for k in ("dns_queries", "tcp_connections", "http_requests", "tls_sni")
+    )
+
     # Collect artefacts — prefer host-mounted telemetry (survives container
     # death), fall back to docker cp for sessions started before the mount.
     pcap_path = out_dir / "capture.pcap"
@@ -1022,10 +1183,22 @@ def _stop_session_inner(
                   f"Container stop failed for {session_id}",
                   severity="warning", context={"stop_reason": stop_reason})
 
-    # Parse pcap into structured data
-    network_data: dict = {}
+    # Host-side fallback: if container parsing returned nothing, try host
+    # (works when tcpdump/tshark is installed on the host)
+    if not _has_container_results and pcap_ok:
+        host_data = _parse_pcap(pcap_path)
+        if any(host_data.get(k) for k in ("dns_queries", "tcp_connections", "http_requests", "tls_sni")):
+            network_data = host_data
+
+    # Add pcap_stats from host-side stat
     if pcap_ok:
-        network_data = _parse_pcap(pcap_path)
+        try:
+            network_data["pcap_stats"] = {"file_size_bytes": pcap_path.stat().st_size}
+        except Exception:
+            network_data.setdefault("pcap_stats", {})
+
+    # Write parsed network data
+    if network_data:
         write_artefact(
             out_dir / "network_log.json",
             json.dumps(network_data, indent=2, default=str),
@@ -1079,6 +1252,27 @@ def _stop_session_inner(
                   severity="info", traceback=True,
                   context={"session_id": session_id})
 
+    # Cap inline lists for MCP response size
+    _DNS_CAP, _SNI_CAP, _HTTP_CAP, _TCP_CAP = 50, 50, 50, 100
+    all_tcp = network_data.get("tcp_connections", [])
+    all_http = network_data.get("http_requests", [])
+    all_sni = network_data.get("tls_sni", [])
+    truncated = (
+        len(dns_queries) > _DNS_CAP
+        or len(all_sni) > _SNI_CAP
+        or len(all_http) > _HTTP_CAP
+        or len(all_tcp) > _TCP_CAP
+    )
+
+    _artefact_map = {
+        "capture_pcap": pcap_path if pcap_ok else None,
+        "network_log": (out_dir / "network_log.json") if network_data else None,
+        "dns_log": (out_dir / "dns_log.json") if dns_queries else None,
+        "screenshot": screenshot_path if screenshot_ok else None,
+        "parsed_log": logs_dir / "mde_browser_session.parsed.json",
+        "entities": logs_dir / "mde_browser_session.entities.json",
+    }
+
     manifest = {
         "status": "ok",
         "session_id": session_id,
@@ -1090,22 +1284,19 @@ def _stop_session_inner(
         "duration_seconds": duration_sec,
         "network_summary": network_summary,
         "entities": {k: len(v) for k, v in entities.items()},
-        "dns_queries": dns_queries,
-        "tls_sni": network_data.get("tls_sni", []),
+        "dns_queries": dns_queries[:_DNS_CAP],
+        "tls_sni": all_sni[:_SNI_CAP],
+        "http_requests": all_http[:_HTTP_CAP],
+        "tcp_connections": all_tcp[:_TCP_CAP],
+        "truncated": truncated,
         "artefacts": {
             "capture_pcap": str(pcap_path) if pcap_ok else None,
             "network_log": str(out_dir / "network_log.json") if network_data else None,
             "dns_log": str(out_dir / "dns_log.json") if dns_queries else None,
             "screenshot": str(screenshot_path) if screenshot_ok else None,
         },
-        "case_files": _relative_artefact_paths(case_id, {
-            "capture_pcap": pcap_path if pcap_ok else None,
-            "network_log": (out_dir / "network_log.json") if network_data else None,
-            "dns_log": (out_dir / "dns_log.json") if dns_queries else None,
-            "screenshot": screenshot_path if screenshot_ok else None,
-            "parsed_log": logs_dir / "mde_browser_session.parsed.json",
-            "entities": logs_dir / "mde_browser_session.entities.json",
-        }),
+        "case_files": _relative_artefact_paths(case_id, _artefact_map),
+        "session_files": _relative_session_paths(session_id, _artefact_map) if not case_id else None,
     }
 
     save_json(out_dir / "session_manifest.json", manifest)
@@ -1133,11 +1324,23 @@ def _stop_session_inner(
         print(f"[browser] DNS queries observed:")
         for entry in dns_queries[:20]:
             print(f"  {entry['query']}")
-    tls_sni = network_data.get("tls_sni", [])
-    if tls_sni:
+    if all_sni:
         print(f"[browser] TLS connections (SNI):")
-        for entry in tls_sni[:20]:
+        for entry in all_sni[:20]:
             print(f"  {entry['domain']} → {entry.get('dst_ip', '?')}")
+    if all_http:
+        print(f"[browser] HTTP requests:")
+        for entry in all_http[:20]:
+            print(f"  {entry.get('method', '?')} {entry.get('url', '?')}")
+    if all_tcp:
+        # Unique dst_ip:dst_port pairs
+        seen_dst: set[str] = set()
+        for conn in all_tcp:
+            key = f"{conn.get('dst_ip', '?')}:{conn.get('dst_port', '?')}"
+            seen_dst.add(key)
+        print(f"[browser] TCP destinations ({len(seen_dst)} unique):")
+        for dst in sorted(seen_dst)[:20]:
+            print(f"  {dst}")
     print(f"[browser] Artefacts: {out_dir}")
     print(f"[browser] {'='*60}\n")
 
@@ -1193,6 +1396,90 @@ def cleanup_orphaned() -> int:
         _save_session_state(sid, s)
         cleaned += 1
     return cleaned
+
+
+def import_session(session_id: str, case_id: str) -> dict:
+    """Import a caseless browser session's artefacts into an existing case.
+
+    Copies all artefacts from ``browser_sessions/<session_id>/artefacts/``
+    into ``cases/<case_id>/artefacts/browser_session/`` and updates the
+    session state to reference the case.
+
+    Args:
+        session_id: Completed browser session ID.
+        case_id: Target case identifier.
+
+    Returns:
+        Manifest with ``case_files`` paths for ``read_case_file``.
+    """
+    import re as _re
+    import shutil
+
+    if not _re.match(r"^[a-f0-9]{8,40}$", session_id):
+        return {"status": "error", "reason": "Invalid session_id."}
+    if not case_id:
+        return {"status": "error", "reason": "case_id is required."}
+
+    case_dir = CASES_DIR / case_id
+    if not case_dir.is_dir():
+        return {"status": "error", "reason": f"Case not found: {case_id}"}
+
+    state = _load_session_state(session_id)
+    if not state:
+        return {"status": "error", "reason": f"Session not found: {session_id}"}
+
+    if state.get("case_id"):
+        return {"status": "error",
+                "reason": f"Session already attached to case {state['case_id']}"}
+
+    session_artefacts = SESSIONS_DIR / session_id / "artefacts"
+    if not session_artefacts.is_dir():
+        return {"status": "error", "reason": "No artefacts found for this session."}
+
+    # Destination directories
+    out_dir = case_dir / "artefacts" / "browser_session"
+    logs_dir = case_dir / "logs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy artefacts
+    copied = []
+    for src in session_artefacts.iterdir():
+        if not src.is_file():
+            continue
+        dest = out_dir / src.name
+        # Parsed log and entities go to logs/
+        if src.name in ("mde_browser_session.parsed.json",
+                        "mde_browser_session.entities.json"):
+            dest = logs_dir / src.name
+        shutil.copy2(src, dest)
+        copied.append(src.name)
+
+    # Update session state
+    state["case_id"] = case_id
+    state["imported_at"] = utcnow()
+    _save_session_state(session_id, state)
+
+    # Build case_files paths for read_case_file
+    case_files = _relative_artefact_paths(case_id, {
+        "capture_pcap": out_dir / "capture.pcap" if (out_dir / "capture.pcap").exists() else None,
+        "network_log": out_dir / "network_log.json" if (out_dir / "network_log.json").exists() else None,
+        "dns_log": out_dir / "dns_log.json" if (out_dir / "dns_log.json").exists() else None,
+        "screenshot": out_dir / "screenshot_final.png" if (out_dir / "screenshot_final.png").exists() else None,
+        "session_manifest": out_dir / "session_manifest.json" if (out_dir / "session_manifest.json").exists() else None,
+        "parsed_log": logs_dir / "mde_browser_session.parsed.json" if (logs_dir / "mde_browser_session.parsed.json").exists() else None,
+        "entities": logs_dir / "mde_browser_session.entities.json" if (logs_dir / "mde_browser_session.entities.json").exists() else None,
+    })
+
+    print(f"[browser] Imported session {session_id} into {case_id} ({len(copied)} files)")
+
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "case_id": case_id,
+        "files_copied": copied,
+        "case_files": case_files,
+    }
 
 
 # ---------------------------------------------------------------------------

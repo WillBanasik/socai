@@ -666,6 +666,62 @@ def generate_exec_summary(case_id: str) -> dict:
     return _run_action(case_id, "executive_summary", _do)
 
 
+def _run_post_ingest_pipeline(
+    case_id: str,
+    source_label: str,
+    lines: list[str],
+    *,
+    full: bool = True,
+) -> None:
+    """Run the shared post-ingest analysis pipeline.
+
+    *full*: if True, runs evtx_correlate, detect_anomalies, and
+    timeline_reconstruct in addition to the core IOC pipeline.
+    """
+    lines.append("\nRunning analysis pipeline..." if full else "\nRunning IOC enrichment...")
+    from tools.extract_iocs import extract_iocs
+    from tools.enrich import enrich
+    from tools.score_verdicts import score_verdicts, update_ioc_index
+
+    extract_iocs(case_id)
+    enrich(case_id)
+    score_verdicts(case_id)
+    update_ioc_index(case_id)
+
+    if not full:
+        lines.append("Enrichment complete.")
+        return
+
+    from tools.correlate import correlate
+    correlate(case_id)
+
+    try:
+        from tools.evtx_correlate import evtx_correlate
+        evtx_result = evtx_correlate(case_id)
+        chains = evtx_result.get("chains", [])
+        if chains:
+            lines.append(f"EVTX: {len(chains)} attack chain(s) detected")
+    except Exception as exc:
+        from tools.common import log_error
+        log_error(case_id, f"{source_label}.evtx_correlate", str(exc), severity="warning")
+
+    try:
+        from tools.detect_anomalies import detect_anomalies
+        detect_anomalies(case_id)
+    except Exception as exc:
+        from tools.common import log_error
+        log_error(case_id, f"{source_label}.detect_anomalies", str(exc), severity="warning")
+
+    try:
+        from tools.timeline_reconstruct import timeline_reconstruct
+        timeline_reconstruct(case_id)
+    except Exception as exc:
+        from tools.common import log_error
+        log_error(case_id, f"{source_label}.timeline_reconstruct", str(exc), severity="warning")
+
+    lines.append("Analysis pipeline complete.")
+
+
 def ingest_velociraptor(case_id: str, run_analysis: bool = True) -> dict:
     """Ingest Velociraptor collection results from case uploads directory."""
     def _do():
@@ -705,43 +761,7 @@ def ingest_velociraptor(case_id: str, run_analysis: bool = True) -> dict:
         ]
 
         if run_analysis:
-            lines.append("\nRunning analysis pipeline...")
-            from tools.extract_iocs import extract_iocs
-            from tools.enrich import enrich
-            from tools.score_verdicts import score_verdicts, update_ioc_index
-            from tools.correlate import correlate
-
-            extract_iocs(case_id)
-            enrich_result = enrich(case_id)
-            score_verdicts(case_id)
-            update_ioc_index(case_id)
-            correlate(case_id)
-
-            try:
-                from tools.evtx_correlate import evtx_correlate
-                evtx_result = evtx_correlate(case_id)
-                chains = evtx_result.get("chains", [])
-                if chains:
-                    lines.append(f"EVTX: {len(chains)} attack chain(s) detected")
-            except Exception as exc:
-                from tools.common import log_error
-                log_error(case_id, "ingest_velociraptor.evtx_correlate", str(exc), severity="warning")
-
-            try:
-                from tools.detect_anomalies import detect_anomalies
-                detect_anomalies(case_id)
-            except Exception as exc:
-                from tools.common import log_error
-                log_error(case_id, "ingest_velociraptor.detect_anomalies", str(exc), severity="warning")
-
-            try:
-                from tools.timeline_reconstruct import timeline_reconstruct
-                timeline_reconstruct(case_id)
-            except Exception as exc:
-                from tools.common import log_error
-                log_error(case_id, "ingest_velociraptor.timeline_reconstruct", str(exc), severity="warning")
-
-            lines.append("Analysis pipeline complete.")
+            _run_post_ingest_pipeline(case_id, "ingest_velociraptor", lines)
 
         return {
             "files_processed": len(vr_files),
@@ -796,43 +816,7 @@ def ingest_mde_package(case_id: str, run_analysis: bool = True) -> dict:
         ]
 
         if run_analysis:
-            lines.append("\nRunning analysis pipeline...")
-            from tools.extract_iocs import extract_iocs
-            from tools.enrich import enrich
-            from tools.score_verdicts import score_verdicts, update_ioc_index
-            from tools.correlate import correlate
-
-            extract_iocs(case_id)
-            enrich(case_id)
-            score_verdicts(case_id)
-            update_ioc_index(case_id)
-            correlate(case_id)
-
-            try:
-                from tools.evtx_correlate import evtx_correlate
-                evtx_result = evtx_correlate(case_id)
-                chains = evtx_result.get("chains", [])
-                if chains:
-                    lines.append(f"EVTX: {len(chains)} attack chain(s) detected")
-            except Exception as exc:
-                from tools.common import log_error
-                log_error(case_id, "ingest_mde.evtx_correlate", str(exc), severity="warning")
-
-            try:
-                from tools.detect_anomalies import detect_anomalies
-                detect_anomalies(case_id)
-            except Exception as exc:
-                from tools.common import log_error
-                log_error(case_id, "ingest_mde.detect_anomalies", str(exc), severity="warning")
-
-            try:
-                from tools.timeline_reconstruct import timeline_reconstruct
-                timeline_reconstruct(case_id)
-            except Exception as exc:
-                from tools.common import log_error
-                log_error(case_id, "ingest_mde.timeline_reconstruct", str(exc), severity="warning")
-
-            lines.append("Analysis pipeline complete.")
+            _run_post_ingest_pipeline(case_id, "ingest_mde", lines)
 
         return {
             "packages_processed": len(all_results),
@@ -920,16 +904,7 @@ def analyse_memory_dump_action(case_id: str, run_analysis: bool = True) -> dict:
                     lines.append(f"    — {reason}")
 
         if run_analysis:
-            lines.append("\nRunning IOC enrichment...")
-            from tools.extract_iocs import extract_iocs
-            from tools.enrich import enrich
-            from tools.score_verdicts import score_verdicts, update_ioc_index
-
-            extract_iocs(case_id)
-            enrich(case_id)
-            score_verdicts(case_id)
-            update_ioc_index(case_id)
-            lines.append("Enrichment complete.")
+            _run_post_ingest_pipeline(case_id, "analyse_memory_dump", lines, full=False)
 
         return {
             "dumps_analysed": len(all_results),
