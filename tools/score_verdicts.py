@@ -257,13 +257,17 @@ def update_ioc_index(case_id: str) -> dict:
                 if case_id not in entry.get("cases", []):
                     entry.setdefault("cases", []).append(case_id)
                     recurring_iocs.append(ioc)
-                # Always refresh verdict and timestamps from the latest run
-                entry["last_seen"]  = now
-                entry["verdict"]    = score["verdict"]
-                entry["malicious"]  = score["malicious"]
-                entry["suspicious"] = score["suspicious"]
-                entry["clean"]      = score["clean"]
-                entry["tier"]       = tier
+                entry["last_seen"] = now
+                entry["tier"] = tier
+                # Preserve the strongest verdict ever seen across cases — never
+                # let a later "clean" scoring downgrade a prior "malicious" flag.
+                # Counts aggregate as MAX (any single provider that ever said X).
+                _rank = {"malicious": 3, "suspicious": 2, "clean": 1, "unknown": 0}
+                if _rank.get(score["verdict"], 0) > _rank.get(entry.get("verdict", "unknown"), 0):
+                    entry["verdict"] = score["verdict"]
+                entry["malicious"] = max(entry.get("malicious", 0), score["malicious"])
+                entry["suspicious"] = max(entry.get("suspicious", 0), score["suspicious"])
+                entry["clean"] = max(entry.get("clean", 0), score["clean"])
                 # Track which client each case belongs to
                 if case_client:
                     entry.setdefault("case_clients", {})[case_id] = case_client

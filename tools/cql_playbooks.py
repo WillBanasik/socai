@@ -100,17 +100,36 @@ def load_playbook(playbook_id: str) -> dict | None:
     }
 
 
+def _sanitise_cql_value(value: str) -> str:
+    """Escape a parameter value for safe inline CQL substitution.
+
+    Rejects newlines and control characters that would let a caller inject
+    new CQL stages. Escapes backslashes and double-quotes so the value
+    cannot break out of an enclosing ``"..."`` string literal.
+    """
+    if value is None:
+        return ""
+    value = str(value)
+    if any(ord(c) < 0x20 for c in value):
+        raise ValueError(
+            f"CQL parameter value contains a control character "
+            f"(newline/tab) — rejected: {value!r}"
+        )
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def render_stage(playbook: dict, stage: int, params: dict[str, str]) -> str:
     """Render a specific stage's CQL with parameter substitution.
 
-    Parameters are replaced using ``{{param_name}}`` syntax.
-    Returns the ready-to-run CQL query text.
+    Parameters are replaced using ``{{param_name}}`` syntax. Values are
+    escaped via ``_sanitise_cql_value`` to prevent query-structure injection.
     """
+    safe = {k: _sanitise_cql_value(v) for k, v in params.items()}
     stages = playbook.get("stages", [])
     for s in stages:
         if s.get("stage") == stage:
             query = s["query"]
-            for key, value in params.items():
+            for key, value in safe.items():
                 query = query.replace(f"{{{{{key}}}}}", value)
             return query.strip()
     return ""
@@ -126,13 +145,14 @@ def render_sub_query(
     sub_query : int
         0-based sub-query index within the stage.
     """
+    safe = {k: _sanitise_cql_value(v) for k, v in params.items()}
     stages = playbook.get("stages", [])
     for s in stages:
         if s.get("stage") == stage:
             subs = s.get("sub_queries", [])
             if 0 <= sub_query < len(subs):
                 query = subs[sub_query]["query"]
-                for key, value in params.items():
+                for key, value in safe.items():
                     query = query.replace(f"{{{{{key}}}}}", value)
                 return query.strip()
     return ""

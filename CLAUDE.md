@@ -100,7 +100,7 @@ All investigative output — conversational analysis, reports, case artefacts �
    - `"fast"` — Tier 1 only, no deep OSINT. Use for obvious FPs, low severity, PUP, bulk triage.
    - `"full"` — all tiers for every IOC. Use for high-severity incidents, targeted attacks, novel IOCs.
 4. **Triage runs automatically before enrichment** — IOCs with sufficient cached coverage and IOCs that are routine for the client (via client baseline) are skipped automatically to save API quota.
-5. **Use combined tools for efficiency** — `capture_urls` auto-runs phishing detection (`detect_phishing=True` default). `analyse_pe` auto-runs YARA scanning (`run_yara=True` default). Use `run_kql_batch` for multiple independent queries instead of sequential `run_kql`.
+5. **Use combined tools for efficiency** — `capture_urls` auto-runs phishing detection (`detect_phishing=True` default). `analyse_pe` auto-runs YARA scanning (`run_yara=True` default). Use `run_kql_batch` for multiple independent queries instead of sequential `run_kql`. On re-lookup of a client already loaded this session, call `lookup_client(slim=True)` to skip the ~25 KB knowledge/playbook payload already in context.
 6. **Web search is a last resort** — only when system tools return nothing or query is pure OSINT context
 7. **Never use generic web lookups when a structured tool exists**
 

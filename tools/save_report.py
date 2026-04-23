@@ -131,16 +131,17 @@ def save_report_to_case(
 
     # Defang malicious/suspicious IOCs
     if cfg["defang"]:
+        verdict_path = case_dir / "artefacts" / "enrichment" / "verdict_summary.json"
         try:
-            verdict_data = load_json(
-                case_dir / "artefacts" / "enrichment" / "verdict_summary.json"
-            )
+            verdict_data = load_json(verdict_path)
             mal_iocs: set[str] = set(verdict_data.get("high_priority", []))
             mal_iocs.update(verdict_data.get("needs_review", []))
             if mal_iocs:
                 report_text = defang_report(report_text, mal_iocs)
         except FileNotFoundError:
-            pass
+            log_error(case_id, "save_report.defang", "verdict_summary.json missing",
+                      severity="warning",
+                      context={"path": str(verdict_path), "report_type": report_type})
         except Exception as exc:
             log_error(case_id, "save_report.defang", str(exc),
                       severity="warning", traceback=tb.format_exc())
@@ -155,23 +156,34 @@ def save_report_to_case(
         _stripped.startswith("<!DOCTYPE")
         or _stripped.startswith("<html")
         or _stripped.startswith("<head")
+        or _stripped.startswith("<body")
+        or _stripped.startswith("<h1")
     )
 
-    if is_html:
-        # Already HTML — write directly (no conversion)
-        from tools.common import write_artefact
-        write_artefact(out_path, report_text)
-    else:
-        # Markdown — convert to styled HTML via write_report
-        header = (
-            f"# {cfg['title_prefix']} — {case_id}\n\n"
-            f"_Generated: {ts} | Source: Claude Desktop (client-side)_\n\n---\n\n"
-        )
-        full_text = header + report_text
-        write_report(out_path, full_text, title=f"{cfg['title_prefix']} — {case_id}")
+    try:
+        if is_html:
+            from tools.common import write_artefact
+            write_artefact(out_path, report_text)
+        else:
+            header = (
+                f"# {cfg['title_prefix']} — {case_id}\n\n"
+                f"_Generated: {ts} | Source: Claude Desktop (client-side)_\n\n---\n\n"
+            )
+            full_text = header + report_text
+            write_report(out_path, full_text, title=f"{cfg['title_prefix']} — {case_id}")
+    except Exception as exc:
+        log_error(case_id, "save_report.write", str(exc),
+                  severity="error", traceback=tb.format_exc(),
+                  context={"path": str(out_path), "report_type": report_type})
+        return {
+            "status": "error",
+            "reason": f"Failed to write report: {exc}",
+            "case_id": case_id,
+            "ts": ts,
+        }
 
-
-    # Auto-close if applicable
+    # Auto-close if applicable — only reached on successful write
+    auto_closed = False
     if cfg["auto_close"]:
         try:
             from tools.index_case import index_case
@@ -180,6 +192,7 @@ def save_report_to_case(
             if disp:
                 close_kwargs["disposition"] = disp
             index_case(case_id, **close_kwargs)
+            auto_closed = True
         except Exception as exc:
             log_error(case_id, "save_report.auto_close", str(exc),
                       severity="warning", traceback=tb.format_exc())
@@ -190,7 +203,7 @@ def save_report_to_case(
         "report_type": report_type,
         "report_path": str(out_path),
         "source": "claude_desktop",
-        "auto_closed": cfg["auto_close"],
+        "auto_closed": auto_closed,
         "disposition": disposition or cfg["disposition"],
         "status": "ok",
         "ts": ts,
@@ -215,7 +228,7 @@ def save_report_to_case(
     from tools.common import log_metric
     log_metric("report_saved", case_id=case_id,
                report_type=report_type,
-               auto_closed=cfg["auto_close"],
+               auto_closed=auto_closed,
                disposition=disposition or cfg["disposition"],
                char_count=len(report_text),
                sections_present=_sections_present,

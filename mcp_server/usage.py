@@ -279,8 +279,34 @@ def _record_step(
 # ---------------------------------------------------------------------------
 # Caseless session tracker — for quick_enrich and other no-case tools
 # ---------------------------------------------------------------------------
-_caseless_sessions: dict[str, dict[str, Any]] = {}  # caller → session info
+# Keyed by (caller_email, token_fingerprint) so two concurrent MCP clients
+# for the same user (e.g. desktop + web) don't get their step sequences
+# interleaved into one session.
+_caseless_sessions: dict[tuple[str, str], dict[str, Any]] = {}
 _CASELESS_TIMEOUT = 600  # 10 min — shorter, these are quick lookups
+
+
+def _caseless_key(caller: str) -> tuple[str, str]:
+    """Per-connection key for the caseless session bucket.
+
+    Combines caller email with a fingerprint of the current access token
+    (or ``"local"`` under stdio). Different tokens → different buckets,
+    so concurrent clients under the same user don't collide.
+    """
+    import hashlib
+
+    from mcp_server.config import MCP_TRANSPORT
+
+    if MCP_TRANSPORT == "stdio":
+        return (caller, "local")
+    try:
+        from mcp.server.auth.middleware.auth_context import get_access_token
+        tok = get_access_token()
+        if tok is None:
+            return (caller, "")
+        return (caller, hashlib.sha256(tok.token.encode()).hexdigest()[:12])
+    except Exception:
+        return (caller, "")
 
 
 def _get_or_create_caseless_session(caller: str) -> str:
@@ -289,9 +315,10 @@ def _get_or_create_caseless_session(caller: str) -> str:
         return ""
 
     now = time.monotonic()
+    key = _caseless_key(caller)
 
     with _session_lock:
-        entry = _caseless_sessions.get(caller)
+        entry = _caseless_sessions.get(key)
         if entry is not None:
             if now - entry["last_seen"] > _CASELESS_TIMEOUT:
                 _flush_session(entry)
@@ -309,7 +336,7 @@ def _get_or_create_caseless_session(caller: str) -> str:
                 "tool_count": 0,
                 "steps": [],
             }
-            _caseless_sessions[caller] = entry
+            _caseless_sessions[key] = entry
 
         return entry["session_id"]
 
@@ -340,8 +367,9 @@ def _record_caseless_step(
     if error:
         step["error"] = error[:200]
 
+    key = _caseless_key(caller)
     with _session_lock:
-        entry = _caseless_sessions.get(caller)
+        entry = _caseless_sessions.get(key)
         if entry is None:
             return
         step["seq"] = len(entry["steps"]) + 1
@@ -391,9 +419,21 @@ def _detect_friction(steps: list[dict]) -> list[dict]:
             })
 
     # 3. Long gap — >120s between consecutive tool calls suggests analyst
-    #    was stuck or Claude was slow to respond
+    #    was stuck or Claude was slow to respond.
+    #
+    #    HITL touchpoints (add_evidence, add_finding, ingest_*, update_client_*,
+    #    sandbox/browser start-and-wait) legitimately expect long analyst
+    #    pauses. Exempt them so real friction isn't buried in HITL noise.
+    _HITL_TOOLS = {
+        "add_evidence", "add_finding",
+        "ingest_velociraptor", "ingest_mde_package",
+        "update_client_knowledge",
+        "start_sandbox_session", "stop_sandbox_session",
+        "start_browser_session", "stop_browser_session",
+    }
     for i in range(1, len(steps)):
-        prev_end = steps[i-1]["duration_ms"]
+        if steps[i-1]["tool"] in _HITL_TOOLS or steps[i]["tool"] in _HITL_TOOLS:
+            continue
         # Approximate gap: difference in timestamps
         try:
             from datetime import datetime

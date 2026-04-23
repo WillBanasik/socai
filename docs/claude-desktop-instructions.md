@@ -54,10 +54,11 @@ These tools auto-chain to save round-trips — use them instead of separate call
 - **`analyse_pe`** — auto-runs YARA scan (`run_yara=True` default). No need for separate `yara_scan` call.
 - **`run_kql_batch`** — runs multiple Sentinel queries in parallel. Prefer over sequential `run_kql` when queries are independent.
 - **`create_case(enrichment_id=...)`** — auto-imports `quick_enrich` results. No need for separate `import_enrichment` call.
+- **`lookup_client(slim=True)`** — on re-lookup of a client you've already loaded this session, `slim=True` returns only `{name, platforms, platform_list}` instead of re-sending ~25 KB of knowledge base + playbook. Use it for quick platform re-confirmation; omit (or `slim=False`) for the first call of a session.
 
-### Case Summary vs Get Case
+### Case Summary
 
-When you need a full picture of an existing case, prefer `case_summary` over `get_case`. The summary returns metadata, IOCs, verdicts, enrichment, response actions, and notes in one call. Alternatively, read `socai://cases/{case_id}/full` for the complete bundle as a resource.
+For a full picture of an existing case, use `case_summary` — returns metadata, IOCs, verdicts, enrichment, response actions, and notes in one call. Alternatively, read `socai://cases/{case_id}/full` for the complete bundle as a resource.
 
 ---
 
@@ -262,7 +263,7 @@ Clients may have a playbook (`config/clients/<name>/playbook.json`) defining:
 Clients may also have a knowledge base (`config/clients/<name>/knowledge.md`) with client-specific context: infrastructure, naming conventions, business context.
 
 Access these via:
-- `lookup_client` — confirms client identity and available platforms. Supports fuzzy matching: aliases (e.g. "hbm" for Heidelberg Materials), substring matches, and case-insensitive lookups. Auto-resolves single matches.
+- `lookup_client` — confirms client identity and available platforms. Name is normalised case-insensitively, and whitespace/hyphens are collapsed to underscores (e.g. "Heidelberg Materials" → `heidelberg_materials`). Explicit aliases declared in `config/client_entities.json` (e.g. "hbm" for Heidelberg Materials) auto-resolve when there is a single match. Substring/fuzzy matching is **not** supported — if a name does not resolve, read `socai://clients` for the authoritative list rather than guessing variants. On re-lookup within a session, pass `slim=True` to skip the ~25 KB knowledge base / playbook payload already in your context.
 - `socai://clients/{name}/playbook` — read the playbook resource directly
 - `response_actions` tool — generates a structured response plan from the playbook (deterministic, no LLM)
 
@@ -292,6 +293,8 @@ You can also use:
 - `run_kql_batch` — execute multiple queries in a batch
 
 Always confirm the client's Sentinel workspace before running queries. All queries must target the confirmed client's workspace only.
+
+**Row volume:** `run_kql` returns up to `max_rows` rows (default 50, cap 1000). When a result exceeds 500 rows the response includes a `_hint` suggesting `| summarize` — for pattern analysis, prefer aggregation over dumping raw rows into context. Reserve large `max_rows` for cases where specific event detail is actually being inspected.
 
 ---
 
@@ -397,6 +400,8 @@ Confluence hosts published documentation, SOC policies, processes, runbooks, and
 | "What articles have we published?" | Published articles on the wiki | `search_confluence` |
 
 The threat article workflow is: discover online -> summarise -> publish to Confluence. "Articles" without context could refer to either end of that pipeline. When in doubt, ask.
+
+**Body truncation:** `search_confluence` page-read responses cap the page body at 8,000 characters to keep context manageable. When truncated, the response includes `_body_truncated: true` and `_body_full_length`. Ask the analyst to open the Confluence URL directly when deeper context is required — do not re-query for the same page.
 
 ---
 

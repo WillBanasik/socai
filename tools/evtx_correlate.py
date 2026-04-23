@@ -157,6 +157,16 @@ def _normalize_event(evt: dict) -> dict | None:
         except (ValueError, TypeError):
             logon_type = None
 
+    # In group-add events (4728/4732/4756), Windows uses TargetUserName for
+    # the group name. For every other event_id, TargetUserName is a user —
+    # so only populate group_name for the group-add IDs to avoid
+    # mis-attributing user names as groups downstream.
+    _GROUP_ADD_EVENT_IDS = {4728, 4732, 4756}
+    if event_id in _GROUP_ADD_EVENT_IDS:
+        group_name = str(evt.get("TargetUserName") or evt.get("GroupName") or "")
+    else:
+        group_name = str(evt.get("GroupName") or "")
+
     return {
         "event_id": event_id,
         "timestamp": ts,
@@ -171,7 +181,7 @@ def _normalize_event(evt: dict) -> dict | None:
         "encryption_type": str(evt.get("EncryptionType") or evt.get("TicketEncryptionType") or ""),
         "logon_process": str(evt.get("LogonProcessName") or ""),
         "subject_sid": str(evt.get("SubjectUserSid") or ""),
-        "group_name": str(evt.get("TargetUserName") or evt.get("GroupName") or ""),
+        "group_name": group_name,
         "raw": evt,
     }
 

@@ -128,7 +128,7 @@ Analysts select these from the Claude Desktop prompt picker for structured workf
 | Category | Tools |
 |----------|-------|
 | Investigation & Triage | classify_attack, plan_investigation |
-| Case Management | list_cases, get_case, case_summary, read_report, read_case_file, new_investigation, close_case, link_cases, merge_cases, add_evidence, add_finding |
+| Case Management | list_cases, case_summary, read_report, read_case_file, new_investigation, close_case, link_cases, merge_cases, add_evidence, add_finding |
 | Enrichment & Analysis | enrich_iocs, correlate, contextualise_cves, recall_cases, campaign_cluster, web_search |
 | Email & Phishing | analyse_email, capture_urls, detect_phishing |
 | SIEM & Endpoint | lookup_client (returns full client knowledge base, playbook & Sentinel reference), run_kql, load_kql_playbook, generate_sentinel_query, generate_queries, ingest_velociraptor, ingest_mde_package |
@@ -314,6 +314,10 @@ async def _socai_lifespan(server: FastMCP):
         yield {}
     finally:
         _wd_task.cancel()
+        try:
+            await _wd_task
+        except (asyncio.CancelledError, Exception):
+            pass
         sd_notify("STOPPING=1")
         stop_scheduler()
         from mcp_server.usage import flush_all_sessions

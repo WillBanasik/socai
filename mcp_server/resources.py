@@ -6,6 +6,7 @@ content that MCP clients can read without invoking tool actions.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -15,6 +16,20 @@ from mcp_server.auth import _require_scope
 
 def _json(obj: object) -> str:
     return json.dumps(obj, indent=2, default=str)
+
+
+_CASE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validated_case_id(case_id: str) -> str | None:
+    """Return ``case_id`` if it is a safe identifier, else ``None``.
+
+    Blocks path-traversal characters (``/``, ``\\``, ``..``) and any other
+    special characters so the id can be concatenated into a filesystem path.
+    """
+    if not case_id or not _CASE_ID_RE.match(case_id):
+        return None
+    return case_id
 
 
 def _resolve_client_playbook(client_name: str) -> Path | None:
@@ -82,6 +97,8 @@ def register_resources(mcp: FastMCP) -> None:
     def case_meta(case_id: str) -> str:
         """Case metadata JSON."""
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -100,6 +117,8 @@ def register_resources(mcp: FastMCP) -> None:
         view, copy, or download.
         """
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
 
@@ -117,6 +136,8 @@ def register_resources(mcp: FastMCP) -> None:
     def case_iocs(case_id: str) -> str:
         """Extracted IOCs JSON."""
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -130,6 +151,8 @@ def register_resources(mcp: FastMCP) -> None:
     def case_verdicts(case_id: str) -> str:
         """Verdict summary JSON."""
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -143,6 +166,8 @@ def register_resources(mcp: FastMCP) -> None:
     def case_enrichment(case_id: str) -> str:
         """Enrichment data JSON."""
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -156,6 +181,8 @@ def register_resources(mcp: FastMCP) -> None:
     def case_timeline(case_id: str) -> str:
         """Timeline events JSON."""
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -169,6 +196,8 @@ def register_resources(mcp: FastMCP) -> None:
     def case_notes(case_id: str) -> str:
         """Analyst notes (free-text investigation context)."""
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
 
@@ -181,6 +210,8 @@ def register_resources(mcp: FastMCP) -> None:
     def case_response_actions(case_id: str) -> str:
         """Response actions JSON (client-specific containment/remediation plan)."""
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -194,6 +225,8 @@ def register_resources(mcp: FastMCP) -> None:
     def case_fp_ticket(case_id: str) -> str:
         """Existing FP closure comment (if generated)."""
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
 
@@ -211,6 +244,8 @@ def register_resources(mcp: FastMCP) -> None:
         in a single call instead of multiple ``read_case_file`` invocations.
         """
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -255,6 +290,8 @@ def register_resources(mcp: FastMCP) -> None:
         recorded during the investigation.
         """
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -276,6 +313,8 @@ def register_resources(mcp: FastMCP) -> None:
         reasonable size limits.
         """
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -346,6 +385,8 @@ def register_resources(mcp: FastMCP) -> None:
         (evidence gaps), and hypotheses (testable claims).
         """
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -359,6 +400,8 @@ def register_resources(mcp: FastMCP) -> None:
     def case_determination(case_id: str) -> str:
         """Evidence-chain determination analysis."""
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -372,6 +415,8 @@ def register_resources(mcp: FastMCP) -> None:
     def case_quality_gate(case_id: str) -> str:
         """Report quality gate review results."""
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -385,6 +430,8 @@ def register_resources(mcp: FastMCP) -> None:
     def case_followups(case_id: str) -> str:
         """Follow-up investigation proposals."""
         _require_scope("investigations:read")
+        if not _validated_case_id(case_id):
+            return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
         from tools.common import load_json
@@ -1225,8 +1272,7 @@ def register_resources(mcp: FastMCP) -> None:
                         "discard_case": "Discard a triage case (noise/duplicate).",
                         "close_case": "Close a case with disposition.",
                         "list_cases": "List all registered cases with status/severity filters.",
-                        "get_case": "Read case metadata.",
-                        "case_summary": "Compact case summary with IOC/verdict/finding counts.",
+                        "case_summary": "Full case context: metadata, IOCs, verdicts, findings, timeline count.",
                         "read_report": "Read the final HTML report for a case.",
                         "read_case_file": "Read any file from a case directory.",
                         "list_case_files": "List all files in a case directory.",

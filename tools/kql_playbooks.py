@@ -77,17 +77,35 @@ def validate_playbook_tables(playbook: dict, workspace: str = "") -> dict:
         return {"valid": True, "warnings": [], "missing_tables": [], "unknown_tables": []}
 
 
+def _sanitise_kql_value(value: str) -> str:
+    """Escape a parameter value for safe inline KQL substitution.
+
+    Rejects newlines/control characters (would let a caller inject extra
+    pipeline operators). Escapes backslashes and double-quotes so values
+    cannot break out of a ``"..."`` literal.
+    """
+    if value is None:
+        return ""
+    value = str(value)
+    if any(ord(c) < 0x20 for c in value):
+        raise ValueError(
+            f"KQL parameter value contains a control character — rejected: {value!r}"
+        )
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def render_stage(playbook: dict, stage: int, params: dict[str, str]) -> str:
     """Render a specific stage's KQL with parameter substitution.
 
-    Parameters are replaced using {{param_name}} syntax.
-    Returns the ready-to-execute KQL query.
+    Parameters are replaced using {{param_name}} syntax. Values are escaped
+    via ``_sanitise_kql_value`` to prevent query-structure injection.
     """
+    safe = {k: _sanitise_kql_value(v) for k, v in params.items()}
     stages = playbook.get("stages", [])
     for s in stages:
         if s.get("stage") == stage:
             query = s["query"]
-            for key, value in params.items():
+            for key, value in safe.items():
                 query = query.replace(f"{{{{{key}}}}}", value)
             return query.strip()
     return ""

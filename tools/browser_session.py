@@ -917,11 +917,18 @@ def start_session(
     for s in [s for s in existing if s.get("status") == "active"]:
         prev_id = s["session_id"]
         container = _container_name(prev_id)
-        check = subprocess.run(
-            ["docker", "inspect", container, "--format", "{{.State.Running}}"],
-            capture_output=True, text=True,
-        )
-        if check.returncode != 0 or "true" not in check.stdout:
+        try:
+            check = subprocess.run(
+                ["docker", "inspect", container, "--format", "{{.State.Running}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            running = check.returncode == 0 and "true" in check.stdout
+        except subprocess.TimeoutExpired:
+            log_error(case_id, "browser_session:docker_inspect_timeout",
+                      f"docker inspect hung for container {container}",
+                      severity="warning", context={"prev_session_id": prev_id})
+            running = False
+        if not running:
             s["status"] = "orphaned"
             _save_session_state(prev_id, s)
         else:
@@ -973,23 +980,44 @@ def start_session(
 
     print(f"[browser] Container started: {container_id[:12]}")
 
-    # Wait for noVNC to be ready
+    # Wait for noVNC to be ready.
+    # Bridge mode: port is published on the host, probe via http.
+    # VPN mode: container shares gluetun's network namespace — host can't
+    # reach the port directly, so probe via `docker exec` (bash /dev/tcp).
     print("[browser] Waiting for Chrome to start...")
     ready = False
+    container_name = _container_name(session_id)
     for _ in range(30):
-        try:
-            import urllib.request
-            resp = urllib.request.urlopen(
-                f"http://127.0.0.1:{novnc_port}/", timeout=3
-            )
-            if resp.status == 200:
-                ready = True
-                break
-        except Exception as exc:
-            log_error(case_id, "browser_session:novnc_readiness_poll", str(exc),
-                      severity="info", traceback=True,
-                      context={"session_id": session_id, "port": novnc_port})
-            time.sleep(1)
+        if BROWSER_USE_VPN:
+            try:
+                probe = subprocess.run(
+                    ["docker", "exec", container_name, "bash", "-c",
+                     f"exec 3<>/dev/tcp/127.0.0.1/{novnc_port}"],
+                    capture_output=True, timeout=5,
+                )
+                if probe.returncode == 0:
+                    ready = True
+                    break
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception as exc:
+                log_error(case_id, "browser_session:novnc_readiness_poll", str(exc),
+                          severity="info", traceback=True,
+                          context={"session_id": session_id, "port": novnc_port, "mode": "vpn"})
+        else:
+            try:
+                import urllib.request
+                resp = urllib.request.urlopen(
+                    f"http://127.0.0.1:{novnc_port}/", timeout=3
+                )
+                if resp.status == 200:
+                    ready = True
+                    break
+            except Exception as exc:
+                log_error(case_id, "browser_session:novnc_readiness_poll", str(exc),
+                          severity="info", traceback=True,
+                          context={"session_id": session_id, "port": novnc_port, "mode": "bridge"})
+        time.sleep(1)
 
     if not ready:
         _stop_container(session_id)
@@ -1355,11 +1383,19 @@ def list_sessions() -> list[dict]:
     for s in sessions:
         if s.get("status") == "active":
             container = _container_name(s["session_id"])
-            check = subprocess.run(
-                ["docker", "inspect", container, "--format", "{{.State.Running}}"],
-                capture_output=True, text=True,
-            )
-            if check.returncode != 0 or "true" not in check.stdout:
+            try:
+                check = subprocess.run(
+                    ["docker", "inspect", container, "--format", "{{.State.Running}}"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                running = check.returncode == 0 and "true" in check.stdout
+            except subprocess.TimeoutExpired:
+                log_error("", "browser_session:docker_inspect_timeout",
+                          f"docker inspect hung for container {container}",
+                          severity="warning",
+                          context={"session_id": s["session_id"]})
+                running = False
+            if not running:
                 s["status"] = "orphaned"
                 _save_session_state(s["session_id"], s)
 
@@ -1419,6 +1455,8 @@ def import_session(session_id: str, case_id: str) -> dict:
         return {"status": "error", "reason": "Invalid session_id."}
     if not case_id:
         return {"status": "error", "reason": "case_id is required."}
+    if not _re.match(r"^[A-Za-z0-9_-]+$", case_id):
+        return {"status": "error", "reason": "Invalid case_id."}
 
     case_dir = CASES_DIR / case_id
     if not case_dir.is_dir():

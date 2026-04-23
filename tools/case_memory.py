@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASE_MEMORY_INDEX_FILE, CASES_DIR, REGISTRY_FILE
-from tools.common import load_json, log_error, utcnow
+from tools.common import load_json, log_error, utcnow, write_artefact
 
 # Protects the BM25 index file from concurrent read/write (scheduler
 # rebuild vs analyst search_case_memory).
@@ -202,9 +202,11 @@ def build_case_memory_index(include_open: bool = True) -> dict:
 
     try:
         with _index_lock:
-            CASE_MEMORY_INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
-            CASE_MEMORY_INDEX_FILE.write_text(
-                json.dumps(index, default=str), encoding="utf-8"
+            # Atomic write (tmp + rename) — prevents corrupt JSON if the
+            # rebuild thread is killed mid-write.
+            write_artefact(
+                CASE_MEMORY_INDEX_FILE,
+                json.dumps(index, default=str),
             )
     except Exception as exc:
         log_error("", "case_memory.write_index", str(exc),

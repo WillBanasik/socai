@@ -51,6 +51,14 @@ def _check_workspace_boundary(workspace_id: str) -> None:  # noqa: ARG001
     """No-op — boundaries removed."""
 
 
+# Bounded concurrency for speculative (advisory) enrichment. Prevents a bulk
+# evidence paste from fanning out dozens of simultaneous TI-provider calls.
+import threading as _spec_thr
+
+_SPEC_ENRICH_MAX_CONCURRENT = 3
+_spec_enrich_slots = _spec_thr.Semaphore(_SPEC_ENRICH_MAX_CONCURRENT)
+
+
 def _speculative_enrich_bg(
     text: str,
     *,
@@ -59,7 +67,9 @@ def _speculative_enrich_bg(
 ) -> None:
     """Extract IOCs from *text* and pre-warm enrichment cache in a background thread.
 
-    Advisory only — failures are logged but never block the caller.
+    Advisory only — failures are logged but never block the caller. Capped
+    at ``_SPEC_ENRICH_MAX_CONCURRENT`` concurrent threads; over-budget calls
+    are dropped silently (the next real enrichment will fetch as normal).
     """
     try:
         from tools.extract_iocs import _extract_from_text
@@ -73,7 +83,9 @@ def _speculative_enrich_bg(
         raw_iocs = list(dict.fromkeys(raw_iocs))[:20]  # dedup, cap at 20
         if not raw_iocs:
             return
-        import threading as _thr
+
+        if not _spec_enrich_slots.acquire(blocking=False):
+            return  # pool saturated — drop; speculative only
 
         def _bg():
             try:
@@ -82,8 +94,10 @@ def _speculative_enrich_bg(
             except Exception as exc:
                 from tools.common import log_error
                 log_error("", "speculative_enrich", str(exc), severity="info")
+            finally:
+                _spec_enrich_slots.release()
 
-        _thr.Thread(target=_bg, daemon=True, name=thread_name).start()
+        _spec_thr.Thread(target=_bg, daemon=True, name=thread_name).start()
     except Exception:
         pass  # advisory — never block caller
 
@@ -111,6 +125,68 @@ def _validate_kql_schema(query: str, workspace_id: str = "") -> list[str]:
         return validation.get("warnings", [])
     except Exception:
         return []
+
+
+def _workspace_resolution_hint(case_id: str = "") -> dict:
+    """Build an error payload for failed KQL workspace resolution.
+
+    Lists which clients have a Sentinel workspace configured, and which don't,
+    so the agent can reason about why the resolve failed instead of just
+    blindly retrying with a different workspace string.
+    """
+    import os as _os
+    from config.settings import CLIENT_ENTITIES, CASES_DIR
+    from tools.common import load_json
+
+    configured: list[str] = []
+    unconfigured: list[str] = []
+    try:
+        entities = load_json(CLIENT_ENTITIES).get("clients", [])
+        for ent in entities:
+            name = ent.get("name", "")
+            ws = (ent.get("platforms", {}) or {}).get("sentinel", {}).get("workspace_id") \
+                or ent.get("workspace_id")
+            if ws:
+                configured.append(name)
+            else:
+                unconfigured.append(name)
+    except Exception:
+        pass
+
+    case_client = ""
+    if case_id:
+        try:
+            meta = load_json(CASES_DIR / case_id / "case_meta.json")
+            case_client = (meta.get("client") or "").strip()
+        except Exception:
+            pass
+
+    env_ws = _os.environ.get("SOCAI_SENTINEL_WORKSPACE", "").strip()
+    hint_lines = []
+    if case_client and case_client in unconfigured:
+        hint_lines.append(
+            f"Case client {case_client!r} has no Sentinel workspace_id in "
+            "client_entities.json — populate it or pass workspace= explicitly."
+        )
+    elif case_client and case_client not in configured:
+        hint_lines.append(
+            f"Case client {case_client!r} is not in the client registry."
+        )
+    if not env_ws:
+        hint_lines.append("SOCAI_SENTINEL_WORKSPACE env var is unset.")
+    hint_lines.append(
+        "Pass workspace=<name|GUID> explicitly, or use a client that has a "
+        "configured workspace."
+    )
+
+    return {
+        "error": "Could not resolve Sentinel workspace.",
+        "case_client": case_client or None,
+        "env_workspace_set": bool(env_ws),
+        "clients_with_workspace": configured,
+        "clients_without_workspace": unconfigured,
+        "hint": " ".join(hint_lines),
+    }
 
 
 def _ensure_case(
@@ -230,7 +306,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         })
 
     @mcp.tool(title="Look Up Client", annotations={"readOnlyHint": True})
-    def lookup_client(client_name: str) -> str:
+    def lookup_client(client_name: str, slim: bool = False) -> str:
         """Use when the analyst mentions a client name, asks "which platforms does
         this client have?", or when you need to confirm which Sentinel workspace,
         XDR tenant, or CrowdStrike CID belongs to a client before running queries.
@@ -253,15 +329,29 @@ def _register_tier1(mcp: FastMCP) -> None:
         Call this early in an investigation to establish the client context, especially
         before using ``run_kql`` (which needs the correct workspace).
 
+        **Slim mode:** if you have already loaded this client in the current session
+        and just need to re-confirm platforms/workspace, pass ``slim=True`` — it
+        returns only ``name``, ``platforms``, and ``platform_list`` (a few hundred
+        bytes) instead of re-sending the full ~25 KB knowledge base and playbook.
+
         Parameters
         ----------
         client_name : str
-            Client name to look up (case-insensitive).
+            Client name to look up (case-insensitive; whitespace and hyphens
+            auto-normalised to underscores).
+        slim : bool
+            If True, skip the knowledge base / playbook / sentinel reference and
+            return only platform identifiers. Use on re-lookup within a session.
         """
         _require_scope("investigations:read")
 
         from tools.common import get_client_config
-        cfg = get_client_config(client_name)
+        # Normalise input: lowercase, strip, and collapse whitespace/hyphens to
+        # underscores so "Heidelberg Materials" and "heidelberg-materials" both
+        # resolve to the canonical name "heidelberg_materials" without needing
+        # the alias fallback path below.
+        normalised = client_name.strip().lower().replace(" ", "_").replace("-", "_")
+        cfg = get_client_config(client_name) or get_client_config(normalised)
         if not cfg:
             # Fuzzy matching: try substring and domain patterns
             from config.settings import CLIENT_ENTITIES
@@ -273,36 +363,32 @@ def _register_tier1(mcp: FastMCP) -> None:
 
             query = client_name.lower().strip()
             suggestions = []
+            # Exact alias match only — no fuzzy/substring matching. Fuzzy
+            # matching caused spurious hits (e.g. any 3-char substring
+            # collisions). Aliases must be declared explicitly in
+            # client_entities.json (e.g. "perf" → performanta, "hbm" →
+            # heidelberg_materials).
             for ent in entities:
-                name = ent.get("name", "").lower()
-                notes = ent.get("notes", "").lower()
-                aliases = [a.lower() for a in ent.get("aliases", [])]
-                # Substring match on name
-                if query in name or name in query:
+                aliases = {a.lower().strip() for a in ent.get("aliases", [])}
+                if query in aliases:
                     suggestions.append(ent.get("name", ""))
-                    continue
-                # Alias match (exact or substring)
-                if any(query == a or query in a or a in query for a in aliases):
-                    suggestions.append(ent.get("name", ""))
-                    continue
-                # Domain/keyword match against notes and known_infrastructure
-                infra = str(ent.get("known_infrastructure", "")).lower()
-                if query in notes or query in infra:
-                    suggestions.append(ent.get("name", ""))
-                    continue
 
             if len(suggestions) == 1:
                 # Single match — auto-resolve
                 cfg = get_client_config(suggestions[0])
             else:
-                names = [e.get("name", "") for e in entities]
                 msg = f"Client {client_name!r} not found."
                 if suggestions:
                     msg += f" Did you mean: {', '.join(suggestions)}?"
                 return _json({
                     "error": msg,
                     "suggestions": suggestions,
-                    "available_clients": names,
+                    "_hint": (
+                        "Do NOT retry with guessed spellings — each failed call "
+                        "adds context overhead. Read the socai://clients resource "
+                        "for the authoritative client list, or ask the analyst "
+                        "to confirm the client name."
+                    ),
                 })
 
         # Include platforms and any response playbook
@@ -315,6 +401,15 @@ def _register_tier1(mcp: FastMCP) -> None:
             "platforms": platforms,
             "platform_list": list(platforms.keys()),
         }
+
+        if slim:
+            # Re-lookup within a session — skip the ~25 KB knowledge / playbook /
+            # sentinel payload. The caller already has it from an earlier call.
+            result["_hint"] = (
+                "Slim response — knowledge base and playbook already loaded "
+                "earlier in this session. Call with slim=false to force reload."
+            )
+            return _json(result)
 
         # Load client knowledge files inline so the agent has full context
         # from the first tool call — no separate resource read needed.
@@ -346,6 +441,12 @@ def _register_tier1(mcp: FastMCP) -> None:
         else:
             result["sentinel_reference"] = None
 
+        result["_hint"] = (
+            "Full client context loaded. For subsequent lookup_client calls in "
+            "this session (e.g. to re-confirm platforms), pass slim=true to skip "
+            "the knowledge base / playbook / sentinel payload — it is already in "
+            "your context."
+        )
         return _json(result)
 
     @mcp.tool(title="Update Client Knowledge Base")
@@ -495,32 +596,6 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         return _json(registry)
 
-    @mcp.tool(title="Get Case Status", annotations={"readOnlyHint": True})
-    def get_case(case_id: str) -> str:
-        """Retrieve basic case metadata (title, severity, status, disposition,
-        timestamps, attack type).
-
-        Returns case metadata only. Does NOT include IOCs, verdicts, or
-        enrichment data — for a complete picture, use ``case_summary`` instead.
-
-        Parameters
-        ----------
-        case_id : str
-            Case identifier, e.g. "IV_CASE_001".
-        """
-        _require_scope("investigations:read")
-        _check_client_boundary(case_id)
-
-        from config.settings import CASES_DIR
-        from tools.common import load_json
-
-        meta_path = CASES_DIR / case_id / "case_meta.json"
-        if not meta_path.exists():
-            return _json({"error": f"Case {case_id!r} not found."})
-        meta = load_json(meta_path)
-
-        return _json(meta)
-
     @mcp.tool(title="Full Case Summary", annotations={"readOnlyHint": True})
     def case_summary(case_id: str) -> str:
         """Use when the analyst says "summarise this case", "what do we know about
@@ -531,9 +606,6 @@ def _register_tier1(mcp: FastMCP) -> None:
         stats, response actions, correlation hits, campaign links, analyst notes,
         timeline event count, and any errors. This is the go-to tool for getting
         a full picture of a case without calling multiple tools.
-
-        **Prefer this over ``get_case``** when you need the full investigative
-        context. ``get_case`` returns metadata only; this returns everything.
 
         Parameters
         ----------
@@ -2406,11 +2478,41 @@ def _register_tier1(mcp: FastMCP) -> None:
             result = await asyncio.to_thread(get_page, page_id)
             if not result:
                 raise ToolError(f"Page {page_id} not found or not accessible.")
+            # Cap body at ~8 KB to keep context manageable. ET/EV articles can
+            # be >100 KB of raw HTML; full content is rarely needed once IOCs
+            # and the summary are visible.
+            MAX_BODY_CHARS = 8000
+            body = result.get("body") or ""
+            if len(body) > MAX_BODY_CHARS:
+                result["body"] = body[:MAX_BODY_CHARS]
+                result["_body_truncated"] = True
+                result["_body_full_length"] = len(body)
+                result["_hint"] = (
+                    f"Page body truncated to {MAX_BODY_CHARS} of {len(body)} chars. "
+                    "Full content is rarely needed — ask the analyst to open the "
+                    "Confluence URL directly if deeper context is required."
+                )
             return _json({"status": "ok", "mode": "read", "page": result})
 
         # Mode: search by title
         if query:
             pages = await asyncio.to_thread(search_pages, query, limit)
+            if not pages:
+                return _json({
+                    "status": "no_matches",
+                    "mode": "search",
+                    "query": query,
+                    "results": 0,
+                    "pages": [],
+                    "_hint": (
+                        "No pages match this title query. Do NOT reformulate "
+                        "and retry — the ET/EV corpus genuinely has no entry. "
+                        "For SOC process/runbook questions use socai:// "
+                        "resources (incident-handling, service-requests, "
+                        "critical-incident-management). For external threat "
+                        "intel use search_threat_articles or web_search."
+                    ),
+                })
             return _json({
                 "status": "ok",
                 "mode": "search",
@@ -2425,11 +2527,23 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         # Mode: browse recent pages
         result = await asyncio.to_thread(list_pages, limit)
+        pages = result.get("pages", [])
+        if not pages:
+            return _json({
+                "status": "no_matches",
+                "mode": "browse",
+                "results": 0,
+                "pages": [],
+                "_hint": (
+                    "Confluence space returned no pages — check CONFLUENCE_SPACE_KEY "
+                    "and token scopes. Do not retry this tool."
+                ),
+            })
         return _json({
             "status": "ok",
             "mode": "browse",
-            "results": len(result.get("pages", [])),
-            "pages": result.get("pages", []),
+            "results": len(pages),
+            "pages": pages,
             "next_cursor": result.get("next_cursor"),
             "_hint": (
                 "To read the full content of a page, call search_confluence "
@@ -3884,7 +3998,7 @@ def _register_tier3(mcp: FastMCP) -> None:
 
         ws_id = _resolve_kql_workspace(workspace.strip())
         if not ws_id:
-            return _json({"error": "No workspace resolved. Pass workspace explicitly or set SOCAI_SENTINEL_WORKSPACE."})
+            return _json(_workspace_resolution_hint())
 
         # Enforce client boundary — resolve workspace back to owning client
         _check_workspace_boundary(ws_id)
@@ -3899,8 +4013,26 @@ def _register_tier3(mcp: FastMCP) -> None:
 
         rows = await asyncio.to_thread(lambda: _run_kql(ws_id, q, timeout=60))
         if rows is None:
-            return _json({"error": "Query execution failed."})
+            err: dict = {
+                "error": "Query execution failed.",
+                "workspace": ws_id,
+            }
+            if schema_warnings:
+                err["schema_warnings"] = schema_warnings
+                err["hint"] = (
+                    "Schema pre-check flagged unknown or unavailable tables — "
+                    "likely cause of the failure. Check the workspace's "
+                    "available tables via socai://sentinel-queries."
+                )
+            return _json(err)
         result = {"rows": rows[:limit], "row_count": len(rows), "truncated": len(rows) > limit}
+        if len(rows) > 500:
+            result["_hint"] = (
+                f"{len(rows)} rows returned — at this volume the context cost is "
+                "significant. For pattern analysis prefer `| summarize Count=count() "
+                "by Field` or `| summarize` with a time bucket; use raw rows only "
+                "when inspecting specific events."
+            )
         if schema_warnings:
             result["schema_warnings"] = schema_warnings
         return _json(result)
@@ -4128,7 +4260,7 @@ def _register_tier3(mcp: FastMCP) -> None:
 
         ws_id = resolve_kql_workspace(workspace, case_id=case_id or None)
         if not ws_id:
-            return _json({"error": "Could not resolve workspace. Provide workspace name/GUID or set SOCAI_SENTINEL_WORKSPACE."})
+            return _json(_workspace_resolution_hint(case_id=case_id))
 
         if case_id:
             _check_workspace_boundary(ws_id)
