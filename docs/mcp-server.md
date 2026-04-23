@@ -28,8 +28,8 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  106 tools, 40 resources │
-│  21 prompts, JSONL logs │
+│  105 tools, 44 resources │
+│  22 prompts, JSONL logs │
 │  Background scheduler   │
 └─────────────────────────┘
     │
@@ -98,7 +98,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 
 | Permission | Grants |
 |---|---|
-| `investigations:read` | list_cases, get_case, read_report, read_case_file, recall_cases, recall_semantic, classify_attack, plan_investigation, get_client_baseline, resources |
+| `investigations:read` | list_cases, case_summary, read_report, read_case_file, recall_cases, recall_semantic, classify_attack, plan_investigation, get_client_baseline, resources |
 | `investigations:submit` | capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, analyse_pe, yara_scan, memory tools, all write tools, rebuild_client_baseline |
 | `enrichment:run` | geoip_lookup |
 | `campaigns:read` | campaign_cluster, assess_landscape, search_threat_articles |
@@ -309,7 +309,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://enrichment-providers` | Configured TI providers and availability per IOC type |
 | `socai://ioc-index/stats` | IOC index summary with tier breakdown |
 | `socai://playbooks` | KQL playbook index |
-| `socai://playbooks/{id}` | Full KQL playbook with stages |
+| `socai://playbooks/{playbook_id}` | Full KQL playbook with stages |
 | `socai://cql-playbooks` | CQL (LogScale) playbook index |
 | `socai://cql-playbooks/{playbook_id}` | Full CQL playbook with stages |
 | `socai://sentinel-queries` | Sentinel composite query scenarios |
@@ -493,7 +493,7 @@ Analyst's Claude Desktop (VPN / corporate network)
     ▼
 ┌──────────────────────────┐
 │  mcp_server (port 8001)  │  ← SOCAI_MCP_HOST=127.0.0.1
-│  106 tools, 40 resources  │
+│  105 tools, 44 resources │
 │  JWT RBAC, role system   │
 │  Background scheduler    │
 └──────────────────────────┘

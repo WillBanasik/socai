@@ -22,7 +22,6 @@ All persistent state is on the filesystem. There is no database.
 |------|---------|
 | `cases/<ID>/case_meta.json` | Metadata: status, severity, attack_type, reference_id, report path, IOC totals, phase_timestamps (created_at, triage_at, active_at, closed_at) |
 | `cases/<ID>/iocs/iocs.json` | Canonical IOC list; consumed by `enrich` and `correlate` |
-| `cases/<ID>/chat_history_{email}.json` | Per-user LLM chat history (Anthropic API message format) |
 | `cases/<ID>/artefacts/enrichment/enrichment.json` | Raw per-provider enrichment results; includes `tiered_enrichment` stats and `asn_prescreen` entries for infra-skipped IPs |
 | `cases/<ID>/artefacts/enrichment/verdict_summary.json` | Composite verdict per IOC; `high_priority`, `needs_review`, `clean` |
 | `cases/<ID>/artefacts/web/<host>/capture_manifest.json` | Per-URL capture manifest; includes `cloudflare_blocked`, `tls_certificate` |
@@ -99,15 +98,6 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/sandbox_detonation/llm_analysis.json` | LLM behavioural analysis (MITRE mapping, risk score) |
 | `cases/<ID>/logs/mde_sandbox_detonation.parsed.json` | Normalised sandbox log rows for downstream pipeline |
 | `cases/<ID>/logs/mde_sandbox_detonation.entities.json` | Extracted entities (IPs, domains, URLs, hashes) |
-
-## Session Files
-
-| File | Purpose |
-|------|---------|
-| `sessions/<SID>/session_meta.json` | Session metadata: status, user, expiry, case_id link |
-| `sessions/<SID>/history.json` | Conversation history (Anthropic API format) |
-| `sessions/<SID>/context.json` | Accumulated IOCs, findings, telemetry summaries, disposition |
-| `sessions/<SID>/uploads/` | Analyst-uploaded files |
 
 ## Threat Article Files
 

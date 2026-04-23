@@ -52,7 +52,6 @@ graph TB
             SJ["save_json()"]
             AU["audit()"]
             LE["log_error()"]
-            GM["get_model()"]
             DF["defang_report()"]
         end
     end
@@ -80,23 +79,14 @@ graph TB
         WX["WhoisXML"]
     end
 
-    subgraph LLM["Claude LLM (Tiered)"]
-        HAIKU["Haiku<br/>fast tier"]
-        SONNET["Sonnet<br/>standard tier"]
-        OPUS["Opus<br/>heavy tier"]
-    end
-
     subgraph Browser["Browser Backend"]
         PW["Playwright"]
         RQ["requests fallback"]
     end
 
+    %% All LLM reasoning is handled by the analyst's local Claude Desktop
+    %% agent via MCP prompts — the server makes no Anthropic API calls.
     EN --> ExtAPIs
-    SAR --> LLM
-    MDR --> LLM
-    ES --> LLM
-    FP --> LLM
-    EVTX --> LLM
     WC --> Browser
 
     subgraph State["Filesystem State (no database)"]

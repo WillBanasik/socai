@@ -1374,12 +1374,12 @@ def register_resources(mcp: FastMCP) -> None:
                 "description": "Read-only data URIs. Use these to inspect case state without calling tools.",
                 "case_data": {
                     "socai://cases": "Full case registry (all cases with status/severity).",
-                    "socai://cases/{id}/meta": "Case metadata (title, severity, client, disposition).",
-                    "socai://cases/{id}/iocs": "Extracted IOCs.",
-                    "socai://cases/{id}/verdicts": "Verdict summary (malicious/suspicious/clean).",
-                    "socai://cases/{id}/enrichment": "Full enrichment data from all providers.",
-                    "socai://cases/{id}/report": "Final HTML report.",
-                    "socai://cases/{id}/full": "Complete case bundle.",
+                    "socai://cases/{case_id}/meta": "Case metadata (title, severity, client, disposition).",
+                    "socai://cases/{case_id}/iocs": "Extracted IOCs.",
+                    "socai://cases/{case_id}/verdicts": "Verdict summary (malicious/suspicious/clean).",
+                    "socai://cases/{case_id}/enrichment": "Full enrichment data from all providers.",
+                    "socai://cases/{case_id}/report": "Final HTML report.",
+                    "socai://cases/{case_id}/full": "Complete case bundle.",
                 },
                 "client_and_config": {
                     "socai://clients": "Client registry.",

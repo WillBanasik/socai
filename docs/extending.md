@@ -67,7 +67,7 @@ Add a prompt handler in `mcp_server/prompts.py` that loads system instructions a
 
 3. **Sentinel schema** — once workspace ID is known, run `scripts/discover_sentinel_schemas.py` then `scripts/generate_sentinel_reference.py --client <name>` to auto-populate `sentinel.md` with real table schemas.
 
-Files are resolved by name convention: `config/clients/{name}/knowledge.md` (also tries lowercase + underscored variants). `lookup_client` performs fuzzy matching against `name`, `aliases`, and `notes`.
+Files are resolved by name convention: `config/clients/{client_name}/knowledge.md` (also tries lowercase + underscored variants). `lookup_client` matches against the canonical `name` (auto-normalised for case, whitespace, and hyphens) and against explicit `aliases` declared in `config/client_entities.json`. Substring/fuzzy matching is not supported.
 
 ## New Article Source
 
@@ -75,7 +75,7 @@ Add entries to `config/article_sources.json` with `"type": "rss"` and `"categori
 
 ## MCP Server
 
-`mcp_server/` exposes 106 tools, 36 resources, and 21 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). The server makes no LLM calls — all reasoning is handled by the analyst's local Claude Desktop agent via prompts. Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
+`mcp_server/` exposes 105 tools, 44 resources, and 22 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). The server makes no LLM calls — all reasoning is handled by the analyst's local Claude Desktop agent via prompts. Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
 
 When adding new analytical capabilities, prefer adding an MCP prompt (in `mcp_server/prompts.py`) + save handler over adding LLM-backed tools. Tools should handle data gathering and persistence only; the local agent handles all reasoning.
 

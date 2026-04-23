@@ -29,7 +29,7 @@ Shared API (api/)        -- auth, actions, timeline, input parsing
 - **No direct LLM API calls** -- all reasoning is handled by the analyst's local Claude Desktop agent via MCP prompts
 - **Human-in-the-loop** -- analyst drives each investigation step; tools gather data, agent reasons
 - **Filesystem state** -- no database; cases in `cases/`, registry in `registry/`, articles in `articles/`
-- **100 MCP tools**, 36 resources, 21 prompts across 3 permission tiers
+- **105 MCP tools**, 44 resources, 22 prompts across 3 permission tiers
 
 ## Quick Start
 

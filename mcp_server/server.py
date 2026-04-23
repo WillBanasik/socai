@@ -155,8 +155,8 @@ Read case data, client config, playbooks, and threat intel without invoking tool
 
 - `socai://cases` — full case registry
 - `socai://cases/{case_id}/meta`, `/report`, `/iocs`, `/verdicts`, `/enrichment`, `/timeline`, `/notes`, `/response-actions`, `/fp-ticket`, `/matrix`, `/determination`, `/quality-gate`, `/followups`
-- `socai://clients` — client registry; `socai://clients/{name}` — full config; `socai://clients/{name}/playbook` — response playbook
-- `socai://playbooks` — KQL playbook index; `socai://playbooks/{id}` — full playbook
+- `socai://clients` — client registry; `socai://clients/{client_name}` — full config; `socai://clients/{client_name}/playbook` — response playbook
+- `socai://playbooks` — KQL playbook index; `socai://playbooks/{playbook_id}` — full playbook
 - `socai://sentinel-queries` — Sentinel composite query scenarios (single-execution full-picture queries)
 - `socai://pipeline-profiles` — attack-type routing profiles
 - `socai://ioc-index/stats` — IOC index summary with recurring indicators

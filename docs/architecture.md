@@ -19,9 +19,9 @@ Shared API (api/)
 MCP Server (mcp_server/)
     ├── HTTPS SSE transport  → port 8001, separate process
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
-    ├── 106 tools (3 tiers)   → core investigation, extended analysis, advanced/restricted
-    ├── 36 resources         → case data, clients, IOC index, playbooks, sentinel queries, NGSIEM/LogScale refs, articles, landscape
-    ├── 21 prompts           → investigation, KQL, triage, FP, analysis, report generation, forensics
+    ├── 105 tools (3 tiers)  → core investigation, extended analysis, advanced/restricted
+    ├── 44 resources         → case data, clients, IOC index, playbooks, sentinel queries, NGSIEM/LogScale refs, articles, landscape
+    ├── 22 prompts           → investigation, KQL, triage, FP, analysis, report generation, forensics
     ├── Save tools (2)       → save_report, save_threat_article (persist agent output)
     ├── RBAC                 → per-tool scopes via JWT claims; filesystem isolation (cases/<ID>/)
     ├── Data hierarchy       → global (cross-client IOCs) / client (internal + baseline profiles) / case (details)

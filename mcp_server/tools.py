@@ -2436,7 +2436,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         - P1/P2 / critical incidents / war rooms → ``socai://critical-incident-management``
         - Service Desk / tickets / Teams → ``socai://service-requests``
         - Time tracking / Kantata / overtime → ``socai://time-tracking``
-        - Client playbooks → ``socai://clients/{name}/playbook``
+        - Client playbooks → ``socai://clients/{client_name}/playbook``
 
         **"Articles" disambiguation:**
         - "Check Confluence for articles on X" → use this tool

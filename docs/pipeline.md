@@ -161,4 +161,4 @@ When a case has a `client` field and a matching playbook exists in `config/clien
 
 Multi-environment clients (e.g. Sentinel/MDE + CrowdStrike + OT) define an `environments` map and optional `escalation_matrix_ot` for environment-specific overrides (e.g. no containment in OT).
 
-The tool is purely deterministic (no LLM call). Output is consumed by the MDR report's "Approved Response Actions" section. The client playbook is also exposed as a resource (`socai://clients/{name}/playbook`) so the `write_response_plan` prompt can reference it directly.
+The tool is purely deterministic (no LLM call). Output is consumed by the MDR report's "Approved Response Actions" section. The client playbook is also exposed as a resource (`socai://clients/{client_name}/playbook`) so the `write_response_plan` prompt can reference it directly.
