@@ -1,15 +1,13 @@
 """
 tool: darkweb
 -------------
-Dark web intelligence lookups -- infostealer exposure (Hudson Rock Cavalier),
-breach analytics (XposedOrNot), dark web search (Ahmia.fi), and deep/dark web
-content search (Intelligence X).
+Dark web intelligence lookups -- breach analytics (XposedOrNot), dark web
+search (Ahmia.fi), and deep/dark web content search (Intelligence X).
 
 Agent-invocable MCP tools (NOT automatic enrichment).  The Claude Desktop
 agent decides when to invoke these during investigations.
 
 Writes:
-  cases/<case_id>/artefacts/darkweb/hudsonrock_results.json
   cases/<case_id>/artefacts/darkweb/xposedornot_results.json
   cases/<case_id>/artefacts/darkweb/ahmia_results.json
   cases/<case_id>/artefacts/darkweb/intelx_results.json
@@ -27,7 +25,7 @@ import time
 import traceback as tb
 from pathlib import Path
 
-from config.settings import CASES_DIR, HUDSONROCK_KEY, INTELX_KEY, XPOSEDORNOT_KEY
+from config.settings import CASES_DIR, INTELX_KEY, XPOSEDORNOT_KEY
 from tools.common import get_session, load_json, log_error, save_json, utcnow
 
 # ---------------------------------------------------------------------------
@@ -96,207 +94,6 @@ def _detect_type(value: str) -> str:
     if "." in value and not value.startswith("http"):
         return "domain"
     return "unknown"
-
-
-# ---------------------------------------------------------------------------
-# Hudson Rock Cavalier API
-# ---------------------------------------------------------------------------
-
-_HR_BASE = "https://api.hudsonrock.com/json/v3"
-_HR_TIMEOUT = 30
-
-
-def _hr_headers() -> dict[str, str]:
-    return {"api-key": HUDSONROCK_KEY, "Content-Type": "application/json"}
-
-
-def _hr_is_configured() -> bool:
-    return bool(HUDSONROCK_KEY)
-
-
-def _hudsonrock_paginate(
-    endpoint: str,
-    payload: dict,
-    *,
-    max_pages: int = 5,
-    case_id: str = "",
-) -> list[dict]:
-    """Follow cursor-based pagination for Hudson Rock endpoints."""
-    all_data: list[dict] = []
-    session = get_session()
-    cursor = None
-
-    for _ in range(max_pages):
-        if cursor:
-            payload["cursor"] = cursor
-        try:
-            resp = session.post(
-                f"{_HR_BASE}/{endpoint}",
-                headers=_hr_headers(),
-                json=payload,
-                timeout=_HR_TIMEOUT,
-            )
-            if resp.status_code == 429:
-                log_error(case_id, "darkweb.hudsonrock", "Rate limited by Hudson Rock",
-                          severity="warning")
-                break
-            resp.raise_for_status()
-            body = resp.json()
-        except Exception as exc:
-            log_error(case_id, "darkweb.hudsonrock", str(exc),
-                      severity="warning", traceback=tb.format_exc())
-            break
-
-        page_data = body.get("data", [])
-        if isinstance(page_data, list):
-            all_data.extend(page_data)
-        elif isinstance(page_data, dict):
-            all_data.append(page_data)
-
-        cursor = body.get("nextCursor")
-        if not cursor:
-            break
-
-    return all_data
-
-
-def hudsonrock_email_search(
-    emails: list[str],
-    case_id: str = "",
-) -> dict:
-    """Search Hudson Rock for infostealer compromise data on email addresses.
-
-    Parameters
-    ----------
-    emails : list[str]
-        Up to 50 email addresses to search.
-    case_id : str
-        If provided, results are saved to case artefacts.
-
-    Returns
-    -------
-    dict with source, status, results, compromised_count, total_queried, ts.
-    Credentials are ALWAYS redacted before return.
-    """
-    if not _hr_is_configured():
-        return {"source": "hudsonrock", "status": "no_api_key",
-                "message": "HUDSONROCK_API_KEY not set", "ts": utcnow()}
-
-    emails = emails[:50]
-    payload = {"logins": emails}
-    raw = _hudsonrock_paginate("search-by-login/emails", payload, case_id=case_id)
-
-    # Redact IMMEDIATELY
-    results = _redact_credentials(raw)
-
-    out = {
-        "source": "hudsonrock",
-        "status": "ok" if results else "no_results",
-        "query_type": "email",
-        "queries": emails,
-        "compromised_count": len(results),
-        "total_queried": len(emails),
-        "results": results,
-        "ts": utcnow(),
-    }
-
-    if case_id:
-        dest = CASES_DIR / case_id / "artefacts" / "darkweb" / "hudsonrock_results.json"
-        _merge_save(dest, out, case_id)
-
-    return out
-
-
-def hudsonrock_domain_search(
-    domain: str,
-    search_type: str = "overview",
-    case_id: str = "",
-) -> dict:
-    """Search Hudson Rock for domain exposure data.
-
-    Parameters
-    ----------
-    domain : str
-        Domain to search (e.g. 'example.com').
-    search_type : str
-        'overview' for summary stats, 'detailed' for full breakdown.
-    case_id : str
-        If provided, results are saved to case artefacts.
-    """
-    if not _hr_is_configured():
-        return {"source": "hudsonrock", "status": "no_api_key",
-                "message": "HUDSONROCK_API_KEY not set", "ts": utcnow()}
-
-    if search_type == "overview":
-        endpoint = "search-by-domain/overview"
-        payload = {"domains": [domain]}
-    else:
-        endpoint = "search-by-domain"
-        payload = {"domains": [domain], "types": ["employees", "users", "third_parties"]}
-
-    raw = _hudsonrock_paginate(endpoint, payload, case_id=case_id)
-    results = _redact_credentials(raw)
-
-    out = {
-        "source": "hudsonrock",
-        "status": "ok" if results else "no_results",
-        "query_type": "domain",
-        "query": domain,
-        "search_type": search_type,
-        "results": results,
-        "ts": utcnow(),
-    }
-
-    if case_id:
-        dest = CASES_DIR / case_id / "artefacts" / "darkweb" / "hudsonrock_results.json"
-        _merge_save(dest, out, case_id)
-
-    return out
-
-
-def hudsonrock_ip_search(
-    ips: list[str],
-    case_id: str = "",
-) -> dict:
-    """Search Hudson Rock for IP/CIDR infostealer data.
-
-    Parameters
-    ----------
-    ips : list[str]
-        Up to 50 IPs or a single CIDR range.
-    case_id : str
-        If provided, results are saved to case artefacts.
-    """
-    if not _hr_is_configured():
-        return {"source": "hudsonrock", "status": "no_api_key",
-                "message": "HUDSONROCK_API_KEY not set", "ts": utcnow()}
-
-    ips = ips[:50]
-    # Check if CIDR
-    if len(ips) == 1 and "/" in ips[0]:
-        payload = {"cidr": ips[0]}
-    else:
-        payload = {"ips": ips}
-
-    raw = _hudsonrock_paginate("search-by-ip", payload, case_id=case_id)
-    results = _redact_credentials(raw)
-
-    out = {
-        "source": "hudsonrock",
-        "status": "ok" if results else "no_results",
-        "query_type": "ip",
-        "queries": ips,
-        "compromised_count": len(results),
-        "total_queried": len(ips),
-        "results": results,
-        "ts": utcnow(),
-    }
-
-    if case_id:
-        dest = CASES_DIR / case_id / "artefacts" / "darkweb" / "hudsonrock_results.json"
-        _merge_save(dest, out, case_id)
-
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1002,8 +799,8 @@ def darkweb_summary(
 ) -> dict:
     """Produce an aggregated dark web exposure summary for a case.
 
-    Calls Hudson Rock and XposedOrNot for all provided indicators,
-    merges results, and saves a summary to the case.
+    Calls XposedOrNot for all provided indicators, merges results, and
+    saves a summary to the case.
 
     If no indicators are provided, extracts them from the case's iocs.json.
     """
@@ -1034,22 +831,10 @@ def darkweb_summary(
 
     results: dict = {
         "case_id": case_id,
-        "hudsonrock": {},
         "xposedornot": {},
         "summary": {},
         "ts": utcnow(),
     }
-
-    # --- Hudson Rock ---
-    hr_results: list[dict] = []
-    if emails and _hr_is_configured():
-        hr_results.append(hudsonrock_email_search(emails, case_id=case_id))
-    if ips and _hr_is_configured():
-        hr_results.append(hudsonrock_ip_search(ips, case_id=case_id))
-    for domain in domains:
-        if _hr_is_configured():
-            hr_results.append(hudsonrock_domain_search(domain, case_id=case_id))
-    results["hudsonrock"] = hr_results
 
     # --- XposedOrNot ---
     xon_results: list[dict] = []
@@ -1060,9 +845,6 @@ def darkweb_summary(
     results["xposedornot"] = xon_results
 
     # --- Summary ---
-    hr_compromised = sum(
-        r.get("compromised_count", 0) for r in hr_results if isinstance(r.get("compromised_count"), int)
-    )
     xon_breached = sum(1 for r in xon_results if r.get("breached"))
     all_breach_names: set[str] = set()
     for r in xon_results:
@@ -1070,10 +852,8 @@ def darkweb_summary(
 
     results["summary"] = {
         "total_indicators_checked": len(emails) + len(domains) + len(ips),
-        "hudsonrock_compromised_records": hr_compromised,
         "xposedornot_breached_indicators": xon_breached,
         "unique_breaches": sorted(all_breach_names),
-        "hudsonrock_configured": _hr_is_configured(),
         "xposedornot_configured": True,  # keyless for email
     }
 

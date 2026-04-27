@@ -217,11 +217,10 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `geoip_lookup` | `enrichment:run` | Fast offline IP geolocation via local MaxMind GeoLite2 |
 | `refresh_geoip` | `admin` | Download/update local MaxMind GeoLite2-City database |
 
-### Dark Web Intelligence (6)
+### Dark Web Intelligence (5)
 
 | Tool | Permission | Description |
 |---|---|---|
-| `hudsonrock_lookup` | `investigations:read` | Hudson Rock infostealer exposure lookup (email, domain, or IP) |
 | `xposed_breach_check` | `investigations:read` | XposedOrNot breach database lookup (email or domain) |
 | `parse_stealer_logs_tool` | `investigations:submit` | Parse infostealer log archives (.rar/.zip/.7z) |
 | `darkweb_exposure_summary` | `investigations:submit` | Aggregate dark web exposure summary across all sources for a case |

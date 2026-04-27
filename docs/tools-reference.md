@@ -295,7 +295,6 @@ The Intezer access token is fetched **once per `enrich()` call** and reused acro
 
 | Tool | Trigger phrases | IOC types | Provider |
 |------|----------------|-----------|----------|
-| `hudsonrock_lookup` | "check Hudson Rock", "infostealer exposure", "stolen credentials" | email, domain, IP | Hudson Rock Cavalier API (free tier) |
 | `xposed_breach_check` | "check for breaches", "breach exposure", "has this email been breached" | email, domain | XposedOrNot API (keyless for email) |
 | `ahmia_darkweb_search` | "search the dark web", "search onion sites", "dark web search" | any keyword/IOC | Ahmia.fi (no auth, no Tor) |
 | `intelx_search_tool` | "search Intelligence X", "search pastes and leaks", "deep web search" | email, domain, IP, URL, phone | Intelligence X (free tier) |
@@ -304,12 +303,11 @@ The Intezer access token is fetched **once per `enrich()` call** and reused acro
 
 ### Credential Sanitisation
 
-Hudson Rock returns credential data including passwords. All passwords are automatically redacted at the tool layer (`_redact_credentials`) before results are saved to artefacts or returned to the agent. Passwords appear as `[REDACTED-Nchars]`. Email local-parts in credential entries are truncated (`j***@example.com`). The full unredacted response is never stored or returned.
+Stealer log archives and Intelligence X records can contain credential data. All passwords are automatically redacted at the tool layer (`_redact_credentials`) before results are saved to artefacts or returned to the agent. Passwords appear as `[REDACTED-Nchars]`. Email local-parts in credential entries are truncated (`j***@example.com`). The full unredacted response is never stored or returned.
 
 ### Artefacts
 
 Results are saved to `cases/<ID>/artefacts/darkweb/`:
-- `hudsonrock_results.json` — infostealer compromise data (redacted)
 - `xposedornot_results.json` — breach exposure data
 - `darkweb_summary.json` — aggregated exposure summary
 - `stealer_logs/parsed.json` — parsed infostealer log output (redacted)
@@ -318,7 +316,6 @@ Results are saved to `cases/<ID>/artefacts/darkweb/`:
 
 | Env var | Required | Notes |
 |---------|----------|-------|
-| `HUDSONROCK_API_KEY` | For Hudson Rock tools | Free tier at hudsonrock.com/free-api-key |
 | `XPOSEDORNOT_API_KEY` | For domain breach checks only | Email breach checks are keyless |
 | `INTELX_API_KEY` | For Intelligence X (recommended) | Free tier at intelx.io/account?tab=developer; public API (very limited) used if unset |
 

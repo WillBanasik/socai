@@ -32,6 +32,7 @@ import base64
 import json
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -622,6 +623,35 @@ def _proxycheck_lookup(ioc: str, ioc_type: str) -> dict:
     }
 
 
+# OpenCTI circuit breaker — short-circuit lookups when the platform is unreachable
+# so a batch of IOCs doesn't pay the full timeout cost on every call.
+_OPENCTI_CB_THRESHOLD = 3        # consecutive transport failures before opening
+_OPENCTI_CB_COOLDOWN = 300       # seconds the circuit stays open
+_opencti_cb_lock = threading.Lock()
+_opencti_cb_failures: int = 0
+_opencti_cb_open_until: float = 0.0
+
+
+def _opencti_circuit_open() -> bool:
+    with _opencti_cb_lock:
+        return time.monotonic() < _opencti_cb_open_until
+
+
+def _opencti_record_failure() -> None:
+    global _opencti_cb_failures, _opencti_cb_open_until
+    with _opencti_cb_lock:
+        _opencti_cb_failures += 1
+        if _opencti_cb_failures >= _OPENCTI_CB_THRESHOLD:
+            _opencti_cb_open_until = time.monotonic() + _OPENCTI_CB_COOLDOWN
+
+
+def _opencti_record_success() -> None:
+    global _opencti_cb_failures, _opencti_cb_open_until
+    with _opencti_cb_lock:
+        _opencti_cb_failures = 0
+        _opencti_cb_open_until = 0.0
+
+
 def _opencti_lookup(ioc: str, ioc_type: str) -> dict:
     """OpenCTI — query internal threat intel platform for observable + related objects."""
     if not OPENCTI_KEY:
@@ -633,6 +663,10 @@ def _opencti_lookup(ioc: str, ioc_type: str) -> dict:
 
     if ioc_type not in _value_types and ioc_type not in _hash_types and ioc_type != "cve":
         return {"provider": "opencti", "status": "skipped", "ioc": ioc}
+
+    if _opencti_circuit_open():
+        return {"provider": "opencti", "status": "circuit_open", "ioc": ioc,
+                "message": "OpenCTI unreachable recently; backing off"}
 
     headers = {
         "Authorization": f"Bearer {OPENCTI_KEY}",
@@ -669,10 +703,12 @@ def _opencti_lookup(ioc: str, ioc_type: str) -> dict:
         try:
             resp = get_session().post(graphql_url, headers=headers, json={"query": query}, timeout=15)
             resp.raise_for_status()
+            data = resp.json()
         except Exception as exc:
+            _opencti_record_failure()
             return {"provider": "opencti", "status": "error", "ioc": ioc, "error": str(exc)}
+        _opencti_record_success()
 
-        data = resp.json()
         if "errors" in data:
             return {"provider": "opencti", "status": "api_error", "ioc": ioc,
                     "message": data["errors"][0].get("message")}
@@ -757,10 +793,12 @@ def _opencti_lookup(ioc: str, ioc_type: str) -> dict:
     try:
         resp = get_session().post(graphql_url, headers=headers, json={"query": query}, timeout=15)
         resp.raise_for_status()
+        data = resp.json()
     except Exception as exc:
+        _opencti_record_failure()
         return {"provider": "opencti", "status": "error", "ioc": ioc, "error": str(exc)}
+    _opencti_record_success()
 
-    data = resp.json()
     if "errors" in data:
         return {"provider": "opencti", "status": "api_error", "ioc": ioc,
                 "message": data["errors"][0].get("message")}

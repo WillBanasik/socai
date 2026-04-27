@@ -65,7 +65,6 @@ CENSYS_TOKEN     = os.getenv("CENSYS_TOKEN", "")      # Personal Access Token fr
 WHOISXML_KEY     = os.getenv("WHOISXML_API_KEY", "")
 
 # Dark web intelligence
-HUDSONROCK_KEY   = os.getenv("HUDSONROCK_API_KEY", "")
 XPOSEDORNOT_KEY  = os.getenv("XPOSEDORNOT_API_KEY", "")  # optional; email lookups are keyless
 INTELX_KEY       = os.getenv("INTELX_API_KEY", "")       # free tier at intelx.io/account?tab=developer
 

@@ -1808,7 +1808,6 @@ def _register_tier1(mcp: FastMCP) -> None:
             ],
             "account_compromise": _prefix + [
                 {"tool": "enrich_iocs", "reason": "Enrich IPs, domains from sign-in data"},
-                {"tool": "hudsonrock_lookup", "reason": "Check if user credentials were harvested by infostealer malware", "condition": "if user email available"},
                 {"tool": "xposed_breach_check", "reason": "Check if user email appears in historical data breaches", "condition": "if user email available"},
                 {"tool": "recall_cases", "reason": "Check for prior related investigations"},
             ] + _kql("account-compromise", "sign-ins, MFA, post-compromise audit")
@@ -5314,74 +5313,6 @@ def _register_intelligence(mcp: FastMCP) -> None:
 
 def _register_darkweb(mcp: FastMCP) -> None:
 
-    @mcp.tool(title="Hudson Rock Infostealer Lookup",
-              annotations={"readOnlyHint": False, "openWorldHint": True})
-    async def hudsonrock_lookup(
-        query: Annotated[str, "Email address, domain, or IP/CIDR to search."],
-        query_type: Annotated[str, "One of: 'email', 'domain', 'ip'. "
-                                   "Default 'auto' detects from value."] = "auto",
-        case_id: Annotated[str, "Case ID to save results to (optional)."] = "",
-        domain_detail: Annotated[bool, "For domain queries: True for detailed "
-                                       "employee/user/third-party breakdown, "
-                                       "False (default) for overview stats."] = False,
-    ) -> str:
-        """Use when the analyst says "check Hudson Rock", "infostealer exposure",
-        "has this email been compromised by a stealer?", "check dark web for
-        this domain", "any stolen credentials for this user?", or when
-        investigating account compromise and you need to check if credentials
-        were harvested by infostealer malware.
-
-        Hudson Rock Cavalier searches data from infostealer malware infections.
-        Returns: stealer family, date compromised, computer name, OS, malware
-        path.  Credentials are ALWAYS redacted -- passwords are never shown.
-
-        Useful during:
-        - Account compromise investigations (was the password stolen by malware?)
-        - Domain exposure assessments (how many employees are in stealer logs?)
-        - IP-based pivot (which compromised machines connected from this IP?)
-
-        Parameters
-        ----------
-        query : str
-            Email, domain, or IP to search.
-        query_type : str
-            'email', 'domain', 'ip', or 'auto' (default -- auto-detects).
-        case_id : str
-            If provided, saves results to case artefacts.
-        domain_detail : bool
-            For domain queries only: detailed breakdown (True) or overview (False).
-        """
-        _require_scope("investigations:read")
-        if case_id:
-            _check_client_boundary(case_id)
-
-        from tools.darkweb import (
-            _detect_type,
-            hudsonrock_domain_search,
-            hudsonrock_email_search,
-            hudsonrock_ip_search,
-        )
-
-        qtype = query_type if query_type != "auto" else _detect_type(query)
-
-        if qtype == "email":
-            result = await asyncio.to_thread(
-                lambda: hudsonrock_email_search([query], case_id=case_id)
-            )
-        elif qtype == "domain":
-            stype = "detailed" if domain_detail else "overview"
-            result = await asyncio.to_thread(
-                lambda: hudsonrock_domain_search(query, search_type=stype, case_id=case_id)
-            )
-        elif qtype == "ip":
-            result = await asyncio.to_thread(
-                lambda: hudsonrock_ip_search([query], case_id=case_id)
-            )
-        else:
-            raise ToolError(f"Cannot detect IOC type for '{query}'. "
-                            "Specify query_type='email', 'domain', or 'ip'.")
-        return _json(result)
-
     @mcp.tool(title="Breach Exposure Check (XposedOrNot)",
               annotations={"readOnlyHint": False, "openWorldHint": True})
     async def xposed_breach_check(
@@ -5398,9 +5329,6 @@ def _register_darkweb(mcp: FastMCP) -> None:
         XposedOrNot aggregates data breach records.  Returns: breach names,
         risk scores, exposed data types (passwords, emails, phone numbers, etc.),
         paste exposure, and industry breakdown.
-
-        Complements Hudson Rock (infostealer-specific) -- use both together for
-        comprehensive dark web exposure assessment.
 
         Email lookups are keyless (no API key needed).  Domain lookups require
         XPOSEDORNOT_API_KEY in .env.
@@ -5489,17 +5417,13 @@ def _register_darkweb(mcp: FastMCP) -> None:
         or when you want to run all dark web intelligence sources at once
         for a case.
 
-        Aggregates results from Hudson Rock (infostealer data) and XposedOrNot
-        (breach data) for all relevant indicators in the case.  If no indicators
-        are explicitly provided, extracts emails, domains, and IPs from the
-        case's iocs.json.
+        Aggregates results from XposedOrNot (breach data) for all relevant
+        indicators in the case.  If no indicators are explicitly provided,
+        extracts emails, domains, and IPs from the case's iocs.json.
 
         Produces a unified summary including:
-        - Total compromised accounts across all sources
-        - Stealer families detected
         - Breach names and exposed data types
         - Risk assessment per indicator
-        - Timeline of compromise dates
 
         Saved to: cases/<case_id>/artefacts/darkweb/darkweb_summary.json
 

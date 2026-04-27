@@ -558,29 +558,10 @@ def assess_email_security(dns_data: dict) -> dict:
 # Phase 5 — Credential Exposure
 # ---------------------------------------------------------------------------
 
-def assess_credential_exposure(domain: str, key_emails: list[str] | None = None) -> dict:
+def assess_credential_exposure(domain: str) -> dict:
     """Check for credential exposure via dark web intelligence."""
     findings = []
     results = {}
-
-    # Hudson Rock
-    try:
-        from tools.darkweb import hudsonrock_domain_search
-        hr = hudsonrock_domain_search(domain, search_type="overview")
-        results["hudsonrock"] = hr
-        if hr.get("status") == "ok" and hr.get("results"):
-            count = hr.get("compromised_count", len(hr.get("results", [])))
-            if count > 0:
-                findings.append({
-                    "severity": "high" if count >= 10 else "medium",
-                    "category": "credential_exposure",
-                    "title": f"{count} infostealer compromises found for {domain}",
-                    "detail": f"Hudson Rock reports {count} credential(s) stolen by infostealers targeting {domain}.",
-                })
-    except Exception as exc:
-        log_error("", "exposure_test:hudsonrock_domain", str(exc), severity="warning", traceback=True,
-                  context={"domain": domain})
-        results["hudsonrock"] = {"error": str(exc)}
 
     # XposedOrNot
     try:
@@ -598,25 +579,6 @@ def assess_credential_exposure(domain: str, key_emails: list[str] | None = None)
         log_error("", "exposure_test:xposedornot_domain", str(exc), severity="warning", traceback=True,
                   context={"domain": domain})
         results["xposedornot"] = {"error": str(exc)}
-
-    # Key email lookups
-    if key_emails:
-        try:
-            from tools.darkweb import hudsonrock_email_search
-            hr_emails = hudsonrock_email_search(key_emails[:20])
-            results["hudsonrock_emails"] = hr_emails
-            compromised = hr_emails.get("compromised_count", 0)
-            if compromised > 0:
-                findings.append({
-                    "severity": "high",
-                    "category": "credential_exposure",
-                    "title": f"{compromised} key email(s) found in infostealer data",
-                    "detail": f"{compromised} of {len(key_emails)} monitored emails have stolen credentials.",
-                })
-        except Exception as exc:
-            log_error("", "exposure_test:hudsonrock_emails", str(exc), severity="warning",
-                      traceback=True, context={"email_count": len(key_emails)})
-            results["hudsonrock_emails"] = {"error": str(exc)}
 
     return {"results": results, "findings": findings}
 

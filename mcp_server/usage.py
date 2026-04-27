@@ -75,7 +75,6 @@ TOOL_TAXONOMY: dict[str, dict[str, str]] = {
     "quick_enrich":             {"category": "enrichment",  "goal": "quick_answer"},
     "query_opencti":            {"category": "enrichment",  "goal": "quick_answer"},
     "extract_iocs_text":        {"category": "enrichment",  "goal": "quick_answer"},
-    "hudsonrock_lookup":        {"category": "enrichment",  "goal": "quick_answer"},
     "xposed_breach_check":      {"category": "enrichment",  "goal": "quick_answer"},
     "web_search_osint":         {"category": "enrichment",  "goal": "quick_answer"},
     "ahmia_darkweb_search":     {"category": "enrichment",  "goal": "quick_answer"},

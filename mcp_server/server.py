@@ -135,7 +135,7 @@ Analysts select these from the Claude Desktop prompt picker for structured workf
 | Dynamic Analysis | start_sandbox_session, stop_sandbox_session, list_sandbox_sessions, start_browser_session, stop_browser_session, list_browser_sessions |
 | Reporting | generate_report, prepare_mdr_report, prepare_pup_report, prepare_executive_summary, generate_weekly, prepare_fp_ticket, prepare_fp_tuning_ticket, reconstruct_timeline, security_arch_review, response_actions |
 | Threat Intelligence | assess_landscape, search_threat_articles, generate_threat_article, search_confluence (ET/EV articles only) |
-| Dark Web Intelligence | hudsonrock_lookup (infostealer exposure), xposed_breach_check (breach data), ahmia_darkweb_search (.onion search), intelx_search (pastes/leaks/darknet), parse_stealer_logs, darkweb_exposure_summary |
+| Dark Web Intelligence | xposed_breach_check (breach data), ahmia_darkweb_search (.onion search), intelx_search (pastes/leaks/darknet), parse_stealer_logs, darkweb_exposure_summary |
 | SOC Processes | lookup_soc_process (incident handling, P1/P2, service desk, time tracking) |
 
 ## SOC Process Documentation
@@ -178,7 +178,7 @@ Every workflow starts with classification. The `classify_attack` result includes
 
 - **Phishing:** lookup_client → classify_attack → add_evidence → enrich_iocs → capture_urls → detect_phishing → analyse_email → run_kql (phishing playbook) → prepare_mdr_report
 - **Malware:** lookup_client → classify_attack → add_evidence → enrich_iocs → start_sandbox_session → run_kql (malware-execution playbook) → prepare_mdr_report
-- **Account Compromise:** lookup_client → classify_attack → add_evidence → enrich_iocs → hudsonrock_lookup + xposed_breach_check (check credential exposure) → generate_sentinel_query (suspicious-signin / mailbox-permission-change) → run_kql → prepare_mdr_report
+- **Account Compromise:** lookup_client → classify_attack → add_evidence → enrich_iocs → xposed_breach_check (check breach exposure) → generate_sentinel_query (suspicious-signin / mailbox-permission-change) → run_kql → prepare_mdr_report
 - **False Positive:** add_evidence → enrich_iocs → prepare_fp_ticket → prepare_fp_tuning_ticket (if tuning needed)
 - **PUP/PUA:** classify_attack → enrich_iocs → prepare_pup_report
 

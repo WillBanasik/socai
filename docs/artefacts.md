@@ -33,7 +33,6 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/sandbox/sandbox_results.json` | Sandbox provider results per file hash |
 | `cases/<ID>/artefacts/sandbox/sandbox_iocs.json` | Supplementary IOCs from sandbox analysis |
 | `cases/<ID>/artefacts/anomalies/anomaly_report.json` | Behavioural anomaly detection findings |
-| `cases/<ID>/artefacts/darkweb/hudsonrock_results.json` | Hudson Rock infostealer lookup results (credentials REDACTED) |
 | `cases/<ID>/artefacts/darkweb/xposedornot_results.json` | XposedOrNot breach exposure results |
 | `cases/<ID>/artefacts/darkweb/darkweb_summary.json` | Aggregated dark web exposure summary |
 | `cases/<ID>/artefacts/darkweb/ahmia_results.json` | Ahmia.fi dark web search results |

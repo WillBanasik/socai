@@ -1329,14 +1329,13 @@ def register_resources(mcp: FastMCP) -> None:
                     },
                 },
                 "dark_web_intelligence": {
-                    "description": "Check dark web sources for credential theft, breach exposure, infostealer data, and dark web mentions. Use during account compromise, credential theft, or when assessing user/domain exposure.",
+                    "description": "Check dark web sources for credential theft, breach exposure, and dark web mentions. Use during account compromise, credential theft, or when assessing user/domain exposure.",
                     "tools": {
-                        "hudsonrock_lookup": "Check infostealer exposure for email/domain/IP — was credential harvested by malware? (Hudson Rock Cavalier)",
                         "xposed_breach_check": "Check historical breach databases — which breaches was this email/domain in? (XposedOrNot)",
                         "ahmia_darkweb_search": "Search indexed .onion sites for keywords, IOCs, or threat actor references (Ahmia.fi, Tor required for full search).",
                         "intelx_search": "Search dark web, paste sites, data leaks, and documents for a specific indicator (Intelligence X).",
                         "parse_stealer_logs": "Parse infostealer log archives (.rar/.zip/.7z) into structured data with credential redaction.",
-                        "darkweb_exposure_summary": "Aggregate all dark web exposure data for a case — runs Hudson Rock + XposedOrNot for all case indicators.",
+                        "darkweb_exposure_summary": "Aggregate all dark web exposure data for a case — runs XposedOrNot for all case indicators.",
                     },
                 },
             },

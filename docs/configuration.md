@@ -58,7 +58,6 @@ All LLM reasoning (report generation, analytical judgement, disposition analysis
 | `ANYRUN_API_KEY` | Any.Run | SHA256 — sandbox hash lookup + detonation |
 | `JOESANDBOX_API_KEY` | Joe Sandbox | SHA256 — sandbox hash lookup + detonation |
 | `SOCAI_BRAVE_SEARCH_KEY` | Brave Search | Web search fallback (optional; DuckDuckGo used if unset) |
-| `HUDSONROCK_API_KEY` | Hudson Rock Cavalier | email, domain, IP — infostealer exposure (free tier) |
 | `XPOSEDORNOT_API_KEY` | XposedOrNot | domain breaches (optional; email lookups are keyless) |
 | `INTELX_API_KEY` | Intelligence X | dark web, pastes, leaks, documents — free tier at intelx.io/account?tab=developer |
 
