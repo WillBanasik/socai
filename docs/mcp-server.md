@@ -28,7 +28,7 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  105 tools, 44 resources │
+│  104 tools, 44 resources │
 │  22 prompts, JSONL logs │
 │  Background scheduler   │
 └─────────────────────────┘
@@ -492,7 +492,7 @@ Analyst's Claude Desktop (VPN / corporate network)
     ▼
 ┌──────────────────────────┐
 │  mcp_server (port 8001)  │  ← SOCAI_MCP_HOST=127.0.0.1
-│  105 tools, 44 resources │
+│  104 tools, 44 resources │
 │  JWT RBAC, role system   │
 │  Background scheduler    │
 └──────────────────────────┘

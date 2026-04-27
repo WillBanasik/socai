@@ -75,7 +75,7 @@ Add entries to `config/article_sources.json` with `"type": "rss"` and `"categori
 
 ## MCP Server
 
-`mcp_server/` exposes 105 tools, 44 resources, and 22 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). The server makes no LLM calls — all reasoning is handled by the analyst's local Claude Desktop agent via prompts. Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
+`mcp_server/` exposes 104 tools, 44 resources, and 22 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). The server makes no LLM calls — all reasoning is handled by the analyst's local Claude Desktop agent via prompts. Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, and `admin` scopes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
 
 When adding new analytical capabilities, prefer adding an MCP prompt (in `mcp_server/prompts.py`) + save handler over adding LLM-backed tools. Tools should handle data gathering and persistence only; the local agent handles all reasoning.
 

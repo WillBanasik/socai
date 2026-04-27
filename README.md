@@ -12,7 +12,7 @@ SOC-AI provides a complete investigation toolkit for MDR/XDR analysts:
 - **Email and phishing analysis** -- .eml parsing, headless browser capture, brand impersonation detection, credential harvest detection
 - **Dynamic analysis** -- sandbox detonation, disposable browser sessions with network capture
 - **Forensic ingestion** -- Velociraptor collections, MDE investigation packages, PE analysis, YARA scanning
-- **Dark web intelligence** -- infostealer exposure, breach databases, .onion search, paste/leak search
+- **Dark web intelligence** -- stealer log parsing, breach databases, .onion search, paste/leak search
 - **Cross-case intelligence** -- BM25 semantic case recall, IOC overlap clustering, campaign detection, threat landscape
 - **Report generation** -- MDR reports, PUP reports, FP tickets, executive summaries, threat articles
 - **Client playbooks** -- per-client escalation matrices, containment capabilities, crown jewel monitoring, multi-environment support
@@ -29,7 +29,7 @@ Shared API (api/)        -- auth, actions, timeline, input parsing
 - **No direct LLM API calls** -- all reasoning is handled by the analyst's local Claude Desktop agent via MCP prompts
 - **Human-in-the-loop** -- analyst drives each investigation step; tools gather data, agent reasons
 - **Filesystem state** -- no database; cases in `cases/`, registry in `registry/`, articles in `articles/`
-- **105 MCP tools**, 44 resources, 22 prompts across 3 permission tiers
+- **104 MCP tools**, 44 resources, 22 prompts across 3 permission tiers
 
 ## Quick Start
 
