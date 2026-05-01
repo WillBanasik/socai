@@ -58,6 +58,8 @@ All LLM reasoning — report writing, disposition analysis, quality review — i
 
 **All reports are HTML.** Prompts include the CSS styling inline. Template resources (`socai://templates/mdr-report`, `socai://templates/pup-report`) provide complete HTML skeletons. `save_report` accepts HTML directly — if markdown is passed (legacy), it is converted automatically.
 
+**Template access fallback:** If `prepare_mdr_report` or `prepare_pup_report` is blocked (e.g. the case is already closed), call `load_report_template(template="mdr_report")` or `load_report_template(template="pup_report")` instead. This tool returns the full HTML skeleton, CSS, and analyst instructions with no case requirement and no business-logic gate — identical content to the `socai://templates/*` resources.
+
 Note: The server-side tool names (`prepare_mdr_report`, `prepare_pup_report`, `prepare_fp_ticket`, etc.) still exist as MCP tools but now redirect to the prompt workflow — they collect case data and return it for the local agent to process, rather than making direct API calls.
 
 ### Report Prompts

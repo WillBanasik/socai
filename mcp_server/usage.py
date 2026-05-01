@@ -157,6 +157,7 @@ TOOL_TAXONOMY: dict[str, dict[str, str]] = {
 
     # Delivery — reports, tickets, closures
     "generate_report":          {"category": "delivery",    "goal": "deliver"},
+    "load_report_template":     {"category": "delivery",    "goal": "deliver"},
     "prepare_mdr_report":       {"category": "delivery",    "goal": "deliver"},
     "prepare_pup_report":       {"category": "delivery",    "goal": "deliver"},
     "prepare_executive_summary": {"category": "delivery",   "goal": "deliver"},

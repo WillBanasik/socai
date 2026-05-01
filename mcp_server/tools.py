@@ -1487,6 +1487,196 @@ def _register_tier1(mcp: FastMCP) -> None:
             ),
         })
 
+    @mcp.tool(title="Load Report Template")
+    def load_report_template(template: str) -> str:
+        """Return the HTML skeleton, CSS styling, and analyst instructions for a
+        report template — without requiring a case or opening any deliverable
+        workflow.
+
+        Use this when you need the template content but the normal
+        ``prepare_mdr_report`` / ``prepare_pup_report`` path is unavailable
+        (e.g. the target case is closed, or you want to inspect the template
+        before starting a report).
+
+        Parameters
+        ----------
+        template : str
+            One of: ``mdr_report``, ``pup_report``.
+        """
+        _require_scope("investigations:read")
+
+        from tools.common import _REPORT_CSS
+
+        if template == "mdr_report":
+            from tools.generate_mdr_report import _SYSTEM_PROMPT
+
+            html_skeleton = (
+                '<!DOCTYPE html>\n'
+                '<html lang="en">\n<head>\n'
+                '<meta charset="UTF-8">\n'
+                '<title>MDR Incident Report — {case_id}</title>\n'
+                f'<style>\n{_REPORT_CSS}</style>\n'
+                '</head>\n\n<body>\n\n'
+                '<h1>MDR Incident Report — {case_id}</h1>\n'
+                '<div class="meta">\n'
+                '  <strong>Generated:</strong> {timestamp}<br>\n'
+                '  <strong>Analyst:</strong> {analyst}<br>\n'
+                '  <strong>Client:</strong> {client}<br>\n'
+                '  <strong>Severity:</strong> {severity}\n'
+                '</div>\n\n'
+                '<div class="section">\n'
+                '  <h2>Executive Summary</h2>\n'
+                '  <p>[One paragraph: what was detected, by which platform, '
+                'users/hosts involved, overall assessment, confidence level, '
+                'evidence gaps.]</p>\n'
+                '</div>\n\n'
+                '<div class="section">\n'
+                '  <h2>Technical Analysis</h2>\n'
+                '  <p>[Chronological technical narrative: timestamps, processes, '
+                'IOCs inline, enrichment verdicts. Mark gaps as UNKNOWN.]</p>\n'
+                '</div>\n\n'
+                '<div class="section">\n'
+                '  <h2>Plain-Language Risk Explanation</h2>\n'
+                '  <p>[Non-technical: what happened, business impact, '
+                'what could happen if no action.]</p>\n'
+                '</div>\n\n'
+                '<div class="section">\n'
+                '  <h2>What Was NOT Observed</h2>\n'
+                '  <ul>\n'
+                '    <li>[Tailored list of notable absences relevant to this '
+                'detection type]</li>\n'
+                '  </ul>\n'
+                '</div>\n\n'
+                '<div class="section">\n'
+                '  <h2>Recommendations</h2>\n'
+                '  <h3>SOC-Executed Containment</h3>\n'
+                '  <ul>\n'
+                '    <li>[Reference Approved Response Actions and containment '
+                'capabilities]</li>\n'
+                '  </ul>\n'
+                '  <h3>Client-Responsible Remediation</h3>\n'
+                '  <ul>\n'
+                '    <li>[Specific actions the client must take — name the user, '
+                'host, or IOC]</li>\n'
+                '  </ul>\n'
+                '</div>\n\n'
+                '</body>\n</html>'
+            )
+
+            return (
+                "# MDR Report Template\n\n"
+                "## How to Use\n\n"
+                "1. Produce the report as a **complete HTML document** using the skeleton below\n"
+                "2. Fill in each section with investigation findings\n"
+                "3. Call `save_report` with `report_type=\"mdr_report\"` and the full HTML as `report_text`\n\n"
+                "---\n\n"
+                "## Analyst Instructions (Gold MDR / XDR Instruction Set)\n\n"
+                f"{_SYSTEM_PROMPT}\n\n"
+                "---\n\n"
+                "## HTML Skeleton\n\n"
+                "Use this exact structure. Replace placeholder text with actual findings.\n\n"
+                "```html\n"
+                f"{html_skeleton}\n"
+                "```\n"
+            )
+
+        if template == "pup_report":
+            html_skeleton = (
+                '<!DOCTYPE html>\n'
+                '<html lang="en">\n<head>\n'
+                '<meta charset="UTF-8">\n'
+                '<title>PUP/PUA Report — {case_id}</title>\n'
+                f'<style>\n{_REPORT_CSS}</style>\n'
+                '</head>\n\n<body>\n\n'
+                '<h1>PUP/PUA Report — {case_id}</h1>\n'
+                '<div class="meta">\n'
+                '  <strong>Generated:</strong> {timestamp}<br>\n'
+                '  <strong>Analyst:</strong> {analyst}<br>\n'
+                '  <strong>Client:</strong> {client}\n'
+                '</div>\n\n'
+                '<div class="section">\n'
+                '  <h2>Summary</h2>\n'
+                '  <p>[One line: hostname, username, software name, PUP category, '
+                'detection platform.]</p>\n'
+                '</div>\n\n'
+                '<div class="section">\n'
+                '  <h2>Path &amp; File Details</h2>\n'
+                '  <ul>\n'
+                '    <li><strong>File name:</strong> [name]</li>\n'
+                '    <li><strong>File path:</strong> [full path on disk]</li>\n'
+                '    <li><strong>SHA256:</strong> [hash if available]</li>\n'
+                '    <li><strong>Publisher / signer:</strong> [if known]</li>\n'
+                '    <li><strong>Detection name:</strong> [EDR/AV signature or '
+                'heuristic label]</li>\n'
+                '    <li><strong>Category:</strong> [adware / browser hijacker / '
+                'bundleware / toolbar / crypto miner / system optimiser / other]</li>\n'
+                '  </ul>\n'
+                '</div>\n\n'
+                '<div class="section">\n'
+                '  <h2>Access Vector</h2>\n'
+                '  <p>[How the software arrived: user-installed, bundled with '
+                'legitimate software, drive-by download, group policy, unknown. '
+                'Include evidence — process tree, parent process, download source '
+                'URL, installer name.]</p>\n'
+                '</div>\n\n'
+                '<div class="section">\n'
+                '  <h2>Actions Taken</h2>\n'
+                '  <ul>\n'
+                '    <li>[What the SOC/EDR has already done: quarantined, blocked, '
+                'alerted only. Include timestamps.]</li>\n'
+                '  </ul>\n'
+                '</div>\n\n'
+                '<div class="section">\n'
+                '  <h2>Recommendations</h2>\n'
+                '  <ul>\n'
+                '    <li>Confirm whether this application is approved for use on '
+                'corporate machines</li>\n'
+                '    <li>[If not approved: removal steps — uninstall, EDR quarantine, '
+                'manual cleanup]</li>\n'
+                '    <li>[Prevention: block publisher hash, restrict user installs, '
+                'browser policy]</li>\n'
+                '  </ul>\n'
+                '</div>\n\n'
+                '</body>\n</html>'
+            )
+
+            instructions = (
+                "# PUP/PUA Report Instructions\n\n"
+                "## Tone\n\n"
+                "PUP/PUA reports are **not incident reports**. The tone is "
+                "\"unwanted software found, recommended action required\" — not "
+                "\"attack detected/blocked\". Use **UK English** and a professional SOC tone.\n\n"
+                "## Rules\n\n"
+                "- Every finding must be provable with supplied data\n"
+                "- PUP ≠ malware — be precise about what it does vs. what it could do\n"
+                "- If the access vector is unknown, say so — do not speculate\n"
+                "- The default recommendation is always: "
+                "\"confirm whether this application is approved for use on corporate machines\"\n"
+                "- Only include IOCs that are directly observed (file hashes, paths, domains contacted)\n"
+                "- Classify findings: CONFIRMED = data proves it, "
+                "ASSESSED = inference, UNKNOWN = no data\n"
+            )
+
+            return (
+                "# PUP/PUA Report Template\n\n"
+                "## How to Use\n\n"
+                "1. Produce the report as a **complete HTML document** using the skeleton below\n"
+                "2. Fill in each section with investigation findings\n"
+                "3. Call `save_report` with `report_type=\"pup_report\"` and the full HTML as `report_text`\n\n"
+                "---\n\n"
+                f"{instructions}\n"
+                "---\n\n"
+                "## HTML Skeleton\n\n"
+                "Use this exact structure. Replace placeholder text with actual findings.\n\n"
+                "```html\n"
+                f"{html_skeleton}\n"
+                "```\n"
+            )
+
+        raise ToolError(
+            f"Unknown template {template!r}. Valid values: mdr_report, pup_report."
+        )
+
     @mcp.tool(title="Generate Hunt Queries")
     async def generate_queries(
         case_id: str,

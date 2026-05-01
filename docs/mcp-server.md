@@ -152,6 +152,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `add_finding` | `investigations:submit` | Record analytical finding/conclusion |
 | `enrich_iocs` | `investigations:submit` | Extract and enrich IOCs |
 | `generate_report` | `investigations:submit` | Collect case context for report (use `write_mdr_report` prompt to generate) |
+| `load_report_template` | `investigations:read` | Return HTML skeleton, CSS, and analyst instructions for `mdr_report` or `pup_report` — no case required, no business-logic gate |
 | `prepare_mdr_report` | `investigations:submit` | Collect context for MDR report (redirects to prompt workflow) |
 | `prepare_pup_report` | `investigations:submit` | Collect context for PUP/PUA report (redirects to prompt workflow) |
 | `generate_queries` | `investigations:submit` | Generate SIEM hunt queries (KQL/Splunk/LogScale) incl. contextual CrowdStrike queries |

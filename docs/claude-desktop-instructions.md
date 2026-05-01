@@ -115,7 +115,7 @@ When classified as `pup_pua`, short-circuit after enrichment. Use the `write_pup
 
 All LLM reasoning (report writing, disposition analysis, quality review) happens in YOUR local session. The MCP server provides prompts that load system instructions and case data, and save tools that persist the output.
 
-**Workflow:** Select MCP prompt -> you generate the report as a **complete HTML document** using the template CSS and structure -> call `save_report` to persist. Read `socai://templates/mdr-report` or `socai://templates/pup-report` for the HTML skeleton and styling.
+**Workflow:** Select MCP prompt -> you generate the report as a **complete HTML document** using the template CSS and structure -> call `save_report` to persist. Read `socai://templates/mdr-report` or `socai://templates/pup-report` for the HTML skeleton and styling. If those resources are inaccessible, call `load_report_template(template="mdr_report")` or `load_report_template(template="pup_report")` — same content, no case required.
 
 **All reports are HTML.** Never produce markdown reports. The template resources provide the exact HTML structure, CSS styling, and section layout. `save_report` accepts HTML directly and writes it to disk.
 

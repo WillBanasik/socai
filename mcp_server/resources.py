@@ -1286,6 +1286,7 @@ def register_resources(mcp: FastMCP) -> None:
                 "report_delivery": {
                     "description": "These tools trigger the prompt+save workflow for deliverables. They auto-create cases if needed.",
                     "tools": {
+                        "load_report_template": "Returns HTML skeleton, CSS, and analyst instructions for mdr_report or pup_report. No case required — use when prepare_* is blocked (e.g. closed case).",
                         "prepare_mdr_report": "Loads context for write_mdr_report prompt → save_report. Primary client deliverable.",
                         "prepare_pup_report": "Loads context for write_pup_report prompt → save_report.",
                         "prepare_executive_summary": "Loads context for write_executive_summary prompt → save_report.",

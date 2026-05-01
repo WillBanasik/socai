@@ -36,12 +36,21 @@ CQL_PLAYBOOKS_DIR = BASE_DIR / "config" / "cql_playbooks"
 DISCOVERY_QUERIES = [
     {
         "name": "List all connectors (tags, vendor, product, event count)",
+        "description": (
+            "Use when a CQL query returns no events — enumerates every active "
+            "@dataConnectionID with its vendor/dataset/module tags so you can "
+            "confirm the correct connector ID, tag casing, and field names "
+            "(e.g. CrowdStrike vs fortinet vs microsoft.windows.security). "
+            "Sorted by event volume descending so the noisiest connectors "
+            "surface first."
+        ),
         "query": (
             "*\n"
             "| groupBy(@dataConnectionID, function=[\n"
             "    collect([#Vendor, #event.dataset, #event.module, observer.vendor, observer.product]),\n"
-            "    count()\n"
-            "  ])"
+            "    count(as=events)\n"
+            "  ])\n"
+            "| sort(events, order=desc)"
         ),
     },
     {
