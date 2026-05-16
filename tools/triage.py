@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config.settings import (
     ENRICH_CACHE_FILE, ENRICH_CACHE_TTL, IOC_INDEX_FILE,
 )
-from tools.common import load_json, log_error, utcnow
+from tools.common import eprint, load_json, log_error, utcnow
 
 # Threshold for severity escalation: this many known-malicious IOCs triggers it
 TRIAGE_ESCALATION_THRESHOLD = int(
@@ -156,18 +156,18 @@ def triage(case_id: str, urls: list[str] | None = None, severity: str = "medium"
             pass
 
     # Print summary
-    print(f"[triage] Checked {len(input_iocs)} IOC(s) against intelligence")
+    eprint(f"[triage] Checked {len(input_iocs)} IOC(s) against intelligence")
     if known_malicious:
-        print(f"  ⚠ {len(known_malicious)} KNOWN MALICIOUS IOC(s): "
-              + ", ".join(h["ioc"] for h in known_malicious[:5]))
+        eprint(f"  ⚠ {len(known_malicious)} KNOWN MALICIOUS IOC(s): "
+               + ", ".join(h["ioc"] for h in known_malicious[:5]))
     if known_suspicious:
-        print(f"  ⚡ {len(known_suspicious)} known suspicious IOC(s)")
+        eprint(f"  ⚡ {len(known_suspicious)} known suspicious IOC(s)")
     if known_clean:
-        print(f"  ✓ {len(known_clean)} known clean IOC(s)")
+        eprint(f"  ✓ {len(known_clean)} known clean IOC(s)")
     if skip_enrichment_iocs:
-        print(f"  ⏭ {len(skip_enrichment_iocs)} IOC(s) have fresh cache — skip enrichment")
+        eprint(f"  ⏭ {len(skip_enrichment_iocs)} IOC(s) have fresh cache — skip enrichment")
     if escalate_severity:
-        print(f"  ⬆ Recommending severity escalation to {escalate_severity}")
+        eprint(f"  ⬆ Recommending severity escalation to {escalate_severity}")
 
     return result
 

@@ -521,6 +521,15 @@ def create_mcp_server(*, transport: str = MCP_TRANSPORT) -> FastMCP:
         except Exception:
             mcp_log("sse_middleware_skip", note="could not install connection logging")
 
+    # One-click report URLs work on any network transport (sse or streamable-http).
+    if is_network:
+        try:
+            from mcp_server.reports_http import install_reports_endpoint
+            install_reports_endpoint(server)
+        except Exception as exc:
+            mcp_log("reports_middleware_skip", error=str(exc),
+                    note="one-click report links will not be available")
+
     return server
 
 

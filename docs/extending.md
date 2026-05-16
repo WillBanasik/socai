@@ -12,6 +12,8 @@ To add a new infrastructure ASN for Tier 0 pre-screening, add to `KNOWN_INFRA_AS
 
 Accept `case_id`, use `write_artefact()` / `save_json()` for all outputs, return a manifest dict. Add a CLI sub-command in `socai.py` if needed.
 
+For progress / status messages emitted during execution, use `eprint(...)` from `tools/common.py` rather than bare `print(...)`. Stdio MCP uses stdout as its JSON-RPC channel — any plain `print()` inside a tool function corrupts the protocol stream and surfaces in Claude Desktop as `Unexpected token ... is not valid JSON` errors. `print()` is only valid inside `if __name__ == "__main__":` blocks.
+
 ## New IOC TLD
 
 Add to the explicit allowlist in `_RE_DOMAIN` in `tools/extract_iocs.py`.

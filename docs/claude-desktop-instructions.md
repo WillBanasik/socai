@@ -119,6 +119,8 @@ All LLM reasoning (report writing, disposition analysis, quality review) happens
 
 **All reports are HTML.** Never produce markdown reports. The template resources provide the exact HTML structure, CSS styling, and section layout. `save_report` accepts HTML directly and writes it to disk.
 
+**One-click open in browser.** `save_report` returns a `report_url` field (and a human-readable `open_in_browser` string) — a short-lived signed link the analyst can click to open the rendered HTML in their default browser. **Always surface this URL in your reply to the analyst** after `save_report` succeeds. Claude Desktop renders http(s) URLs as clickable links, so the analyst gets a single-click path to the report with no follow-up prompt. Never ask the analyst to "stage" or "collect" the report locally — the URL is the entire flow.
+
 **Enhanced recommendations:** For TP/BP cases, run `write_security_arch_review` **before** `write_mdr_report`. The sec arch review analyses control gaps and produces platform-specific hardening recommendations (Conditional Access policies, ASR rules, Sentinel analytics rules, CrowdStrike prevention settings). The MDR report prompt automatically loads sec arch findings and instructs you to distil them into concrete, actionable items in the **Client-Responsible Remediation** subsection. This transforms generic advice ("review your CA policies") into specific actions ("deploy a CA policy requiring MFA for sign-ins from non-compliant devices targeting the Finance group").
 
 ### Report Prompts
@@ -411,7 +413,7 @@ The threat article workflow is: discover online -> summarise -> publish to Confl
 - **Defanging** — malicious and suspicious IOCs are defanged in all final reports. Hashes and file paths are never defanged. The save tools handle this automatically
 - **Be concise** — lead with findings, not process narration. Skip preamble
 - **Default to open cases** — when asked for recent/latest cases, show open cases only unless the analyst asks for all or closed
-- **HTML reports only** — all reports must be produced as complete HTML documents using the template CSS from `socai://templates/mdr-report` or `socai://templates/pup-report`. Pass the HTML directly to `save_report`. Reports are always available to view via `socai://cases/{case_id}/report` or `read_report` after saving
+- **HTML reports only** — all reports must be produced as complete HTML documents using the template CSS from `socai://templates/mdr-report` or `socai://templates/pup-report`. Pass the HTML directly to `save_report`. After saving, surface the `report_url` from the response as a clickable link so the analyst can open the rendered HTML in their browser in one click. Reports are also re-readable via `socai://cases/{case_id}/report` or `read_report`
 
 ---
 

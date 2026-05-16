@@ -207,13 +207,19 @@ def md_file_note(file_path) -> str:
 # ---------------------------------------------------------------------------
 
 _REPORT_CSS = """\
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+html {
+    background: #12161c;
+}
 body {
-    font-family: Arial, sans-serif;
-    font-size: 16px;
-    margin: 40px;
-    line-height: 1.6;
-    background: #0d1117;
-    color: #e6edf3;
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-size: 15.5px;
+    max-width: 880px;
+    margin: 48px auto;
+    padding: 0 24px;
+    line-height: 1.65;
+    background: #12161c;
+    color: #d6dde6;
 }
 h1, h2, h3 {
     color: #58a6ff;
@@ -231,7 +237,7 @@ h1 {
 }
 .section {
     margin-bottom: 28px;
-    background: #11161c;
+    background: #1a1f27;
     padding: 18px;
     border-radius: 8px;
     box-shadow: 0 0 0 1px #21262d;
@@ -591,6 +597,14 @@ def sha256_str(text: str) -> str:
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def eprint(*args, **kwargs) -> None:
+    """print() to stderr. Use for progress/status — stdout is the JSON-RPC channel in stdio MCP mode."""
+    import sys
+    kwargs.setdefault("file", sys.stderr)
+    kwargs.setdefault("flush", True)
+    print(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------

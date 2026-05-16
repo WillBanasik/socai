@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import KNOWN_CLEAN_DOMAINS, is_private_ip, log_error, utcnow, write_artefact
+from tools.common import KNOWN_CLEAN_DOMAINS, eprint, is_private_ip, log_error, utcnow, write_artefact
 
 # ---------------------------------------------------------------------------
 # Regex patterns
@@ -230,7 +230,7 @@ def extract_iocs(
                 lines.append(f"  ... and {len(vals)-50} more")
             lines.append("")
     write_artefact(iocs_dir / "iocs_summary.txt", "\n".join(lines))
-    print(f"[extract_iocs] Extracted IOCs from {len(sources)} source(s) for case {case_id}")
+    eprint(f"[extract_iocs] Extracted IOCs from {len(sources)} source(s) for case {case_id}")
     return result
 
 

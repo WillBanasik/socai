@@ -4677,6 +4677,12 @@ def _register_tier3(mcp: FastMCP) -> None:
         - ``executive_summary`` — does NOT auto-close (supplementary output)
         - ``security_arch_review`` — does NOT auto-close (supplementary output)
 
+        On success the response includes ``report_url`` — a one-click,
+        short-lived signed link the analyst can click to open the rendered
+        HTML in their browser. Always surface this URL in your reply to the
+        analyst (Claude Desktop renders it as a clickable link) so they
+        never have to ask you to "stage" the report locally.
+
         Parameters
         ----------
         case_id : str
@@ -4701,6 +4707,32 @@ def _register_tier3(mcp: FastMCP) -> None:
                 disposition=disposition,
             )
         )
+
+        # Attach a one-click signed URL so the analyst can open the rendered
+        # HTML in their browser without a follow-up prompt to stage the file.
+        if isinstance(result, dict) and result.get("status") == "ok":
+            try:
+                from mcp_server.reports_http import mint_report_token, build_report_url
+                from mcp_server.auth import _get_caller_email
+                token = mint_report_token(
+                    case_id=case_id,
+                    report_type=report_type,
+                    caller_email=_get_caller_email(),
+                )
+                url = build_report_url(
+                    case_id=case_id, report_type=report_type, token=token,
+                )
+                result["report_url"] = url
+                result["open_in_browser"] = f"📄 Open report: {url}"
+            except Exception as exc:
+                # URL minting is a UX nicety, not a correctness gate — the
+                # file is already on disk. Log and continue.
+                from tools.common import log_error
+                import traceback as _tb
+                log_error(case_id, "save_report.mint_url", str(exc),
+                          severity="warning", traceback=_tb.format_exc(),
+                          context={"report_type": report_type})
+
         return _json(result)
 
     @mcp.tool(title="Link Related Cases")

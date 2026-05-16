@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, IOC_INDEX_FILE
-from tools.common import load_json, log_error, save_json, utcnow
+from tools.common import eprint, load_json, log_error, save_json, utcnow
 from tools.ioc_classify import classify_ioc, get_case_client
 
 # Thread-safety: protects the read-modify-write cycle on ioc_index.json
@@ -93,14 +93,14 @@ def score_verdicts(case_id: str) -> dict:
             from tools.common import load_json as _load
             _meta = _load(meta_path)
             if _meta.get("status") == "closed":
-                print(f"[score_verdicts] Case {case_id} is closed — skipping verdict scoring.")
+                eprint(f"[score_verdicts] Case {case_id} is closed — skipping verdict scoring.")
                 return {"error": f"Case {case_id} is closed.", "case_id": case_id}
         except Exception:
             pass
 
     enrich_path = CASES_DIR / case_id / "artefacts" / "enrichment" / "enrichment.json"
     if not enrich_path.exists():
-        print(f"[score_verdicts] enrichment.json not found — skipping verdict scoring.")
+        eprint(f"[score_verdicts] enrichment.json not found — skipping verdict scoring.")
         return {"error": "enrichment.json not found", "case_id": case_id}
 
     data = load_json(enrich_path)
@@ -201,7 +201,7 @@ def score_verdicts(case_id: str) -> dict:
                    "LOW": sum(1 for s in ioc_scores.values() if s.get("confidence") == "LOW"),
                },
                conflicting_iocs=len(conflicting))
-    print(
+    eprint(
         f"[score_verdicts] {len(high_priority)} malicious, "
         f"{len(needs_review)} suspicious, {len(clean_iocs)} clean "
         f"({len(ioc_scores)} IOCs scored for case {case_id})"
@@ -223,7 +223,7 @@ def update_ioc_index(case_id: str) -> dict:
         CASES_DIR / case_id / "artefacts" / "enrichment" / "verdict_summary.json"
     )
     if not verdict_path.exists():
-        print(f"[update_ioc_index] verdict_summary.json not found — skipping index update.")
+        eprint(f"[update_ioc_index] verdict_summary.json not found — skipping index update.")
         return {"error": "verdict_summary.json not found", "case_id": case_id}
 
     verdict_data = load_json(verdict_path)
@@ -250,7 +250,7 @@ def update_ioc_index(case_id: str) -> dict:
                 index = {}
 
         for ioc, score in ioc_scores.items():
-            tier = classify_ioc(score["ioc_type"], ioc)
+            tier = classify_ioc(score.get("ioc_type", ""), ioc)
 
             if ioc in index:
                 entry = index[ioc]
@@ -263,25 +263,26 @@ def update_ioc_index(case_id: str) -> dict:
                 # let a later "clean" scoring downgrade a prior "malicious" flag.
                 # Counts aggregate as MAX (any single provider that ever said X).
                 _rank = {"malicious": 3, "suspicious": 2, "clean": 1, "unknown": 0}
-                if _rank.get(score["verdict"], 0) > _rank.get(entry.get("verdict", "unknown"), 0):
-                    entry["verdict"] = score["verdict"]
-                entry["malicious"] = max(entry.get("malicious", 0), score["malicious"])
-                entry["suspicious"] = max(entry.get("suspicious", 0), score["suspicious"])
-                entry["clean"] = max(entry.get("clean", 0), score["clean"])
+                _score_verdict = score.get("verdict", "unknown")
+                if _rank.get(_score_verdict, 0) > _rank.get(entry.get("verdict", "unknown"), 0):
+                    entry["verdict"] = _score_verdict
+                entry["malicious"] = max(entry.get("malicious", 0), score.get("malicious", 0))
+                entry["suspicious"] = max(entry.get("suspicious", 0), score.get("suspicious", 0))
+                entry["clean"] = max(entry.get("clean", 0), score.get("clean", 0))
                 # Track which client each case belongs to
                 if case_client:
                     entry.setdefault("case_clients", {})[case_id] = case_client
             else:
                 entry = {
-                    "ioc_type":   score["ioc_type"],
+                    "ioc_type":   score.get("ioc_type", ""),
                     "tier":       tier,
                     "first_seen": now,
                     "last_seen":  now,
                     "cases":      [case_id],
-                    "verdict":    score["verdict"],
-                    "malicious":  score["malicious"],
-                    "suspicious": score["suspicious"],
-                    "clean":      score["clean"],
+                    "verdict":    score.get("verdict", "unknown"),
+                    "malicious":  score.get("malicious", 0),
+                    "suspicious": score.get("suspicious", 0),
+                    "clean":      score.get("clean", 0),
                 }
                 if case_client:
                     entry["case_clients"] = {case_id: case_client}
@@ -292,12 +293,12 @@ def update_ioc_index(case_id: str) -> dict:
         save_json(IOC_INDEX_FILE, index)
 
     if recurring_iocs:
-        print(
+        eprint(
             f"[update_ioc_index] {len(recurring_iocs)} RECURRING IOC(s) "
             f"seen in other cases: {recurring_iocs[:5]}"
             + (" ..." if len(recurring_iocs) > 5 else "")
         )
-    print(
+    eprint(
         f"[update_ioc_index] {len(new_iocs)} new | "
         f"{len(recurring_iocs)} recurring | "
         f"{len(index)} total indexed"

@@ -82,7 +82,7 @@ Set `SOCAI_MCP_AUTH=entra_id` to validate Azure AD tokens instead. `SocaiTokenVe
 |---|---|---|
 | `SOCAI_MCP_PORT` | `8001` | Server port |
 | `SOCAI_MCP_HOST` | `0.0.0.0` | Bind address (`127.0.0.1` when behind reverse proxy) |
-| `SOCAI_MCP_TRANSPORT` | `sse` | Transport: `sse`, `streamable-http`, or `stdio` |
+| `SOCAI_MCP_TRANSPORT` | `sse` | Transport: `sse`, `streamable-http`, or `stdio`. **stdio uses stdout as the JSON-RPC channel — tool code must emit progress via `eprint()` from `tools/common.py`, never `print()`. See "Progress / status output" in CLAUDE.md.** |
 | `SOCAI_MCP_AUTH` | `local` | Auth mode: `local` or `entra_id` |
 | `SOCAI_MCP_MOUNT_PATH` | `/` | Mount path for SSE routes |
 | `SOCAI_MCP_LOG_LEVEL` | `INFO` | Structured log level |
