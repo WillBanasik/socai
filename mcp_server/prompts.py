@@ -515,6 +515,161 @@ def register_prompts(mcp: FastMCP) -> None:
         return "\n".join(lines)
 
     @mcp.prompt()
+    def triage_file(
+        file_path: str = "",
+        filename: str = "",
+        case_id: str = "",
+    ) -> str:
+        """Guided workflow for triaging a potentially malicious file received
+        in Claude Desktop's sandbox. Keeps the file local until heavy
+        server-side analysis is actually warranted.
+
+        Use this prompt whenever the analyst hands you a file (PDF, doc,
+        script, binary, .eml, archive). Avoid shipping bytes through the
+        MCP transport unless deep analysis is required by the verdict.
+
+        Parameters
+        ----------
+        file_path : str
+            Absolute path to the file in Claude Desktop's sandbox
+            (typically ``/home/claude/...``).
+        filename : str
+            Display name. Defaults to the basename of ``file_path``.
+        case_id : str
+            Optional existing case to attach findings to.
+        """
+        import os
+        display = filename or (os.path.basename(file_path) if file_path else "(file)")
+        path = file_path or "/home/claude/<file>"
+
+        lines = [
+            "# File Triage Workflow",
+            "",
+            f"**File:** `{display}`",
+            f"**Local path:** `{path}`",
+            f"**Case:** {case_id or '(none — create only if findings warrant)'}",
+            "",
+            "**Guiding principle:** do as much as possible where the file is.",
+            "Only ship the file to the MCP server when YARA, deep PE, or sandbox",
+            "detonation is genuinely required. Bytes shipped via the MCP",
+            "transport bloat the chat context and can break long sessions.",
+            "",
+            "## Step 1 — Identify the file in the sandbox",
+            "",
+            "Run in Desktop's bash sandbox (no shipping):",
+            "```bash",
+            f"sha256sum '{path}'",
+            f"file '{path}'",
+            f"stat -c '%s bytes' '{path}'",
+            "```",
+            "Record the SHA-256, MIME/file type, and size.",
+            "",
+            "## Step 2 — Reputation check on the hash alone",
+            "",
+            "Call `quick_enrich(iocs=[\"<sha256>\"])`. This is a small payload —",
+            "hash out, verdict back. Three outcomes:",
+            "",
+            "- **Verdict: malicious** — you often have enough to call it. Skip",
+            "  to Step 4 (case + report). Heavy analysis is optional, not required.",
+            "- **Verdict: suspicious / unknown** — proceed to Step 3 for local",
+            "  IOC extraction.",
+            "- **Verdict: clean** — proceed to Step 3 to confirm by extracting",
+            "  contents (some samples are zero-day; reputation isn't everything).",
+            "",
+            "## Step 3 — Extract IOCs locally (text-ish files only)",
+            "",
+            "Pick the right extractor for the file type, run it in the sandbox,",
+            "and send Claude a focused excerpt — not the whole dump.",
+            "",
+            "**PDF:**",
+            "```bash",
+            f"pdftotext '{path}' - | head -500",
+            "```",
+            "If `pdftotext` is missing, try `python3 -c \"import fitz; print(fitz.open('FILE').get_text())\"`.",
+            "",
+            "**Email (.eml):**",
+            "```bash",
+            f"python3 -c \"import email,sys; m=email.message_from_file(open('{path}')); print(m['From'],m['Subject'],m['Date']); [print(p.get_content()) for p in m.walk() if p.get_content_type()=='text/plain']\" | head -200",
+            "```",
+            "",
+            "**Office docs (.docx/.xlsx/.pptx):**",
+            "```bash",
+            f"unzip -p '{path}' word/document.xml 2>/dev/null | python3 -c \"import sys,re; print(re.sub('<[^>]+>',' ',sys.stdin.read()))\" | head -300",
+            "```",
+            "Also worth: `olevba` if available, for macro detection on legacy .doc/.xls.",
+            "",
+            "**Script (.js/.ps1/.vbs/.bat/.sh/.py):**",
+            "```bash",
+            f"cat '{path}' | head -200",
+            "```",
+            "",
+            "**Binary (.exe/.dll/.so/.macho):**",
+            "```bash",
+            f"strings -n 8 '{path}' | head -300",
+            "```",
+            "",
+            "**Archive (.zip/.7z/.tar.gz):**",
+            "```bash",
+            f"7z l '{path}' 2>/dev/null || unzip -l '{path}'",
+            "```",
+            "If contents look interesting, extract a single inner file and recurse",
+            "through this workflow on it.",
+            "",
+            "From the extracted output, list every URL, IP, domain, email address,",
+            "filename, and embedded hash you can see. Then call",
+            "`quick_enrich(iocs=[...])` with the consolidated set. Verdicts come",
+            "back per IOC — focus on the malicious/suspicious ones.",
+            "",
+            "## Step 4 — Decide based on verdicts",
+            "",
+            "Use this decision tree:",
+            "",
+            "**A) Everything clean, no signal in contents** → close as benign.",
+            "No case required. Note the sha256 and key findings in your reply.",
+            "",
+            "**B) Malicious / suspicious signal** → create or attach a case:",
+            "- If `enrichment_id` was returned from `quick_enrich`, call",
+            "  `create_case(..., enrichment_id=\"<id>\")` (or `import_enrichment`",
+            "  on an existing case). This pulls IOC verdicts in without re-enriching.",
+            "- Document the sha256, file type, size, and key extraction findings",
+            "  with `add_evidence`.",
+            "- Continue the investigation using the standard `triage_alert` workflow.",
+            "",
+            "**C) Need server-only deep analysis** (YARA rules, PE imports/exports,",
+            "sandbox detonation) → only now ship the file:",
+            "- Preferred: `prepare_file_upload` → `curl` from the sandbox. Bytes",
+            "  go straight to the server filesystem, not through chat history.",
+            "- Fallback (only if sandbox can't reach the server AND file < 2 MB):",
+            "  `upload_file_content` (in-band base64). This costs context — use",
+            "  sparingly.",
+            "- Manual fallback (large files, no network): ask the user to copy",
+            "  the file into the WSL filesystem yourself, then call",
+            "  `analyse_pe(file_path='<server-path>', ...)` or `yara_scan` directly.",
+            "",
+            "## Step 5 — Document and report",
+            "",
+            "If a case was created:",
+            "- Use the standard report flow (`write_mdr_report` or `write_pup_report`",
+            "  prompt → `save_report`).",
+            "- The report should record: sha256, file type, size, key extracted IOCs,",
+            "  verdicts, and (if shipped) deep-analysis findings.",
+            "",
+            "If no case (benign): no formal write-up needed. Mention the file,",
+            "the sha256, and the verdict in your reply so the analyst has a record.",
+            "",
+            "## Context discipline",
+            "",
+            "- Don't paste full file contents into chat. Extract → excerpt →",
+            "  enrich → discard. The case artefact captures what matters.",
+            "- One `quick_enrich` call per IOC batch, not per-IOC. Batch is cheaper.",
+            "- Don't re-read the file across tool calls. Reference the sha256",
+            "  or the case artefact ID instead.",
+            "- If you find yourself wanting to ship a multi-MB file just to read",
+            "  text from it, stop — extract Desktop-side instead.",
+        ]
+        return "\n".join(lines)
+
+    @mcp.prompt()
     def write_fp_ticket(
         alert_json: str = "",
         query_text: str = "",

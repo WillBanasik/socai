@@ -28,8 +28,8 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  104 tools, 44 resources │
-│  22 prompts, JSONL logs │
+│  107 tools, 46 resources│
+│  23 prompts, JSONL logs │
 │  Background scheduler   │
 └─────────────────────────┘
     │
@@ -91,6 +91,11 @@ Set `SOCAI_MCP_AUTH=entra_id` to validate Azure AD tokens instead. `SocaiTokenVe
 | `SOCAI_JWT_SECRET` | (insecure default) | JWT signing secret — **must set in production** |
 | `SOCAI_JWT_TTL_HOURS` | `8` | Token expiry (hours); `720` = 30 days |
 | `MAXMIND_LICENSE_KEY` | — | MaxMind license key for local GeoIP database (free at maxmind.com) |
+| `SOCAI_MCP_PUBLIC_BASE_URL` | `http://127.0.0.1:<port>` | Public origin used to build one-click `report_url` and `upload_url` links. Override with the public Azure URL in production. |
+| `SOCAI_MCP_REPORT_TOKEN_TTL_SECONDS` | `28800` (8 h) | TTL for one-click report URLs returned by `save_report` |
+| `SOCAI_MCP_UPLOAD_TOKEN_TTL_SECONDS` | `900` (15 min) | TTL for HTTP upload URLs minted by `prepare_file_upload` |
+| `SOCAI_MCP_UPLOAD_MAX_BYTES` | `104857600` (100 MB) | Hard cap on HTTP-uploaded sample size |
+| `SOCAI_MCP_INBAND_UPLOAD_MAX_BYTES` | `2097152` (2 MB) | Hard cap on **in-band base64** uploads via `upload_file_content`. Kept small because in-band bytes land in the chat transcript and persist for the rest of the session — use the HTTP path for anything larger. |
 
 ## RBAC Permissions
 
@@ -130,7 +135,7 @@ python3 -c "from api.auth import create_token_for_role; print(create_token_for_r
 
 When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg-soc-analyst`, `sg-soc-senior`) to these role names in the auth config.
 
-## Tools (103)
+## Tools (107)
 
 ### Tier 1 -- Core Investigation (29)
 
@@ -166,7 +171,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `lookup_soc_process` | `investigations:read` | Look up SOC operational processes (incident handling, P1/P2, service desk, time tracking) |
 | `search_confluence` | `investigations:read` | Search/browse published ET/EV threat articles on Confluence wiki (NOT for SOC processes) |
 
-### Tier 2 -- Extended Analysis (26)
+### Tier 2 -- Extended Analysis (28)
 
 | Tool | Permission | Description |
 |---|---|---|
@@ -191,7 +196,9 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `correlate_evtx` | `investigations:submit` | Windows EVTX attack chain correlation (7 detectors) |
 | `triage_iocs` | `investigations:submit` | Pre-pipeline IOC reputation check |
 | `score_ioc_verdicts` | `investigations:submit` | Composite verdict scoring + IOC index update |
-| `analyse_static_file` | `investigations:submit` | Quick binary file triage (PE headers, entropy, strings) |
+| `analyse_static_file` | `investigations:submit` | Quick binary file triage (PE headers, entropy, strings) — server-side, requires file on MCP filesystem |
+| `prepare_file_upload` | `investigations:read` | Mint a signed URL the caller can `curl` to ship a sample from a different sandbox to the MCP server (HTTP path; preferred) |
+| `upload_file_content` | `investigations:read` | Last-resort in-band base64 file upload — capped at 2 MB; bytes land in chat history. Use only when HTTP upload is unreachable |
 | `sandbox_api_lookup` | `investigations:submit` | API-based sandbox report lookup (Hybrid Analysis, Any.Run, Joe) |
 | `query_cyberint_alerts` | `investigations:read` | Query Cyberint CTI alert feed (single alert or filtered list) |
 | `cyberint_alert_artefact` | `investigations:read` | Fetch Cyberint alert attachments, indicators, analysis reports, risk scores |
@@ -277,7 +284,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `memory_dump_guide` | `investigations:submit` | MDE Live Response dump collection guidance |
 | `analyse_memory_dump` | `investigations:submit` | Process memory dump analysis (strings, IOCs, risk scoring) |
 
-## Resources (44)
+## Resources (46)
 
 | URI | Description |
 |---|---|
@@ -307,6 +314,8 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://templates/mdr-report` | MDR report HTML template — 5-section structure, Gold Analyst Instruction Set, CSS styling |
 | `socai://templates/pup-report` | PUP/PUA report HTML template — lightweight 5-section structure, CSS styling |
 | `socai://enrichment-providers` | Configured TI providers and availability per IOC type |
+| `socai://enrichment-depths` | Decision matrix for `enrich_iocs` / `quick_enrich` depth (auto / fast / full) |
+| `socai://report-types` | `save_report` `report_type` values and per-type auto-close behaviour |
 | `socai://ioc-index/stats` | IOC index summary with tier breakdown |
 | `socai://playbooks` | KQL playbook index |
 | `socai://playbooks/{playbook_id}` | Full KQL playbook with stages |
@@ -326,14 +335,15 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://time-tracking` | SOC process: Kantata categories, overtime logging, on-call hours |
 | `socai://critical-incident-management` | SOC process: P1/P2 checklists, war rooms, P1 flow diagram, IR activation |
 
-## Prompts (22)
+## Prompts (23)
 
-### Guided Workflows (6)
+### Guided Workflows (7)
 
 | Prompt | Description |
 |---|---|
 | `hitl_investigation` | Guided step-by-step investigation (client gate → intake → playbook → disposition → output) |
 | `triage_alert` | Guided alert triage workflow |
+| `triage_file` | Desktop-side file triage for potentially malicious files — hash locally, enrich, extract IOCs in sandbox, ship only when deep server-side analysis is warranted |
 | `write_fp_ticket` | FP ticket generation workflow |
 | `kql_investigation` | Unified KQL playbook prompt (select playbook: bec, phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, ioc-hunt) |
 | `cql_investigation` | Unified CQL (LogScale) playbook prompt (select playbook: account-compromise, ioc-hunt, lateral-movement, malware-execution) |
@@ -493,7 +503,7 @@ Analyst's Claude Desktop (VPN / corporate network)
     ▼
 ┌──────────────────────────┐
 │  mcp_server (port 8001)  │  ← SOCAI_MCP_HOST=127.0.0.1
-│  104 tools, 44 resources │
+│  107 tools, 46 resources │
 │  JWT RBAC, role system   │
 │  Background scheduler    │
 └──────────────────────────┘

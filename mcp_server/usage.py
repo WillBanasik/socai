@@ -118,6 +118,8 @@ TOOL_TAXONOMY: dict[str, dict[str, str]] = {
     "detect_anomalies":         {"category": "analysis",    "goal": "investigate"},
     "correlate_evtx":           {"category": "analysis",    "goal": "investigate"},
     "analyse_static_file":      {"category": "analysis",    "goal": "investigate"},
+    "prepare_file_upload":      {"category": "analysis",    "goal": "investigate"},
+    "upload_file_content":      {"category": "analysis",    "goal": "investigate"},
     "analyse_pe":               {"category": "analysis",    "goal": "investigate"},
     "yara_scan":                {"category": "analysis",    "goal": "investigate"},
     "analyse_memory_dump":      {"category": "analysis",    "goal": "investigate"},

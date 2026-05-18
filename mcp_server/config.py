@@ -24,3 +24,24 @@ MCP_PUBLIC_BASE_URL: str = os.getenv(
 MCP_REPORT_TOKEN_TTL_SECONDS: int = int(
     os.getenv("SOCAI_MCP_REPORT_TOKEN_TTL_SECONDS", str(8 * 3600))
 )
+
+# Upload endpoint — used by Claude Desktop's bash sandbox to ship a sample into
+# the MCP server's filesystem before calling analyse_static_file / analyse_pe.
+# TTL is short because the upload URL is single-purpose (one-shot transfer).
+MCP_UPLOAD_TOKEN_TTL_SECONDS: int = int(
+    os.getenv("SOCAI_MCP_UPLOAD_TOKEN_TTL_SECONDS", str(15 * 60))
+)
+# Hard cap on uploaded sample size (bytes). 100 MB covers typical PDFs, Office
+# docs, and PE binaries while keeping memory usage bounded.
+MCP_UPLOAD_MAX_BYTES: int = int(
+    os.getenv("SOCAI_MCP_UPLOAD_MAX_BYTES", str(100 * 1024 * 1024))
+)
+# Separate, smaller cap for in-band base64 uploads — these ride the MCP
+# JSON-RPC transport itself, so every uploaded byte lands in the analyst's
+# chat transcript and persists in the LLM's context window for the rest of
+# the session. A 2 MB raw cap (~2.7 MB base64) keeps a single upload under
+# ~700 K tokens, which a Claude Desktop chat can absorb. Anything larger
+# must use the HTTP upload endpoint (prepare_file_upload + curl).
+MCP_INBAND_UPLOAD_MAX_BYTES: int = int(
+    os.getenv("SOCAI_MCP_INBAND_UPLOAD_MAX_BYTES", str(2 * 1024 * 1024))
+)

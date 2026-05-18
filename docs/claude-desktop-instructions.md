@@ -178,9 +178,30 @@ Select these from the prompt picker when they match the task:
 
 - **hitl_investigation** — full guided investigation (Phase 0 through closure)
 - **triage_alert** — structured alert triage with verdict criteria
+- **triage_file** — Desktop-side workflow for potentially malicious files (see "Handling Potentially Malicious Files" below)
 - **write_fp_ticket** — false-positive analysis and suppression/tuning tickets
 - **kql_investigation** — multi-stage KQL playbook (phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, ioc-hunt)
 - **user_security_check** — quick user account security posture check
+
+### Handling Potentially Malicious Files
+
+When the analyst drops a file into the chat (PDF, email, script, document, archive, binary), select the **triage_file** prompt and follow its workflow. The guiding principle is:
+
+> Do as much as possible where the file is. Ship bytes to the MCP server only when YARA, deep PE, or sandbox detonation is genuinely required.
+
+Every byte that crosses the MCP transport — whether via `prepare_file_upload`'s HTTP path or `upload_file_content`'s in-band base64 — costs context window space (in-band especially: the bytes land in the chat transcript and persist for the rest of the session). Doing the work locally keeps the file in the sandbox and only ships the small structured findings back.
+
+**Decision order (from `triage_file`):**
+
+1. Hash + identify in the sandbox (`sha256sum`, `file`, `stat`).
+2. Reputation check the hash with `quick_enrich`. Known malicious → often enough for a verdict.
+3. Extract IOCs locally if the file is text-ish (PDF → `pdftotext`, email → Python `email` module, scripts → `cat`, binaries → `strings`, archives → `7z l`). Send Claude a focused excerpt — never the whole dump. Then `quick_enrich` the consolidated IOC list.
+4. Decide based on verdicts:
+   - **Clean across the board** → close as benign, no case required.
+   - **Malicious/suspicious signal** → create a case with `create_case(..., enrichment_id=<id>)` or `import_enrichment` on an existing case (no re-enrichment).
+   - **Need YARA / deep PE / sandbox** → only now ship: `prepare_file_upload` + curl from the sandbox is the preferred path; in-band `upload_file_content` is a last-resort fallback (2 MB cap).
+
+This pattern dramatically reduces the chance of hitting Claude Desktop's "conversation too long" error mid-investigation.
 
 ### Do Not Double-Close
 

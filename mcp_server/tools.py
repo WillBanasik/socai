@@ -958,7 +958,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         severity: str = "medium",
         analyst: str = "unassigned",
         tags: list[str] | None = None,
-        client: str = "",
+        client_name: str = "",
         classification: str = "",
         plan: str = "",
         enrichment_id: str = "",
@@ -991,7 +991,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             Analyst name or ID.
         tags : list[str]
             Free-form tags (e.g. ["phishing", "credential-harvest"]).
-        client : str
+        client_name : str
             Client name (must match client registry).
         classification : str
             Attack type from classify_attack (e.g. "phishing", "malware").
@@ -1004,21 +1004,21 @@ def _register_tier1(mcp: FastMCP) -> None:
         """
         _require_scope("investigations:submit")
 
-        if not client:
+        if not client_name:
             raise ToolError(
                 "Client name is required. Specify the client to ensure "
                 "correct data segregation. Use lookup_client to find the "
                 "registered client name."
             )
 
-        _set_client_boundary(client)
+        _set_client_boundary(client_name)
 
         from tools.case_create import case_create as _create, next_case_id
         case_id = next_case_id()
 
         result = _create(
             case_id, title=title, severity=severity,
-            analyst=analyst, tags=tags or [], client=client,
+            analyst=analyst, tags=tags or [], client=client_name,
         )
 
         # Save classification and plan as notes
@@ -1036,9 +1036,6 @@ def _register_tier1(mcp: FastMCP) -> None:
             notes_dir = CASES_DIR / case_id / "notes"
             notes_dir.mkdir(parents=True, exist_ok=True)
             (notes_dir / "analyst_input.md").write_text(f"## Investigation Plan\n\n{plan}\n")
-
-        if client:
-            _set_client_boundary(client)
 
         # Auto-import quick_enrich results if enrichment_id provided
         if enrichment_id:
@@ -1300,59 +1297,19 @@ def _register_tier1(mcp: FastMCP) -> None:
         include_private: bool = False,
         depth: str = "auto",
     ) -> str:
-        """Use when the analyst says "enrich these IOCs", "look up this IP/domain/hash",
-        "what do we know about these indicators?", or after adding new evidence to a
-        case that introduced new IOCs.
+        """Extract and enrich all IOCs in a case against tiered threat intel
+        providers. Safe to re-run as new evidence lands. Triage + client
+        baseline pre-filter to spend API quota where it matters.
 
-        **Routing:** If starting a new investigation, call ``classify_attack``
-        first to determine the attack type and recommended tool sequence.
+        For provider list see ``socai://enrichment-providers``; for depth
+        tiers see ``socai://enrichment-depths``.
 
-        Extracts all IOCs from case artefacts (URLs, IPs, domains, hashes, emails,
-        CVEs), then enriches them against multiple threat intelligence sources:
-        VirusTotal, AbuseIPDB, URLhaus, ThreatFox, OpenCTI, Shodan, GreyNoise,
-        URLScan, MalwareBazaar, Intezer, Censys, OTX, Hybrid Analysis, WhoisXML,
-        PhishTank, crt.sh, and ProxyCheck. Produces a scored verdict
-        (malicious/suspicious/clean) for each IOC.
-
-        Before enrichment, triage automatically skips IOCs that already have
-        sufficient cached coverage, and the client baseline filters out IOCs
-        that are routine for this client — so API quota is spent where it
-        matters most.
-
-        This tool re-runs extraction and enrichment from scratch — safe to call
-        multiple times as new evidence is added. Results are saved to the case
-        and used by report generation and correlation tools.
-
-        Parameters
-        ----------
-        case_id : str
-            Case identifier.
-        include_private : bool
-            Include RFC-1918 private IPs (10.x, 172.16-31.x, 192.168.x) in
-            extraction. Default False. Only set True for forensic log
-            correlation (e.g., lateral movement analysis) — OSINT providers
-            have no data on internal addresses, so enriching them wastes
-            API calls and returns nothing useful.
-        depth : str
-            Controls how deep enrichment goes. Choose based on the situation:
-
-            ``"auto"`` — **Default. Use for most cases.** Runs fast/free
-            providers first, then automatically escalates to deep OSINT only
-            for IOCs that show signal (malicious, suspicious, newly registered,
-            or unknown). Best balance of speed and coverage.
-
-            ``"fast"`` — **Tier 1 only, no deep OSINT.** Use when:
-            • The alert is clearly a false positive or benign positive
-            • Bulk triaging multiple low-severity alerts
-            • Re-enriching a case where you only need a quick refresh
-            • The IOCs are common/expected (e.g., internal tools, known SaaS)
-
-            ``"full"`` — **All tiers for every IOC.** Use when:
-            • High-severity incident (targeted attack, data breach, ransomware)
-            • Novel/unfamiliar IOCs that need maximum intelligence
-            • The analyst explicitly requests a thorough deep-dive
-            • Initial enrichment returned inconclusive results and you need
-              the full picture before writing the report
+        Args:
+            case_id: Case identifier.
+            include_private: Include RFC-1918 IPs. Default False (OSINT
+                providers have no data on internal addresses).
+            depth: ``"auto"`` (default, smart tiering), ``"fast"`` (Tier 1
+                only), ``"full"`` (all tiers every IOC).
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
@@ -1726,34 +1683,13 @@ def _register_tier1(mcp: FastMCP) -> None:
     def load_ngsiem_reference(
         sections: list[str] | None = None,
     ) -> str:
-        """Load CQL/LogScale/NGSIEM syntax reference for writing queries.
+        """Load CQL/LogScale/NGSIEM/CrowdStrike/Falcon syntax reference.
+        Call BEFORE writing any such query.
 
-        Call this BEFORE writing any CrowdStrike, LogScale, NGSIEM, CQL,
-        or Falcon query. Trigger phrases: "crowdstrike query",
-        "logscale query", "NGSIEM detection", "CQL query", "falcon query",
-        "write me a detection rule", "help with CQL syntax".
-
-        Returns authoritative syntax rules, field schemas, function
-        signatures, proven patterns, and anti-patterns.
-
-        Parameters
-        ----------
-        sections : list[str]
-            Which references to load. Options:
-
-            - ``"rules"``   — authoring conventions, anti-patterns,
-              tag-based source filtering, ECS field naming, worked
-              examples (Kerberoasting, port scan, AWS IAM).
-            - ``"columns"`` — field schema per connector (ECS + vendor
-              fields for Fortinet, Azure AD, Windows, Check Point, etc.)
-            - ``"grammar"`` — all 194 CQL function signatures. Large
-              (57 KB) — only request when you need a specific function.
-            - ``"syntax"``  — general CQL syntax reference (operators,
-              precedence, conditionals, joins, regex, 16 pitfalls).
-
-            Defaults to ``["rules", "syntax"]`` (covers most query
-            writing). Add ``"columns"`` when building queries for a
-            specific log source.
+        ``sections`` defaults to ``["rules", "syntax"]``. Other options:
+        ``"columns"`` (per-connector field schemas), ``"grammar"`` (all
+        194 CQL function signatures — 57 KB, request only when needed).
+        Unknown section names return the valid list in the response.
         """
         _require_scope("sentinel:query")
 
@@ -1787,40 +1723,13 @@ def _register_tier1(mcp: FastMCP) -> None:
     def lookup_soc_process(
         topic: str,
     ) -> str:
-        """Look up SOC operational processes, policies, and procedures.
+        """Look up SOC operational processes (incident handling, P1/P2,
+        service desk, time tracking). Replaces Confluence for process
+        questions — use ``search_confluence`` only for ET/EV threat articles.
 
-        Use this tool when the analyst asks about incident handling, escalation,
-        P1/P2 process, critical incidents, war rooms, service desk tickets,
-        time tracking, overtime, on-call, or any SOC operational procedure.
-
-        Trigger phrases: "what's our process for X?", "P1 handling",
-        "escalation process", "how do we handle critical incidents?",
-        "service desk procedure", "time tracking", "SOP for Y",
-        "do we have a runbook for X?", "war room process".
-
-        **This tool replaces Confluence for all SOC process questions.**
-        Only use ``search_confluence`` for published ET/EV threat articles.
-
-        Parameters
-        ----------
-        topic : str
-            Which process to look up. Options:
-
-            - ``"incident-handling"`` — role priorities (L1-L3), SOAR queue
-              workflow, alert sorting, escalation rules, morning clean-up.
-            - ``"critical-incident-management"`` — P1/P2 checklists, war
-              rooms, P1 classification, IR activation, technical report
-              structure.
-            - ``"service-requests"`` — Service Desk queues, ticket lifecycle,
-              merging, blueprint, Teams channels.
-            - ``"time-tracking"`` — Kantata categories, overtime logging
-              (1.5x/2x), on-call hours.
-            - ``"all"`` — returns all process documents.
-
-            Also accepts partial matches: "p1", "critical", "escalation",
-            "war room" → critical-incident-management. "service desk",
-            "tickets" → service-requests. "overtime", "kantata", "on-call"
-            → time-tracking. "soar", "queue", "triage" → incident-handling.
+        Topics are fuzzy-matched: pass ``"p1"``, ``"escalation"``,
+        ``"overtime"``, ``"soar"``, etc. Pass ``"all"`` for everything,
+        or any unknown value to see the full topic list in the response.
         """
         _require_scope("investigations:read")
 
@@ -1890,41 +1799,14 @@ def _register_tier1(mcp: FastMCP) -> None:
         eml_provided: bool = False,
         logs_provided: bool = False,
     ) -> str:
-        """Use EARLY in any interactive investigation — before deciding which
-        tools to call.  Trigger phrases: "what type of attack is this?",
-        "classify this alert", "what should I investigate?", or simply when
-        you have alert details and need to decide the investigation path.
+        """Classify alert into attack_type (phishing, malware,
+        account_compromise, privilege_escalation, pup_pua, generic) and
+        return ordered tool sequence + skip profile. Deterministic
+        keyword/shape match, no LLM, no case required. Call EARLY to
+        decide the investigation path.
 
-        Runs deterministic keyword + input-shape classification (no LLM call,
-        instant) and returns:
-
-        - **attack_type** — phishing, malware, account_compromise,
-          privilege_escalation, pup_pua, or generic
-        - **confidence** — high / medium / low
-        - **signals** — human-readable reasons for the classification
-        - **profile** — which pipeline steps to run and which to skip
-        - **recommended_tools** — ordered list of MCP tools to call for this
-          attack type, with dependencies noted
-
-        Does NOT require a case — works on raw alert text alone.  Call this
-        early in the investigation to inform your strategy.
-
-        Parameters
-        ----------
-        title : str
-            Alert or incident title.
-        notes : str
-            Analyst notes, alert description, or raw alert text.
-        tags : list[str]
-            Tags from the alert (e.g. MITRE technique IDs).
-        urls : list[str]
-            URLs present in the alert (used as input-shape signal).
-        file_names : list[str]
-            File names / paths from the alert (used as input-shape signal).
-        eml_provided : bool
-            True if .eml files are available.
-        logs_provided : bool
-            True if log files are available.
+        See ``plan_investigation`` for the same classification plus a
+        numbered step-by-step plan with client identification.
         """
         _require_scope("investigations:read")
 
@@ -2164,45 +2046,14 @@ def _register_tier1(mcp: FastMCP) -> None:
         file_names: list[str] | None = None,
         eml_provided: bool = False,
         logs_provided: bool = False,
-        client: str = "",
+        client_name: str = "",
         severity: str = "",
     ) -> str:
-        """Use at the START of an interactive investigation to get a complete,
-        ordered plan.  Trigger phrases: "how should I investigate this?",
-        "what's the plan?", "walk me through this", or anytime you receive
-        alert details and need to decide the investigation approach.
-
-        Classifies the attack type, then returns a step-by-step investigation
-        plan tailored to the alert:
-
-        - Ordered tool calls with reasons and dependencies
-        - Steps to skip (and why) based on the attack profile
-        - Recommended KQL playbook (if Sentinel access is available)
-        - Guidance on which report tool to use at the end
-
-        Does NOT execute anything — purely advisory.  Present the plan to the
-        analyst, then execute the steps by calling the individual tools.
-
-        Parameters
-        ----------
-        title : str
-            Alert or incident title.
-        notes : str
-            Analyst notes, alert description, or raw alert text.
-        tags : list[str]
-            Tags from the alert (e.g. MITRE technique IDs).
-        urls : list[str]
-            URLs present in the alert.
-        file_names : list[str]
-            File names / paths from the alert.
-        eml_provided : bool
-            True if .eml files are available.
-        logs_provided : bool
-            True if log files are available.
-        client : str
-            Client name (if known).
-        severity : str
-            Alert severity (low, medium, high, critical).
+        """Use at the START of an interactive investigation. Classifies the
+        attack type (see ``classify_attack``) and returns a numbered,
+        phased investigation plan: client identification, intake, recall,
+        enrichment, attack-specific evidence, reporting. Advisory only —
+        execute steps by calling each tool.
         """
         _require_scope("investigations:read")
 
@@ -2227,11 +2078,11 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         # Phase 0 — Client identification (always)
         step_num += 1
-        if client:
+        if client_name:
             plan_steps.append({
                 "step": step_num,
                 "phase": "Client Identification",
-                "action": f"Call `lookup_client` to validate '{client}' and confirm available platforms.",
+                "action": f"Call `lookup_client` to validate '{client_name}' and confirm available platforms.",
                 "tool": "lookup_client",
                 "reason": "Establishes platform scope (Sentinel workspace, XDR tenant, etc.)",
             })
@@ -2419,7 +2270,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             "confidence": result["confidence"],
             "signals": result["signals"],
             "severity": severity or "auto-detect from alert data",
-            "client": client or "MUST BE IDENTIFIED — call lookup_client first",
+            "client": client_name or "MUST BE IDENTIFIED — call lookup_client first",
             "plan": plan_steps,
             "skipped_steps": skipped,
             "profile_description": profile.get("description", ""),
@@ -2431,41 +2282,16 @@ def _register_tier1(mcp: FastMCP) -> None:
         iocs: list[str],
         depth: str = "auto",
     ) -> str:
-        """Use for fast, ad-hoc IOC lookups — no case required.  Trigger
-        phrases: "enrich this IP", "look up this hash", "is this domain
-        malicious?", "check these IOCs", or whenever the analyst pastes
-        IOC values and wants immediate reputation data.
+        """Fast, ad-hoc IOC lookup — no case required. Auto-detects type
+        (IP, domain, URL, hash, email). Returns verdicts + an
+        ``enrichment_id`` importable later via ``import_enrichment``.
 
-        Accepts raw IOC values (IPs, domains, URLs, hashes, emails) and
-        auto-detects the type.  Uses the same tiered enrichment pipeline
-        as case-bound enrichment: Tier 0 ASN pre-screen (IPs) → Tier 1
-        fast providers → selective Tier 2 deep OSINT escalation on signal.
+        Depth tiers: see ``socai://enrichment-depths``. Same pipeline as
+        ``enrich_iocs``.
 
-        Returns per-IOC composite verdicts (malicious / suspicious / clean
-        / unknown) with confidence levels and an ``enrichment_id`` that can
-        be imported into a case later via ``import_enrichment``.
-
-        **Typical flow:** analyst pastes IOCs → ``quick_enrich`` returns
-        verdicts → if malicious, analyst creates a case → uses
-        ``import_enrichment`` to pull results into the case without
-        re-running enrichment.
-
-        Parameters
-        ----------
-        iocs : list[str]
-            One or more raw IOC values.  Examples:
-            ``["20.23.78.212", "evil-domain.com", "abc123..."]``
-        depth : str
-            ``"auto"`` — **(default)** Tier 0 ASN pre-screen (IPs), then
-            Tier 1 fast providers, then selectively escalate to Tier 2
-            deep OSINT only for IOCs that show signal. Best balance of
-            speed and coverage.
-
-            ``"fast"`` — Tier 1 only, no deep OSINT. Use for quick triage
-            or when you just need a fast reputation check.
-
-            ``"full"`` — All tiers for every IOC. Use when you want
-            maximum intelligence on every IOC.
+        Args:
+            iocs: Raw IOC values, e.g. ``["20.23.78.212", "evil.com"]``.
+            depth: ``"auto"`` | ``"fast"`` | ``"full"`` (default ``auto``).
         """
         _require_scope("investigations:read")
 
@@ -3303,7 +3129,7 @@ def _register_tier2(mcp: FastMCP) -> None:
     @mcp.tool(title="Assess Threat Landscape", annotations={"readOnlyHint": True})
     def assess_landscape(
         days: int | None = None,
-        client: str | None = None,
+        client_name: str | None = None,
     ) -> str:
         """Use when the analyst says "what's trending?", "threat summary",
         "how are we doing?", "show me the landscape", "weekly overview",
@@ -3320,13 +3146,13 @@ def _register_tier2(mcp: FastMCP) -> None:
         ----------
         days : int
             Lookback window in days.
-        client : str
+        client_name : str
             Filter by client name.
         """
         _require_scope("campaigns:read")
 
         from tools.case_landscape import assess_landscape as _assess
-        return _json(_assess(days=days, client=client))
+        return _json(_assess(days=days, client=client_name))
 
     @mcp.tool(title="Search Threat Articles", annotations={"readOnlyHint": True})
     def search_threat_articles(
@@ -3780,19 +3606,14 @@ def _register_tier2(mcp: FastMCP) -> None:
 
     @mcp.tool(title="Analyse Static File", annotations={"readOnlyHint": True})
     async def analyse_static_file(file_path: str, case_id: str) -> str:
-        """Use for quick binary file triage — hashes, entropy, file type, strings,
-        and PE metadata extraction. Trigger phrases: "analyse this file",
-        "what is this binary?", "file triage", "quick file analysis".
+        """Server-side static file triage — hashes, entropy, file type,
+        strings, PE metadata. Requires the file to be on the MCP server's
+        filesystem.
 
-        Lighter and faster than ``analyse_pe`` (full PE deep-dive). Use this for
-        initial file triage; escalate to ``analyse_pe`` for suspicious binaries.
-
-        Parameters
-        ----------
-        file_path : str
-            Absolute path to the file to analyse.
-        case_id : str
-            Case identifier for artefact storage.
+        For files arriving in Claude Desktop's sandbox, prefer the
+        ``triage_file`` prompt: it extracts hash/IOCs Desktop-side without
+        shipping bytes. Only ship (via ``prepare_file_upload``) when this
+        tool or ``analyse_pe`` is actually required by the verdict.
         """
         _require_scope("investigations:read")
         _check_client_boundary(case_id)
@@ -3801,6 +3622,117 @@ def _register_tier2(mcp: FastMCP) -> None:
         result = await asyncio.to_thread(
             lambda: static_file_analyse(file_path, case_id)
         )
+        return _json(result)
+
+    @mcp.tool(title="Prepare File Upload")
+    async def prepare_file_upload(case_id: str, filename: str) -> str:
+        """Mint a signed URL the caller can ``curl -X POST --data-binary @<file>``
+        to ship a sample from a different sandbox to the MCP server's filesystem.
+
+        Use this only after the ``triage_file`` workflow has surfaced a need
+        for server-side tools (YARA, deep PE, sandbox detonation). For text
+        extraction and IOC enrichment, keep the file local — see the
+        ``triage_file`` prompt.
+
+        Single-purpose token bound to (case_id, filename); short TTL; capped
+        at ``SOCAI_MCP_UPLOAD_MAX_BYTES``. File lands in
+        ``cases/<case_id>/artefacts/uploads/<filename>``.
+        """
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from mcp_server.uploads_http import (
+            build_upload_url,
+            expected_artefact_path,
+            mint_upload_token,
+            sanitise_filename,
+        )
+        from mcp_server.auth import _get_caller_email
+        from mcp_server.config import (
+            MCP_UPLOAD_MAX_BYTES,
+            MCP_UPLOAD_TOKEN_TTL_SECONDS,
+        )
+
+        safe = sanitise_filename(filename)
+        if safe is None:
+            return _json({
+                "status": "error",
+                "error": "filename sanitised to empty — provide a name with "
+                         "at least one [A-Za-z0-9] character",
+            })
+
+        token = mint_upload_token(
+            case_id=case_id,
+            filename=safe,
+            caller_email=_get_caller_email(),
+        )
+        url = build_upload_url(case_id=case_id, filename=safe, token=token)
+        path = expected_artefact_path(case_id=case_id, filename=safe)
+
+        return _json({
+            "status": "ok",
+            "case_id": case_id,
+            "filename": safe,
+            "upload_url": url,
+            "artefact_path": str(path),
+            "max_bytes": MCP_UPLOAD_MAX_BYTES,
+            "ttl_seconds": MCP_UPLOAD_TOKEN_TTL_SECONDS,
+            "curl_example": (
+                f'curl -X POST --data-binary @<local-file> "{url}"'
+            ),
+            "fallback": (
+                "If the calling sandbox has no network path to the MCP "
+                "server (e.g. host.docker.internal does not resolve), use "
+                "upload_file_content instead — it ships bytes in-band over "
+                "the MCP transport itself."
+            ),
+            "next_step": (
+                f"After upload, call analyse_static_file(file_path='{path}', "
+                f"case_id='{case_id}')."
+            ),
+        })
+
+    @mcp.tool(title="Upload File Content (in-band)")
+    async def upload_file_content(
+        case_id: str,
+        filename: str,
+        content_b64: str,
+    ) -> str:
+        """**Last-resort fallback.** Ships file bytes as base64 inside the
+        MCP transport — every byte lands in the chat transcript and stays
+        there. Costs context heavily.
+
+        Use only when ALL of: (a) ``triage_file`` workflow surfaced a need
+        for server-side tools, (b) the sandbox cannot reach the HTTP upload
+        endpoint, (c) the file is small (cap: ``SOCAI_MCP_INBAND_UPLOAD_MAX_BYTES``,
+        default 2 MB).
+
+        Returns the on-disk ``path`` for ``analyse_static_file``/``analyse_pe``.
+        """
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from mcp_server.uploads_http import sanitise_filename, store_inband_upload
+        from mcp_server.config import MCP_INBAND_UPLOAD_MAX_BYTES
+        from mcp_server.logging_config import mcp_log
+
+        safe = sanitise_filename(filename)
+        if safe is None:
+            return _json({
+                "status": "error",
+                "error": "filename sanitised to empty — provide a name with "
+                         "at least one [A-Za-z0-9] character",
+            })
+
+        result = await asyncio.to_thread(
+            store_inband_upload,
+            case_id=case_id, filename=safe, content_b64=content_b64,
+            max_bytes=MCP_INBAND_UPLOAD_MAX_BYTES,
+        )
+        if result.get("status") == "ok":
+            mcp_log("upload_stored_inband",
+                    case_id=case_id, filename=safe,
+                    bytes=result["bytes"], sha256=result["sha256"])
         return _json(result)
 
     @mcp.tool(title="Sandbox API Lookup", annotations={"readOnlyHint": True, "openWorldHint": True})
@@ -4349,46 +4281,16 @@ def _register_tier3(mcp: FastMCP) -> None:
         additional_upns: str = "",
         lookback_hours: int = 24,
     ) -> str:
-        """Use when the analyst needs a **single ready-to-run Sentinel KQL query**
-        that covers an entire investigation scenario in one execution.  Unlike
-        ``load_kql_playbook`` (multi-stage, one query at a time), this returns a
-        composite query with multiple ``let`` sections unioned together — run it
-        once and get the full picture.
+        """Render a single composite Sentinel KQL query covering a whole
+        scenario in one execution (multiple ``let`` blocks unioned). Use
+        ``load_kql_playbook`` for multi-stage parameterised queries.
 
-        Trigger phrases: "composite query for mailbox changes", "full picture
-        query", "catch-all query for this sign-in", "BEC query", "DLP query",
-        "OAuth consent query", "generate Sentinel query".
+        Call with empty ``scenario`` to list available scenarios. ``upn``
+        is required for all scenarios. Sentinel-native tables only
+        (OfficeActivity, SigninLogs, SecurityAlert, AlertEvidence). Pass
+        the returned query to ``run_kql``.
 
-        **Available scenarios:**
-        - ``mailbox-permission-change`` — delegation, FullAccess, SendAs changes
-        - ``suspicious-signin`` — risky sign-ins, location anomalies, MFA bypass
-        - ``inbox-rule-bec`` — inbox rules, mail forwarding, BEC indicators
-        - ``email-threat-zap`` — email threats, ZAP actions, post-delivery activity
-        - ``dlp-exfiltration`` — DLP alerts, bulk downloads, external sharing
-        - ``oauth-consent-grant`` — OAuth consent, app role assignments, post-consent activity
-
-        Call with no ``scenario`` to list available scenarios.
-
-        Uses only Sentinel-native tables (OfficeActivity, SigninLogs,
-        SecurityAlert, AlertEvidence).  Pass the returned query directly
-        to ``run_kql`` for execution.
-
-        Parameters
-        ----------
-        scenario : str
-            Scenario identifier (e.g. "suspicious-signin").  Empty to list all.
-        upn : str
-            Primary target User Principal Name (required for all scenarios).
-        ip : str
-            Optional suspicious IP address.
-        object_id : str
-            Optional Azure AD object ID.
-        mailbox_id : str
-            Optional mailbox GUID (OfficeObjectId from OfficeActivity).
-        additional_upns : str
-            Comma-separated additional UPNs to include in query scope.
-        lookback_hours : int
-            Lookback window in hours (default 24, max 720).
+        ``lookback_hours``: default 24, max 720.
         """
         _require_scope("sentinel:query")
 
@@ -4660,40 +4562,16 @@ def _register_tier3(mcp: FastMCP) -> None:
         report_text: str,
         disposition: str | None = None,
     ) -> str:
-        """Use after selecting a report prompt (write_mdr_report, write_pup_report,
-        write_fp_closure, write_fp_tuning, write_executive_summary,
-        write_security_arch_review) and generating the report content locally.
+        """Persist a locally-generated report (HTML preferred, markdown
+        accepted) with defanging, audit, and auto-close. Call after running
+        the matching ``write_*`` prompt.
 
-        Persists a locally-generated report to disk with defanging,
-        auto-close logic, and audit trail. Accepts HTML directly (markdown
-        fallback for legacy). No LLM call — all the thinking was done by
-        your local session.
+        ``report_type``: ``mdr_report`` | ``pup_report`` | ``fp_ticket`` |
+        ``fp_tuning_ticket`` | ``executive_summary`` | ``security_arch_review``.
+        See ``socai://report-types`` for per-type auto-close behaviour.
 
-        **Report types and auto-close behaviour:**
-        - ``mdr_report`` — auto-closes (preserves existing disposition)
-        - ``pup_report`` — auto-closes (disposition: pup_pua)
-        - ``fp_ticket`` — auto-closes (disposition: false_positive)
-        - ``fp_tuning_ticket`` — auto-closes (disposition: false_positive)
-        - ``executive_summary`` — does NOT auto-close (supplementary output)
-        - ``security_arch_review`` — does NOT auto-close (supplementary output)
-
-        On success the response includes ``report_url`` — a one-click,
-        short-lived signed link the analyst can click to open the rendered
-        HTML in their browser. Always surface this URL in your reply to the
-        analyst (Claude Desktop renders it as a clickable link) so they
-        never have to ask you to "stage" the report locally.
-
-        Parameters
-        ----------
-        case_id : str
-            Case identifier.
-        report_type : str
-            One of: mdr_report, pup_report, fp_ticket, fp_tuning_ticket,
-            executive_summary, security_arch_review.
-        report_text : str
-            Full report markdown as generated by your local session.
-        disposition : str
-            Optional disposition override for auto-close.
+        Response includes ``report_url`` — a one-click signed link the
+        analyst can click to open the rendered HTML. Always surface it.
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
@@ -5190,37 +5068,14 @@ def _register_tier3(mcp: FastMCP) -> None:
         run_yara: bool = True,
         generate_yara_rules: bool = False,
     ) -> str:
-        """Use when the analyst says "analyse the binary", "PE analysis", "check the
-        executable", "static analysis", or after extracting PE files (EXE, DLL, SYS)
-        from a ZIP or email attachment.
+        """Deep static analysis on PE files in case artefacts: entropy,
+        sections, imports, exports, header anomalies, overlay, packer
+        heuristics, Rich hash, hashes, strings. YARA runs after by default.
 
-        Runs deep static analysis on all PE files found in the case artefacts
-        (extracted ZIPs and email attachments):
-        - Shannon entropy (per-section + overall)
-        - Section analysis (W+X, size mismatches, unnamed sections)
-        - Full import table with suspicious API flagging
-        - Export table analysis
-        - PE header anomalies (timestamp, checksum, subsystem)
-        - Overlay detection, packer signature heuristics, Rich header hash
-        - File hashes (MD5, SHA1, SHA256) and strings extraction
-        - Optional LLM-powered malware classification
-
-        **YARA scanning runs automatically** after PE analysis (set
-        ``run_yara=False`` to skip). This gives you PE analysis AND
-        signature matching in a single tool call.
-
-        Requires the ``pefile`` library. Returns skip manifest if not installed.
-
-        Parameters
-        ----------
-        case_id : str
-            Case identifier.
-        run_yara : bool
-            If True (default), automatically runs YARA scan after PE analysis.
-            Set False to skip YARA scanning.
-        generate_yara_rules : bool
-            If True, generate custom YARA rules from PE analysis findings.
-            Only applies when ``run_yara=True``. Default False.
+        This is the **deep-analysis escalation** for binaries — call it
+        after the ``triage_file`` workflow shows hash/IOC verdicts that
+        warrant going deeper. Requires the file to already be on the server
+        (ship via ``prepare_file_upload`` if needed). Requires ``pefile``.
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
@@ -5634,31 +5489,10 @@ def _register_darkweb(mcp: FastMCP) -> None:
         domains: Annotated[str, "Comma-separated domains to check (optional)."] = "",
         ips: Annotated[str, "Comma-separated IPs to check (optional)."] = "",
     ) -> str:
-        """Use when the analyst says "dark web exposure summary", "full dark web
-        check for this case", "comprehensive credential exposure assessment",
-        or when you want to run all dark web intelligence sources at once
-        for a case.
-
-        Aggregates results from XposedOrNot (breach data) for all relevant
-        indicators in the case.  If no indicators are explicitly provided,
-        extracts emails, domains, and IPs from the case's iocs.json.
-
-        Produces a unified summary including:
-        - Breach names and exposed data types
-        - Risk assessment per indicator
-
-        Saved to: cases/<case_id>/artefacts/darkweb/darkweb_summary.json
-
-        Parameters
-        ----------
-        case_id : str
-            Case identifier.
-        emails : str
-            Comma-separated email addresses (auto-extracted from case if empty).
-        domains : str
-            Comma-separated domains (auto-extracted from case if empty).
-        ips : str
-            Comma-separated IPs (auto-extracted from case if empty).
+        """Aggregate dark web / breach exposure for a case across
+        XposedOrNot. If ``emails`` / ``domains`` / ``ips`` are empty,
+        auto-extracts indicators from ``iocs.json``. Saved to
+        ``cases/<case_id>/artefacts/darkweb/darkweb_summary.json``.
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
@@ -5683,33 +5517,10 @@ def _register_darkweb(mcp: FastMCP) -> None:
         max_results: Annotated[int, "Maximum results to return (default 20)."] = 20,
         case_id: Annotated[str, "Case ID to save results to (optional)."] = "",
     ) -> str:
-        """Use when the analyst says "search the dark web", "search onion sites",
-        "check Tor for this", "dark web search", "is this .onion indexed",
-        or when you need to find references to an IOC or keyword on Tor
-        hidden services.
-
-        Two modes depending on configuration:
-        - **With SOCAI_OPSEC_PROXY (Tor SOCKS5):** Full text search of
-          indexed .onion site content via the Ahmia .onion address.
-        - **Without proxy:** Fetches Ahmia's full list of indexed .onion
-          domains and greps for matches.  Useful for checking if a known
-          .onion address is in Ahmia's index.
-
-        No API key required.
-
-        Useful for:
-        - Checking if a known .onion address is indexed by Ahmia
-        - Full dark web content search (requires Tor proxy)
-        - Discovering .onion sites related to a threat actor or campaign
-
-        Parameters
-        ----------
-        query : str
-            Search term (email, domain, username, keyword, etc.).
-        max_results : int
-            Maximum results (default 20).
-        case_id : str
-            If provided, saves results to case artefacts.
+        """Search indexed .onion sites via Ahmia. With
+        ``SOCAI_OPSEC_PROXY`` (Tor SOCKS5) does full content search;
+        without proxy, greps Ahmia's domain list for known .onion
+        addresses. No API key required.
         """
         _require_scope("investigations:read")
         if case_id:
@@ -5733,32 +5544,10 @@ def _register_darkweb(mcp: FastMCP) -> None:
                                 "Empty searches all."] = "",
         case_id: Annotated[str, "Case ID to save results to (optional)."] = "",
     ) -> str:
-        """Use when the analyst says "search Intelligence X", "search IntelX",
-        "search dark web for this IOC", "check pastes and leaks", "deep web
-        search", or when you need to search across dark web content, paste
-        sites, data leaks, and documents for a specific indicator.
-
-        Intelligence X indexes content from the dark web, paste sites, data
-        leaks, and public documents.  Searches by strong selectors (email,
-        domain, IP, URL, phone, Bitcoin address, etc.).
-
-        Requires INTELX_API_KEY for best results (free tier at
-        intelx.io/account?tab=developer).  Falls back to public API
-        (very limited) if no key is set.
-
-        Returns: matching records with source bucket, date, name, and
-        relevance score.  Credentials in results are automatically redacted.
-
-        Parameters
-        ----------
-        query : str
-            Strong selector (email, domain, IP, URL, phone, etc.).
-        max_results : int
-            Maximum results (default 20).
-        buckets : str
-            Comma-separated data sources (empty = all).
-        case_id : str
-            If provided, saves results to case artefacts.
+        """Search Intelligence X (dark web, pastes, leaks, documents) by
+        strong selector. Set ``INTELX_API_KEY`` for full results; falls
+        back to limited public API otherwise. Credentials in results are
+        auto-redacted.
         """
         _require_scope("investigations:read")
         if case_id:

@@ -1103,6 +1103,87 @@ def register_resources(mcp: FastMCP) -> None:
             ),
         })
 
+    @mcp.resource("socai://enrichment-depths")
+    def enrichment_depths() -> str:
+        """Decision matrix for the ``depth`` parameter on ``enrich_iocs``
+        and ``quick_enrich``. Read this when deciding how much OSINT to
+        pull on an investigation.
+        """
+        _require_scope("investigations:read")
+        return _json({
+            "auto": {
+                "default": True,
+                "description": (
+                    "Smart tiering: Tier 0 ASN pre-screen (IPs), Tier 1 fast "
+                    "providers on all IOCs, then selective Tier 2 deep OSINT "
+                    "only for IOCs that show signal (malicious, suspicious, "
+                    "newly registered, or unknown)."
+                ),
+                "use_when": "Most cases — best balance of speed and coverage.",
+            },
+            "fast": {
+                "description": "Tier 1 only, no deep OSINT.",
+                "use_when": [
+                    "Alert is clearly false positive or benign positive",
+                    "Bulk triaging low-severity alerts",
+                    "Re-enriching for a quick refresh",
+                    "IOCs are common/expected (internal tools, known SaaS)",
+                ],
+            },
+            "full": {
+                "description": "All tiers for every IOC, no skipping.",
+                "use_when": [
+                    "High-severity incident (targeted attack, breach, ransomware)",
+                    "Novel/unfamiliar IOCs needing maximum intelligence",
+                    "Analyst explicitly requests a thorough deep-dive",
+                    "Initial enrichment was inconclusive",
+                ],
+            },
+        })
+
+    @mcp.resource("socai://report-types")
+    def report_types() -> str:
+        """Report types accepted by ``save_report`` and their auto-close
+        behaviour. Read this when picking the right ``report_type`` value.
+        """
+        _require_scope("investigations:read")
+        return _json({
+            "mdr_report": {
+                "auto_close": True,
+                "disposition": "preserves_existing",
+                "prompt": "write_mdr_report",
+                "use_for": "Standard MDR client deliverable.",
+            },
+            "pup_report": {
+                "auto_close": True,
+                "disposition": "pup_pua",
+                "prompt": "write_pup_report",
+                "use_for": "Potentially Unwanted Program / Adware findings.",
+            },
+            "fp_ticket": {
+                "auto_close": True,
+                "disposition": "false_positive",
+                "prompt": "write_fp_closure",
+                "use_for": "False positive closure ticket.",
+            },
+            "fp_tuning_ticket": {
+                "auto_close": True,
+                "disposition": "false_positive",
+                "prompt": "write_fp_tuning",
+                "use_for": "False positive plus rule-tuning recommendation.",
+            },
+            "executive_summary": {
+                "auto_close": False,
+                "prompt": "write_executive_summary",
+                "use_for": "Supplementary stakeholder summary — does NOT close the case.",
+            },
+            "security_arch_review": {
+                "auto_close": False,
+                "prompt": "write_security_arch_review",
+                "use_for": "Architecture / control-failure review — does NOT close the case.",
+            },
+        })
+
     # ------------------------------------------------------------------
     # IOC Index
     # ------------------------------------------------------------------
@@ -1394,6 +1475,8 @@ def register_resources(mcp: FastMCP) -> None:
                     "socai://ngsiem-columns": "NGSIEM field schema per connector — ECS + vendor fields for each data source.",
                     "socai://cql-grammar": "Complete CQL function grammar — 194 functions with signatures and docs.",
                     "socai://enrichment-providers": "Available enrichment providers.",
+                    "socai://enrichment-depths": "Decision matrix for enrich_iocs/quick_enrich depth (auto/fast/full).",
+                    "socai://report-types": "save_report report_type values + auto-close behaviour.",
                 },
                 "report_templates": {
                     "socai://templates/mdr-report": "MDR report template — 5-section structure, analyst instructions, CSS styling, markdown skeleton.",

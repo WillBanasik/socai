@@ -530,6 +530,13 @@ def create_mcp_server(*, transport: str = MCP_TRANSPORT) -> FastMCP:
             mcp_log("reports_middleware_skip", error=str(exc),
                     note="one-click report links will not be available")
 
+        try:
+            from mcp_server.uploads_http import install_uploads_endpoint
+            install_uploads_endpoint(server)
+        except Exception as exc:
+            mcp_log("uploads_middleware_skip", error=str(exc),
+                    note="cross-sandbox file uploads will not be available")
+
     return server
 
 

@@ -474,6 +474,44 @@ Classification runs early in the investigation (before case creation). Results a
 - Analysis via prompt: use `write_timeline` prompt for attack phase mapping (MITRE ATT&CK), dwell time gap analysis, key event identification, narrative summary
 - Output: `artefacts/timeline/timeline.json`
 
+## Cross-Sandbox File Upload
+
+Files arriving in a separate sandbox (typically Claude Desktop's bash container) need to land on the MCP server's filesystem before server-side tools (`analyse_static_file`, `analyse_pe`, `yara_scan`, sandbox detonation) can touch them. Two paths exist; **prefer the HTTP path** wherever possible.
+
+### Preferred — HTTP upload (`prepare_file_upload`)
+
+`prepare_file_upload(case_id, filename)` mints a single-use signed URL the caller can `curl` to from the sandbox holding the file:
+
+```bash
+curl -X POST --data-binary @<local-path> "<upload_url>"
+```
+
+- Bytes flow Desktop sandbox → MCP server filesystem; nothing crosses the chat transcript
+- File lands at `cases/<case_id>/artefacts/uploads/<filename>`
+- Filename is sanitised to `[A-Za-z0-9._-]` (no slashes, no dotfiles)
+- Token is single-purpose, bound to `(case_id, filename)`, with short TTL (`SOCAI_MCP_UPLOAD_TOKEN_TTL_SECONDS`, default 15 minutes)
+- Hard size cap via `SOCAI_MCP_UPLOAD_MAX_BYTES` (default 100 MB)
+- Server replies with absolute on-disk path + SHA-256 — pass the path straight into the analysis tool
+
+### Last-resort — in-band base64 (`upload_file_content`)
+
+Used only when the sandbox cannot reach the HTTP endpoint (e.g. `host.docker.internal` does not resolve and `127.0.0.1` loops back to the container). The file is base64-encoded and shipped *through the MCP transport itself* — every byte lands in the chat transcript and persists for the rest of the session.
+
+- Default cap is `SOCAI_MCP_INBAND_UPLOAD_MAX_BYTES` (2 MB raw, ~2.7 MB base64). Keeping this small is deliberate: a 2 MB upload alone consumes ~700 K tokens of Claude Desktop's context window.
+- Anything larger must use the HTTP path or a manual copy.
+- The tool returns the same absolute on-disk path for downstream analysis tools.
+
+### Default pattern (use the `triage_file` prompt instead)
+
+For most malicious-file work the file does not need to land on the server at all. The `triage_file` MCP prompt walks the analyst through Desktop-side extraction:
+
+1. Compute SHA-256 + file type + size in the sandbox.
+2. `quick_enrich` the hash — small payload, verdict back.
+3. Extract text/IOCs locally (PDF text, email headers, scripts, strings from binaries) and `quick_enrich` the consolidated IOC list.
+4. Only escalate to upload + `analyse_pe`/`yara_scan` when verdicts genuinely require deeper inspection.
+
+The upload tools above are the *escalation* path, not the default.
+
 ## PE File Analysis
 
 `tools/pe_analysis.py` performs deep static analysis on PE files (`.exe`, `.dll`, `.sys`, `.ocx`, `.scr`):
