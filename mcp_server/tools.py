@@ -5211,6 +5211,118 @@ def _register_tier3(mcp: FastMCP) -> None:
         )
         return _json(_pop_message(result))
 
+    @mcp.tool(title="Analyse Memory Dump (Volatility3)")
+    async def analyse_memory_volatility(
+        case_id: str,
+        full: bool = False,
+        per_plugin_timeout_seconds: int = 600,
+    ) -> str:
+        """Volatility3 deep memory-dump analysis: pslist, psscan, netscan,
+        cmdline, malfind, svcscan. Auto-detects Windows/Linux/macOS.
+
+        Run after ``analyse_memory_dump`` when string findings warrant deep
+        process / network / injection inspection. Set ``full=True`` to also
+        run DllList / Modules (much slower). Requires Volatility3 on PATH.
+        """
+        _require_scope("investigations:submit")
+        _check_client_boundary(case_id)
+
+        from api import actions
+        result = await asyncio.to_thread(
+            lambda: actions.analyse_memory_volatility_action(
+                case_id, full=full,
+                per_plugin_timeout_seconds=per_plugin_timeout_seconds,
+            )
+        )
+        return _json(_pop_message(result))
+
+    @mcp.tool(title="Analyse Office Document", annotations={"readOnlyHint": True})
+    async def analyse_office(file_path: str, case_id: str) -> str:
+        """Extract VBA / XLM macros, autoexec triggers, suspicious keywords,
+        DDE fields, and external template targets from DOC/DOCX/XLS/XLSX/
+        PPT/PPTM/RTF. File must already be on the server."""
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from tools.office_analyse import office_analyse
+        result = await asyncio.to_thread(lambda: office_analyse(file_path, case_id))
+        return _json(result)
+
+    @mcp.tool(title="Analyse PDF (Deep)", annotations={"readOnlyHint": True})
+    async def analyse_pdf(file_path: str, case_id: str) -> str:
+        """Object-level PDF static analysis: JavaScript bodies,
+        OpenAction/AdditionalActions, Launch/URI/SubmitForm targets,
+        embedded files with hashes, URI annotations. Complements the
+        pymupdf metadata in ``analyse_static_file``."""
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from tools.pdf_analyse import pdf_analyse
+        result = await asyncio.to_thread(lambda: pdf_analyse(file_path, case_id))
+        return _json(result)
+
+    @mcp.tool(title="Analyse Shell Link (.lnk)", annotations={"readOnlyHint": True})
+    async def analyse_lnk(file_path: str, case_id: str) -> str:
+        """Parse a Windows .lnk: target binary, arguments, working directory,
+        icon path, distributed-link tracker (machine ID, MAC), volume info.
+        Flags LOLBin targets and PowerShell evasion command lines."""
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from tools.lnk_analyse import lnk_analyse
+        result = await asyncio.to_thread(lambda: lnk_analyse(file_path, case_id))
+        return _json(result)
+
+    @mcp.tool(title="Analyse OneNote (.one)", annotations={"readOnlyHint": True})
+    async def analyse_onenote(file_path: str, case_id: str) -> str:
+        """Extract embedded attachments from a OneNote section file by
+        walking the FileDataStoreObject markers. Each embedded payload is
+        written to ``artefacts/onenote/`` with a guessed extension."""
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from tools.onenote_analyse import onenote_analyse
+        result = await asyncio.to_thread(lambda: onenote_analyse(file_path, case_id))
+        return _json(result)
+
+    @mcp.tool(title="Analyse Mach-O Binary", annotations={"readOnlyHint": True})
+    async def analyse_macho(file_path: str, case_id: str) -> str:
+        """Static analysis of a Mach-O (macOS) binary: per-slice header,
+        load commands, linked dylibs, code-signature presence, encrypted
+        segments, rpaths. Handles fat / universal binaries."""
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from tools.macho_analyse import macho_analyse
+        result = await asyncio.to_thread(lambda: macho_analyse(file_path, case_id))
+        return _json(result)
+
+    @mcp.tool(title="Analyse Disk Image", annotations={"readOnlyHint": True})
+    async def analyse_disk_image(file_path: str, case_id: str) -> str:
+        """ISO / IMG / VHD / VHDX container analysis. ISO contents are
+        walked via pycdlib — every file listed with size + SHA-256, risky
+        extensions (.exe/.lnk/.js/.vbs/.ps1) auto-extracted under
+        ``artefacts/disk_images/``. VHD/VHDX surface metadata only — mount
+        the embedded filesystem externally to inspect contents."""
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from tools.disk_image_analyse import disk_image_analyse
+        result = await asyncio.to_thread(lambda: disk_image_analyse(file_path, case_id))
+        return _json(result)
+
+    @mcp.tool(title="Analyse MSI Installer", annotations={"readOnlyHint": True})
+    async def analyse_msi(file_path: str, case_id: str) -> str:
+        """Walk an MSI's OLE2 streams, decode MSI-tag stream names, surface
+        SummaryInformation, and extract embedded PE/script payloads to
+        ``artefacts/msi/`` for downstream PE / YARA analysis."""
+        _require_scope("investigations:read")
+        _check_client_boundary(case_id)
+
+        from tools.msi_analyse import msi_analyse
+        result = await asyncio.to_thread(lambda: msi_analyse(file_path, case_id))
+        return _json(result)
+
 
 # ---------------------------------------------------------------------------
 # Intelligence tier — semantic memory, baselines, GeoIP

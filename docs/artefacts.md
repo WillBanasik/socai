@@ -43,6 +43,16 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/fp_comms/fp_ticket_manifest.json` | FP ticket generation metadata |
 | `cases/<ID>/artefacts/timeline/timeline.json` | Forensic timeline with sorted events + LLM analysis |
 | `cases/<ID>/artefacts/analysis/pe_analysis.json` | Deep PE file analysis (imports, entropy, packers) |
+| `cases/<ID>/artefacts/analysis/<file>.office_analysis.json` | Office macro / DDE / template-injection analysis (DOC/XLS/DOCX/XLSX/PPTM/RTF) |
+| `cases/<ID>/artefacts/analysis/<file>.pdf_analysis.json` | Deep PDF analysis — JS bodies, action triggers, embedded files, URI annotations |
+| `cases/<ID>/artefacts/analysis/<file>.lnk_analysis.json` | Windows shell link parse — target, args, tracker block, volume info |
+| `cases/<ID>/artefacts/analysis/<file>.onenote_analysis.json` | OneNote section file embed listing (file metadata) |
+| `cases/<ID>/artefacts/onenote/<file>__embed_<idx>.<ext>` | Embedded files extracted from a OneNote section |
+| `cases/<ID>/artefacts/analysis/<file>.macho_analysis.json` | Mach-O (macOS) static analysis — per-slice header, dylibs, code-signature |
+| `cases/<ID>/artefacts/analysis/<file>.disk_image_analysis.json` | ISO/IMG/VHD/VHDX container analysis |
+| `cases/<ID>/artefacts/disk_images/<image>/<file>` | Files auto-extracted from ISO/IMG carriers (risky extensions and small files) |
+| `cases/<ID>/artefacts/analysis/<file>.msi_analysis.json` | MSI installer analysis — OLE2 streams, SummaryInformation, CustomAction |
+| `cases/<ID>/artefacts/msi/<file>__stream_<i>.<ext>` | Embedded payloads extracted from MSI streams |
 | `cases/<ID>/artefacts/yara/yara_results.json` | YARA scan match results |
 | `cases/<ID>/artefacts/yara/generated_rules.yar` | LLM-generated case-specific YARA rules |
 | `cases/<ID>/artefacts/evtx/evtx_correlation.json` | Windows Event Log attack chain detection |
@@ -71,6 +81,7 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/memory/dump_guidance_manifest.json` | Memory dump guidance metadata |
 | `cases/<ID>/artefacts/memory/memory_analysis.json` | Memory dump analysis results (strings, PE headers, patterns, risk) |
 | `cases/<ID>/artefacts/memory/memory_analysis_manifest.json` | Memory analysis metadata |
+| `cases/<ID>/artefacts/memory/<dump>.volatility.json` | Volatility3 deep analysis — per-plugin output + summary IOCs (pslist, netscan, malfind, cmdline, svcscan) |
 | `cases/<ID>/logs/mde_memory_dump.parsed.json` | Normalised memory dump findings for downstream pipeline |
 | `cases/<ID>/artefacts/browser_session/session_manifest.json` | Browser session investigation summary (DNS queries, TLS SNI, network stats) |
 | `cases/<ID>/artefacts/browser_session/capture.pcap` | Raw packet capture from browser session |

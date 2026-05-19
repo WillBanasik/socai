@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, STRINGS_MIN_LEN
-from tools.common import log_error, utcnow, write_artefact
+from tools.common import eprint, log_error, utcnow, write_artefact
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,33 +48,121 @@ def _entropy(data: bytes) -> float:
     return -sum((c / n) * math.log2(c / n) for c in freq if c)
 
 
-def _detect_type(data: bytes, filename: str) -> str:
-    """Simple magic-byte detection without python-magic dependency."""
-    sigs = {
-        b"MZ":       "PE/DOS executable",
-        b"\x7fELF":  "ELF executable",
-        b"PK\x03\x04": "ZIP archive",
-        b"\x1f\x8b": "GZip archive",
-        b"BZh":      "BZip2 archive",
-        b"%PDF":     "PDF document",
-        b"\xff\xd8\xff": "JPEG image",
-        b"\x89PNG":  "PNG image",
-        b"GIF8":     "GIF image",
-        b"<!DOCTYPE": "HTML document",
-        b"<html":    "HTML document",
-        b"#!/":      "Shell script",
-    }
-    for magic, label in sigs.items():
+_OFFICE_OOXML_EXTS = {".docx", ".docm", ".xlsx", ".xlsm", ".xlsb",
+                      ".pptx", ".pptm", ".potm", ".dotm", ".vsdm"}
+_OFFICE_LEGACY_EXTS = {".doc", ".dot", ".xls", ".xlt", ".ppt", ".pot",
+                       ".vsd"}
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+_LNK_MAGIC = b"L\x00\x00\x00\x01\x14\x02\x00"
+_ONENOTE_MAGIC = bytes.fromhex("e4525c7b8cd8a74daeb15378d02996d3")  # OneNote section
+_MACHO_MAGICS = (
+    b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+    b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca",
+)
+_VHD_FOOTER_COOKIE = b"conectix"
+_VHDX_HEADER_COOKIE = b"vhdxfile"
+_RTF_MAGIC = b"{\\rtf"
+
+
+def _ole2_is_msi(data: bytes) -> bool:
+    """Heuristic — MSI compound docs include a 'DigitalProductID' or
+    '!_Tables' stream. Cheap proxy: look for the 'msi' creator string."""
+    return b"Microsoft.Windows.Installer" in data[:65536] or \
+           b"intel;1033" in data[:65536]
+
+
+def _detect_type(data: bytes, filename: str, file_path: Path | None = None) -> str:
+    """Magic-byte + extension detection covering executables, archives,
+    Office (modern + legacy), PDF, OneNote, LNK, MSI, ISO/IMG/VHD/VHDX,
+    Mach-O variants, and memory-dump containers."""
+    head = data[:64]
+    ext = Path(filename).suffix.lower()
+
+    # ---- Mach-O variants (check before generic MZ) -----------------------
+    if head[:4] in _MACHO_MAGICS:
+        head4 = head[:4]
+        if head4 in (b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+                     b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"):
+            return "Mach-O universal binary"
+        return "Mach-O executable"
+
+    sigs = [
+        (b"MZ",            "PE/DOS executable"),
+        (b"\x7fELF",       "ELF executable"),
+        (b"PK\x03\x04",    "ZIP archive"),
+        (b"\x1f\x8b",      "GZip archive"),
+        (b"BZh",           "BZip2 archive"),
+        (b"7z\xbc\xaf\x27\x1c", "7-Zip archive"),
+        (b"Rar!\x1a\x07",  "RAR archive"),
+        (b"%PDF",          "PDF document"),
+        (b"\xff\xd8\xff",  "JPEG image"),
+        (b"\x89PNG",       "PNG image"),
+        (b"GIF8",          "GIF image"),
+        (b"<!DOCTYPE",     "HTML document"),
+        (b"<html",         "HTML document"),
+        (b"#!/",           "Shell script"),
+        (_RTF_MAGIC,       "RTF document"),
+        (_LNK_MAGIC,       "Windows shell link (.lnk)"),
+        (b"MSCF",          "Microsoft Cabinet (.cab)"),
+        (b"PAGEDU64",      "Windows kernel memory dump"),
+        (b"PAGEDUMP",      "Windows kernel memory dump"),
+        (b"MDMP",          "Windows minidump"),
+        (b"HIBR",          "Windows hibernation file"),
+        (_VHDX_HEADER_COOKIE, "VHDX disk image"),
+    ]
+    for magic, label in sigs:
         if data.startswith(magic):
             return label
-    # Fallback: check extension
-    ext = Path(filename).suffix.lower()
+
+    # OneNote section file (.one) — 16-byte file-type GUID at offset 0
+    if data.startswith(_ONENOTE_MAGIC):
+        return "OneNote section (.one)"
+
+    # ISO 9660 — Volume Descriptor identifier at LBA 16 (offset 32768)
+    if len(data) > 32768 + 6:
+        if data[32769:32774] in (b"CD001", b"BEA01", b"NSR02", b"NSR03"):
+            return "ISO 9660 disk image"
+
+    # VHD — footer cookie 'conectix' in last 512 bytes
+    if len(data) >= 512 and data[-512:].startswith(_VHD_FOOTER_COOKIE):
+        return "VHD disk image"
+
+    # OLE2 compound — could be DOC/XLS/PPT/MSI/VSD; differentiate by extension
+    if data.startswith(_OLE2_MAGIC):
+        if ext == ".msi" or _ole2_is_msi(data):
+            return "MSI installer"
+        if ext in _OFFICE_LEGACY_EXTS:
+            return f"Office legacy ({ext.lstrip('.').upper()})"
+        return "OLE2 compound document"
+
+    # OOXML packages — these are ZIPs, but caught earlier as ZIP unless we
+    # check extension to refine the label.
+    if ext in _OFFICE_OOXML_EXTS:
+        return f"Office OOXML ({ext.lstrip('.').upper()})"
+
+    # Fallback: check extension for scripts / data
     ext_map = {
         ".py": "Python script", ".js": "JavaScript",
         ".ps1": "PowerShell script", ".bat": "Windows batch file",
-        ".vbs": "VBScript", ".csv": "CSV data",
-        ".json": "JSON data", ".xml": "XML document",
-        ".txt": "Plain text", ".log": "Log file",
+        ".cmd": "Windows batch file", ".vbs": "VBScript",
+        ".vbe": "VBScript (encoded)", ".jse": "JScript (encoded)",
+        ".hta": "HTML Application (HTA)",
+        ".csv": "CSV data", ".json": "JSON data",
+        ".xml": "XML document", ".txt": "Plain text", ".log": "Log file",
+        ".one": "OneNote section (.one)",
+        ".onetoc2": "OneNote table of contents",
+        ".img": "Raw disk image (.img)",
+        ".iso": "ISO 9660 disk image",
+        ".vhd": "VHD disk image",
+        ".vhdx": "VHDX disk image",
+        ".dmp": "Memory/crash dump (.dmp)",
+        ".mem": "Memory dump (.mem)",
+        ".vmem": "VMware memory dump (.vmem)",
+        ".raw": "Raw memory dump (.raw)",
+        ".eml": "Email message (.eml)",
+        ".msg": "Outlook message (.msg)",
     }
     return ext_map.get(ext, "Unknown/Binary")
 
@@ -145,9 +233,56 @@ def _pdf_metadata(data: bytes) -> dict | None:
         return None
 
 
+_SPECIALIST_DISPATCH: dict[str, tuple[str, str]] = {
+    # file_type label -> (module name, function name)
+    "PDF document":              ("tools.pdf_analyse",         "pdf_analyse"),
+    "Windows shell link (.lnk)": ("tools.lnk_analyse",         "lnk_analyse"),
+    "OneNote section (.one)":    ("tools.onenote_analyse",     "onenote_analyse"),
+    "OneNote table of contents": ("tools.onenote_analyse",     "onenote_analyse"),
+    "MSI installer":             ("tools.msi_analyse",         "msi_analyse"),
+    "Mach-O executable":         ("tools.macho_analyse",       "macho_analyse"),
+    "Mach-O universal binary":   ("tools.macho_analyse",       "macho_analyse"),
+    "ISO 9660 disk image":       ("tools.disk_image_analyse",  "disk_image_analyse"),
+    "Raw disk image (.img)":     ("tools.disk_image_analyse",  "disk_image_analyse"),
+    "VHD disk image":            ("tools.disk_image_analyse",  "disk_image_analyse"),
+    "VHDX disk image":           ("tools.disk_image_analyse",  "disk_image_analyse"),
+}
+
+
+def _dispatch_specialist(file_type: str, file_path: Path, case_id: str) -> dict | None:
+    """Route OOXML / legacy Office / specialist types to dedicated analysers."""
+    if file_type.startswith("Office OOXML") or file_type.startswith("Office legacy"):
+        target = ("tools.office_analyse", "office_analyse")
+    else:
+        target = _SPECIALIST_DISPATCH.get(file_type)
+    if target is None:
+        return None
+    module_name, func_name = target
+    try:
+        mod = __import__(module_name, fromlist=[func_name])
+        fn = getattr(mod, func_name)
+    except Exception as exc:
+        log_error(case_id, "static_file_analyse.dispatch",
+                  f"failed to load {module_name}.{func_name}: {exc}",
+                  severity="warning")
+        return None
+    try:
+        return fn(file_path, case_id)
+    except Exception as exc:
+        log_error(case_id, "static_file_analyse.dispatch",
+                  f"{module_name}.{func_name} raised: {exc}",
+                  severity="warning",
+                  context={"file": str(file_path), "file_type": file_type})
+        return None
+
+
 def static_file_analyse(file_path: str | Path, case_id: str) -> dict:
     """
     Run static analysis on *file_path* and save results under the case.
+
+    Detection routes specialist file types (Office, PDF, LNK, OneNote, MSI,
+    Mach-O, ISO/IMG/VHD/VHDX) to their dedicated analysers; the deep manifest
+    is returned under ``specialist_analysis`` and key flags are merged in.
     """
     file_path = Path(file_path)
     data = file_path.read_bytes()
@@ -157,7 +292,7 @@ def static_file_analyse(file_path: str | Path, case_id: str) -> dict:
     analysis_dir.mkdir(parents=True, exist_ok=True)
 
     strings_list = _extract_strings_py(data, STRINGS_MIN_LEN)
-    file_type = _detect_type(data, filename)
+    file_type = _detect_type(data, filename, file_path)
 
     result = {
         "filename": filename,
@@ -172,6 +307,7 @@ def static_file_analyse(file_path: str | Path, case_id: str) -> dict:
         "strings_sample": strings_list[:200],
         "pe_metadata": _pe_metadata(data) if data[:2] == b"MZ" else None,
         "pdf_metadata": _pdf_metadata(data) if file_type == "PDF document" else None,
+        "specialist_analysis": None,
         "flags": [],
     }
 
@@ -201,10 +337,22 @@ def static_file_analyse(file_path: str | Path, case_id: str) -> dict:
         for kw in pdf_meta.get("suspicious_keywords", []):
             result["flags"].append(f"PDF_SUSPICIOUS_KEYWORD: {kw} found")
 
+    # ---- Specialist dispatch --------------------------------------------
+    specialist = _dispatch_specialist(file_type, file_path, case_id)
+    if specialist is not None:
+        result["specialist_analysis"] = specialist
+        for sf in specialist.get("flags", []) or []:
+            result["flags"].append(f"SPECIALIST: {sf}")
+        if specialist.get("status") not in ("ok", None):
+            result["flags"].append(
+                f"SPECIALIST_STATUS: {specialist.get('status')}"
+                + (f" — {specialist.get('reason')}" if specialist.get('reason') else "")
+            )
+
     out_path = analysis_dir / f"{filename}.analysis.json"
     write_artefact(out_path, json.dumps(result, indent=2))
-    print(f"[static_file_analyse] {filename}: {result['file_type']}, "
-          f"entropy={result['entropy']}, flags={result['flags']}")
+    eprint(f"[static_file_analyse] {filename}: {result['file_type']}, "
+           f"entropy={result['entropy']}, flags={len(result['flags'])}")
     return result
 
 

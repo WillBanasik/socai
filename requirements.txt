@@ -14,8 +14,16 @@ playwright>=1.43.0
 # PowerPoint report generation
 python-pptx>=0.6.21
 
-# Optional – PE file analysis
-# pefile>=2023.2.7
+# File-format analysers (hard requirements)
+pefile>=2023.2.7                # PE/DOS executables (.exe/.dll/.sys)
+oletools>=0.60.1                # Office macros (DOC/XLS/DOCM/XLSM), MSI streams
+olefile>=0.47                   # OLE2 compound documents (MSI, legacy Office)
+pdfminer.six>=20231228          # PDF structure + active content
+pikepdf>=8.7.1                  # PDF object/JavaScript extraction
+LnkParse3>=1.4.0                # Windows .lnk shortcuts
+macholib>=1.16.3                # Mach-O (macOS) binaries
+pycdlib>=1.14.0                 # ISO 9660 / Joliet / Rock Ridge / UDF
+volatility3>=2.7.0              # Memory dump analysis (pslist/netscan/malfind/etc.)
 
 # Optional – YARA scanning
 # yara-python>=4.3.0
@@ -31,6 +39,12 @@ python-pptx>=0.6.21
 
 # MCP server
 mcp>=1.1.0
+# Pin starlette / sse-starlette to a range compatible with both mcp and any
+# FastAPI 0.x ecosystem packages that may share the environment. Without
+# these, pip will resolve sse-starlette to 3.x (requires starlette>=0.49.1)
+# which breaks FastAPI <0.135.
+starlette>=0.40,<0.48
+sse-starlette>=1.6.1,<3
 
 # Auth (shared: MCP server + user management)
 python-jose[cryptography]>=3.3.0

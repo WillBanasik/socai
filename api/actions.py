@@ -914,6 +914,54 @@ def analyse_memory_dump_action(case_id: str, run_analysis: bool = True) -> dict:
     return _run_action(case_id, "analyse_memory_dump", _do)
 
 
+def analyse_memory_volatility_action(
+    case_id: str,
+    *,
+    full: bool = False,
+    per_plugin_timeout_seconds: int = 600,
+) -> dict:
+    """Run Volatility3 against every memory dump in the case uploads dir."""
+    def _do():
+        from tools.memory_volatility import analyse_memory_volatility
+
+        uploads_dir = CASES_DIR / case_id / "uploads"
+        if not uploads_dir.exists():
+            return {"_message": "No uploads directory found — upload a memory dump first."}
+
+        dumps = sorted(
+            f for f in uploads_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in (".dmp", ".dump", ".raw", ".mem", ".vmem", ".bin")
+        )
+        if not dumps:
+            return {"_message": "No memory dump files found (.dmp/.dump/.raw/.mem/.vmem/.bin)."}
+
+        results = []
+        for d in dumps:
+            results.append(analyse_memory_volatility(
+                d, case_id, full=full,
+                per_plugin_timeout_seconds=per_plugin_timeout_seconds,
+            ))
+
+        lines = [f"Volatility3 analysis on {len(results)} dump(s):"]
+        for r in results:
+            os_name = r.get("detected_os") or r.get("status")
+            summary = r.get("summary", {}) or {}
+            lines.append(
+                f"  • {Path(r['dump_path']).name}: os={os_name}, "
+                f"procs={summary.get('process_count', 0)}, "
+                f"malfind={len(summary.get('malfind_hits', []))}, "
+                f"ext_conns={len(summary.get('external_connections', []))}"
+            )
+
+        return {
+            "dumps_analysed": len(results),
+            "results": results,
+            "_message": "\n".join(lines),
+        }
+
+    return _run_action(case_id, "analyse_memory_volatility", _do)
+
+
 def parse_logs_action(case_id: str) -> dict:
     """Parse log files from case uploads directory."""
     def _do():

@@ -103,8 +103,8 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 
 | Permission | Grants |
 |---|---|
-| `investigations:read` | list_cases, case_summary, read_report, read_case_file, recall_cases, recall_semantic, classify_attack, plan_investigation, get_client_baseline, resources |
-| `investigations:submit` | capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, analyse_pe, yara_scan, memory tools, all write tools, rebuild_client_baseline |
+| `investigations:read` | list_cases, case_summary, read_report, read_case_file, recall_cases, recall_semantic, classify_attack, plan_investigation, get_client_baseline, analyse_static_file, analyse_office, analyse_pdf, analyse_lnk, analyse_onenote, analyse_macho, analyse_disk_image, analyse_msi, resources |
+| `investigations:submit` | capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, analyse_pe, yara_scan, analyse_memory_dump, analyse_memory_volatility, memory_dump_guide, all write tools, rebuild_client_baseline |
 | `enrichment:run` | geoip_lookup |
 | `campaigns:read` | campaign_cluster, assess_landscape, search_threat_articles |
 | `sentinel:query` | run_kql, load_kql_playbook, generate_sentinel_query, run_kql_batch |
@@ -135,7 +135,7 @@ python3 -c "from api.auth import create_token_for_role; print(create_token_for_r
 
 When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg-soc-analyst`, `sg-soc-senior`) to these role names in the auth config.
 
-## Tools (107)
+## Tools (115)
 
 ### Tier 1 -- Core Investigation (29)
 
@@ -280,9 +280,17 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `list_browser_session_files` | `admin` | List artefacts in a browser session directory |
 | `import_browser_session` | `admin` | Import caseless session artefacts into an existing case |
 | `analyse_pe` | `investigations:submit` | Deep PE static analysis (entropy, imports, packing) |
+| `analyse_office` | `investigations:read` | Office macro / DDE / template-injection analysis (DOC/XLS/DOCX/XLSX/PPTM/RTF) |
+| `analyse_pdf` | `investigations:read` | Deep PDF — JS bodies, action triggers, embedded files, URI annotations |
+| `analyse_lnk` | `investigations:read` | Windows shell link parse — target, args, tracker block, volume info |
+| `analyse_onenote` | `investigations:read` | OneNote section embedded-file extraction (FileDataStoreObject) |
+| `analyse_macho` | `investigations:read` | Mach-O (macOS) static analysis — slices, dylibs, code-signature |
+| `analyse_disk_image` | `investigations:read` | ISO / IMG / VHD / VHDX container analysis with auto-extraction |
+| `analyse_msi` | `investigations:read` | MSI installer — OLE2 streams, CustomAction, embedded payload extraction |
 | `yara_scan` | `investigations:submit` | YARA rule scanning (built-in + external + LLM-generated) |
 | `memory_dump_guide` | `investigations:submit` | MDE Live Response dump collection guidance |
 | `analyse_memory_dump` | `investigations:submit` | Process memory dump analysis (strings, IOCs, risk scoring) |
+| `analyse_memory_volatility` | `investigations:submit` | Volatility3 deep analysis — pslist/netscan/malfind/cmdline; auto OS-detect |
 
 ## Resources (46)
 

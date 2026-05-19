@@ -104,11 +104,25 @@ All investigative output — conversational analysis, reports, case artefacts �
 
 ## Handling Files in Claude Desktop
 
-When a file arrives in Claude Desktop's sandbox (PDF, doc, script, binary, archive, email), use the **`triage_file`** MCP prompt — it walks through Desktop-side extraction (hash, file type, IOCs) and only escalates to server-side upload when YARA / deep PE / sandbox detonation is actually required.
+When a file arrives in Claude Desktop's sandbox (PDF, doc, script, binary, archive, email), use the **`triage_file`** MCP prompt — it walks through Desktop-side extraction (hash, file type, IOCs) and only escalates to server-side upload when deep static analysis or sandbox detonation is actually required.
 
 **Why:** Every byte shipped through the MCP transport costs context window space. `upload_file_content` (in-band base64) is especially costly — bytes land in the chat transcript and persist for the session. The default cap is 2 MB raw; anything larger must use `prepare_file_upload` + curl. For most malicious-file work the file does not need to leave the sandbox at all.
 
 The upload tools (`prepare_file_upload`, `upload_file_content`) are the escalation path, not the default.
+
+**Server-side specialist analysers** (call after the file is on the MCP server, e.g. via `prepare_file_upload`):
+
+- `analyse_static_file` — generic triage + magic-byte detection; auto-dispatches to the right specialist below
+- `analyse_pe` — Windows PE (.exe .dll .sys); auto-runs YARA
+- `analyse_office` — DOC / XLS / DOCM / XLSM / PPTM / RTF macros + DDE + template injection
+- `analyse_pdf` — JS, OpenAction/AA, Launch/URI/SubmitForm, embedded files
+- `analyse_lnk` — Windows shortcut target/args/tracker block
+- `analyse_onenote` — OneNote `.one` embedded-file extraction
+- `analyse_macho` — Mach-O (macOS) header, dylibs, code-signature
+- `analyse_disk_image` — ISO/IMG content walk; VHD/VHDX metadata
+- `analyse_msi` — MSI OLE2 streams + embedded payload extraction
+- `analyse_memory_dump` — fast string/IOC/pattern scan of `.dmp`/`.mem`/`.raw`
+- `analyse_memory_volatility` — Volatility3 pslist/netscan/malfind/cmdline/svcscan with auto OS detection
 
 ## Critical Conventions
 

@@ -121,7 +121,7 @@ The prompt picker exposes guided workflows for the most common SOC tasks (full H
 
 When the analyst drops a file into the chat (PDF, email, script, document, archive, binary), select the file-triage prompt and follow its workflow. The guiding principle is:
 
-> Do as much as possible where the file is. Ship bytes to the MCP server only when YARA, deep PE, or sandbox detonation is genuinely required.
+> Do as much as possible where the file is. Ship bytes to the MCP server only when a specialist server-side analyser (YARA, deep PE, macros, PDF JS extraction, Volatility3 memory analysis, etc.) or sandbox detonation is genuinely required.
 
 Every byte that crosses the MCP transport — whether via the HTTP upload path (`prepare_file_upload`) or the in-band base64 path (`upload_file_content`) — costs context window space (in-band especially: the bytes land in the chat transcript and persist for the rest of the session). Doing the work locally keeps the file in the sandbox and only ships the small structured findings back.
 
@@ -133,7 +133,7 @@ Every byte that crosses the MCP transport — whether via the HTTP upload path (
 4. Decide based on verdicts:
    - **Clean across the board** → close as benign, no case required.
    - **Malicious/suspicious signal** → create a case with `create_case(..., enrichment_id=<id>)` or `import_enrichment` on an existing case (no re-enrichment).
-   - **Need YARA / deep PE / sandbox** → only now ship: `prepare_file_upload` + curl from the sandbox is the preferred path; in-band `upload_file_content` is a last-resort fallback (2 MB cap).
+   - **Need a specialist server-side analyser** → only now ship: `prepare_file_upload` + curl from the sandbox is the preferred path; in-band `upload_file_content` is a last-resort fallback (2 MB cap). Once on the server, call `analyse_static_file` (it auto-dispatches to the right specialist: `analyse_pe`, `analyse_office`, `analyse_pdf`, `analyse_lnk`, `analyse_onenote`, `analyse_macho`, `analyse_disk_image`, `analyse_msi`) — or for memory dumps, `analyse_memory_dump` followed by `analyse_memory_volatility` if deep process/network/injection forensics are needed.
 
 This pattern dramatically reduces the chance of hitting Claude Desktop's "conversation too long" error mid-investigation.
 

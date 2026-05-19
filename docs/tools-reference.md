@@ -522,6 +522,72 @@ The upload tools above are the *escalation* path, not the default.
 
 **Auto-YARA scanning:** The MCP `analyse_pe` tool has `run_yara=True` by default. YARA scanning runs automatically after PE analysis — both results returned in a single tool call. Set `run_yara=False` to skip. Set `generate_yara_rules=True` to create custom rules from PE findings.
 
+## Office Document Analysis
+
+`tools/office_analyse.py` (MCP tool `analyse_office`) extracts macros and active content from Microsoft Office documents — both modern OOXML (`.docx .docm .xlsx .xlsm .xlsb .pptm`) and legacy OLE2 (`.doc .xls .ppt`):
+
+- Dependency: `oletools` (hard requirement)
+- Per-file: VBA + XLM macros (deobfuscated), autoexec triggers, suspicious keyword hits, IOC strings inside macros, external `.rels` template targets (template injection), DDE/DDEAUTO field codes, OLE stream listing
+- Analysis via prompt: pair with the `triage_file` MCP prompt for verdicting
+- Output: `artefacts/analysis/<filename>.office_analysis.json`
+
+## PDF Deep Analysis
+
+`tools/pdf_analyse.py` (MCP tool `analyse_pdf`) goes beyond `analyse_static_file`'s pymupdf metadata to do object-level extraction:
+
+- Dependency: `pikepdf` (hard requirement)
+- Per-file: PDFiD-style keyword tallies, JavaScript object bodies, OpenAction / AdditionalActions / per-page action triggers, Launch / URI / SubmitForm action targets, embedded files (with sha256), URI annotations, encryption status
+- Output: `artefacts/analysis/<filename>.pdf_analysis.json`
+
+## Shell Link (`.lnk`) Analysis
+
+`tools/lnk_analyse.py` (MCP tool `analyse_lnk`) parses Windows shortcut files:
+
+- Dependency: `LnkParse3` (hard requirement)
+- Per-file: target path, command-line arguments, working directory, icon location, distributed-link tracker (machine ID, MAC), volume metadata (serial, drive type), header timestamps
+- Heuristic flags: LOLBin target detection, PowerShell evasion arguments, icon-spoofing (document icon for a code-launching shortcut), target-less shortcuts
+- Output: `artefacts/analysis/<filename>.lnk_analysis.json`
+
+## OneNote (`.one`) Analysis
+
+`tools/onenote_analyse.py` (MCP tool `analyse_onenote`) walks the OneNote binary for `FileDataStoreObject` markers and lifts each embedded payload:
+
+- No external dependency — pure binary parsing
+- Per embed: SHA-256, MD5, size, head-bytes hex, guessed extension, on-disk path under `artefacts/onenote/<file>__embed_<idx>.<ext>`
+- Heuristic flags: executable / script / archive payloads (`.exe .lnk .rtf .ole .zip .html .sh`)
+- Output: `artefacts/analysis/<filename>.onenote_analysis.json`
+
+## Mach-O (macOS) Analysis
+
+`tools/macho_analyse.py` (MCP tool `analyse_macho`) parses Mach-O binaries (FAT / universal supported):
+
+- Dependency: `macholib` (hard requirement)
+- Per-slice: CPU type, file type, load commands, linked dylibs (LC_LOAD_DYLIB / weak / re-export / lazy), code-signature presence (LC_CODE_SIGNATURE), encrypted segments (LC_ENCRYPTION_INFO), rpaths, segments, UUID
+- Heuristic flags: unsigned slices, encrypted segments, networking/infostealer dylibs, high overall entropy
+- Output: `artefacts/analysis/<filename>.macho_analysis.json`
+
+## Disk Image Analysis (ISO / IMG / VHD / VHDX)
+
+`tools/disk_image_analyse.py` (MCP tool `analyse_disk_image`) inspects disk-image carriers commonly used for ISO smuggling:
+
+- Dependencies: `pycdlib` for ISO 9660 / Joliet / Rock Ridge / UDF; raw byte parsing for VHD/VHDX
+- ISO/IMG: walks every file via pycdlib, computes sha256 + md5, auto-extracts small files and any risky extension (`.exe .dll .lnk .js .vbs .ps1 .bat .hta .cpl .msi …`) under `artefacts/disk_images/<image>/`
+- VHD/VHDX: surfaces metadata only (cookie, creator, disk type, geometry, unique ID). The embedded filesystem is not mounted — mount externally if contents need triage.
+- Output: `artefacts/analysis/<filename>.disk_image_analysis.json`
+
+## MSI Installer Analysis
+
+`tools/msi_analyse.py` (MCP tool `analyse_msi`) inspects Windows Installer packages (OLE2 compound documents):
+
+- Dependency: `olefile` (hard requirement)
+- Surfaces: OLE2 stream listing with MSI-tag decoded names (`!CustomAction`, `!Binary`, `!Property` etc.), SummaryInformation property set (creator, template, etc.)
+- Embedded payloads: any stream whose first bytes are MZ / ELF / script / ZIP / PDF / CAB are extracted to `artefacts/msi/<file>__stream_<i>.<ext>` for downstream PE / YARA analysis
+- Output: `artefacts/analysis/<filename>.msi_analysis.json`
+
+## Specialist Dispatch in `analyse_static_file`
+
+`tools/static_file_analyse.py` now recognises all of the above formats from magic bytes / extension and automatically calls the matching specialist analyser. The deep manifest is returned under `specialist_analysis` on the static-file analysis result, and key flags are merged into the parent `flags` array prefixed with `SPECIALIST:`. The analyst usually only needs to call `analyse_static_file` — escalation happens for free.
+
 ## YARA Scanning
 
 `tools/yara_scan.py` scans case files against YARA rules:
@@ -898,6 +964,20 @@ python3 socai.py memory-analyse /path/to/lsass.dmp --case IV_CASE_001
 ### Chat Tools
 
 `memory_dump_guide` and `analyse_memory_dump` are available in both case-mode and session-mode chat. File read failures in guidance retrieval are logged via `log_error()` rather than silently swallowed.
+
+### Volatility3 Deep Analysis
+
+`tools/memory_volatility.py` (MCP tool `analyse_memory_volatility`) escalates beyond `analyse_memory_dump`'s string-and-pattern triage to full process/network/injection forensics:
+
+- Dependency: `volatility3` (hard requirement; CLI `vol` must be on PATH)
+- OS auto-detection: `windows.pslist`, `linux.pslist`, `mac.pslist` are tried in order; the family that returns rows is used for the rest of the plugin set
+- Plugin set (default): `pslist`, `psscan`, `cmdline`, `netscan`, `netstat`, `malfind`, `svcscan` (Windows); `pslist`, `pstree`, `bash`, `lsof`, `malfind` (Linux); `pslist`, `psaux`, `lsof`, `malfind` (mac)
+- Heavy plugins (`dlllist`, `modules`) are skipped unless `full=True`
+- Per-plugin timeout via `per_plugin_timeout_seconds` (default 600 s)
+- Summarised IOCs: process count, external connections, malfind hits, suspicious LOLBin command lines (encoded PowerShell, `rundll32`, `mshta`, `certutil -urlcache`, etc.)
+- Output: `artefacts/memory/<dump>.volatility.json`
+
+Volatility3 is invoked via subprocess on the `vol` CLI — Volatility3 mutates process-wide framework state at import time, so subprocess isolation prevents pollution of the MCP server runtime.
 
 ## Disposable Browser Sessions
 

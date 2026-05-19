@@ -54,6 +54,22 @@ Memory Guidance (tools/memory_guidance.py)
     ├── Guide mode    → MDE Live Response ProcDump instructions contextual to alert
     └── Analyse mode  → .dmp file analysis (strings, PE headers, DLLs, risk scoring)
 
+Memory Volatility (tools/memory_volatility.py)
+    ├── Auto OS detect (Windows / Linux / macOS via pslist probe)
+    ├── Curated plugin set: pslist, psscan, netscan, cmdline, malfind, svcscan
+    ├── Subprocess-isolated `vol` CLI calls (Volatility3 mutates process state on import)
+    └── Summary IOCs: external connections, malfind regions, LOLBin command lines
+
+File-format Analysers (tools/{office,pdf,lnk,onenote,macho,disk_image,msi}_analyse.py)
+    ├── Office (oletools)       → VBA + XLM macros, DDE, external template targets
+    ├── PDF (pikepdf)           → JS bodies, action triggers, embedded files, URI annotations
+    ├── LNK (LnkParse3)         → target, args, tracker block (machine ID, MAC), volume info
+    ├── OneNote (built-in)      → FileDataStoreObject walk + embedded payload extraction
+    ├── Mach-O (macholib)       → per-slice header, dylibs, code-signature, encrypted segments
+    ├── Disk image (pycdlib)    → ISO content walk + auto-extract; VHD/VHDX metadata
+    └── MSI (olefile)           → OLE2 streams, CustomAction, embedded payload extraction
+    These are auto-dispatched from `tools/static_file_analyse.py` based on magic-byte detection.
+
 Browser Session (tools/browser_session.py)
     ├── Docker (socai-browser:latest)       → vanilla Chrome via noVNC (:7900), bridge networking, no automation markers
     ├── tcpdump (passive capture)           → DNS, TCP, HTTP, TLS SNI extraction (parsed inside container)
