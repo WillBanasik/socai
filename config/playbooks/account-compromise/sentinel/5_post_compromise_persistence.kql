@@ -1,0 +1,68 @@
+let target_upn = "{{upn}}";
+let investigation_window = {{lookback}};
+union
+(
+    AuditLogs
+    | where TimeGenerated > ago(investigation_window)
+    | where TargetResources has target_upn or InitiatedBy has target_upn
+    | where OperationName in (
+        // MFA and credential changes
+        "User registered security info",
+        "User registered all required security info",
+        "User started security info registration",
+        "User deleted security info",
+        "Admin registered security info",
+        "Reset password (by admin)",
+        "Reset password (self-service)",
+        "Change password (self-service)",
+        "User performed a self-service password reset",
+        // OAuth consent grants
+        "Consent to application",
+        // Conditional access
+        "Add conditional access policy",
+        "Update conditional access policy",
+        "Delete conditional access policy",
+        // App registrations and service principals
+        "Add service principal credentials",
+        "Update application – Certificates and secrets management"
+    )
+    | project
+        SourceTable = "AuditLogs",
+        TimeGenerated,
+        Activity = OperationName,
+        InitiatedBy = tostring(InitiatedBy),
+        TargetResources = tostring(TargetResources),
+        Result,
+        Detail = coalesce(ResultReason, ""),
+        Extra = tostring(AdditionalDetails),
+        ClientIP = "",
+        CorrelationId
+),
+(
+    OfficeActivity
+    | where TimeGenerated > ago(investigation_window)
+    | where UserId =~ target_upn
+    | where Operation in (
+        "New-InboxRule",
+        "Set-InboxRule",
+        "Enable-InboxRule",
+        "New-TransportRule",
+        "Set-TransportRule",
+        "UpdateInboxRules",
+        // Mail forwarding
+        "Set-Mailbox",
+        "Set-MailboxJunkEmailConfiguration"
+    )
+    | project
+        SourceTable = "OfficeActivity",
+        TimeGenerated,
+        Activity = Operation,
+        InitiatedBy = UserId,
+        TargetResources = "",
+        Result = ResultStatus,
+        Detail = tostring(Parameters),
+        Extra = "",
+        ClientIP,
+        CorrelationId = ""
+)
+| sort by TimeGenerated desc

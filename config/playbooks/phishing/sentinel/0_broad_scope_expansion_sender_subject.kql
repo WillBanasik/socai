@@ -1,0 +1,50 @@
+let SeedLookup = EmailEvents
+    | where isnotempty("{{seed_message_id}}") and NetworkMessageId == "{{seed_message_id}}"
+    | top 1 by Timestamp asc
+    | project SeedSender = SenderFromAddress, SeedSubject = Subject;
+let SeedSender = toscalar(SeedLookup | project SeedSender);
+let SeedSubject = toscalar(SeedLookup | project SeedSubject);
+let TargetSender = iff(isempty("{{sender}}"), SeedSender, "{{sender}}");
+let TargetSubject = iff(isempty("{{subject}}"), SeedSubject, "{{subject}}");
+let CampaignEmails = EmailEvents
+    | where Timestamp >= ago({{lookback}})
+    | where isnotempty(TargetSender) and isnotempty(TargetSubject)
+    | where SenderFromAddress =~ TargetSender
+    | where Subject =~ TargetSubject
+    | project
+        NetworkMessageId,
+        Timestamp,
+        SenderFromAddress,
+        SenderFromDomain,
+        SenderMailFromAddress,
+        Subject,
+        RecipientEmailAddress,
+        DeliveryAction,
+        DeliveryLocation,
+        ThreatTypes,
+        DetectionMethods,
+        EmailDirection,
+        InternetMessageId;
+let CampaignClicks = UrlClickEvents
+    | where Timestamp >= ago({{lookback}})
+    | summarize ClickCount = count() by NetworkMessageId;
+CampaignEmails
+| join kind=leftouter CampaignClicks on NetworkMessageId
+| summarize
+    MessageCount = dcount(NetworkMessageId),
+    MessageIds = make_set(NetworkMessageId),
+    Recipients = make_set(RecipientEmailAddress),
+    RecipientCount = dcount(RecipientEmailAddress),
+    SenderDomains = make_set(SenderFromDomain),
+    MailFromAddresses = make_set(SenderMailFromAddress),
+    DeliveryActions = make_set(DeliveryAction),
+    DeliveryLocations = make_set(DeliveryLocation),
+    ThreatTypes = make_set(ThreatTypes),
+    DetectionMethods = make_set(DetectionMethods),
+    ClickedMessageCount = countif(isnotempty(ClickCount)),
+    TotalClicks = sum(ClickCount),
+    FirstSeen = min(Timestamp),
+    LastSeen = max(Timestamp)
+  by SenderFromAddress, Subject
+| extend SpansDays = datetime_diff('day', LastSeen, FirstSeen)
+| sort by MessageCount desc, LastSeen desc

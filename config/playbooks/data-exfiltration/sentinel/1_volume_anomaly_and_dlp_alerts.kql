@@ -1,0 +1,42 @@
+let target_user = "{{target_upn}}";
+let lookback = {{lookback}};
+let DLPAlerts = SecurityAlert
+    | where TimeGenerated >= ago(lookback)
+    | where Entities has target_user
+    | where AlertName has_any ("DLP", "data loss", "exfiltration", "mass download",
+                                "unusual volume", "sensitive data", "information protection")
+    | project
+        AlertTime = TimeGenerated,
+        AlertName,
+        Severity,
+        Description,
+        Entities;
+let OfficeVolume = OfficeActivity
+    | where TimeGenerated >= ago(lookback)
+    | where UserId =~ target_user
+    | where Operation in ("FileDownloaded", "FileUploaded", "FileSyncDownloadedFull",
+                           "FileModifiedExtended", "FileCopied")
+    | summarize
+        DownloadCount = countif(Operation in ("FileDownloaded", "FileSyncDownloadedFull")),
+        UploadCount = countif(Operation == "FileUploaded"),
+        CopyCount = countif(Operation == "FileCopied"),
+        UniqueFiles = dcount(SourceFileName),
+        Sites = make_set(Site_Url)
+      by bin(TimeGenerated, 1d), UserId;
+union
+(
+    DLPAlerts
+    | extend RecordType = "DLP_Alert"
+    | project RecordType, TimeGenerated = AlertTime, Detail = AlertName,
+              Severity, Extra = Description
+),
+(
+    OfficeVolume
+    | extend RecordType = "DailyVolume"
+    | project RecordType, TimeGenerated,
+              Detail = strcat("Downloads:", DownloadCount, " Uploads:", UploadCount,
+                              " Copies:", CopyCount, " UniqueFiles:", UniqueFiles),
+              Severity = "",
+              Extra = tostring(Sites)
+)
+| sort by TimeGenerated desc

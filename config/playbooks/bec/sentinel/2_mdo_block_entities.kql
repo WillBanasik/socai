@@ -1,0 +1,28 @@
+let targetIds = dynamic([{{target_ids}}]);
+// Malicious URLs to block
+let MaliciousUrls = EmailUrlInfo
+    | where NetworkMessageId in (targetIds)
+    | distinct Url
+    | extend BlockType = "URL", BlockAction = "Add to MDO Tenant Allow/Block List > URLs";
+// Sender addresses to block
+let MaliciousSenders = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | where EmailDirection == "Inbound"
+    | distinct SenderFromAddress, SenderMailFromAddress, SenderFromDomain
+    | extend BlockType = "Sender", BlockAction = "Add to MDO Tenant Allow/Block List > Senders";
+// Sender IPs (for transport rule blocking if needed)
+let SenderIPs = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | where EmailDirection == "Inbound"
+    | where isnotempty(SenderIPv4)
+    | distinct SenderIPv4
+    | extend BlockType = "SenderIP", BlockAction = "Consider transport rule block if IP is dedicated attacker infra";
+// Combine all block entities
+union
+    (MaliciousUrls | project Entity = Url, BlockType, BlockAction),
+    (MaliciousSenders | project Entity = SenderFromAddress, BlockType, BlockAction),
+    (MaliciousSenders | project Entity = SenderFromDomain, BlockType,
+        BlockAction = "Block entire domain if compromised third-party (not shared hosting)"),
+    (SenderIPs | project Entity = SenderIPv4, BlockType, BlockAction)
+| distinct Entity, BlockType, BlockAction
+| sort by BlockType asc, Entity asc

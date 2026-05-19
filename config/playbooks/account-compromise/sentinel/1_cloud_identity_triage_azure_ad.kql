@@ -1,0 +1,33 @@
+let target_upn = "{{upn}}";
+let investigation_window = {{lookback}};
+let AllSignIns = union
+    (
+        SigninLogs
+        | where TimeGenerated > ago(investigation_window)
+        | where UserPrincipalName =~ target_upn
+        | extend SignInType = "Interactive"
+    ),
+    (
+        AADNonInteractiveUserSignInLogs
+        | where TimeGenerated > ago(investigation_window)
+        | where UserPrincipalName =~ target_upn
+        | extend SignInType = "NonInteractive"
+    );
+// Triage summary — one row per IP/Location/App combination
+AllSignIns
+| summarize
+    TotalCount = count(),
+    SuccessCount = countif(ResultType == 0),
+    FailCount = countif(ResultType != 0),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated),
+    Apps = make_set(AppDisplayName, 15),
+    ResultCodes = make_set(ResultType, 15),
+    SignInTypes = make_set(SignInType),
+    Clients = make_set(ClientAppUsed, 10),
+    RiskLevels = make_set(RiskLevelDuringSignIn, 5),
+    ConditionalAccessStatuses = make_set(ConditionalAccessStatus, 5),
+    UserAgents = make_set(UserAgent, 5)
+    by IPAddress, Location
+| extend FailRate = round(100.0 * FailCount / TotalCount, 1)
+| sort by TotalCount desc

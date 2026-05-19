@@ -1,0 +1,53 @@
+# CrowdStrike Falcon NG-SIEM (LogScale / Humio) platform adapter.
+#
+# LogScale is the same query language CrowdStrike NG-SIEM uses (Humio acquired).
+# Capabilities depend on which connectors a client has configured; the set
+# below is the *maximum* this adapter supports. A specific client may have a
+# subset — when that matters we'll move client-specific capabilities into the
+# client_entities config.
+
+id: logscale
+name: CrowdStrike Falcon NG-SIEM (LogScale)
+description: >
+  CrowdStrike Falcon NG-SIEM (built on Humio/LogScale). CQL queries with
+  @dataConnectionID tagging to filter by connector. Native source for Falcon
+  endpoint, identity, and logon events; cloud / email events require a
+  forwarding connector.
+
+query_language: cql
+
+schema_ref: logscale
+
+# Capability names are deliberately vendor-neutral so the same name on
+# Sentinel and LogScale signals equivalent data. Each platform declares
+# the names it can satisfy via whichever connector / sensor it has.
+capabilities:
+  - device_process_events      # Falcon ProcessRollup → equivalent to Sentinel DeviceProcessEvents
+  - device_file_events         # Falcon FileWritten / FileOpened
+  - device_network_events      # Falcon NetworkConnect
+  - identity_logon             # Falcon UserLogon (and on-prem if Windows connector forwards)
+  - windows_security_events    # Windows Event Log (4624/4625/4769 etc.) via Windows connector
+  - sign_in_events             # via M365 connector forwarding azure.signinlogs into LogScale
+  # The following capabilities are NOT declared by default — declare them when
+  # the relevant connector is configured for a client:
+  #   - email_events           # M365 email connector forwarding MDO events
+  #   - email_url_clicks       # M365 email connector
+  #   - email_post_delivery    # M365 email connector
+  #   - office_activity        # M365 audit connector
+  #   - cloud_app_events       # MCAS / MDA connector
+  #   - service_principal_signins
+  #   - security_alerts
+
+template_syntax:
+  parameter_pattern: "{{name}}"
+  list_format: comma_quoted
+
+query_dir: logscale
+query_file_ext: cql
+
+# LogScale doesn't have a direct execution API in SOCAI yet. Render-only mode:
+# the loader returns the rendered query for the analyst to run manually in the
+# LogScale UI. When a CQL execution path is added (e.g. via the Falcon API),
+# replace this with mode: api + module/function pointing at the executor.
+executor:
+  mode: render_only

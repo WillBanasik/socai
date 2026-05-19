@@ -1,0 +1,41 @@
+let targetIds = dynamic([{{target_ids}}]);
+let Delivered = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | where DeliveryAction == "Delivered"
+    | project
+        DeliveryTime = Timestamp,
+        NetworkMessageId,
+        RecipientEmailAddress,
+        Subject,
+        DeliveryLocation,
+        SenderFromAddress;
+let PostDelivery = EmailPostDeliveryEvents
+    | where NetworkMessageId in (targetIds)
+    | project
+        NetworkMessageId,
+        RecipientEmailAddress,
+        ActionType,
+        ActionTrigger,
+        ActionResult,
+        RemediationTime = Timestamp;
+Delivered
+| join kind=leftouter PostDelivery on NetworkMessageId, RecipientEmailAddress
+| extend
+    Remediated = isnotempty(RemediationTime),
+    ExposureMinutes = iff(isnotempty(RemediationTime),
+        datetime_diff('minute', RemediationTime, DeliveryTime), -1),
+    RemediationType = coalesce(ActionType, "None"),
+    RemediationTrigger = coalesce(ActionTrigger, "None")
+| project
+    RecipientEmailAddress,
+    DeliveryTime,
+    DeliveryLocation,
+    Remediated,
+    RemediationType,
+    RemediationTrigger,
+    RemediationTime,
+    ExposureMinutes,
+    Subject,
+    SenderFromAddress,
+    NetworkMessageId
+| sort by Remediated asc, ExposureMinutes desc

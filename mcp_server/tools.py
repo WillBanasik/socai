@@ -816,7 +816,10 @@ def _register_tier1(mcp: FastMCP) -> None:
         return report_path.read_text(encoding="utf-8")
 
     @mcp.tool(title="Read Case File", annotations={"readOnlyHint": True})
-    def read_case_file(case_id: str, file_path: str) -> str:
+    def read_case_file(case_id: str, file_path: str):
+        # Return type intentionally untyped: this tool returns a string for text
+        # files and an Image object for screenshots; declaring `-> str` causes
+        # Pydantic output validation to reject the Image branch.
         """Use when you need to read a specific artefact file from a case — e.g.
         raw enrichment JSON, IOC lists, captured HTML, phishing detection results,
         screenshots, or any other file produced by the pipeline.
@@ -5722,6 +5725,42 @@ def _register_exposure(mcp: FastMCP) -> None:
         })
 
 
+def _register_audit(mcp: FastMCP) -> None:
+    """User-activity audit tooling — read-only views over the MCP server log."""
+
+    @mcp.tool(title="Audit User Activity", annotations={"readOnlyHint": True})
+    async def audit_user_activity(
+        user: Annotated[str, "Filter to a single caller email. Empty = all users."] = "",
+        since: Annotated[str, "ISO date or timestamp (inclusive lower bound). Empty = unbounded."] = "",
+        until: Annotated[str, "ISO date or timestamp (exclusive upper bound). Empty = unbounded."] = "",
+        errors_only: Annotated[bool, "Only return failed calls."] = False,
+        max_events: Annotated[int, "Cap on events scanned. Default 2000."] = 2000,
+    ) -> str:
+        """Audit MCP tool activity from the server log: who called what, when,
+        and which calls failed or ran slow.
+
+        Returns per-user breakdown (calls / successes / failures / top tools /
+        cases touched), every failed call with the error message, and any calls
+        exceeding 30s. Use when the analyst asks "what did <user> do yesterday?",
+        "show me errors from last week", or "any slow tools recently?".
+
+        Read-only — pulls from ``registry/mcp_server.jsonl``.
+        """
+        _require_scope("investigations:read")
+
+        from tools.audit_user import audit_user
+        report = await asyncio.to_thread(
+            lambda: audit_user(
+                user=user or None,
+                since=since or None,
+                until=until or None,
+                errors_only=errors_only,
+                max_events=max_events,
+            )
+        )
+        return _json(report)
+
+
 # ---------------------------------------------------------------------------
 # Registration entry point
 # ---------------------------------------------------------------------------
@@ -5736,3 +5775,4 @@ def register_tools(mcp: FastMCP) -> None:
     _register_darkweb(mcp)
     _register_coverage(mcp)
     _register_exposure(mcp)
+    _register_audit(mcp)

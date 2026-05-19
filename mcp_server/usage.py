@@ -183,6 +183,7 @@ TOOL_TAXONOMY: dict[str, dict[str, str]] = {
     "rebuild_case_memory":      {"category": "infra",       "goal": "maintain"},
     "rebuild_client_baseline":  {"category": "infra",       "goal": "maintain"},
     "refresh_geoip":            {"category": "infra",       "goal": "maintain"},
+    "audit_user_activity":      {"category": "lookup",      "goal": "maintain"},
 }
 
 _DEFAULT_TAXONOMY = {"category": "unknown", "goal": "unknown"}

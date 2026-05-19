@@ -139,8 +139,8 @@ def save_report_to_case(
             if mal_iocs:
                 report_text = defang_report(report_text, mal_iocs)
         except FileNotFoundError:
-            log_error(case_id, "save_report.defang", "verdict_summary.json missing",
-                      severity="warning",
+            log_error(case_id, "save_report.defang", "verdict_summary.json missing — skipping defang (no enrichment run)",
+                      severity="info",
                       context={"path": str(verdict_path), "report_type": report_type})
         except Exception as exc:
             log_error(case_id, "save_report.defang", str(exc),

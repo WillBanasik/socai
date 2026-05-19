@@ -1,0 +1,60 @@
+let target_user = "{{target_upn}}";
+let lookback = {{lookback}};
+let BulkAccess = OfficeActivity
+    | where TimeGenerated >= ago(lookback)
+    | where UserId =~ target_user
+    | where Operation in ("FileDownloaded", "FileSyncDownloadedFull", "FileAccessed",
+                           "FolderModified", "ListItemUpdated")
+    | summarize
+        EventCount = count(),
+        UniqueFiles = dcount(SourceFileName),
+        UniqueSites = dcount(Site_Url),
+        Operations = make_set(Operation),
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated)
+      by bin(TimeGenerated, 1h), UserId;
+let SharingEvents = OfficeActivity
+    | where TimeGenerated >= ago(lookback)
+    | where UserId =~ target_user
+    | where Operation has_any ("SharingSet", "AddedToGroup", "AnonymousLinkCreated",
+                                "CompanyLinkCreated", "SharingInvitationCreated",
+                                "SecureLinkCreated")
+    | project
+        TimeGenerated,
+        Operation,
+        TargetUser = TargetUserOrGroupName,
+        SourceFileName,
+        Site_Url;
+let MailForwarding = OfficeActivity
+    | where TimeGenerated >= ago(lookback)
+    | where UserId =~ target_user
+    | where Operation in ("Set-Mailbox", "New-InboxRule", "Set-InboxRule",
+                           "UpdateInboxRules", "New-TransportRule")
+    | project
+        TimeGenerated,
+        Operation,
+        Parameters = tostring(Parameters);
+union
+(
+    BulkAccess
+    | extend RecordType = "BulkAccess"
+    | project RecordType, TimeGenerated, Detail = strcat("Events:", EventCount,
+              " Files:", UniqueFiles, " Sites:", UniqueSites),
+              Extra = tostring(Operations)
+),
+(
+    SharingEvents
+    | extend RecordType = "Sharing"
+    | project RecordType, TimeGenerated,
+              Detail = strcat(Operation, " → ", TargetUser, " | ", SourceFileName),
+              Extra = Site_Url
+),
+(
+    MailForwarding
+    | extend RecordType = "MailRule"
+    | project RecordType, TimeGenerated,
+              Detail = Operation,
+              Extra = Parameters
+)
+| sort by TimeGenerated desc
+| take 50

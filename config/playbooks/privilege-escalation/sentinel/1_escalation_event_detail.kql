@@ -1,0 +1,74 @@
+union
+(
+    AuditLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where OperationName in (
+        "Add member to role",
+        "Add member to group",
+        "Add eligible member to role",
+        "Add eligible member (permanent)",
+        "Add member to role in PIM requested (permanent)",
+        "Add member to role outside of PIM",
+        "User activated eligible role",
+        "Remove member from role",
+        "Remove member from group"
+    )
+    | where InitiatedBy has "{{actor_upn}}"
+        or TargetResources has "{{target_user}}"
+        or TargetResources has "{{target_group}}"
+    | extend ActorUPN = tostring(parse_json(tostring(InitiatedBy.user)).userPrincipalName)
+    | extend ActorIP = tostring(parse_json(tostring(InitiatedBy.user)).ipAddress)
+    | extend TargetAccount = tostring(TargetResources[0].userPrincipalName)
+    | extend TargetGroup = tostring(TargetResources[0].displayName)
+    | project
+        SourceTable = "AuditLogs",
+        TimeGenerated,
+        Activity = OperationName,
+        ActorUPN,
+        ActorIP,
+        TargetAccount,
+        TargetGroup,
+        Result,
+        Detail = tostring(AdditionalDetails)
+),
+(
+    SecurityEvent
+    | where TimeGenerated > ago({{lookback}})
+    | where EventID in (4728, 4732, 4756, 4727, 4731, 4755)
+    // 4728 = member added to domain local group
+    // 4732 = member added to global security group
+    // 4756 = member added to universal security group
+    // 4727/4731/4755 = corresponding group deletions
+    | where SubjectUserName has "{{actor_upn}}"
+        or TargetUserName has "{{target_user}}"
+        or TargetUserName has "{{target_group}}"
+    // Uncomment to filter by device:
+    // | where Computer has "{{device_name}}"
+    | project
+        SourceTable = "SecurityEvent",
+        TimeGenerated,
+        Activity = strcat("EventID ", tostring(EventID), " - ", Activity),
+        ActorUPN = SubjectUserName,
+        ActorIP = IpAddress,
+        TargetAccount = MemberName,
+        TargetGroup = TargetUserName,
+        Result = tostring(EventID),
+        Detail = EventData
+),
+(
+    SecurityAlert
+    | where TimeGenerated > ago({{lookback}})
+    | where Entities has "{{actor_upn}}"
+        or Entities has "{{target_user}}"
+    | project
+        SourceTable = "SecurityAlert",
+        TimeGenerated,
+        Activity = AlertName,
+        ActorUPN = "",
+        ActorIP = "",
+        TargetAccount = "",
+        TargetGroup = "",
+        Result = AlertSeverity,
+        Detail = Description
+)
+| sort by TimeGenerated desc

@@ -81,6 +81,53 @@ Add entries to `config/article_sources.json` with `"type": "rss"` and `"categori
 
 When adding new analytical capabilities, prefer adding an MCP prompt (in `mcp_server/prompts.py`) + save handler over adding LLM-backed tools. Tools should handle data gathering and persistence only; the local agent handles all reasoning.
 
+## New SIEM Platform (vendor adapter)
+
+The investigation playbooks are vendor-agnostic. To onboard a new SIEM (Splunk,
+Elastic, Chronicle, etc.):
+
+1. **Drop a schema file** at `config/schemas/<platform_id>.json`. In production
+   this is fetched from your external schema project — set
+   `SOCAI_SCHEMA_SOURCE_URL` (and optionally `SOCAI_SCHEMA_API_KEY`) and the
+   schema fetcher pulls it on startup. Locally, just create the file by hand.
+2. **Drop an adapter** at `config/platforms/<platform_id>.yaml`. Required keys:
+   `id`, `query_language`, `capabilities` (list of capability names). Optional:
+   `executor.mode` (`api` or `render_only`), `executor.module`/`function`/
+   `client_config_map` for auto-execution, `template_syntax` for non-Mustache
+   substitution.
+3. **Add query bodies** for each playbook you want to support at
+   `config/playbooks/<playbook_id>/<platform_id>/<stage>.<ext>`. The unified
+   loader picks them up automatically; capability gating ensures the playbook
+   refuses to run if the platform doesn't declare the required capabilities.
+
+No Python changes required.
+
+## New investigation playbook
+
+Playbooks live in `config/playbooks/<id>.yaml` and describe:
+
+- `name` and `description` (vendor-agnostic intent)
+- `required_capabilities` — either a flat list (applies to all platforms) or a
+  dict keyed by platform id (`{sentinel: [...], logscale: [...]}`). A platform
+  missing from the dict means "this playbook is not designed for that platform";
+  the loader refuses to render it there.
+- `parameters` (Mustache placeholders the analyst supplies)
+- `stages` (each with `id`, `name`, `description`, `run`, `query_file`)
+- `definitions` (terminology, principles)
+
+Per-platform query bodies go at `config/playbooks/<id>/<platform_id>/`. The
+filename is determined by `query_file` (string or per-platform dict) or, when
+absent, by the stage id. Query bodies use `{{param}}` substitution; the unified
+loader sanitises values before substituting to prevent KQL/CQL injection.
+
+To add a playbook:
+1. Author `config/playbooks/<id>.yaml` with the stage list and required
+   capabilities per platform.
+2. Drop query files at `config/playbooks/<id>/<platform>/<stage>.<ext>` for
+   each platform you want to support.
+3. The unified loader picks up the playbook on next `tools.platforms.reload()`
+   or server restart. No Python changes required.
+
 ## Sentinel Composite Query Template
 
 Create `config/kql_playbooks/sentinel/<scenario>.kql` with the same frontmatter format as stage-based playbooks. Use `composite: true` in the metadata. The query body is a single monolithic KQL with `let` sections and a `union isfuzzy=true` at the end. Parameters use `{{param}}` substitution. Required parameters: `{{upn}}`, `{{lookback_start}}`, `{{lookback_end}}`. Optional: `{{ip}}`, `{{object_id}}`, `{{mailbox_id}}`, `{{additional_upns}}`. Use `isnotempty()` guards for optional parameters so empty values produce valid KQL. Register the scenario in the `_composite_map` in `mcp_server/tools.py` `classify_attack` to link it to attack types.

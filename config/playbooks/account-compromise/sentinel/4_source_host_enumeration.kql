@@ -1,0 +1,37 @@
+let target_ip = "{{ip}}";
+let investigation_window = {{lookback}};
+// Part 1: What accounts authenticate from this IP?
+let AccountsFromIP = SecurityEvent
+    | where TimeGenerated > ago(investigation_window)
+    | where EventID in (4624, 4625, 4768, 4769)
+    | where IpAddress == target_ip
+       or IpAddress == strcat("::ffff:", target_ip)
+    | summarize
+        Count = count(),
+        SuccessCount = countif(EventID == 4624),
+        FailCount = countif(EventID == 4625),
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated),
+        EventTypes = make_set(EventID, 10),
+        LogonTypes = make_set(LogonTypeName, 10)
+        by TargetUserName, Computer
+    | extend Section = "AccountsFromIP"
+    | project Section, TargetUserName, Computer, Count, SuccessCount, FailCount,
+              FirstSeen, LastSeen, EventTypes, LogonTypes;
+// Part 2: Hostname resolution
+let HostnameResolution = DeviceNetworkInfo
+    | where Timestamp > ago(investigation_window)
+    | where IPAddresses has target_ip
+    | summarize arg_max(Timestamp, *) by DeviceName
+    | project Section = "HostnameResolution",
+              TargetUserName = "",
+              Computer = DeviceName,
+              Count = 1,
+              SuccessCount = 0,
+              FailCount = 0,
+              FirstSeen = Timestamp,
+              LastSeen = Timestamp,
+              EventTypes = dynamic([]),
+              LogonTypes = dynamic([]);
+union AccountsFromIP, HostnameResolution
+| sort by Section asc, Count desc

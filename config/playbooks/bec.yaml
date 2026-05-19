@@ -1,0 +1,150 @@
+id: bec
+name: BEC Investigation & Response
+description: 'Full BEC (Business Email Compromise) lifecycle. Scope broad, contain fast, investigate
+  deep.
+
+  *** START BROAD *** An alert names one NetworkMessageId, but a BEC campaign almost always
+  contains many emails sharing the same sender + subject. Stage 0 expands the seed alert into
+  the full set of related NetworkMessageIds BEFORE any narrow-scope analysis runs. Stage 1
+  onwards then operates on the expanded ID set, not just the alert''s single message. Skipping
+  Stage 0 leads to under-blocked campaigns and missed clickers.
+
+  CRITICAL: MDO blocks (Stage 2) are the FIRST containment action. Run Stage 0, then Stage
+  1, then IMMEDIATELY Stage 2 and instruct the analyst to submit the blocks. Only then proceed
+  with Stages 3-7. Do not close the case until the analyst confirms blocks are in place.
+
+  '
+required_capabilities:
+  sentinel:
+  - cloud_app_events
+  - email_events
+  - email_post_delivery
+  - email_url_clicks
+  - office_activity
+  - sign_in_events
+parameters:
+- name: seed_message_id
+  description: Single NetworkMessageId from the alert (used by Stage 0 to derive sender/subject)
+- name: target_ids
+  description: Comma-separated NetworkMessageIds. Populated from Stage 0 output before Stage
+    1.
+- name: upn
+  description: Compromised or target UserPrincipalName (for post-compromise stages)
+- name: sender
+  description: Malicious sender email address (auto-derived in Stage 0 if seed_message_id
+    supplied)
+- name: subject
+  description: Email subject for broad-scope expansion (auto-derived in Stage 0 if seed_message_id
+    supplied)
+- name: url
+  description: Malicious URL (from Stage 1)
+- name: attacker_ip
+  description: Attacker source IP (from Stage 4; used in Stages 5-7)
+- name: lookback
+  description: Time range to investigate
+  default: 14d
+stages:
+- id: 0
+  name: Broad scope expansion (sender + subject)
+  description: "FIRST STEP. Expand the seed alert (a single NetworkMessageId, or an explicit\
+    \ sender/subject pair) into the full set of related emails across the lookback window.\
+    \ One alert is rarely the whole campaign \u2014 there are usually more recipients from\
+    \ the same sender with the same subject. Returns all matching NetworkMessageIds, recipient\
+    \ count, and delivery breakdown grouped by (sender, subject). Feed the expanded NetworkMessageId\
+    \ list into target_ids for Stage 1 onwards.\n"
+  run: "always \u2014 before Stage 1"
+  query_file: 0_broad_scope_expansion
+- id: 1
+  name: Phishing delivery scope & clickers
+  description: "Full email campaign scope \u2014 all recipients, delivery status, URL clicks,\
+    \ attachments. Identifies who received, who clicked, who clicked through. Operates on\
+    \ the expanded target_ids set from Stage 0 \u2014 never on the single alert NetworkMessageId\
+    \ in isolation.\n"
+  run: always (after Stage 0 expansion)
+  query_file: 1_phishing_delivery_scope
+- id: 2
+  name: "MDO block entities (MANDATORY \u2014 RUN IMMEDIATELY AFTER STAGE 1)"
+  description: 'FIRST CONTAINMENT ACTION. Extracts the exact URLs and sender addresses that
+    MUST be blocked in Microsoft Defender for Office 365 NOW, before continuing the investigation.
+    Present these to the analyst and instruct them to submit blocks via MDO portal (Tenant
+    Allow/Block Lists) or PowerShell (New-TenantAllowBlockListItems) immediately. Do not proceed
+    to Stage 3 until the analyst confirms blocks are submitted.
+
+    '
+  run: "always \u2014 IMMEDIATELY after Stage 1. Do NOT defer."
+  query_file: 2_mdo_block_entities
+- id: 3
+  name: ZAP and remediation status
+  description: 'Check post-delivery remediation for all campaign emails. Identifies emails
+    that ZAP missed, emails still in mailboxes, and forwarded copies that bypass ZAP. Calculates
+    exposure time per recipient.
+
+    '
+  run: always (after Stage 2 blocks are submitted)
+  query_file: 3_zap_remediation_status
+- id: 4
+  name: Post-phishing sign-in analysis
+  description: 'For each user who clicked, check for sign-ins from unfamiliar IPs within 4
+    hours of click. Detects AiTM token theft, credential reuse, and attacker pivot to compromised
+    accounts. Flags risk level and CA status.
+
+    '
+  run: when Stage 1 shows URL clicks
+  query_file: 4_post_phishing_signin
+- id: 5
+  name: BEC persistence hunt
+  description: 'Hunt for inbox rules (especially DeleteMessage=True / StopProcessingRules),
+    mail forwarding changes, mailbox permission grants, and OAuth consent on compromised accounts.
+    These are the primary BEC persistence TTPs.
+
+    '
+  run: when Stage 4 confirms compromised accounts
+  query_file: 5_bec_persistence_hunt
+- id: 6
+  name: Attacker email activity
+  description: "Check whether the attacker sent emails from compromised accounts \u2014 Send,\
+    \ SendAs, SendOnBehalf operations. Detects BEC payoff phase (invoice fraud, payment redirection,\
+    \ internal phishing).\n"
+  run: when Stage 4 confirms compromised accounts
+  query_file: 6_attacker_email_activity
+- id: 7
+  name: Attacker IP tenant sweep
+  description: "Scope the attacker IP across the entire tenant. Identifies all accounts the\
+    \ attacker attempted or succeeded in accessing \u2014 not just the accounts from the original\
+    \ alert. Critical for finding unreported compromises.\n"
+  run: when attacker IP is identified from Stage 4
+  query_file: 7_attacker_ip_tenant_sweep
+definitions:
+- term: Broad Scope Principle
+  definition: 'Every BEC investigation starts broad. The alert identifies one NetworkMessageId,
+    but campaigns typically deliver the same payload to many recipients sharing the same sender
+    and subject. Stage 0 expands the single alert into the full campaign set before any narrow
+    analysis runs. Operating on a single NetworkMessageId leads to under-blocked attackers
+    (some senders escape MDO blocks because their addresses never appear in Stage 1''s narrow
+    query) and missed clickers (other recipients whose clicks are outside the alert''s NetworkMessageId
+    scope). Always expand first, then narrow.
+
+    '
+- term: BEC Persistence
+  definition: 'Techniques an attacker uses to maintain access to a compromised mailbox: inbox
+    rules that delete evidence (DeleteMessage=True), mail forwarding to external addresses,
+    mailbox delegation grants, and OAuth app consent.
+
+    '
+- term: AiTM Token Theft
+  definition: "Adversary-in-the-Middle attack where the phishing page proxies the real Microsoft\
+    \ login, capturing the session token after MFA completion. The attacker replays the stolen\
+    \ token \u2014 MFA is not re-challenged because the token already satisfies the authentication\
+    \ requirement.\n"
+- term: Exposure Time
+  definition: 'Duration between email delivery to inbox and remediation (ZAP, admin purge,
+    or user deletion). ExposureMinutes = -1 means never remediated.
+
+    '
+- term: MDO Tenant Block
+  definition: 'A block entry in Microsoft Defender for Office 365 Tenant Allow/Block List
+    that prevents delivery of emails from a specific sender address or containing a specific
+    URL. Blocks should be submitted for all confirmed malicious senders and URLs before case
+    closure.
+
+    '

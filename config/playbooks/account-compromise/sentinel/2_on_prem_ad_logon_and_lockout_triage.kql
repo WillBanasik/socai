@@ -1,0 +1,72 @@
+let target_user = "{{username}}";
+let investigation_window = {{lookback}};
+// All relevant logon events for this user
+let LogonEvents = SecurityEvent
+    | where TimeGenerated > ago(investigation_window)
+    | where EventID in (4624, 4625, 4771, 4776, 4768, 4769)
+    | where TargetUserName has target_user
+    | extend
+        Result = case(
+            EventID == 4624, "Success",
+            EventID == 4625, "Failure",
+            EventID == 4771, "Kerberos PreAuth Failure",
+            EventID == 4776 and Keywords == "Audit Failure", "NTLM Failure",
+            EventID == 4776 and Keywords == "Audit Success", "NTLM Success",
+            EventID == 4768, "TGT Request",
+            EventID == 4769, "Service Ticket",
+            "Other"
+        ),
+        KerbStatus = case(
+            Status == "0x0", "OK",
+            Status == "0x6", "Unknown principal",
+            Status == "0x12", "Account locked/disabled/expired",
+            Status == "0x17", "Password expired",
+            Status == "0x18", "Wrong password",
+            Status == "0x25", "Clock skew",
+            Status == "0x1f", "Integrity check failed",
+            isnotempty(Status), strcat("0x", Status),
+            ""
+        );
+// Part 1: Summarised triage — one row per source/event-type/result combination
+let Triage = LogonEvents
+    | summarize
+        Count = count(),
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated),
+        LogonTypes = make_set(LogonTypeName, 10),
+        KerbStatuses = make_set(KerbStatus, 10),
+        Computers = make_set(Computer, 5)
+        by IpAddress, WorkstationName, EventID, Result
+    | extend Section = "Triage"
+    | project Section, IpAddress, WorkstationName, EventID, Result,
+              Count, FirstSeen, LastSeen, LogonTypes, KerbStatuses, Computers;
+// Part 2: Lockout events
+let Lockouts = SecurityEvent
+    | where TimeGenerated > ago(investigation_window)
+    | where EventID == 4740
+    | where TargetUserName has target_user
+    | summarize
+        Count = count(),
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated),
+        SourceWorkstations = make_set(TargetDomainName, 10),
+        Computers = make_set(Computer, 5)
+        by TargetUserName
+    | extend Section = "Lockouts", IpAddress = "", WorkstationName = "",
+             EventID = 4740, Result = "Lockout",
+             LogonTypes = dynamic([]), KerbStatuses = dynamic([])
+    | project Section, IpAddress, WorkstationName, EventID, Result,
+              Count, FirstSeen, LastSeen, LogonTypes, KerbStatuses, Computers;
+// Part 3: Hourly pattern — detect automated vs interactive activity
+let HourlyPattern = LogonEvents
+    | where EventID == 4624
+    | summarize Count = count() by IpAddress, HourOfDay = datetime_part("hour", TimeGenerated)
+    | extend Section = "HourlyPattern", WorkstationName = "",
+             EventID = 4624, Result = "Success",
+             FirstSeen = datetime(null), LastSeen = datetime(null),
+             LogonTypes = dynamic([]), KerbStatuses = dynamic([]),
+             Computers = dynamic([])
+    | project Section, IpAddress, WorkstationName, EventID, Result,
+              Count, FirstSeen, LastSeen, LogonTypes, KerbStatuses, Computers;
+union Triage, Lockouts, HourlyPattern
+| sort by Section asc, Count desc

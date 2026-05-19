@@ -1,0 +1,61 @@
+id: account-compromise
+name: Account Investigation
+description: "Comprehensive account investigation playbook covering cloud identity (Azure\
+  \ AD / Entra ID), on-prem Active Directory, Microsoft Defender for Identity (MDI), behaviour\
+  \ analytics (UEBA), and post-compromise persistence. Designed for account compromise, lockout\
+  \ investigations, suspicious sign-in activity, and service account abuse. Each stage uses\
+  \ heavy summarisation to return analytical output \u2014 use max_rows 200-500 on run_kql\
+  \ to capture the full picture in a single call."
+required_capabilities:
+  sentinel:
+  - identity_logon
+  - office_activity
+  - sign_in_events
+  - windows_security_events
+  logscale:
+  - device_process_events
+  - identity_logon
+  - sign_in_events
+parameters:
+- name: upn
+  type: string
+  description: UserPrincipalName of the suspect account (e.g. user@domain.com)
+- name: username
+  type: string
+  description: On-prem sAMAccountName (e.g. m.chalkiadaki). Derive from UPN if not provided.
+- name: ip
+  type: string
+  description: Suspicious source IP address (optional; omit to investigate all activity)
+- name: lookback
+  type: string
+  description: Time range to investigate (default 30d)
+  default: 30d
+stages:
+- id: 1
+  name: Cloud identity triage (Azure AD)
+  description: See query block.
+  run: "ALWAYS \u2014 starting point for cloud identity investigations."
+  query_file: 1_cloud_identity_triage_azure_ad
+- id: 2
+  name: On-prem AD logon and lockout triage
+  description: See query block.
+  run: "ALWAYS \u2014 primary stage for on-prem AD and lockout investigations."
+  query_file: 2_on_prem_ad_logon_and_lockout_triage
+- id: 3
+  name: Identity protection and behaviour analytics
+  description: See query block.
+  run: "ALWAYS \u2014 tables may be empty if MDI or UEBA is not deployed."
+  query_file:
+    sentinel: 3_identity_protection_and_behaviour_analytics
+    logscale: 3_endpoint_logon_context
+- id: 4
+  name: Source host enumeration
+  description: See query block.
+  run: "When a source IP warrants investigation \u2014 automated auth pattern,"
+  query_file: 4_source_host_enumeration
+- id: 5
+  name: Post-compromise persistence
+  description: See query block.
+  run: ALWAYS for compromised accounts.
+  query_file: 5_post_compromise_persistence
+definitions: []

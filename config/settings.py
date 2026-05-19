@@ -182,3 +182,17 @@ SOCAI_BROWSER_POOL_MAX_USES = int(os.getenv("SOCAI_BROWSER_POOL_MAX_USES", "50")
 # Auto-close pooled browser after N seconds of inactivity (default 5 min)
 SOCAI_BROWSER_POOL_IDLE_SECS = int(os.getenv("SOCAI_BROWSER_POOL_IDLE_SECS", "300"))
 
+# ---------------------------------------------------------------------------
+# Platform schema fetcher (external schema project)
+# ---------------------------------------------------------------------------
+# Source URL for platform schemas (the manifest endpoint of the schema project).
+# If empty, the fetcher is disabled and only locally cached schemas are used.
+# Manifest format: {"<platform_id>": {"url": "...", "etag": "..."}, ...}
+SOCAI_SCHEMA_SOURCE_URL = os.getenv("SOCAI_SCHEMA_SOURCE_URL", "")
+# Optional bearer token for the schema endpoint
+SOCAI_SCHEMA_API_KEY = os.getenv("SOCAI_SCHEMA_API_KEY", "")
+# Hours between refresh attempts. 0 disables periodic refresh (only initial pull).
+SOCAI_SCHEMA_REFRESH_HOURS = int(os.getenv("SOCAI_SCHEMA_REFRESH_HOURS", "24"))
+# Where fetched schemas are cached. Defaults to config/schemas/.
+SCHEMAS_DIR = BASE_DIR / "config" / "schemas"
+

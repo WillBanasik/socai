@@ -1,0 +1,57 @@
+let ioc_list = dynamic([{{iocs}}]);
+let lookback = {{lookback}};
+union
+(
+    DeviceNetworkEvents
+    | where TimeGenerated >= ago(lookback)
+    | where RemoteIP in (ioc_list) or RemoteUrl has_any (ioc_list)
+    | project
+        SourceTable = "DeviceNetworkEvents",
+        TimeGenerated,
+        Indicator = RemoteIP,
+        DeviceOrSource = DeviceName,
+        User = InitiatingProcessAccountName,
+        Detail = strcat(ActionType, " | ", InitiatingProcessFileName, " → ", RemoteIP, ":", RemotePort),
+        Extra = InitiatingProcessCommandLine
+),
+(
+    SigninLogs
+    | where TimeGenerated >= ago(lookback)
+    | where IPAddress in (ioc_list)
+    | project
+        SourceTable = "SigninLogs",
+        TimeGenerated,
+        Indicator = IPAddress,
+        DeviceOrSource = tostring(DeviceDetail.displayName),
+        User = UserPrincipalName,
+        Detail = strcat(ResultType, " | ", AppDisplayName, " | Risk:", RiskLevelDuringSignIn),
+        Extra = Location
+),
+(
+    CommonSecurityLog
+    | where TimeGenerated >= ago(lookback)
+    | where SourceIP in (ioc_list) or DestinationIP in (ioc_list)
+    | project
+        SourceTable = "CommonSecurityLog",
+        TimeGenerated,
+        Indicator = iff(SourceIP in (ioc_list), SourceIP, DestinationIP),
+        DeviceOrSource = strcat(DeviceVendor, "/", DeviceProduct),
+        User = SourceUserName,
+        Detail = strcat(Activity, " | ", DeviceAction, " | ", SourceIP, " → ", DestinationIP, ":", DestinationPort),
+        Extra = Message
+),
+(
+    SecurityAlert
+    | where TimeGenerated >= ago(lookback)
+    | where Entities has_any (ioc_list)
+    | project
+        SourceTable = "SecurityAlert",
+        TimeGenerated,
+        Indicator = extract(strcat("(", strcat_array(ioc_list, "|"), ")"), 0, Entities),
+        DeviceOrSource = ProductName,
+        User = "",
+        Detail = strcat(Severity, " | ", AlertName),
+        Extra = Description
+)
+| sort by TimeGenerated desc
+| take 50

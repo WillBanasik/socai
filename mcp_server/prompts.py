@@ -68,23 +68,38 @@ _BEHAVIOURAL_ASSESSMENT = [
 ]
 
 
-def _get_kql_playbooks() -> dict[str, str]:
-    """Load available KQL playbook IDs and names from disk (cached after first call)."""
+def _platform_playbooks(platform_id: str) -> dict[str, str]:
+    """Return playbooks runnable on *platform_id* — those whose capability
+    declaration includes the platform and which pass the platform's gate.
+    """
     try:
-        from tools.kql_playbooks import list_playbooks
-        return {p["id"]: p["name"] for p in list_playbooks()}
+        from tools.platforms import reload as _platforms_reload, validate_capabilities
+        from tools.playbooks import list_playbooks_unified, _resolve_required_capabilities
+        _platforms_reload()
+        out: dict[str, str] = {}
+        for entry in list_playbooks_unified():
+            reqs = _resolve_required_capabilities(
+                entry.get("required_capabilities"), platform_id,
+            )
+            if reqs is None:
+                continue  # playbook not designed for this platform
+            ok, _ = validate_capabilities(platform_id, reqs)
+            if ok:
+                out[entry["id"]] = entry["name"]
+        return out
     except Exception:
-        # Fallback if playbook files are missing
         return {}
+
+
+def _get_kql_playbooks() -> dict[str, str]:
+    """KQL-runnable playbooks (sentinel platform). Refreshed every call so
+    newly-dropped YAMLs appear without a restart."""
+    return _platform_playbooks("sentinel")
 
 
 def _get_cql_playbooks() -> dict[str, str]:
-    """Load available CQL playbook IDs and names from disk."""
-    try:
-        from tools.cql_playbooks import list_playbooks
-        return {p["id"]: p["name"] for p in list_playbooks()}
-    except Exception:
-        return {}
+    """CQL-runnable playbooks (logscale platform)."""
+    return _platform_playbooks("logscale")
 
 
 # Cache on module load for the docstring; refreshed per-call in the prompt body
@@ -108,13 +123,19 @@ def register_prompts(mcp: FastMCP) -> None:
         """Multi-stage KQL investigation playbook — select the playbook that matches your attack type.
 
         Available playbooks:
-        - **phishing** — email delivery, URL clicks, credential harvest
+        - **bec** — full BEC lifecycle: Stage 0 broad-scope expansion (sender+subject), Stage 1 delivery scope, Stage 2 MDO blocks (mandatory immediate containment), then ZAP / post-phishing sign-ins / persistence hunt / attacker activity / tenant IP sweep
+        - **phishing** — Stage 0 broad-scope expansion (sender+subject), then email delivery, URL clicks, credential harvest, post-delivery logon, exposure time
         - **account-compromise** — sign-ins, on-prem AD logons, lockouts, MDI, UEBA, post-compromise audit
         - **malware-execution** — process tree, file events, persistence
         - **privilege-escalation** — role changes, actor legitimacy
         - **data-exfiltration** — volume anomalies, cloud access, network transfers
         - **lateral-movement** — RDP/SMB pivots, credential access, blast radius
         - **ioc-hunt** — cross-table IOC sweep + context pivot
+
+        **Investigations start broad.** When a playbook offers a Stage 0
+        broad-scope expansion (currently `bec` and `phishing`), run it before
+        any narrow-scope stage. One alert names one entity; the actual
+        campaign almost always spans more.
 
         Tip: call `classify_attack` first to determine which playbook to use,
         then select this prompt with the matching playbook ID.
@@ -131,7 +152,7 @@ def register_prompts(mcp: FastMCP) -> None:
             Additional parameters as key=value pairs, comma-separated
             (e.g. "threshold_mb=500,source_host=DESKTOP-01").
         """
-        from tools.kql_playbooks import load_playbook, render_stage
+        from tools.playbooks import load_playbook_for_platform, render_stage_for_platform
 
         # Resolve playbook — refresh from disk each call so new playbooks are picked up
         available = _get_kql_playbooks()
@@ -144,8 +165,17 @@ def register_prompts(mcp: FastMCP) -> None:
                 "Tip: call `classify_attack` to determine which playbook matches your alert."
             )
 
-        pb = load_playbook(playbook_id)
-        if not pb:
+        # Route through the unified loader (vendor-aware). For kql_investigation
+        # we always target the sentinel platform. Migrated playbooks (config/playbooks/
+        # *.yaml) use the new per-platform query layout; un-migrated playbooks fall
+        # back to the legacy monolithic .kql parser transparently.
+        pb = load_playbook_for_platform(playbook_id, "sentinel")
+        if "error" in pb:
+            if pb.get("code") == "capability_gate":
+                return (
+                    f"Playbook `{playbook_id}` cannot run on Sentinel: "
+                    f"{pb['error']}"
+                )
             return f"Playbook `{playbook_id}` not found on disk."
 
         display_name = available[playbook_id]
@@ -239,17 +269,23 @@ def register_prompts(mcp: FastMCP) -> None:
                       "the full analytical picture in a single call.")
         lines.append("")
 
-        for i, stage in enumerate(pb.get("stages", []), 1):
-            lines.append(f"### Stage {i} — {stage.get('name', stage.get('title', ''))}")
+        for stage in pb.get("stages", []):
+            stage_id = stage.get("stage")
+            lines.append(f"### Stage {stage_id} — {stage.get('name', stage.get('title', ''))}")
             if stage.get("description"):
                 lines.append(stage["description"])
+            if stage.get("run"):
+                lines.append(f"*Run:* {stage['run']}")
             lines.append("")
 
-            rendered = render_stage(pb, i, params)
-            if rendered:
+            rendered = render_stage_for_platform(playbook_id, stage_id, params, "sentinel")
+            if isinstance(rendered, str) and rendered:
                 lines.append("```kql")
                 lines.append(rendered)
                 lines.append("```")
+                lines.append("")
+            elif isinstance(rendered, dict) and rendered.get("code") == "stage_not_implemented_for_platform":
+                lines.append(f"*Stage not implemented for Sentinel yet ({rendered.get('error', '')}).*")
                 lines.append("")
 
         if pb.get("definitions"):
@@ -290,7 +326,7 @@ def register_prompts(mcp: FastMCP) -> None:
             Additional parameters as key=value pairs, comma-separated
             (e.g. "source_host=DESKTOP-01,sha256=abc123").
         """
-        from tools.cql_playbooks import load_playbook, render_stage
+        from tools.playbooks import load_playbook_for_platform, render_stage_for_platform
 
         # Resolve playbook
         available = _get_cql_playbooks()
@@ -303,8 +339,16 @@ def register_prompts(mcp: FastMCP) -> None:
                 "Tip: call `classify_attack` to determine which playbook matches your alert."
             )
 
-        pb = load_playbook(playbook_id)
-        if not pb:
+        # Route through the unified loader. Target platform is logscale; migrated
+        # playbooks pick up per-platform query bodies, un-migrated fall back to
+        # the legacy parser transparently.
+        pb = load_playbook_for_platform(playbook_id, "logscale")
+        if "error" in pb:
+            if pb.get("code") == "capability_gate":
+                return (
+                    f"CQL Playbook `{playbook_id}` cannot run on LogScale: "
+                    f"{pb['error']}"
+                )
             return f"CQL Playbook `{playbook_id}` not found on disk."
 
         display_name = available[playbook_id]
@@ -390,17 +434,23 @@ def register_prompts(mcp: FastMCP) -> None:
                       "data sources not present in LogScale — check the noted alternative.")
         lines.append("")
 
-        for i, stage in enumerate(pb.get("stages", []), 1):
-            lines.append(f"### Stage {i} — {stage.get('name', stage.get('title', ''))}")
+        for stage in pb.get("stages", []):
+            stage_id = stage.get("stage")
+            lines.append(f"### Stage {stage_id} — {stage.get('name', stage.get('title', ''))}")
             if stage.get("description"):
                 lines.append(stage["description"])
+            if stage.get("run"):
+                lines.append(f"*Run:* {stage['run']}")
             lines.append("")
 
-            rendered = render_stage(pb, i, params)
-            if rendered:
+            rendered = render_stage_for_platform(playbook_id, stage_id, params, "logscale")
+            if isinstance(rendered, str) and rendered:
                 lines.append("```cql")
                 lines.append(rendered)
                 lines.append("```")
+                lines.append("")
+            elif isinstance(rendered, dict) and rendered.get("code") == "stage_not_implemented_for_platform":
+                lines.append(f"*Stage not implemented for LogScale yet.*")
                 lines.append("")
 
         if pb.get("definitions"):

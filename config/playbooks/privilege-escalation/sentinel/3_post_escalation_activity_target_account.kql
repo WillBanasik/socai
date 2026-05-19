@@ -1,0 +1,92 @@
+union
+(
+    SigninLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where UserPrincipalName =~ "{{target_user}}"
+    | where AppDisplayName in (
+        "Azure Portal",
+        "Microsoft Azure Management",
+        "Microsoft 365 admin center",
+        "Exchange Admin Center",
+        "Microsoft Entra admin center",
+        "Microsoft Graph",
+        "Microsoft Graph PowerShell",
+        "Azure Active Directory PowerShell",
+        "Microsoft Teams Admin Center",
+        "SharePoint Online Management Shell"
+    )
+    | project
+        SourceTable = "SigninLogs",
+        TimeGenerated,
+        Activity = strcat("Sign-in to ", AppDisplayName),
+        TargetAccount = UserPrincipalName,
+        IPAddress,
+        AppOrResource = AppDisplayName,
+        Detail = tostring(DeviceDetail)
+),
+(
+    AuditLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where InitiatedBy has "{{target_user}}"
+    | where OperationName in (
+        // Cascading privilege changes
+        "Add member to role",
+        "Add member to group",
+        "Add eligible member to role",
+        // App and OAuth abuse
+        "Add application",
+        "Add service principal",
+        "Add service principal credentials",
+        "Consent to application",
+        "Add app role assignment to service principal",
+        // Credential changes
+        "Reset password (by admin)",
+        "Update user",
+        "Add owner to application",
+        "Add owner to service principal",
+        // MFA manipulation
+        "User registered security info",
+        "User deleted security info",
+        "Admin registered security info"
+    )
+    | extend TargetAccount = tostring(parse_json(tostring(InitiatedBy.user)).userPrincipalName)
+    | project
+        SourceTable = "AuditLogs",
+        TimeGenerated,
+        Activity = OperationName,
+        TargetAccount,
+        IPAddress = tostring(parse_json(tostring(InitiatedBy.user)).ipAddress),
+        AppOrResource = tostring(TargetResources[0].displayName),
+        Detail = tostring(TargetResources)
+),
+(
+    OfficeActivity
+    | where TimeGenerated > ago({{lookback}})
+    | where UserId =~ "{{target_user}}"
+    | where Operation in (
+        // Mailbox rule manipulation
+        "New-InboxRule",
+        "Set-InboxRule",
+        "Enable-InboxRule",
+        "New-TransportRule",
+        "Set-TransportRule",
+        "UpdateInboxRules",
+        // eDiscovery / compliance search
+        "New-ComplianceSearch",
+        "Start-ComplianceSearch",
+        "New-ComplianceSearchAction",
+        // SharePoint admin actions
+        "SiteCollectionAdminAdded",
+        "SharingPolicyChanged",
+        "SiteCollectionCreated"
+    )
+    | project
+        SourceTable = "OfficeActivity",
+        TimeGenerated,
+        Activity = Operation,
+        TargetAccount = UserId,
+        IPAddress = ClientIP,
+        AppOrResource = OfficeWorkload,
+        Detail = tostring(Parameters)
+)
+| sort by TimeGenerated desc

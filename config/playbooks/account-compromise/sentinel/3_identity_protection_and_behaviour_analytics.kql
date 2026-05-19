@@ -1,0 +1,88 @@
+let target_upn = "{{upn}}";
+let target_user = "{{username}}";
+let investigation_window = {{lookback}};
+union
+(
+    // MDI cross-protocol logon events (Kerberos, NTLM, LDAP, etc.)
+    IdentityLogonEvents
+    | where Timestamp > ago(investigation_window)
+    | where AccountUpn =~ target_upn or AccountName =~ target_user
+    | summarize
+        Count = count(),
+        SuccessCount = countif(ActionType == "LogonSuccess"),
+        FailCount = countif(ActionType == "LogonFailed"),
+        FirstSeen = min(Timestamp),
+        LastSeen = max(Timestamp),
+        Protocols = make_set(Protocol, 10),
+        Actions = make_set(ActionType, 10),
+        FailReasons = make_set(FailureReason, 10),
+        Applications = make_set(Application, 10)
+        by IPAddress, DeviceName
+    | extend SourceTable = "IdentityLogonEvents"
+    | project SourceTable, IPAddress, DeviceName, Count, SuccessCount, FailCount,
+              FirstSeen, LastSeen, Protocols, Actions, FailReasons, Applications
+),
+(
+    // MDI directory operations (group membership, password changes, LDAP queries)
+    IdentityDirectoryEvents
+    | where Timestamp > ago(investigation_window)
+    | where AccountUpn =~ target_upn or AccountName =~ target_user
+    | summarize
+        Count = count(),
+        Actions = make_set(ActionType, 15),
+        FirstSeen = min(Timestamp),
+        LastSeen = max(Timestamp)
+        by DeviceName
+    | extend SourceTable = "IdentityDirectoryEvents", IPAddress = "",
+             SuccessCount = 0, FailCount = 0,
+             Protocols = dynamic([]), FailReasons = dynamic([]),
+             Applications = dynamic([])
+    | project SourceTable, IPAddress, DeviceName, Count, SuccessCount, FailCount,
+              FirstSeen, LastSeen, Protocols, Actions, FailReasons, Applications
+),
+(
+    // UEBA anomaly scores — high-value signal for compromised accounts
+    BehaviorAnalytics
+    | where TimeGenerated > ago(investigation_window)
+    | where UserPrincipalName =~ target_upn or UserName =~ target_user
+    | where InvestigationPriority > 0 or ActivityInsights has_any ("True", "true")
+    | summarize
+        Count = count(),
+        MaxPriority = max(InvestigationPriority),
+        Activities = make_set(ActivityType, 15),
+        Insights = make_set(ActivityInsights, 10),
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated)
+        by SourceIPAddress, SourceDevice
+    | extend SourceTable = "BehaviorAnalytics",
+             IPAddress = SourceIPAddress, DeviceName = SourceDevice,
+             SuccessCount = 0, FailCount = 0,
+             Protocols = dynamic([]),
+             Actions = Activities,
+             FailReasons = Insights,
+             Applications = dynamic([])
+    | project SourceTable, IPAddress, DeviceName, Count, SuccessCount, FailCount,
+              FirstSeen, LastSeen, Protocols, Actions, FailReasons, Applications
+),
+(
+    // Device-level logon events (MDE) — endpoint context
+    DeviceLogonEvents
+    | where Timestamp > ago(investigation_window)
+    | where AccountName =~ target_user or AccountUpn =~ target_upn
+    | summarize
+        Count = count(),
+        SuccessCount = countif(ActionType == "LogonSuccess"),
+        FailCount = countif(ActionType == "LogonFailed"),
+        FirstSeen = min(Timestamp),
+        LastSeen = max(Timestamp),
+        LogonTypes = make_set(LogonType, 10),
+        Protocols = make_set(Protocol, 10),
+        RemoteIPs = make_set(RemoteIP, 15)
+        by DeviceName
+    | extend SourceTable = "DeviceLogonEvents", IPAddress = tostring(RemoteIPs),
+             Actions = LogonTypes, FailReasons = dynamic([]),
+             Applications = dynamic([])
+    | project SourceTable, IPAddress, DeviceName, Count, SuccessCount, FailCount,
+              FirstSeen, LastSeen, Protocols, Actions, FailReasons, Applications
+)
+| sort by SourceTable asc, Count desc

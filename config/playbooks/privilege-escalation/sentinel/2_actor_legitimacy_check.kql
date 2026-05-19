@@ -1,0 +1,61 @@
+union
+(
+    SigninLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where UserPrincipalName =~ "{{actor_upn}}"
+    | extend SignInType = "Interactive"
+    | project
+        SourceTable = "SigninLogs",
+        TimeGenerated,
+        SignInType,
+        IPAddress,
+        Location,
+        AppDisplayName,
+        RiskLevelDuringSignIn,
+        RiskLevelAggregated,
+        RiskDetail,
+        DeviceDetail = tostring(DeviceDetail),
+        UserAgent,
+        Department = "",
+        JobTitle = ""
+),
+(
+    AADNonInteractiveUserSignInLogs
+    | where TimeGenerated > ago({{lookback}})
+    | where UserPrincipalName =~ "{{actor_upn}}"
+    | extend SignInType = "NonInteractive"
+    | project
+        SourceTable = "AADNonInteractive",
+        TimeGenerated,
+        SignInType,
+        IPAddress,
+        Location,
+        AppDisplayName,
+        RiskLevelDuringSignIn,
+        RiskLevelAggregated,
+        RiskDetail,
+        DeviceDetail = tostring(DeviceDetail),
+        UserAgent,
+        Department = "",
+        JobTitle = ""
+),
+(
+    IdentityInfo
+    | where AccountUPN =~ "{{actor_upn}}"
+    | summarize arg_max(TimeGenerated, *) by AccountUPN
+    | project
+        SourceTable = "IdentityInfo",
+        TimeGenerated,
+        SignInType = "Identity",
+        IPAddress = "",
+        Location = "",
+        AppDisplayName = "",
+        RiskLevelDuringSignIn = "",
+        RiskLevelAggregated = "",
+        RiskDetail = "",
+        DeviceDetail = "",
+        UserAgent = "",
+        Department,
+        JobTitle
+)
+| sort by TimeGenerated desc

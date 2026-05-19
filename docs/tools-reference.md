@@ -597,27 +597,38 @@ Outputs: `security_arch_review.html`, `security_arch_structured.json`, `security
 
 Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 
-## KQL Investigation Playbooks
+## Investigation Playbooks (vendor-agnostic)
 
-`tools/kql_playbooks.py` loads parameterised, multi-stage KQL queries from `config/kql_playbooks/*.kql`. Each playbook contains expert-crafted queries for a common investigation scenario, with YAML-like frontmatter metadata and `{{param}}` placeholders. The phishing playbook supports multi-ID pivot: pass several NetworkMessageIds as comma-separated quoted strings and Stage 1 returns one row per recipient UPN with aggregated columns across all messages.
+Investigation playbooks live in `config/playbooks/<id>.yaml` and describe stage logic, parameters, required capabilities, and definitions in a vendor-neutral form. Per-stage query bodies live under `config/playbooks/<id>/<platform>/*.<ext>` — one subdirectory per SIEM platform. The unified loader (`tools/playbooks.py`) merges the YAML structure with the right query files at render time. KQL parameters use `{{param}}` placeholders sanitised via `_sanitise_kql_value()` (rejects control characters, escapes quotes/backslashes) to prevent query-structure injection.
 
-**Available playbooks:**
+**Available playbooks** (8 total, 6 with multi-platform support):
 
-| Playbook | Stages | Key parameters |
-|----------|--------|----------------|
-| `phishing` | 4 (email core per UPN, post-delivery logon, URL scope + ZAP, attachment execution) | `target_ids` (comma-separated NetworkMessageIds — rendered into `dynamic([...])`); `url` (stage 3); `sha256` (stage 4) |
-| `account-compromise` | 3 (sign-in detail + triage, Defender fallback, post-compromise activity) | `upn`, `ip` (optional), `lookback` (default 30d) |
-| `ioc-hunt` | 2 (IOC presence sweep, conditional context pivot) | `iocs` (comma-separated), `lookback` (default 30d), `hit_table`/`hit_time`/`hit_device` (stage 2) |
-| `malware-execution` | 3 (process ancestry + script content, file delivery chain, initial access vector) | `device_name`, `filename` (or `__NONE__`), `sha256` (or `__NONE__`), `lookback` (default 7d) |
-| `privilege-escalation` | 3 (escalation event detail, actor legitimacy check, post-escalation activity) | `actor_upn`, `target_user` (or `__NONE__`), `target_group` (or `__NONE__`), `lookback` (default 14d) |
-| `data-exfiltration` | 3 (volume anomaly + DLP, cloud application access, network exfil indicators) | `target_upn`, `threshold_mb` (default 100), `lookback` (default 7d) |
-| `lateral-movement` | 3 (lateral connections RDP/SMB/WMI, credential access, movement chain) | `source_host`, `destination_hosts` (comma-separated), `lookback` (default 7d) |
+| Playbook | Stages | Sentinel | LogScale | Key parameters |
+|----------|--------|----------|----------|----------------|
+| `bec` | 8 (broad scope expansion → delivery scope → MDO blocks → ZAP → post-phishing signin → persistence → attacker activity → tenant sweep) | yes | — | `seed_message_id` or `sender`+`subject`, `target_ids`, `upn`, `attacker_ip`, `lookback` (default 14d) |
+| `phishing` | 5 (broad scope expansion → email core per UPN → post-delivery logon → URL scope+ZAP → attachment execution) | yes | — | `seed_message_id` or `sender`+`subject`, `target_ids`, `url`, `sha256`, `lookback` (default 14d) |
+| `account-compromise` | 5 (cloud identity triage, on-prem AD, identity protection, source host enum, persistence) | yes | yes (4 stages — persistence not implemented) | `upn`, `username`, `ip` (optional), `lookback` (default 30d) |
+| `malware-execution` | 3 (execution context + process ancestry, file delivery chain, initial access vector) | yes | yes | `device_name`, `filename`, `sha256`, `lookback` (default 7d) |
+| `lateral-movement` | 3 (lateral connections RDP/SMB/WMI, credential access, movement chain) | yes | yes | `source_host`, `destination_hosts`, `lookback` (default 7d) |
+| `ioc-hunt` | 2 (IOC presence sweep, context pivot) | yes | yes | `iocs`, `lookback` (default 30d), `hit_table`/`hit_time`/`hit_device` |
+| `data-exfiltration` | 3 (volume anomaly + DLP, cloud application access, network exfil indicators) | yes | — | `target_upn`, `threshold_mb` (default 100), `lookback` (default 7d) |
+| `privilege-escalation` | 3 (escalation event detail, actor legitimacy, post-escalation activity) | yes | — | `actor_upn`, `target_user`, `target_group`, `lookback` (default 14d) |
 
-**API:** `list_playbooks()`, `load_playbook(id)`, `render_stage(pb, stage, params)`
+`bec` and `phishing` Stage 0 implements the **broad scope principle** — every email-campaign investigation expands the alert seed (one NetworkMessageId) into the full set of related messages (sender + subject) before any narrow-scope stage runs. Operating on a single NetworkMessageId leads to under-blocked campaigns and missed clickers.
 
-**Chat integration:** The `load_kql_playbook` tool is available in both case-mode and session-mode chat. The LLM loads a playbook, substitutes parameters from the investigation context, and executes each stage via `run_kql`.
+**Platform adapters** at `config/platforms/<id>.yaml` declare each platform's capabilities (data sources it can query), query language, and executor binding. Today: `sentinel.yaml` (13 capabilities, KQL, auto-execute via `scripts/run_kql.py`) and `logscale.yaml` (6 capabilities, CQL, render-only). To add a new platform, drop a new adapter and the schema reference — no Python changes.
 
-**Adding a playbook:** Create `config/kql_playbooks/<name>.kql` with frontmatter between `// ---` markers and stage blocks delimited by `// STAGE N — Title` headers.
+**Capability gating** is enforced by the unified loader. A playbook's `required_capabilities` is either a flat list (applies to every platform) or a dict keyed by platform id. When dict-form lacks an entry for the target platform, the loader returns `platform_not_supported`. When the platform doesn't declare all required capabilities, the loader returns `capability_gate` with the missing list. This prevents Claude Desktop from running queries on a SIEM that doesn't have the underlying data forwarded into it.
+
+**External schema sync** (`tools/schema_fetcher.py`) pulls platform schemas from a configurable HTTP manifest endpoint. Configure with `SOCAI_SCHEMA_SOURCE_URL`, `SOCAI_SCHEMA_API_KEY` (optional), `SOCAI_SCHEMA_REFRESH_HOURS`. ETag-based incremental fetch, cached locally, falls back to cached copies on network failure.
+
+**API:** `tools.playbooks.list_playbooks_unified()`, `tools.playbooks.load_playbook_for_platform(id, platform_id)`, `tools.playbooks.render_stage_for_platform(id, stage, params, platform_id)`. `tools.platforms.list_platforms()`, `tools.platforms.get_platform(id)`, `tools.platforms.validate_capabilities(platform_id, required)`.
+
+**MCP prompts:** `kql_investigation` (Sentinel) and `cql_investigation` (LogScale) both route through the unified loader. Each prompt's playbook list is filtered by the platform's capability gate — playbooks unrunnable on the target platform are not offered.
+
+**Adding a playbook:** see `docs/extending.md` → "New investigation playbook".
+
+**Adding a SIEM platform:** see `docs/extending.md` → "New SIEM Platform (vendor adapter)".
 
 ## Sentinel Composite Queries
 

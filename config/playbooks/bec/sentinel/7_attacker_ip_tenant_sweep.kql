@@ -1,0 +1,48 @@
+let AttackerIP = "{{attacker_ip}}";
+let Lookback = {{lookback}};
+let Interactive = SigninLogs
+    | where TimeGenerated > ago(Lookback)
+    | where IPAddress == AttackerIP
+    | extend
+        City = tostring(LocationDetails.city),
+        Country = tostring(LocationDetails.countryOrRegion)
+    | summarize
+        InteractiveCount = count(),
+        SuccessCount = countif(ResultType == 0),
+        FailedCount = countif(ResultType != 0),
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated),
+        Apps = make_set(AppDisplayName),
+        ResultTypes = make_set(ResultType),
+        Locations = make_set(strcat(City, ", ", Country)),
+        RiskLevels = make_set(RiskLevelDuringSignIn),
+        CAStatuses = make_set(ConditionalAccessStatus)
+      by UserPrincipalName;
+let NonInteractive = AADNonInteractiveUserSignInLogs
+    | where TimeGenerated > ago(Lookback)
+    | where IPAddress == AttackerIP
+    | summarize
+        NonInteractiveCount = count(),
+        NISuccessCount = countif(ResultType == 0),
+        NIFirstSeen = min(TimeGenerated),
+        NILastSeen = max(TimeGenerated),
+        NIApps = make_set(AppDisplayName)
+      by UserPrincipalName;
+Interactive
+| join kind=leftouter NonInteractive on UserPrincipalName
+| project
+    UserPrincipalName,
+    InteractiveCount,
+    SuccessCount,
+    FailedCount,
+    NonInteractiveCount = coalesce(NonInteractiveCount, 0),
+    NISuccessCount = coalesce(NISuccessCount, 0),
+    TotalEvents = InteractiveCount + coalesce(NonInteractiveCount, 0),
+    FirstSeen,
+    LastSeen = max_of(LastSeen, coalesce(NILastSeen, datetime(null))),
+    Apps,
+    Locations,
+    RiskLevels,
+    CAStatuses,
+    ResultTypes
+| sort by SuccessCount desc, TotalEvents desc

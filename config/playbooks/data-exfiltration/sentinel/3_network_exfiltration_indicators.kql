@@ -1,0 +1,55 @@
+let target_user = "{{target_upn}}";
+let lookback = {{lookback}};
+let UserDevices = SigninLogs
+    | where TimeGenerated >= ago(lookback)
+    | where UserPrincipalName =~ target_user
+    | where isnotempty(DeviceDetail.displayName)
+    | summarize arg_max(TimeGenerated, *) by tostring(DeviceDetail.displayName)
+    | project DeviceName = tostring(DeviceDetail.displayName);
+let UploadEvents = DeviceNetworkEvents
+    | where TimeGenerated >= ago(lookback)
+    | where DeviceName in (UserDevices)
+    | where ActionType == "ConnectionSuccess"
+    | where RemotePort in (443, 80, 22, 21, 445)
+    | where not(ipv4_is_private(RemoteIP))
+    | summarize
+        ConnectionCount = count(),
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated),
+        Processes = make_set(InitiatingProcessFileName),
+        Ports = make_set(RemotePort)
+      by DeviceName, RemoteIP, RemoteUrl;
+let LargeFileOps = DeviceFileEvents
+    | where TimeGenerated >= ago(lookback)
+    | where DeviceName in (UserDevices)
+    | where ActionType in ("FileCreated", "FileModified", "FileRenamed")
+    | where FolderPath has_any ("usb", "removable", "external", "cloud",
+                                 "onedrive", "dropbox", "google drive")
+    | project
+        TimeGenerated,
+        DeviceName,
+        FileName,
+        FolderPath,
+        ActionType,
+        InitiatingProcessFileName;
+union
+(
+    UploadEvents
+    | extend RecordType = "NetworkUpload"
+    | project RecordType, TimeGenerated = LastSeen,
+              DeviceName,
+              Detail = strcat(RemoteIP, " | Connections:", ConnectionCount,
+                              " | Ports:", tostring(Ports)),
+              Extra = strcat("Processes: ", tostring(Processes),
+                             " | URL: ", RemoteUrl)
+),
+(
+    LargeFileOps
+    | extend RecordType = "SuspiciousFilePath"
+    | project RecordType, TimeGenerated,
+              DeviceName,
+              Detail = strcat(ActionType, " | ", FileName),
+              Extra = strcat(FolderPath, " via ", InitiatingProcessFileName)
+)
+| sort by TimeGenerated desc
+| take 50

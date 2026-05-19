@@ -1,0 +1,46 @@
+id: privilege-escalation
+name: Privilege Escalation Investigation
+description: "Multi-stage privilege escalation and AD group change investigation. Stage 1\
+  \ gathers the escalation event detail across Entra ID audit logs, on-prem AD security events,\
+  \ and related security alerts. Stage 2 checks the actor's sign-in legitimacy (location,\
+  \ risk, device, identity). Stage 3 is conditional \u2014 tracks what the target account\
+  \ did after gaining elevated privileges (admin portal access, cascading changes, mailbox\
+  \ abuse)."
+required_capabilities:
+  sentinel:
+  - office_activity
+  - security_alerts
+  - sign_in_events
+  - windows_security_events
+parameters:
+- name: actor_upn
+  type: string
+  description: UPN of the account that performed the escalation action
+- name: target_user
+  type: string
+  description: UPN of the account that was escalated (set to __NONE__ if investigating actor
+    only)
+- name: target_group
+  type: string
+  description: Group name the target was added to (set to __NONE__ if not a group-add alert)
+- name: lookback
+  type: string
+  description: Time range to investigate (default 14d)
+  default: 14d
+stages:
+- id: 1
+  name: Escalation event detail
+  description: See query block.
+  run: "ALWAYS \u2014 starting point for every privilege escalation investigation."
+  query_file: 1_escalation_event_detail
+- id: 2
+  name: Actor legitimacy check
+  description: See query block.
+  run: "ALWAYS \u2014 checks whether the actor's sign-in context is legitimate."
+  query_file: 2_actor_legitimacy_check
+- id: 3
+  name: Post-escalation activity (target account)
+  description: See query block.
+  run: "CONDITIONAL \u2014 when escalation looks suspicious or actor legitimacy is"
+  query_file: 3_post_escalation_activity_target_account
+definitions: []

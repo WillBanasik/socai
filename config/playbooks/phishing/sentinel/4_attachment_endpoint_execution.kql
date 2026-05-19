@@ -1,0 +1,46 @@
+let targetIds = dynamic([{{target_ids}}]);
+let AttachmentHash = "{{sha256}}";
+let DeliveryWindow = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | summarize EarliestDelivery = min(Timestamp)
+    | project EarliestDelivery;
+let FileWritten = DeviceFileEvents
+    | where SHA256 =~ AttachmentHash
+    | where Timestamp between (toscalar(DeliveryWindow) .. (toscalar(DeliveryWindow) + 2h))
+    | project
+        FileTimestamp = Timestamp,
+        DeviceName,
+        FileName,
+        FolderPath,
+        SHA256,
+        FileOriginUrl,
+        InitiatingProcessFileName,
+        ActionType;
+let FileExecuted = DeviceProcessEvents
+    | where SHA256 =~ AttachmentHash
+    | where Timestamp between (toscalar(DeliveryWindow) .. (toscalar(DeliveryWindow) + 2h))
+    | project
+        ExecTimestamp = Timestamp,
+        DeviceName,
+        FileName,
+        FolderPath,
+        SHA256,
+        ProcessCommandLine,
+        InitiatingProcessFileName,
+        InitiatingProcessCommandLine,
+        AccountName;
+FileWritten
+| join kind=leftouter FileExecuted on DeviceName, SHA256
+| project
+    FileTimestamp,
+    ExecTimestamp,
+    Executed = isnotempty(ExecTimestamp),
+    DeviceName,
+    FileName,
+    FolderPath,
+    SHA256,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    AccountName,
+    FileOriginUrl
+| sort by FileTimestamp asc

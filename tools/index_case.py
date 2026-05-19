@@ -72,13 +72,17 @@ def index_case(
         ts_key = f"{status}_at"
         if ts_key not in pts:
             pts[ts_key] = utcnow()
-        from tools.common import log_metric
-        log_metric("case_phase_change", case_id=case_id,
-                   phase=status,
-                   prev_status=prev_status,
-                   analyst=meta.get("analyst", ""),
-                   client=meta.get("client", ""),
-                   severity=meta.get("severity", ""))
+        # Only emit metric on a real transition — index_case() is called by many
+        # tools whose status param may equal the current state; emitting on no-op
+        # writes was generating ~80% noise in registry/metrics.jsonl.
+        if status != prev_status:
+            from tools.common import log_metric
+            log_metric("case_phase_change", case_id=case_id,
+                       phase=status,
+                       prev_status=prev_status,
+                       analyst=meta.get("analyst", ""),
+                       client=meta.get("client", ""),
+                       severity=meta.get("severity", ""))
 
     # Count artefacts via targeted subdirectory check (avoids expensive
     # rglob over the entire case directory — 5-10× faster on large cases)

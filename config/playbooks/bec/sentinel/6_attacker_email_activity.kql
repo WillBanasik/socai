@@ -1,0 +1,37 @@
+let TargetUPN = "{{upn}}";
+let AttackerIP = "{{attacker_ip}}";
+let Lookback = {{lookback}};
+// Outbound emails sent from the compromised account
+let SentEmails = EmailEvents
+    | where Timestamp > ago(Lookback)
+    | where SenderFromAddress =~ TargetUPN or SenderMailFromAddress =~ TargetUPN
+    | where EmailDirection == "Outbound" or EmailDirection == "Intra-org"
+    | project
+        Timestamp,
+        Subject,
+        SenderFromAddress,
+        RecipientEmailAddress,
+        SenderIPv4,
+        EmailDirection,
+        ThreatTypes,
+        DeliveryAction,
+        NetworkMessageId;
+// Exchange Send/SendAs/SendOnBehalf operations (OfficeActivity)
+let SendOps = OfficeActivity
+    | where TimeGenerated > ago(Lookback)
+    | where OfficeWorkload == "Exchange"
+    | where UserId =~ TargetUPN
+    | where Operation in ("Send", "SendAs", "SendOnBehalf")
+    | where isempty(AttackerIP) or ClientIP has AttackerIP
+    | project
+        Timestamp = TimeGenerated,
+        Operation,
+        UserId,
+        ClientIP,
+        OfficeObjectId,
+        ExternalAccess;
+union
+    (SentEmails | extend Section = "A_SentEmails", SortTime = Timestamp),
+    (SendOps | extend Section = "B_SendOps", SortTime = Timestamp)
+| sort by Section asc, SortTime asc
+| take 200

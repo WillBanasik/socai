@@ -1,0 +1,40 @@
+id: data-exfiltration
+name: Data Exfiltration Investigation
+description: Multi-stage data exfiltration investigation. Stage 1 identifies abnormal download/upload
+  volumes and DLP alerts for the target user. Stage 2 checks cloud application activity (SharePoint,
+  OneDrive, Exchange) for bulk access or sharing events. Stage 3 correlates with network telemetry
+  to identify external data transfer destinations.
+required_capabilities:
+  sentinel:
+  - device_file_events
+  - device_network_events
+  - office_activity
+  - security_alerts
+  - sign_in_events
+parameters:
+- name: target_upn
+  type: string
+  description: User Principal Name of the suspect account
+- name: lookback
+  type: string
+  description: KQL timespan for lookback window (default 30d)
+- name: threshold_mb
+  type: string
+  description: Download volume threshold in MB to flag as abnormal (default 500)
+stages:
+- id: 1
+  name: Volume anomaly and DLP alerts
+  description: See query block.
+  run: "ALWAYS \u2014 baseline check for abnormal data movement and DLP triggers."
+  query_file: 1_volume_anomaly_and_dlp_alerts
+- id: 2
+  name: Cloud application file access
+  description: See query block.
+  run: "ALWAYS \u2014 check for bulk file access, external sharing, and mailbox forwarding."
+  query_file: 2_cloud_application_file_access
+- id: 3
+  name: Network exfiltration indicators
+  description: correlate with endpoint network events to identify external
+  run: when Stage 1 or Stage 2 shows suspicious volume or access patterns.
+  query_file: 3_network_exfiltration_indicators
+definitions: []

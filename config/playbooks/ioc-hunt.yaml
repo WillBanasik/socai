@@ -1,0 +1,46 @@
+id: ioc-hunt
+name: IOC Hunt
+description: Fast IOC presence sweep across a Sentinel workspace. Stage 1 runs a single union
+  query across all major tables (network, sign-in, firewall, alerts, threat intel) to determine
+  whether any of the supplied IOCs have been seen. Stage 2 is a conditional context pivot
+  that pulls surrounding activity from the table and time window where hits were found.
+required_capabilities:
+  sentinel:
+  - device_network_events
+  - security_alerts
+  - sign_in_events
+  logscale:
+  - device_file_events
+  - device_network_events
+  - device_process_events
+  - sign_in_events
+parameters:
+- name: iocs
+  type: string
+  description: Comma-separated IOC values formatted as KQL dynamic list content (IPs, domains,
+    hashes)
+- name: lookback
+  type: string
+  description: KQL timespan for lookback window (default 30d)
+- name: hit_table
+  type: string
+  description: Table name from Stage 1 hit (used in Stage 2)
+- name: hit_time
+  type: string
+  description: ISO timestamp of a Stage 1 hit to pivot around (used in Stage 2)
+- name: hit_device
+  type: string
+  description: DeviceProduct or DeviceName from Stage 1 hit (used in Stage 2)
+stages:
+- id: 1
+  name: IOC presence sweep
+  description: See query block.
+  run: "ALWAYS \u2014 single query replaces 4-5 sequential table searches."
+  query_file: 1_ioc_presence_sweep
+- id: 2
+  name: Context pivot
+  description: understand what else happened on the same device/source around the time of
+    the IOC hit.
+  run: when Stage 1 returns hits. Pulls 1-hour window around the hit for context.
+  query_file: 2_context_pivot
+definitions: []

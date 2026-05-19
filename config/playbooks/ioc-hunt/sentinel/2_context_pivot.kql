@@ -1,0 +1,21 @@
+let pivot_time = datetime({{hit_time}});
+let window_start = pivot_time - 30m;
+let window_end = pivot_time + 30m;
+let device_filter = "{{hit_device}}";
+CommonSecurityLog
+| where TimeGenerated between (window_start .. window_end)
+| where DeviceProduct has device_filter or DeviceName has device_filter
+| project
+    TimeGenerated,
+    SourceIP,
+    SourceUserName,
+    DestinationIP,
+    DestinationPort,
+    Protocol,
+    Activity,
+    DeviceAction,
+    DeviceVendor,
+    DeviceProduct,
+    Message
+| sort by TimeGenerated asc
+| take 50

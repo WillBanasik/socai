@@ -1,0 +1,36 @@
+let URL = "{{url}}";
+EmailUrlInfo
+| where Url has URL
+| join kind=inner (
+    EmailEvents
+    | where DeliveryAction == "Delivered" and EmailDirection == "Inbound"
+) on NetworkMessageId
+| project
+    DeliveryTime = Timestamp,
+    NetworkMessageId,
+    Url,
+    SenderFromAddress,
+    SenderIPv4,
+    RecipientEmailAddress,
+    Subject,
+    DeliveryAction,
+    DeliveryLocation
+| join kind=leftouter (
+    EmailPostDeliveryEvents
+    | where ActionType has "ZAP"
+    | project NetworkMessageId, RecipientEmailAddress, ZAPTime = Timestamp, ZAPAction = ActionType
+) on NetworkMessageId, RecipientEmailAddress
+| extend ExposureMinutes = iff(isnotempty(ZAPTime), datetime_diff('minute', ZAPTime, DeliveryTime), -1)
+| project
+    DeliveryTime,
+    ZAPTime,
+    ExposureMinutes,
+    NetworkMessageId,
+    SenderFromAddress,
+    SenderIPv4,
+    RecipientEmailAddress,
+    Subject,
+    DeliveryAction,
+    DeliveryLocation,
+    ZAPAction
+| sort by DeliveryTime asc

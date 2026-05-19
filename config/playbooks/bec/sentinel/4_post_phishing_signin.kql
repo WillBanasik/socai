@@ -1,0 +1,56 @@
+let TargetUPN = "{{upn}}";
+let AttackerIP = "{{attacker_ip}}";
+let Lookback = {{lookback}};
+// Interactive sign-ins — anomalous locations, new devices, risk flags
+let Interactive = SigninLogs
+    | where TimeGenerated > ago(Lookback)
+    | where UserPrincipalName =~ TargetUPN
+    | where isempty(AttackerIP) or IPAddress == AttackerIP
+    | extend
+        City = tostring(LocationDetails.city),
+        Country = tostring(LocationDetails.countryOrRegion),
+        DeviceName = tostring(DeviceDetail.displayName),
+        DeviceOS = tostring(DeviceDetail.operatingSystem),
+        Browser = tostring(DeviceDetail.browser),
+        IsManaged = tostring(DeviceDetail.isManaged),
+        IsCompliant = tostring(DeviceDetail.isCompliant),
+        TrustType = tostring(DeviceDetail.trustType),
+        MfaMethod = tostring(MfaDetail.authMethod),
+        ErrorCode = tostring(Status.errorCode),
+        FailureReason = tostring(Status.failureReason)
+    | project
+        TimeGenerated, UserPrincipalName, IPAddress,
+        City, Country,
+        AppDisplayName, ResourceDisplayName,
+        ResultType, ErrorCode, FailureReason,
+        RiskLevelDuringSignIn, RiskState, RiskDetail,
+        ConditionalAccessStatus, AuthenticationRequirement,
+        MfaMethod,
+        DeviceName, DeviceOS, Browser, IsManaged, IsCompliant, TrustType,
+        SessionId = CorrelationId,
+        SignInType = "Interactive";
+// Non-interactive sign-ins — token replay, app access
+let NonInteractive = AADNonInteractiveUserSignInLogs
+    | where TimeGenerated > ago(Lookback)
+    | where UserPrincipalName =~ TargetUPN
+    | where isempty(AttackerIP) or IPAddress == AttackerIP
+    | extend
+        City = tostring(LocationDetails.city),
+        Country = tostring(LocationDetails.countryOrRegion),
+        ErrorCode = tostring(Status.errorCode),
+        FailureReason = tostring(Status.failureReason)
+    | project
+        TimeGenerated, UserPrincipalName, IPAddress,
+        City, Country,
+        AppDisplayName, ResourceDisplayName,
+        ResultType, ErrorCode, FailureReason,
+        RiskLevelDuringSignIn, RiskState, RiskDetail = "",
+        ConditionalAccessStatus, AuthenticationRequirement,
+        MfaMethod = "",
+        DeviceName = "", DeviceOS = "", Browser = "",
+        IsManaged = "", IsCompliant = "", TrustType = "",
+        SessionId = CorrelationId,
+        SignInType = "NonInteractive";
+union Interactive, NonInteractive
+| sort by TimeGenerated asc
+| take 500

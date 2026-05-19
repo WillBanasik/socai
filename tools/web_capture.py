@@ -59,6 +59,11 @@ class _BrowserPool:
         self._last_used: float = 0.0
         self._reaper: threading.Thread | None = None
         self._reaper_stop = threading.Event()
+        # Playwright's sync API is greenlet-bound to the thread that started it.
+        # The reaper runs on a separate thread and must NOT call into Playwright
+        # directly — it sets _idle_recycle_pending and the next get_sync_context()
+        # call (which is on a worker thread) performs the actual teardown.
+        self._idle_recycle_pending = False
 
     def _start_reaper(self):
         """Start the idle reaper thread if not already running (must hold _lock)."""
@@ -73,33 +78,47 @@ class _BrowserPool:
         self._reaper.start()
 
     def _reaper_loop(self):
-        """Periodically check if the browser has been idle too long."""
+        """Periodically check if the browser has been idle too long.
+
+        Only sets a recycle flag — the next caller performs the actual teardown
+        on its own thread (Playwright is thread-affine to the creating thread).
+        """
+        from tools.common import eprint
         while not self._reaper_stop.is_set():
             self._reaper_stop.wait(timeout=30)
             if self._reaper_stop.is_set():
                 break
             with self._lock:
                 if (self._sync_browser is not None
+                        and not self._idle_recycle_pending
                         and self._last_used > 0
                         and time.monotonic() - self._last_used >= self._idle_secs):
-                    print(f"[browser_pool] Idle for {self._idle_secs}s — shutting down pooled browser")
-                    self._teardown()
+                    eprint(f"[browser_pool] Idle for {self._idle_secs}s — marking pool for recycle on next use")
+                    self._idle_recycle_pending = True
 
     def _teardown(self):
-        """Tear down browser and Playwright (must hold _lock)."""
+        """Tear down browser and Playwright (must hold _lock).
+
+        If called from a thread other than the one that created Playwright
+        (e.g. atexit on the main thread), Playwright raises "Cannot switch
+        to a different thread". That's expected at shutdown — log as info,
+        not warning. The OS reaps the chromium subprocess anyway.
+        """
         if self._sync_browser is not None:
             try:
                 self._sync_browser.close()
             except Exception as exc:
+                _sev = "info" if "different thread" in str(exc) else "warning"
                 log_error("", "web_capture.browser_pool.close_browser", str(exc),
-                          severity="warning", traceback=True)
+                          severity=_sev, traceback=True)
             self._sync_browser = None
         if self._sync_pw is not None:
             try:
                 self._sync_pw.stop()
             except Exception as exc:
+                _sev = "info" if "different thread" in str(exc) else "warning"
                 log_error("", "web_capture.browser_pool.stop_playwright", str(exc),
-                          severity="warning", traceback=True)
+                          severity=_sev, traceback=True)
             self._sync_pw = None
         self._use_count = 0
 
@@ -109,12 +128,14 @@ class _BrowserPool:
             self._sync_browser is None
             or not self._sync_browser.is_connected()
             or self._use_count >= self._max_uses
+            or self._idle_recycle_pending
         )
         if not needs_new:
             return
 
         # Tear down old browser if it exists
         self._teardown()
+        self._idle_recycle_pending = False
 
         from playwright.sync_api import sync_playwright  # type: ignore
         from config.settings import OPSEC_PROXY

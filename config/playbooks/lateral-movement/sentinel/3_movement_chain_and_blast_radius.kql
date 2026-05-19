@@ -1,0 +1,61 @@
+let first_hop_hosts = dynamic([{{destination_hosts}}]);
+let lookback = {{lookback}};
+let SecondHop = DeviceNetworkEvents
+    | where TimeGenerated >= ago(lookback)
+    | where DeviceName in~ (first_hop_hosts)
+    | where ActionType == "ConnectionSuccess"
+    | where RemotePort in (3389, 445, 135, 5985, 5986, 22)
+    | where not(RemoteIP == "127.0.0.1")
+    | project
+        TimeGenerated,
+        SourceHost = DeviceName,
+        DestinationIP = RemoteIP,
+        DestinationPort = RemotePort,
+        Protocol = case(
+            RemotePort == 3389, "RDP",
+            RemotePort == 445, "SMB",
+            RemotePort == 135, "WMI/DCOM",
+            RemotePort in (5985, 5986), "WinRM",
+            RemotePort == 22, "SSH",
+            strcat("Port:", RemotePort)
+        ),
+        User = InitiatingProcessAccountName,
+        Process = InitiatingProcessFileName;
+let SecondHopLogons = DeviceLogonEvents
+    | where TimeGenerated >= ago(lookback)
+    | where RemoteDeviceName in~ (first_hop_hosts)
+    | where LogonType in ("RemoteInteractive", "Network", "NewCredentials")
+    | where ActionType == "LogonSuccess"
+    | project
+        TimeGenerated,
+        SourceHost = RemoteDeviceName,
+        DestinationHost = DeviceName,
+        LogonType,
+        User = AccountName;
+let AllHosts = union
+    (SecondHop | project Host = SourceHost),
+    (SecondHop | project Host = DestinationIP),
+    (SecondHopLogons | project Host = SourceHost),
+    (SecondHopLogons | project Host = DestinationHost)
+    | distinct Host;
+let BlastRadius = AllHosts
+    | summarize Hosts = make_set(Host);
+union
+(
+    SecondHop
+    | extend RecordType = "SecondHopNetwork"
+    | project RecordType, TimeGenerated, SourceHost,
+              Detail = strcat(Protocol, " → ", DestinationIP, ":", DestinationPort),
+              User,
+              Extra = Process
+),
+(
+    SecondHopLogons
+    | extend RecordType = "SecondHopLogon"
+    | project RecordType, TimeGenerated, SourceHost,
+              Detail = strcat(LogonType, " → ", DestinationHost),
+              User,
+              Extra = ""
+)
+| sort by TimeGenerated asc
+| take 50

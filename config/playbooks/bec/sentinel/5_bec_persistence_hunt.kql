@@ -1,0 +1,65 @@
+let TargetUPN = "{{upn}}";
+let AttackerIP = "{{attacker_ip}}";
+let Lookback = {{lookback}};
+// Section A: Inbox rules (the #1 BEC persistence mechanism)
+let InboxRules = CloudAppEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountId =~ TargetUPN or AccountDisplayName has split(TargetUPN, "@")[0]
+    | where ActionType in ("New-InboxRule", "Set-InboxRule", "Enable-InboxRule",
+        "UpdateInboxRules", "Remove-InboxRule", "Disable-InboxRule")
+    | extend RawParams = tostring(RawEventData)
+    | project Timestamp, ActionType, AccountId, IPAddress,
+        RawParams = substring(RawParams, 0, 2000)
+    | extend Section = "A_InboxRules";
+// Section B: Mail forwarding configuration
+let Forwarding = CloudAppEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountId =~ TargetUPN or AccountDisplayName has split(TargetUPN, "@")[0]
+    | where ActionType == "Set-Mailbox"
+    | where tostring(RawEventData) has_any ("ForwardingSmtpAddress", "ForwardingAddress",
+        "DeliverToMailboxAndForward", "RedirectTo")
+    | extend RawParams = tostring(RawEventData)
+    | project Timestamp, ActionType, AccountId, IPAddress,
+        RawParams = substring(RawParams, 0, 2000)
+    | extend Section = "B_Forwarding";
+// Section C: Mailbox permission grants (SendAs, FullAccess, delegation)
+let Permissions = CloudAppEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountId =~ TargetUPN or AccountDisplayName has split(TargetUPN, "@")[0]
+    | where ActionType has_any ("MailboxPermission", "RecipientPermission",
+        "FolderPermission", "MailboxLogin")
+    | extend RawParams = tostring(RawEventData)
+    | project Timestamp, ActionType, AccountId, IPAddress,
+        RawParams = substring(RawParams, 0, 2000)
+    | extend Section = "C_Permissions";
+// Section D: OAuth / consent grants (illicit app consent for persistence)
+let OAuthConsent = CloudAppEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountId =~ TargetUPN or AccountDisplayName has split(TargetUPN, "@")[0]
+    | where ActionType in ("Consent to application.", "Add OAuth2PermissionGrant.",
+        "Add app role assignment to user.", "Add delegated permission grant.",
+        "Add service principal.", "Add service principal credentials.")
+    | extend RawParams = tostring(RawEventData)
+    | project Timestamp, ActionType, AccountId, IPAddress,
+        RawParams = substring(RawParams, 0, 2000)
+    | extend Section = "D_OAuthConsent";
+// Section E: MFA method changes (attacker registering their own MFA)
+let MFAChanges = CloudAppEvents
+    | where Timestamp > ago(Lookback)
+    | where AccountId =~ TargetUPN or AccountDisplayName has split(TargetUPN, "@")[0]
+    | where ActionType has_any ("Update user.", "Register security info",
+        "User registered security info", "Delete security info",
+        "User deleted security info")
+    | where tostring(RawEventData) has_any ("StrongAuthentication", "PhoneNumber",
+        "AuthenticatorApp", "SecurityInfo", "Fido2")
+    | extend RawParams = tostring(RawEventData)
+    | project Timestamp, ActionType, AccountId, IPAddress,
+        RawParams = substring(RawParams, 0, 2000)
+    | extend Section = "E_MFAChanges";
+union isfuzzy=true
+    (InboxRules | extend SortTime = Timestamp),
+    (Forwarding | extend SortTime = Timestamp),
+    (Permissions | extend SortTime = Timestamp),
+    (OAuthConsent | extend SortTime = Timestamp),
+    (MFAChanges | extend SortTime = Timestamp)
+| sort by Section asc, SortTime asc

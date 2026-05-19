@@ -1,0 +1,53 @@
+id: lateral-movement
+name: Lateral Movement Investigation
+description: Multi-stage lateral movement investigation. Stage 1 identifies RDP, SMB, WMI,
+  PsExec, and WinRM connections from the compromised host. Stage 2 checks for credential access
+  (pass-the-hash, Kerberos abuse, LSASS access) on the source and destination hosts. Stage
+  3 traces the full movement chain across multiple hops to map the blast radius.
+required_capabilities:
+  sentinel:
+  - device_network_events
+  - device_process_events
+  - identity_logon
+  - security_alerts
+  logscale:
+  - device_network_events
+  - device_process_events
+  - identity_logon
+parameters:
+- name: source_host
+  type: string
+  description: Initially compromised hostname or DeviceName
+- name: source_user
+  type: string
+  description: Compromised user account (UPN or AccountName)
+- name: lookback
+  type: string
+  description: KQL timespan for lookback window (default 7d)
+- name: destination_hosts
+  type: string
+  description: Comma-separated destination hosts from Stage 1 (used in Stages 2-3)
+stages:
+- id: 1
+  name: Lateral movement connections
+  description: See query block.
+  run: "ALWAYS \u2014 identify all lateral movement from the source host."
+  query_file: 1_lateral_movement_connections
+- id: 2
+  name: Credential access on movement path
+  description: detect credential theft techniques on source and destination hosts.
+  run: when Stage 1 identifies lateral connections.
+  query_file: 2_credential_access_on_movement_path
+- id: 3
+  name: Movement chain and blast radius
+  description: "trace secondary hops \u2014 did the adversary move further from the"
+  run: when Stage 2 confirms credential access or Stage 1 shows multiple destinations.
+  query_file: 3_movement_chain_and_blast_radius
+definitions:
+- term: Lateral Movement
+  definition: Techniques where an adversary moves from one system to another within the network,
+    typically using legitimate remote access protocols (RDP, SMB, WMI) with stolen or escalated
+    credentials.
+- term: Blast Radius
+  definition: The total set of systems and accounts accessed by the adversary from the initial
+    point of compromise, including all intermediate hops.

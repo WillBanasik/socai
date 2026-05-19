@@ -1192,15 +1192,37 @@ def _whoisxml_lookup(ioc: str, ioc_type: str) -> dict:
     # Calculate domain age in days
     domain_age_days = None
     newly_registered = False
-    try:
-        from datetime import datetime, timezone
-        created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+    if created_str:
+        from datetime import datetime
         from tools.common import utcnow as _utcnow
-        _now = datetime.fromisoformat(_utcnow().replace("Z", "+00:00"))
-        domain_age_days = (_now - created_dt).days
-        newly_registered = domain_age_days < 30
-    except Exception as exc:
-        log_error("", "enrich.whoisxml_domain_age", str(exc), severity="info")
+
+        created_dt = None
+        normalised = created_str.replace("Z", "+00:00").strip()
+        try:
+            created_dt = datetime.fromisoformat(normalised)
+        except ValueError:
+            # WhoisXML occasionally returns non-ISO formats (e.g. "11-Jun-2014",
+            # "Monday 9th February 2009"). Try a couple of common fallbacks.
+            for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%d %B %Y"):
+                try:
+                    created_dt = datetime.strptime(normalised, fmt)
+                    break
+                except ValueError:
+                    continue
+
+        if created_dt is not None:
+            try:
+                _now = datetime.fromisoformat(_utcnow().replace("Z", "+00:00"))
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=_now.tzinfo)
+                domain_age_days = (_now - created_dt).days
+                newly_registered = domain_age_days < 30
+            except Exception as exc:
+                log_error("", "enrich.whoisxml_domain_age", str(exc), severity="info",
+                          context={"created_str": created_str})
+        else:
+            log_error("", "enrich.whoisxml_domain_age", "unparseable createdDate",
+                      severity="info", context={"created_str": created_str, "domain": ioc})
 
     # Newly registered domains are a strong phishing signal
     verdict = "suspicious" if newly_registered else "clean"

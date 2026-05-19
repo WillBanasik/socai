@@ -987,6 +987,7 @@ def start_session(
     print("[browser] Waiting for Chrome to start...")
     ready = False
     container_name = _container_name(session_id)
+    last_probe_err: str | None = None
     for _ in range(30):
         if BROWSER_USE_VPN:
             try:
@@ -999,11 +1000,9 @@ def start_session(
                     ready = True
                     break
             except subprocess.TimeoutExpired:
-                pass
+                last_probe_err = "probe timeout"
             except Exception as exc:
-                log_error(case_id, "browser_session:novnc_readiness_poll", str(exc),
-                          severity="info", traceback=True,
-                          context={"session_id": session_id, "port": novnc_port, "mode": "vpn"})
+                last_probe_err = str(exc)
         else:
             try:
                 import urllib.request
@@ -1014,12 +1013,17 @@ def start_session(
                     ready = True
                     break
             except Exception as exc:
-                log_error(case_id, "browser_session:novnc_readiness_poll", str(exc),
-                          severity="info", traceback=True,
-                          context={"session_id": session_id, "port": novnc_port, "mode": "bridge"})
+                last_probe_err = str(exc)
         time.sleep(1)
 
     if not ready:
+        # Only log if startup actually failed — per-iteration polling errors
+        # during normal startup (connection refused / reset) are expected and noisy.
+        log_error(case_id, "browser_session:novnc_readiness_poll",
+                  f"Browser failed to become ready within 30s; last probe error: {last_probe_err}",
+                  severity="warning",
+                  context={"session_id": session_id, "port": novnc_port,
+                           "mode": "vpn" if BROWSER_USE_VPN else "bridge"})
         _stop_container(session_id)
         return {"status": "error", "reason": "Browser failed to start within 30 seconds"}
 

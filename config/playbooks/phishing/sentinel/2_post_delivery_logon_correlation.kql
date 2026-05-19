@@ -1,0 +1,28 @@
+let targetIds = dynamic([{{target_ids}}]);
+let Recipients = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | where DeliveryAction == "Delivered"
+    | project
+        TimeEmail = Timestamp,
+        UPN = RecipientEmailAddress,
+        AccountName = tostring(split(RecipientEmailAddress, "@")[0]),
+        NetworkMessageId,
+        Subject;
+Recipients
+| join kind=inner (
+    IdentityLogonEvents
+    | project LogonTime = Timestamp, AccountName, DeviceName, LogonType
+) on AccountName
+| where (LogonTime - TimeEmail) between (0min .. 30min)
+| project
+    UPN,
+    TimeEmail,
+    LogonTime,
+    TimeDelta = LogonTime - TimeEmail,
+    AccountName,
+    DeviceName,
+    LogonType,
+    Subject,
+    NetworkMessageId
+| sort by UPN asc, TimeEmail asc
+| take 50

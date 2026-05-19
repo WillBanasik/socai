@@ -1,0 +1,55 @@
+let targetIds = dynamic([{{target_ids}}]);
+let EmailCore = EmailEvents
+    | where NetworkMessageId in (targetIds)
+    | project
+        NetworkMessageId,
+        EmailTimestamp = Timestamp,
+        Subject,
+        SenderFromAddress,
+        SenderDisplayName,
+        SenderFromDomain,
+        SenderIP = SenderIPv4,
+        RecipientEmailAddress,
+        RecipientObjectId,
+        AuthenticationDetails,
+        DeliveryAction,
+        DeliveryLocation,
+        ThreatTypes,
+        ThreatNames,
+        InternetMessageId;
+let Attachments = EmailAttachmentInfo
+    | where NetworkMessageId in (targetIds)
+    | summarize AttachmentSHA256 = make_set(SHA256) by NetworkMessageId;
+let Urls = EmailUrlInfo
+    | where NetworkMessageId in (targetIds)
+    | summarize Urls = make_set(Url) by NetworkMessageId;
+let Clicks = UrlClickEvents
+    | where NetworkMessageId in (targetIds)
+    | summarize
+        ClickedUrls = make_set(Url),
+        ClickedThrough = make_set_if(Url, IsClickedThrough == true),
+        FirstClick = min(Timestamp),
+        LastClick = max(Timestamp)
+      by NetworkMessageId;
+EmailCore
+| join kind=leftouter Attachments on NetworkMessageId
+| join kind=leftouter Urls on NetworkMessageId
+| join kind=leftouter Clicks on NetworkMessageId
+| summarize
+    MessageCount = dcount(NetworkMessageId),
+    MessageIds = make_set(NetworkMessageId),
+    Subjects = make_set(Subject),
+    Senders = make_set(SenderFromAddress),
+    SenderDomains = make_set(SenderFromDomain),
+    SenderIPs = make_set(SenderIP),
+    DeliveryActions = make_set(DeliveryAction),
+    ThreatTypes = make_set(ThreatTypes),
+    AttachmentSHA256 = make_set(AttachmentSHA256),
+    Urls = make_set(Urls),
+    ClickedUrls = make_set(ClickedUrls),
+    ClickedThrough = make_set(ClickedThrough),
+    FirstEmailSeen = min(EmailTimestamp),
+    LastEmailSeen = max(EmailTimestamp),
+    FirstClick = min(FirstClick),
+    LastClick = max(LastClick)
+  by UPN = RecipientEmailAddress

@@ -1,0 +1,63 @@
+# Microsoft Sentinel + Defender 365 platform adapter.
+#
+# Pulled at runtime by tools.platforms.load_platform("sentinel"). Defines the
+# query language, exposed capabilities, and how to execute rendered queries.
+# The schema referenced here describes the tables/columns available; it is
+# fetched from the external schema project (see config.settings.SOCAI_SCHEMA_*).
+
+id: sentinel
+name: Microsoft Sentinel (KQL)
+description: >
+  Microsoft Sentinel Log Analytics workspace with Defender 365 advanced hunting
+  tables. KQL queries via the Sentinel Logs API.
+
+query_language: kql
+
+# Schema reference — looked up in the external schema manifest by this key.
+# The fetched schema describes available tables and columns; the platform
+# adapter just names the lookup key.
+schema_ref: sentinel
+
+# Capabilities this platform exposes when fully ingested.
+# Playbooks declare required_capabilities; the loader refuses to render
+# a playbook stage on a platform whose capability set is missing any required.
+capabilities:
+  - email_events            # EmailEvents, EmailAttachmentInfo, EmailUrlInfo
+  - email_url_clicks        # UrlClickEvents
+  - email_post_delivery     # EmailPostDeliveryEvents
+  - sign_in_events          # SigninLogs, AADNonInteractiveUserSignInLogs
+  - service_principal_signins  # AADServicePrincipalSignInLogs
+  - identity_logon          # IdentityLogonEvents (MDI)
+  - office_activity         # OfficeActivity (Exchange / SharePoint admin)
+  - device_process_events   # DeviceProcessEvents (MDE)
+  - device_file_events      # DeviceFileEvents (MDE)
+  - device_network_events   # DeviceNetworkEvents (MDE)
+  - cloud_app_events        # CloudAppEvents (MDA / MCAS)
+  - security_alerts         # SecurityAlert, SecurityIncident, ThreatIntelligenceIndicator
+  - windows_security_events # SecurityEvent (on-prem AD via MMA / AMA)
+
+# Template syntax used by the unified renderer. Both KQL and CQL use the same
+# Mustache-style today; the field exists so future platforms can override.
+template_syntax:
+  parameter_pattern: "{{name}}"
+  list_format: comma_quoted     # ["a","b","c"] → "a","b","c" inside dynamic([…])
+
+# Per-stage query files live at:
+#   config/playbooks/<playbook_id>/<query_dir>/<stage_file>.<query_file_ext>
+query_dir: sentinel
+query_file_ext: kql
+
+# How to execute a rendered query. The loader dispatches to this module/function
+# with the rendered query plus client-derived kwargs from client_config_map.
+# Set `mode: render_only` (and omit module/function) for platforms without an
+# auto-execution path — the loader returns the rendered query for the analyst
+# to run manually.
+executor:
+  mode: api
+  module: scripts.run_kql
+  function: run_kql
+  # Map from the client_entities.json platforms.<platform>.<key> path to the
+  # kwarg the executor expects. e.g. client.platforms.sentinel.workspace_id
+  # is passed as kwarg `workspace_id`.
+  client_config_map:
+    workspace_id: workspace_id
