@@ -64,12 +64,6 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# SOC process docs (contain internal URLs, ticket queue IDs, personnel names)
-docs/incident-handling.md
-docs/service-requests.md
-docs/time-tracking.md
-docs/critical-incident-management.md
-
 # Binary artefacts
 *.pptx
 *.zip

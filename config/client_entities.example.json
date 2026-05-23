@@ -8,19 +8,21 @@
           "subscription_id": "",
           "resource_group": ""
         },
-        "xdr": {
-          "tenant_id": "",
-          "access": "read"
+        "defender_xdr": {
+          "api_enabled": false,
+          "tenant_id": ""
         },
         "crowdstrike": {
-          "cid": "",
-          "access": "read"
+          "api_enabled": false,
+          "falcon_region": "",
+          "ngsiem_repo": ""
         },
         "encore": {
           "tenant_id": "",
           "access": "read"
         }
-      }
+      },
+      "aliases": ["acme"]
     },
     {
       "name": "partner-inc",
@@ -29,10 +31,12 @@
           "workspace_id": "00000000-0000-0000-0000-000000000001"
         },
         "crowdstrike": {
-          "cid": "00000000000000000000000000000001",
-          "access": "read"
+          "api_enabled": true,
+          "falcon_region": "eu-1",
+          "ngsiem_repo": "partner-ngsiem-prod"
         }
-      }
+      },
+      "aliases": ["partner"]
     }
   ]
 }

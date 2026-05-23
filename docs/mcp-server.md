@@ -28,7 +28,7 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  107 tools, 46 resources│
+│  120 tools, 46 resources│
 │  23 prompts, JSONL logs │
 │  Background scheduler   │
 └─────────────────────────┘
@@ -108,6 +108,9 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | `enrichment:run` | geoip_lookup |
 | `campaigns:read` | campaign_cluster, assess_landscape, search_threat_articles |
 | `sentinel:query` | run_kql, load_kql_playbook, generate_sentinel_query, run_kql_batch |
+| `defender_xdr:query` | run_defender_kql |
+| `crowdstrike:query` | run_falcon_cql, query_falcon_detections, query_falcon_hosts, query_falcon_incidents |
+| `ioc_index:read` | recall by IOC, IOC index lookups |
 | `admin` | All tools including sandbox, browser, response_actions, merge_cases, refresh_geoip |
 
 ## Analyst Roles
@@ -135,7 +138,7 @@ python3 -c "from api.auth import create_token_for_role; print(create_token_for_r
 
 When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg-soc-analyst`, `sg-soc-senior`) to these role names in the auth config.
 
-## Tools (115)
+## Tools (120)
 
 ### Tier 1 -- Core Investigation (29)
 
@@ -168,8 +171,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `import_enrichment` | `investigations:submit` | Import caseless enrichment results into a case (avoids re-enrichment) |
 | `query_opencti` | `investigations:read` | Direct OpenCTI queries (IOCs, CVEs, keyword search) |
 | `extract_iocs_from_text` | — | Extract IOCs from raw text (caseless) |
-| `lookup_soc_process` | `investigations:read` | Look up SOC operational processes (incident handling, P1/P2, service desk, time tracking) |
-| `search_confluence` | `investigations:read` | Search/browse published ET/EV threat articles on Confluence wiki (NOT for SOC processes) |
+| `search_confluence` | `investigations:read` | Search/browse published ET/EV threat articles on Confluence wiki |
 
 ### Tier 2 -- Extended Analysis (28)
 
@@ -250,7 +252,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `run_client_exposure_test` | `investigations:write` | External attack surface assessment (DNS, certs, email security, typosquats) |
 | `get_client_exposure_report` | `investigations:read` | Return latest exposure test results for a client |
 
-### Tier 3 -- Advanced / Restricted (26)
+### Tier 3 -- Advanced / Restricted (31)
 
 | Tool | Permission | Description |
 |---|---|---|
@@ -259,6 +261,11 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `load_cql_playbook` | `sentinel:query` | Load CQL (LogScale) playbook stages |
 | `generate_sentinel_query` | `sentinel:query` | Generate composite Sentinel queries |
 | `run_kql_batch` | `sentinel:query` | Execute multiple KQL queries concurrently (max 4 workers) |
+| `run_defender_kql` | `defender_xdr:query` | Execute KQL against client's Defender XDR Advanced Hunting endpoint (Device*/Email*/Identity*/CloudApp*/Url*/Alert* tables) |
+| `run_falcon_cql` | `crowdstrike:query` | Execute CQL against client's CrowdStrike Falcon NG-SIEM (LogScale) repository |
+| `query_falcon_detections` | `crowdstrike:query` | Falcon detection summaries (FQL filter) |
+| `query_falcon_hosts` | `crowdstrike:query` | Falcon host inventory (FQL filter) |
+| `query_falcon_incidents` | `crowdstrike:query` | Falcon incidents (FQL filter) |
 | `security_arch_review` | `investigations:submit` | Security architecture review (collects context; use `write_security_arch_review` prompt) |
 | `contextualise_cves` | `investigations:read` | CVE contextualisation (NVD, EPSS, CISA KEV) |
 | `ingest_velociraptor` | `investigations:submit` | Ingest Velociraptor offline collector data |
@@ -420,9 +427,9 @@ mcp_server/
                        #   unhandled exception hook, SSE connection lifecycle middleware
     auth.py            # SocaiTokenVerifier, _require_scope
     config.py          # Env var configuration
-    tools.py           # 99 MCP tool wrappers
-    resources.py       # 32 MCP resource implementations
-    prompts.py         # 21 MCP prompt implementations
+    tools.py           # 120 MCP tool wrappers
+    resources.py       # 46 MCP resource implementations
+    prompts.py         # 23 MCP prompt implementations
     health.py          # /healthz liveness probe (scheduler, filesystem, uptime)
     watchdog.py        # systemd watchdog integration (sd_notify, WATCHDOG=1 loop)
     usage.py           # Tool invocation logging (JSONL + stderr); emits tool_call,
@@ -511,7 +518,7 @@ Analyst's Claude Desktop (VPN / corporate network)
     ▼
 ┌──────────────────────────┐
 │  mcp_server (port 8001)  │  ← SOCAI_MCP_HOST=127.0.0.1
-│  107 tools, 46 resources │
+│  120 tools, 46 resources │
 │  JWT RBAC, role system   │
 │  Background scheduler    │
 └──────────────────────────┘

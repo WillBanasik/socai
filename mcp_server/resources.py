@@ -1413,12 +1413,6 @@ def register_resources(mcp: FastMCP) -> None:
                         "ingest_mde_package": "Ingest MDE investigation package. Parses logs, EVTX, prefetch.",
                     },
                 },
-                "soc_processes": {
-                    "description": "SOC operational processes and policies. Use lookup_soc_process for ALL process/policy questions — NOT search_confluence.",
-                    "tools": {
-                        "lookup_soc_process": "Look up SOC processes: incident handling, P1/P2 critical incidents, service desk, time tracking. Accepts topic name or keywords (e.g. 'p1', 'escalation', 'overtime').",
-                    },
-                },
                 "dark_web_intelligence": {
                     "description": "Check dark web sources for credential theft, breach exposure, and dark web mentions. Use during account compromise, credential theft, or when assessing user/domain exposure.",
                     "tools": {

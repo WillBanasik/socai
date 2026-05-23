@@ -19,9 +19,9 @@ Shared API (api/)
 MCP Server (mcp_server/)
     ├── HTTPS SSE transport  → port 8001, separate process
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
-    ├── 104 tools (3 tiers)  → core investigation, extended analysis, advanced/restricted
-    ├── 44 resources         → case data, clients, IOC index, playbooks, sentinel queries, NGSIEM/LogScale refs, articles, landscape
-    ├── 22 prompts           → investigation, KQL, triage, FP, analysis, report generation, forensics
+    ├── 120 tools (3 tiers) → core investigation, extended analysis, advanced/restricted (incl. Sentinel KQL, Defender XDR Advanced Hunting, CrowdStrike Falcon + NG-SIEM)
+    ├── 46 resources        → case data, clients, IOC index, playbooks, sentinel queries, NGSIEM/LogScale refs, articles, landscape
+    ├── 23 prompts          → investigation, KQL, triage, FP, analysis, report generation, forensics
     ├── Save tools (2)       → save_report, save_threat_article (persist agent output)
     ├── RBAC                 → per-tool scopes via JWT claims; filesystem isolation (cases/<ID>/)
     ├── Data hierarchy       → global (cross-client IOCs) / client (internal + baseline profiles) / case (details)
@@ -127,9 +127,9 @@ The system makes **no direct Anthropic API calls**. All LLM reasoning is handled
 | Component | Role |
 |-----------|------|
 | **Claude Desktop agent** | All analytical reasoning, report writing, disposition analysis, quality review |
-| **MCP prompts (21)** | Load system instructions + case data into the local session |
+| **MCP prompts (23)** | Load system instructions + case data into the local session |
 | **Save tools (2)** | `save_report`, `save_threat_article` — persist agent output with defanging, HTML, auto-close, audit |
-| **MCP tools (98)** | Data gathering only: enrichment APIs, Sentinel queries, file I/O, deterministic logic |
+| **MCP tools (120)** | Data gathering only: enrichment APIs, Sentinel / Defender XDR / CrowdStrike queries, file I/O, deterministic logic |
 
 ## Tool Contracts
 

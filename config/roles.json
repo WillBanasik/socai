@@ -29,6 +29,8 @@
         "investigations:submit",
         "campaigns:read",
         "sentinel:query",
+        "defender_xdr:query",
+        "crowdstrike:query",
         "ioc_index:read"
       ],
       "severity_ceiling": "critical",
@@ -52,6 +54,8 @@
         "investigations:submit",
         "campaigns:read",
         "sentinel:query",
+        "defender_xdr:query",
+        "crowdstrike:query",
         "ioc_index:read"
       ],
       "severity_ceiling": "critical",

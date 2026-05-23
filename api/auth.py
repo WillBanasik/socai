@@ -87,6 +87,8 @@ def _resolve_permissions(user_data: dict) -> list[str]:
             "campaigns:read",
             "ioc_index:read",
             "sentinel:query",
+            "defender_xdr:query",
+            "crowdstrike:query",
         ]
     return perms
 

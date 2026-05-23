@@ -136,16 +136,6 @@ Analysts select these from the Claude Desktop prompt picker for structured workf
 | Reporting | generate_report, prepare_mdr_report, prepare_pup_report, prepare_executive_summary, generate_weekly, prepare_fp_ticket, prepare_fp_tuning_ticket, reconstruct_timeline, security_arch_review, response_actions |
 | Threat Intelligence | assess_landscape, search_threat_articles, generate_threat_article, search_confluence (ET/EV articles only) |
 | Dark Web Intelligence | xposed_breach_check (breach data), ahmia_darkweb_search (.onion search), intelx_search (pastes/leaks/darknet), parse_stealer_logs, darkweb_exposure_summary |
-| SOC Processes | lookup_soc_process (incident handling, P1/P2, service desk, time tracking) |
-
-## SOC Process Documentation
-
-For any question about SOC processes, policies, escalation, P1/P2 handling, service desk, or time tracking, use `lookup_soc_process` — NOT `search_confluence`. These docs are local and authoritative:
-
-- `incident-handling` — role priorities (L1-L3), SOAR queue workflow, alert sorting, escalation rules
-- `critical-incident-management` — P1/P2 checklists, war rooms, P1 classification, IR activation
-- `service-requests` — Service Desk queues, ticket lifecycle, merging, Teams channels
-- `time-tracking` — Kantata categories, overtime logging (1.5x/2x), on-call hours
 
 `search_confluence` is exclusively for browsing published ET/EV threat articles on the wiki.
 

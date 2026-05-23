@@ -1722,76 +1722,6 @@ def _register_tier1(mcp: FastMCP) -> None:
 
         return "\n\n".join(parts)
 
-    @mcp.tool(title="Lookup SOC Process", annotations={"readOnlyHint": True})
-    def lookup_soc_process(
-        topic: str,
-    ) -> str:
-        """Look up SOC operational processes (incident handling, P1/P2,
-        service desk, time tracking). Replaces Confluence for process
-        questions — use ``search_confluence`` only for ET/EV threat articles.
-
-        Topics are fuzzy-matched: pass ``"p1"``, ``"escalation"``,
-        ``"overtime"``, ``"soar"``, etc. Pass ``"all"`` for everything,
-        or any unknown value to see the full topic list in the response.
-        """
-        _require_scope("investigations:read")
-
-        import pathlib
-        docs_dir = pathlib.Path(__file__).resolve().parent.parent / "docs"
-
-        doc_map = {
-            "incident-handling": docs_dir / "incident-handling.md",
-            "critical-incident-management": docs_dir / "critical-incident-management.md",
-            "service-requests": docs_dir / "service-requests.md",
-            "time-tracking": docs_dir / "time-tracking.md",
-        }
-
-        # Fuzzy topic matching
-        topic_lower = topic.lower().strip()
-        alias_map = {
-            "p1": "critical-incident-management",
-            "p2": "critical-incident-management",
-            "critical": "critical-incident-management",
-            "war room": "critical-incident-management",
-            "escalation": "critical-incident-management",
-            "ir activation": "critical-incident-management",
-            "service desk": "service-requests",
-            "tickets": "service-requests",
-            "teams": "service-requests",
-            "overtime": "time-tracking",
-            "kantata": "time-tracking",
-            "on-call": "time-tracking",
-            "oncall": "time-tracking",
-            "soar": "incident-handling",
-            "queue": "incident-handling",
-            "triage": "incident-handling",
-            "alert sorting": "incident-handling",
-        }
-
-        if topic_lower == "all":
-            resolved = list(doc_map.keys())
-        elif topic_lower in doc_map:
-            resolved = [topic_lower]
-        elif topic_lower in alias_map:
-            resolved = [alias_map[topic_lower]]
-        else:
-            # Substring match against aliases
-            matched = set()
-            for alias, key in alias_map.items():
-                if alias in topic_lower or topic_lower in alias:
-                    matched.add(key)
-            resolved = list(matched) if matched else list(doc_map.keys())
-
-        parts = []
-        for key in resolved:
-            path = doc_map[key]
-            if path.exists():
-                parts.append(f"--- {key.upper().replace('-', ' ')} ---\n\n{path.read_text(encoding='utf-8')}")
-            else:
-                parts.append(f"--- {key.upper().replace('-', ' ')} --- (document not found at {path})")
-
-        return "\n\n".join(parts)
-
     @mcp.tool(title="Classify Attack Type", annotations={"readOnlyHint": True})
     def classify_attack(
         title: str = "",
@@ -4161,6 +4091,205 @@ def _register_tier3(mcp: FastMCP) -> None:
             result["schema_warnings"] = schema_warnings
         return _json(result)
 
+    @mcp.tool(title="Run Defender XDR Advanced Hunting Query")
+    async def run_defender_kql(
+        client: str,
+        query: str,
+        max_rows: int = 50,
+    ) -> str:
+        """Use when the analyst wants to query Microsoft Defender XDR data that
+        isn't streamed into the client's Sentinel workspace — primarily the
+        high-volume Device* tables (DeviceProcessEvents, DeviceLogonEvents,
+        DeviceImageLoadEvents, DeviceRegistryEvents, DeviceEvents). Trigger
+        phrases: "check Defender", "Advanced Hunting", "process events for this
+        host", "what ran on the endpoint", "registry changes for this user".
+
+        Executes a read-only KQL query against the client's Defender XDR
+        Advanced Hunting endpoint. Auth uses the Performanta multi-tenant app
+        registration (no Sentinel workspace needed). Tables include the full
+        Device*/Email*/Identity*/CloudApp*/Alert*/Url* schema.
+
+        ``| take`` row limit auto-appended if missing. Defender Advanced
+        Hunting caps results at 10,000 rows and 30s execution.
+
+        Parameters
+        ----------
+        client : str
+            Client code (e.g. "performanta"). Must have
+            ``platforms.defender_xdr.api_enabled=true`` in client_entities.json.
+        query : str
+            KQL query string.
+        max_rows : int
+            Max rows to return (1–1000, default 50).
+        """
+        _require_scope("defender_xdr:query")
+
+        from tools.defender_hunting import (
+            DefenderHuntingError,
+            DefenderNotConfigured,
+            run_defender_kql as _run_defender_kql,
+        )
+
+        query = query.strip()
+        if not query:
+            return _json({"error": "No KQL query provided."})
+        if not client.strip():
+            return _json({"error": "client is required."})
+
+        limit = max(1, min(int(max_rows), 1000))
+        q = query.rstrip().rstrip(";")
+        if "| take " not in q.lower() and "| limit " not in q.lower():
+            q += f"\n| take {limit}"
+
+        try:
+            result = await asyncio.to_thread(lambda: _run_defender_kql(client, q, timeout=30))
+        except DefenderNotConfigured as exc:
+            return _json({
+                "error": "Defender XDR not configured for this client.",
+                "detail": str(exc),
+                "hint": "Set platforms.defender_xdr.api_enabled=true and tenant_id in client_entities.json, and ensure SOCAI_DEFENDER_APP_CLIENT_ID/SECRET are set.",
+            })
+        except DefenderHuntingError as exc:
+            return _json({"error": "Defender XDR query failed.", "detail": str(exc)})
+
+        rows = result["rows"]
+        out: dict = {
+            "rows": rows[:limit],
+            "row_count": len(rows),
+            "truncated": len(rows) > limit,
+            "elapsed_ms": result["stats"]["elapsed_ms"],
+        }
+        if len(rows) > 500:
+            out["_hint"] = (
+                f"{len(rows)} rows returned — at this volume the context cost is "
+                "significant. Prefer `| summarize Count=count() by Field` or "
+                "time-bucketed summaries; use raw rows only when inspecting specific events."
+            )
+        return _json(out)
+
+    @mcp.tool(title="Run CrowdStrike Falcon NG-SIEM Query")
+    async def run_falcon_cql(
+        client: str,
+        cql: str,
+        repo: str = "",
+        max_rows: int = 50,
+    ) -> str:
+        """Use when the analyst wants to query CrowdStrike Falcon NG-SIEM
+        (Falcon LogScale) event data — process execution, network connections,
+        file events from CrowdStrike-protected endpoints. Trigger phrases:
+        "check CrowdStrike", "Falcon NG-SIEM", "Falcon LogScale", "what did the
+        CS sensor see", "process tree on CrowdStrike host".
+
+        Executes a read-only CQL query against the client's Falcon NG-SIEM
+        repository. Per-client API client is used for auth (each client has
+        their own Falcon API client credentials).
+
+        Parameters
+        ----------
+        client : str
+            Client code (e.g. "heidelberg_materials"). Must have
+            ``platforms.crowdstrike.api_enabled=true``.
+        cql : str
+            CQL (LogScale) query string.
+        repo : str
+            LogScale repository ID (optional override; defaults to
+            ``platforms.crowdstrike.ngsiem_repo``).
+        max_rows : int
+            Max rows to return (1–1000, default 50).
+        """
+        _require_scope("crowdstrike:query")
+
+        from tools.crowdstrike import (
+            FalconError,
+            FalconNotConfigured,
+            run_falcon_cql as _run_falcon_cql,
+        )
+
+        cql = cql.strip()
+        if not cql:
+            return _json({"error": "No CQL query provided."})
+        if not client.strip():
+            return _json({"error": "client is required."})
+
+        limit = max(1, min(int(max_rows), 1000))
+        try:
+            result = await asyncio.to_thread(
+                lambda: _run_falcon_cql(client, cql, repo=(repo or None), timeout=30)
+            )
+        except FalconNotConfigured as exc:
+            return _json({
+                "error": "CrowdStrike not configured for this client.",
+                "detail": str(exc),
+                "hint": "Set platforms.crowdstrike.api_enabled=true + falcon_region + ngsiem_repo, and SOCAI_CROWDSTRIKE_<CLIENT>_CLIENT_ID/SECRET env vars.",
+            })
+        except FalconError as exc:
+            return _json({"error": "CrowdStrike NG-SIEM query failed.", "detail": str(exc)})
+
+        rows = result.get("rows") or []
+        out: dict = {
+            "rows": rows[:limit],
+            "row_count": len(rows),
+            "truncated": len(rows) > limit,
+            "elapsed_ms": result["stats"]["elapsed_ms"],
+        }
+        if len(rows) > 500:
+            out["_hint"] = (
+                f"{len(rows)} rows returned — high context cost. Prefer "
+                "`groupBy()` aggregations or time-bucketed summaries."
+            )
+        return _json(out)
+
+    @mcp.tool(title="Query CrowdStrike Falcon Detections")
+    async def query_falcon_detections(client: str, filter_fql: str = "", limit: int = 50) -> str:
+        """Use when the analyst asks for Falcon detections / alerts.
+
+        Returns detection summary objects from CrowdStrike Falcon. ``filter_fql``
+        is a Falcon FQL filter, e.g. ``status:'new'+max_severity_displayname:'High'``.
+        """
+        _require_scope("crowdstrike:query")
+        from tools.crowdstrike import FalconError, FalconNotConfigured, query_detections
+        try:
+            result = await asyncio.to_thread(
+                lambda: query_detections(client, filter_=(filter_fql or None), limit=limit)
+            )
+        except FalconNotConfigured as exc:
+            return _json({"error": "CrowdStrike not configured.", "detail": str(exc)})
+        except FalconError as exc:
+            return _json({"error": "Falcon API call failed.", "detail": str(exc)})
+        return _json(result)
+
+    @mcp.tool(title="Query CrowdStrike Falcon Hosts")
+    async def query_falcon_hosts(client: str, filter_fql: str = "", limit: int = 50) -> str:
+        """Use when the analyst asks for a host's Falcon details. Returns host
+        inventory records. ``filter_fql`` FQL, e.g. ``hostname:'host-1'``."""
+        _require_scope("crowdstrike:query")
+        from tools.crowdstrike import FalconError, FalconNotConfigured, query_hosts
+        try:
+            result = await asyncio.to_thread(
+                lambda: query_hosts(client, filter_=(filter_fql or None), limit=limit)
+            )
+        except FalconNotConfigured as exc:
+            return _json({"error": "CrowdStrike not configured.", "detail": str(exc)})
+        except FalconError as exc:
+            return _json({"error": "Falcon API call failed.", "detail": str(exc)})
+        return _json(result)
+
+    @mcp.tool(title="Query CrowdStrike Falcon Incidents")
+    async def query_falcon_incidents(client: str, filter_fql: str = "", limit: int = 50) -> str:
+        """Use when the analyst asks for Falcon incidents. Returns incident
+        records. ``filter_fql`` FQL, e.g. ``status:20``."""
+        _require_scope("crowdstrike:query")
+        from tools.crowdstrike import FalconError, FalconNotConfigured, query_incidents
+        try:
+            result = await asyncio.to_thread(
+                lambda: query_incidents(client, filter_=(filter_fql or None), limit=limit)
+            )
+        except FalconNotConfigured as exc:
+            return _json({"error": "CrowdStrike not configured.", "detail": str(exc)})
+        except FalconError as exc:
+            return _json({"error": "Falcon API call failed.", "detail": str(exc)})
+        return _json(result)
+
     @mcp.tool(title="Load KQL Playbook", annotations={"readOnlyHint": True})
     def load_kql_playbook(
         playbook_id: str | None = None,
@@ -4193,22 +4322,26 @@ def _register_tier3(mcp: FastMCP) -> None:
         """
         _require_scope("sentinel:query")
 
-        from tools.kql_playbooks import list_playbooks, load_playbook, render_stage
+        from tools.playbooks import (
+            list_playbooks_unified,
+            load_playbook_for_platform,
+            render_stage_for_platform,
+        )
 
         if not playbook_id:
-            return _json({"playbooks": list_playbooks()})
+            return _json({"playbooks": list_playbooks_unified()})
 
-        pb = load_playbook(playbook_id)
-        if not pb:
-            return _json({"error": f"Playbook {playbook_id!r} not found."})
+        pb = load_playbook_for_platform(playbook_id, "sentinel")
+        if "error" in pb:
+            return _json(pb)
 
         if stage is None:
             return _json(pb)
 
-        rendered = render_stage(pb, stage, params or {})
-        if not rendered:
-            return _json({"error": f"Stage {stage} not found."})
-        result = {"query": rendered}
+        rendered = render_stage_for_platform(playbook_id, stage, params or {}, "sentinel")
+        if isinstance(rendered, dict):
+            return _json(rendered)
+        result = {"query": rendered, "language": "kql"}
         try:
             from tools.kql_playbooks import validate_playbook_tables
             from config.sentinel_schema import has_registry
@@ -4251,27 +4384,45 @@ def _register_tier3(mcp: FastMCP) -> None:
         """
         _require_scope("investigations:read")
 
-        from tools.cql_playbooks import (
-            list_playbooks, load_playbook, render_stage, render_sub_query,
+        from tools.playbooks import (
+            list_playbooks_unified,
+            load_playbook_for_platform,
+            render_stage_for_platform,
         )
 
         if not playbook_id:
-            return _json({"playbooks": list_playbooks()})
+            return _json({"playbooks": list_playbooks_unified()})
 
-        pb = load_playbook(playbook_id)
-        if not pb:
-            return _json({"error": f"CQL Playbook {playbook_id!r} not found."})
+        pb = load_playbook_for_platform(playbook_id, "logscale")
+        if "error" in pb:
+            # Legacy CQL playbooks (config/cql_playbooks/<id>.cql) may still
+            # exist outside the unified loader; fall back when available.
+            try:
+                from tools.cql_playbooks import (
+                    load_playbook as _legacy_load,
+                    render_stage as _legacy_render,
+                    render_sub_query as _legacy_render_sub,
+                )
+                legacy_pb = _legacy_load(playbook_id)
+                if legacy_pb:
+                    if stage is None:
+                        return _json(legacy_pb)
+                    if sub_query is not None:
+                        rendered = _legacy_render_sub(legacy_pb, stage, sub_query, params or {})
+                    else:
+                        rendered = _legacy_render(legacy_pb, stage, params or {})
+                    if rendered:
+                        return _json({"query": rendered, "language": "cql"})
+            except Exception:
+                pass
+            return _json(pb)
 
         if stage is None:
             return _json(pb)
 
-        if sub_query is not None:
-            rendered = render_sub_query(pb, stage, sub_query, params or {})
-        else:
-            rendered = render_stage(pb, stage, params or {})
-
-        if not rendered:
-            return _json({"error": f"Stage {stage} (sub_query={sub_query}) not found."})
+        rendered = render_stage_for_platform(playbook_id, stage, params or {}, "logscale")
+        if isinstance(rendered, dict):
+            return _json(rendered)
         return _json({"query": rendered, "language": "cql"})
 
     @mcp.tool(title="Generate Sentinel Composite Query", annotations={"readOnlyHint": True})

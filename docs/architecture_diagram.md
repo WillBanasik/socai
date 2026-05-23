@@ -43,7 +43,7 @@ graph TB
             GQ["generate_queries"]
             MDR["prepare_mdr_report"]
             ES["executive_summary"]
-            FP["fp_ticket"]
+            FP["prepare_fp_ticket"]
             SAR["security_arch_review"]
             PPTX["generate_pptx"]
         end
@@ -95,7 +95,7 @@ graph TB
             IOCS["iocs/iocs.json"]
             ART["artefacts/<br/>web/ zip/ analysis/<br/>enrichment/ phishing/<br/>sandbox/ anomalies/<br/>campaign/ timeline/<br/>yara/ evtx/ cve/"]
             LOGS["logs/<br/>parsed_logs.json<br/>entity_correlation.json"]
-            RPT["reports/<br/>investigation_report.md"]
+            RPT["reports/<br/>mdr_report.html / pup_report.html"]
         end
         subgraph Registry["registry/"]
             CI["case_index.json"]
@@ -141,7 +141,7 @@ sequenceDiagram
     A->>M: prepare_mdr_report()
     M->>T: _ensure_case() → case_create + promote
     T->>F: cases/IV_CASE_042/case_meta.json (status=active)
-    T->>F: reports/mdr_report.md
+    T->>F: cases/IV_CASE_042/reports/mdr_report.html
     Note over M,T: Auto-closes case
     M->>A: report generated, case closed
 ```

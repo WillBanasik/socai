@@ -96,7 +96,6 @@ cases/<case_id>/artefacts/sandbox_detonation/
   dropped_files_manifest.json  # Manifest of dropped files with hashes
   strings_extracted.json       # Strings from stdout/stderr/dropped files
   interactive_log.json         # Commands sent via sandbox_exec (if interactive)
-  llm_analysis.json            # LLM behavioural analysis (MITRE mapping, risk score)
 ```
 
 Normalised output for downstream IOC extraction:

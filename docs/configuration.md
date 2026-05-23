@@ -148,19 +148,29 @@ Config: `config/client_entities.json` (git-ignored) — unified `clients` list. 
 ```json
 {
   "platforms": {
-    "sentinel": { "workspace_id": "..." },
-    "xdr": { "tenant_id": "..." },
-    "crowdstrike": { "cid": "..." },
-    "encore": { "access": true }
+    "sentinel":     { "workspace_id": "<GUID>" },
+    "defender_xdr": { "api_enabled": true, "tenant_id": "<GUID>" },
+    "crowdstrike":  { "api_enabled": true, "falcon_region": "eu-1", "ngsiem_repo": "<repo>" },
+    "encore":       { "access": true }
   }
 }
 ```
 
-The `platforms` object determines which security platforms are available for investigation of that client's incidents. Used by `lookup_client` (MCP tool), `socai://clients` (resource), workspace resolution in `run_kql`, and the `hitl_investigation` prompt (Phase 0 client gate).
+The `platforms` object determines which security platforms are available for investigation of that client's incidents. Used by `lookup_client` (MCP tool), `socai://clients` (resource), workspace resolution in `run_kql`, the `hitl_investigation` prompt (Phase 0 client gate), and per-platform query routers (`tools/defender_hunting.py`, `tools/crowdstrike.py`).
+
+**Per-platform credentials** (env vars, see `tools/secrets.py`):
+
+| Platform | Env vars | Notes |
+|---|---|---|
+| Sentinel | `az` CLI session (`az login`) | Uses user-delegated token, no app reg today |
+| Defender XDR | `SOCAI_DEFENDER_APP_CLIENT_ID`, `SOCAI_DEFENDER_APP_CLIENT_SECRET` | One multi-tenant Performanta app reg; admin-consented per client tenant. See `docs/defender-hunting.md`. |
+| CrowdStrike | `SOCAI_CROWDSTRIKE_<CLIENT>_CLIENT_ID`, `SOCAI_CROWDSTRIKE_<CLIENT>_CLIENT_SECRET` | Per-client API client created in each client's Falcon console; `<CLIENT>` is the client name uppercased with non-alphanumerics → underscore (e.g. `HEIDELBERG_MATERIALS`, `SE_FIRST`). See `docs/crowdstrike.md`. |
 
 ## Sentinel Workspace IDs
 
 Workspace IDs for `az monitor log-analytics query -w <ID>` are in `config/client_entities.json`. Table availability per workspace: `config/workspace_tables.json` (git-ignored, keyed by workspace name). Full table schemas (column names and types): `config/sentinel_tables.json` (git-ignored). Discovery script: `scripts/discover_sentinel_schemas.py`. Workspace resolution in `scripts/run_kql.py` tries exact match, then uppercase, then lowercase.
+
+For Defender XDR Advanced Hunting (separate from Sentinel ingestion), per-client table availability + schemas live in `config/defender_tables.json` — populated by `scripts/discover_defender_schemas.py` (probes the fixed Microsoft-defined Advanced Hunting table set per onboarded client). Tables that aren't licenced for a tenant (e.g. Identity* needs MDI, Device* needs MDE) are recorded as unavailable.
 
 ### Schema validation
 

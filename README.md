@@ -29,7 +29,7 @@ Shared API (api/)        -- auth, actions, timeline, input parsing
 - **No direct LLM API calls** -- all reasoning is handled by the analyst's local Claude Desktop agent via MCP prompts
 - **Human-in-the-loop** -- analyst drives each investigation step; tools gather data, agent reasons
 - **Filesystem state** -- no database; cases in `cases/`, registry in `registry/`, articles in `articles/`
-- **107 MCP tools**, 46 resources, 23 prompts across 3 permission tiers
+- **120 MCP tools**, 46 resources, 23 prompts across 3 permission tiers
 
 ## Quick Start
 
@@ -75,15 +75,6 @@ Per-client response playbooks in `config/clients/<name>/playbook.json` define:
 - **Crown jewels** -- critical hosts with wildcard pattern matching; auto-escalate to P1 if compromised
 - **Multi-environment support** -- separate escalation rules per platform (Sentinel/MDE, CrowdStrike, OT)
 
-## SOC Process Documentation
-
-Local authoritative docs for SOC operational procedures, accessible via the `lookup_soc_process` MCP tool:
-
-- **Incident handling** -- role priorities (L1-L3), SOAR queue workflow, alert sorting, escalation rules
-- **Critical incident management** -- P1/P2 checklists, war rooms, IR activation, technical report structure
-- **Service requests** -- Service Desk queues, ticket lifecycle, Teams channels
-- **Time tracking** -- Kantata categories, overtime logging, on-call hours
-
 ## Investigation Metrics
 
 Built-in analytics for investigation lifecycle and workflow patterns:
@@ -107,10 +98,8 @@ python3 scripts/workflow_report.py --friction  # friction signal analysis
 | `docs/architecture.md` | System overview, data flow, tool contracts |
 | `docs/mcp-server.md` | MCP server: auth, RBAC, tools, resources, prompts |
 | `docs/sandbox.md` | Sandbox detonation: setup, network modes, safety |
-| `docs/incident-handling.md` | SOC incident handling process |
-| `docs/critical-incident-management.md` | P1/P2 checklists, war rooms, IR activation |
-| `docs/service-requests.md` | Service Desk queues and ticket lifecycle |
-| `docs/time-tracking.md` | Kantata time categories and overtime |
+| `docs/defender-hunting.md` | Defender XDR Advanced Hunting API: multi-tenant app reg, per-client tenant_id, `run_defender_kql` |
+| `docs/crowdstrike.md` | CrowdStrike Falcon + NG-SIEM/LogScale: per-client API client, regions, `run_falcon_cql` + classic FQL tools |
 
 ## Tests
 

@@ -175,8 +175,6 @@ Read these only when working on the relevant area:
 | `docs/architecture_diagram.md` | Mermaid diagrams: system architecture, HITL sequence |
 | `docs/sandbox.md` | Sandbox detonation: setup, network modes, artefacts, safety, interactive mode |
 | `docs/mcp-server.md` | MCP server: auth, RBAC, tools, resources, prompts, deployment |
+| `docs/defender-hunting.md` | Defender XDR Advanced Hunting API: multi-tenant app reg, per-client tenant_id, run_defender_kql |
+| `docs/crowdstrike.md` | CrowdStrike Falcon + NG-SIEM/LogScale: per-client API client, falcon_region, run_falcon_cql + classic FQL tools |
 | `docs/roadmap.md` | Planned features: tiered incident model, SOAR/Zoho integration |
-| `docs/incident-handling.md` | SOC process: role priorities, SOAR queue workflow, escalation rules |
-| `docs/service-requests.md` | SOC process: SD queue monitoring, ticket lifecycle, Teams channels |
-| `docs/time-tracking.md` | SOC process: Kantata categories, overtime logging, on-call hours |
-| `docs/critical-incident-management.md` | SOC process: P1/P2 checklists, war rooms, P1 flow diagram, IR activation |
