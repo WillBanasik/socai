@@ -119,38 +119,39 @@ def register_prompts(mcp: FastMCP) -> None:
         target_entity: str = "",
         timeframe: str = "7d",
         extra_params: str = "",
+        include_schemas: str = "none",
     ) -> str:
         """Multi-stage KQL investigation playbook — select the playbook that matches your attack type.
 
-        Available playbooks:
-        - **bec** — full BEC lifecycle: Stage 0 broad-scope expansion (sender+subject), Stage 1 delivery scope, Stage 2 MDO blocks (mandatory immediate containment), then ZAP / post-phishing sign-ins / persistence hunt / attacker activity / tenant IP sweep
-        - **phishing** — Stage 0 broad-scope expansion (sender+subject), then email delivery, URL clicks, credential harvest, post-delivery logon, exposure time
-        - **account-compromise** — sign-ins, on-prem AD logons, lockouts, MDI, UEBA, post-compromise audit
-        - **malware-execution** — process tree, file events, persistence
-        - **privilege-escalation** — role changes, actor legitimacy
-        - **data-exfiltration** — volume anomalies, cloud access, network transfers
-        - **lateral-movement** — RDP/SMB pivots, credential access, blast radius
-        - **ioc-hunt** — cross-table IOC sweep + context pivot
-
-        **Investigations start broad.** When a playbook offers a Stage 0
-        broad-scope expansion (currently `bec` and `phishing`), run it before
-        any narrow-scope stage. One alert names one entity; the actual
-        campaign almost always spans more.
-
-        Tip: call `classify_attack` first to determine which playbook to use,
-        then select this prompt with the matching playbook ID.
+        Available playbooks: ``bec``, ``phishing``, ``account-compromise``,
+        ``malware-execution``, ``privilege-escalation``, ``data-exfiltration``,
+        ``lateral-movement``, ``command-and-control``, ``reconnaissance``,
+        ``ioc-hunt``. Call ``classify_attack`` first to pick the right one.
+        When a playbook has a Stage 0 broad-scope expansion, run it before any
+        narrow stage.
 
         Parameters
         ----------
         playbook : str
-            Playbook ID (e.g. "phishing", "account-compromise", "malware-execution").
+            Playbook ID.
         target_entity : str
-            Primary target — email address, UPN, hostname, or IOC value depending on playbook.
+            Primary target — email address, UPN, hostname, or IOC value.
         timeframe : str
-            Lookback period (e.g. "7d", "24h", "30d"). Defaults to 7d.
+            Lookback period (e.g. "7d", "24h"). Default 7d.
         extra_params : str
-            Additional parameters as key=value pairs, comma-separated
-            (e.g. "threshold_mb=500,source_host=DESKTOP-01").
+            Comma-separated key=value pairs (e.g. "threshold_mb=500").
+        include_schemas : str
+            Table schema injection — opt in when you actually need it.
+            ``"none"`` (default) — no schemas. Cheapest; use when the
+            classification points at a playbook whose tables you already
+            know, or when ``lookup_client`` already loaded the client's
+            ``sentinel_reference``. ``"auto"`` — inject only schemas for
+            tables each stage actually references, deduped across stages
+            and inlined next to the relevant query. Use when investigating
+            an unfamiliar attack type or when query authoring keeps
+            referencing the wrong column names. ``"all"`` — every table
+            referenced by the playbook up-front. Only useful when you plan
+            to skim or modify queries across multiple stages at once.
         """
         from tools.playbooks import load_playbook_for_platform, render_stage_for_platform
 
@@ -224,31 +225,78 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "**Before proceeding:** Confirm the client via `lookup_client` and register "
             "the alert via `add_evidence`. Call `classify_attack` if you have not already. "
-            "The `lookup_client` result includes `knowledge_base`, `response_playbook`, and "
-            "`sentinel_reference` — read these to understand the client's environment, "
-            "available tables, and escalation procedures before running queries.",
+            "If you need the client's knowledge base, response playbook, or Sentinel "
+            "reference (FP patterns, tables, escalation procedures), call "
+            "`lookup_client(slim=false)` once — it skips them by default to save context.",
             "",
             "## Overview",
             pb.get("description", ""),
             "",
         ]
 
-        # Inject table schemas so the agent knows correct column names
-        if pb.get("tables"):
+        # Schema injection: see ``include_schemas`` param. We resolve the
+        # tables a stage references by inspecting its rendered KQL, not by
+        # trusting the playbook's declared list — that way a stage that
+        # touches three tables doesn't drag in the playbook's full table
+        # surface.
+        schema_mode = (include_schemas or "auto").strip().lower()
+        if schema_mode not in ("auto", "all", "none"):
+            schema_mode = "auto"
+
+        _schema_helpers: dict | None = None
+        if schema_mode != "none":
             try:
-                from config.sentinel_schema import get_table_schema_summary, has_registry
+                from config.sentinel_schema import (
+                    extract_tables_from_kql,
+                    get_table_schema_summary,
+                    has_registry,
+                )
                 if has_registry():
-                    lines.append("## Table Schemas (use these exact column names)")
-                    lines.append("")
-                    for table_name in pb["tables"]:
-                        summary = get_table_schema_summary(table_name, max_columns=20)
-                        if summary:
-                            lines.append(f"```")
-                            lines.append(summary)
-                            lines.append(f"```")
-                            lines.append("")
+                    _schema_helpers = {
+                        "extract": extract_tables_from_kql,
+                        "summary": get_table_schema_summary,
+                    }
             except Exception:
-                pass
+                _schema_helpers = None
+
+        # Pre-render every stage once so we can: (a) extract referenced
+        # tables for ``all``-mode upfront injection, and (b) re-use the
+        # rendered text in the stage loop below without rendering twice.
+        rendered_stages: list[tuple[dict, object]] = []
+        for stage in pb.get("stages", []):
+            rendered = render_stage_for_platform(
+                playbook_id, stage.get("stage"), params, "sentinel",
+            )
+            rendered_stages.append((stage, rendered))
+
+        seen_tables: set[str] = set()
+
+        if schema_mode == "all" and _schema_helpers:
+            # Aggregate tables across every stage, then emit once at top.
+            all_tables: list[str] = []
+            for _, rendered in rendered_stages:
+                if isinstance(rendered, str) and rendered:
+                    for t in _schema_helpers["extract"](rendered):
+                        if t not in seen_tables:
+                            seen_tables.add(t)
+                            all_tables.append(t)
+            # Legacy playbooks declare ``tables`` explicitly — honour that
+            # for monolithic .kql sources where per-stage rendering is not
+            # the source of truth.
+            for t in pb.get("tables", []) or []:
+                if t not in seen_tables:
+                    seen_tables.add(t)
+                    all_tables.append(t)
+            if all_tables:
+                lines.append("## Table Schemas (use these exact column names)")
+                lines.append("")
+                for t in all_tables:
+                    summary = _schema_helpers["summary"](t, max_columns=20)
+                    if summary:
+                        lines.append("```")
+                        lines.append(summary)
+                        lines.append("```")
+                        lines.append("")
 
         if pb.get("parameters"):
             lines.append("## Playbook Parameters")
@@ -269,7 +317,7 @@ def register_prompts(mcp: FastMCP) -> None:
                       "the full analytical picture in a single call.")
         lines.append("")
 
-        for stage in pb.get("stages", []):
+        for stage, rendered in rendered_stages:
             stage_id = stage.get("stage")
             lines.append(f"### Stage {stage_id} — {stage.get('name', stage.get('title', ''))}")
             if stage.get("description"):
@@ -278,8 +326,27 @@ def register_prompts(mcp: FastMCP) -> None:
                 lines.append(f"*Run:* {stage['run']}")
             lines.append("")
 
-            rendered = render_stage_for_platform(playbook_id, stage_id, params, "sentinel")
             if isinstance(rendered, str) and rendered:
+                # In "auto" mode, inject schemas for tables this stage
+                # references that haven't already been emitted earlier in
+                # the prompt. Deduped across stages so a follow-up stage
+                # that re-uses an earlier table costs nothing extra.
+                if schema_mode == "auto" and _schema_helpers:
+                    new_tables = [
+                        t for t in _schema_helpers["extract"](rendered)
+                        if t not in seen_tables
+                    ]
+                    if new_tables:
+                        lines.append("*Tables referenced (schemas below):*")
+                        lines.append("")
+                        for t in new_tables:
+                            summary = _schema_helpers["summary"](t, max_columns=15)
+                            if summary:
+                                lines.append("```")
+                                lines.append(summary)
+                                lines.append("```")
+                                lines.append("")
+                            seen_tables.add(t)
                 lines.append("```kql")
                 lines.append(rendered)
                 lines.append("```")
@@ -312,6 +379,8 @@ def register_prompts(mcp: FastMCP) -> None:
         - **lateral-movement** — RDP/SMB pivots, credential access, blast radius (Falcon)
         - **ioc-hunt** — IOC sweep across Falcon + Azure sign-in + firewall logs
         - **account-compromise** — Azure sign-in, Windows events, endpoint logons
+        - **command-and-control** — beaconing, DNS tunnelling, long-haul sessions, LOLBin callbacks (Falcon)
+        - **reconnaissance** — credential spray, port/service scanning (Falcon; DNS enumeration is Sentinel-only)
 
         Tip: call `classify_attack` first to determine which playbook to use,
         then select this prompt with the matching playbook ID.
@@ -694,7 +763,8 @@ def register_prompts(mcp: FastMCP) -> None:
             "  sparingly.",
             "- Manual fallback (large files, no network): ask the user to copy",
             "  the file into the WSL filesystem yourself, then call",
-            "  `analyse_pe(file_path='<server-path>', ...)` or `yara_scan` directly.",
+            "  `analyse_file(file_path='<server-path>', case_id='<id>', depth='full')`",
+            "  for the deepest pass (Tier 1+2+3 including YARA).",
             "",
             "## Step 5 — Document and report",
             "",
@@ -846,10 +916,13 @@ def register_prompts(mcp: FastMCP) -> None:
             "### PHASE 1 — INTAKE (assessment, no case needed)",
             "",
             "1. Call `classify_attack` with the alert data",
-            "2. Call `lookup_client` to confirm client and available platforms — the result "
+            "2. If it returns `recommended_toolsets`, immediately call `load_toolset(<name>)` for "
+            "each one — the specialist tools for this attack type only become callable after you do. "
+            "Core tools (case mgmt, enrichment, log hunting, reporting) are always loaded.",
+            "3. Call `lookup_client` to confirm client and available platforms — the result "
             "includes `knowledge_base`, `response_playbook`, and `sentinel_reference`. "
             "Internalise these: known FP patterns, escalation matrix, available Sentinel tables",
-            "3. Call `recall_cases` to check for prior investigations with overlapping IOCs",
+            "4. Call `recall_cases` to check for prior investigations with overlapping IOCs",
             "",
             "**CP1 — PLAN APPROVAL**",
             "Present to the analyst:",
@@ -921,35 +994,36 @@ def register_prompts(mcp: FastMCP) -> None:
             "- Proposed disposition (TP/BP/FP/inconclusive) with reasoning",
             "- Evidence chain summary (confirmed/assessed/unknown for each link)",
             "- Any remaining gaps",
-            "- Recommendation: proceed to deliverable, or discard",
+            "- Recommendation: for a True Positive, proceed to the MDR report; otherwise close on the disposition (or discard)",
             "",
-            "**Wait for analyst approval.** On approval:",
-            "- Proceed to Phase 4 — deliverable tools auto-create and promote the case",
+            "**Wait for analyst approval.** On approval, proceed to Phase 4 — close on the disposition; for a TP (or on request) generate a deliverable, which auto-creates/promotes the case.",
             "- Or `discard_case` if a case was manually created and the alert is not worth investigating",
             "",
             "---",
             "",
-            "### PHASE 4 — VERIFY (report generation — case auto-created here)",
+            "### PHASE 4 — CLOSE / DELIVER (deliverables are analyst-initiated)",
             "",
-            "Deliverable tools auto-create and promote a case if one doesn't exist yet.",
-            "You can also call `create_case` manually before this phase if preferred.",
+            "Conclude on the approved disposition. **Do not auto-generate reports.**",
+            "A full MDR report is produced only for **True Positive** cases, and even then",
+            "only on the analyst's go-ahead (for a TP it is the expected deliverable — recommend it).",
+            "Every other disposition is closed *without* a generated report. If no case exists yet,",
+            "call `create_case` first (`close_case` needs a case; deliverable tools auto-create one",
+            "when the analyst requests output).",
             "",
-            "Generate the appropriate report based on disposition:",
+            "- **True Positive:** recommend `prepare_mdr_report`; generate on analyst approval (auto-closes on save)",
+            "- **Benign Positive:** `close_case(disposition=\"benign_positive\")` + brief note — no report",
+            "- **False Positive:** `close_case(disposition=\"false_positive\")`; FP ticket (`prepare_fp_ticket`,",
+            "  + `prepare_fp_tuning_ticket`) only if the analyst asks",
+            "- **PUP/PUA:** `close_case(disposition=\"pup_pua\")`; PUP report only on request",
+            "- **Inconclusive:** `close_case(disposition=\"inconclusive\")`, marking gaps; report only on request",
             "",
-            "- **True Positive:** `prepare_mdr_report` (auto-creates case if needed)",
-            "- **Benign Positive:** `prepare_mdr_report` (auto-creates case if needed)",
-            "- **False Positive:** `prepare_fp_ticket` (auto-creates case if needed)",
-            "  (+ `prepare_fp_tuning_ticket` if tuning needed)",
-            "- **PUP/PUA:** `prepare_pup_report` (auto-creates case if needed)",
-            "- **Inconclusive:** `create_case` → `generate_report` (mark gaps clearly)",
+            "Available on demand if the analyst wants written output: `prepare_mdr_report`,",
+            "`prepare_pup_report`, `prepare_fp_ticket`, `prepare_fp_tuning_ticket`,",
+            "`prepare_executive_summary` (leadership summary), `generate_queries` (SIEM hunts),",
+            "`response_actions` (containment guidance).",
             "",
-            "Additional for high/critical:",
-            "- `generate_queries` — SIEM hunt queries",
-            "- `response_actions` — containment guidance",
-            "- `prepare_executive_summary` — leadership summary",
-            "",
-            "**CP4 — REPORT APPROVAL**",
-            "Present the report summary to the analyst for review.",
+            "**CP4 — DELIVERABLE APPROVAL** (only if a report was generated)",
+            "If a report was produced (TP, or on-demand for another disposition), present its summary for review.",
             "",
             "**Wait for analyst approval.** The analyst may:",
             "- Approve the report",
@@ -959,9 +1033,8 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "### PHASE 5 — DELIVER (case closure)",
             "",
-            "On report approval:",
-            "- Report tools auto-close the case (MDR, PUP, FP ticket)",
-            "- If not auto-closed, call `close_case` with the confirmed disposition",
+            "- If a report was generated and saved, the save auto-closes the case (MDR, PUP, FP ticket).",
+            "- Otherwise (the common non-TP path), call `close_case` with the confirmed disposition.",
             "",
             "---",
             "",
@@ -974,7 +1047,7 @@ def register_prompts(mcp: FastMCP) -> None:
             "- ONE ALERT = ONE CASE — never reuse existing cases for new alerts",
             "- Always identify the client before running queries",
             "- Always call recall_cases before enrichment",
-            "- Reports auto-close cases via save_report (after prepare_mdr_report, prepare_pup_report, prepare_fp_ticket)",
+            "- Reports are analyst-initiated: only True Positives get an MDR report (on request); other dispositions close via close_case. When a report IS saved, save_report auto-closes the case",
             "- Keep it concise — lead with findings, not process narration",
             "- Before writing or reviewing LogScale/NGSIEM queries, call `load_ngsiem_reference` (sections=[\"rules\", \"syntax\"]) to load authoring conventions, anti-patterns, and correct CQL syntax. Add \"columns\" when you need field names for a specific log source",
         ])
@@ -1882,11 +1955,8 @@ def register_prompts(mcp: FastMCP) -> None:
         entropy, strings, packer signatures) and lets your local session
         produce the malware assessment verdict.
 
-        The ``analyse_pe`` tool runs a server-side LLM call for this — use
-        this prompt to do that reasoning locally instead.
-
-        Note: ``analyse_pe`` must be run first to extract the static data.
-        This prompt only handles the LLM verdict, not the extraction.
+        Prerequisite: ``analyse_file`` must have run on the PE sample(s) to
+        extract the static data this prompt consumes.
 
         Parameters
         ----------
@@ -1918,7 +1988,7 @@ def register_prompts(mcp: FastMCP) -> None:
             except Exception:
                 context_parts.append("## PE Analysis\nFailed to load PE analysis data.\n")
         else:
-            context_parts.append("## PE Analysis\nNo PE analysis data found. Run `analyse_pe` first.\n")
+            context_parts.append("## PE Analysis\nNo PE analysis data found. Run `analyse_file` on the PE sample first.\n")
 
         context = "\n".join(context_parts)
 

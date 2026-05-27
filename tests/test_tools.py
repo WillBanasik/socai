@@ -644,3 +644,218 @@ def test_response_actions_no_playbook():
     reason = result["reason"].lower()
     assert ("playbook" in reason or "client" in reason
             or "ioc" in reason)  # default client may resolve but no IOCs/playbook
+
+
+# ---------------------------------------------------------------------------
+# Per-turn payload slimming (_slim_recall / _slim_correlate)
+# ---------------------------------------------------------------------------
+
+def _recall_payload():
+    """A recall() result with a bulky per-case report excerpt."""
+    return {
+        "status": "ok",
+        "matches": 1,
+        "prior_cases": [
+            {
+                "case_id": "IV_CASE_777",
+                "title": "Prior phishing",
+                "severity": "high",
+                "status": "closed",
+                "disposition": "true_positive",
+                "verdicts": {"malicious": ["evil.com"], "suspicious": [], "clean_count": 2},
+                "findings": [{"type": "phishing", "summary": "credential harvest"}],
+                "iocs": {"domain": ["evil.com"]},
+                "report_excerpt": "X" * 6000,
+            }
+        ],
+        "known_iocs": [{"ioc": "evil.com", "verdict": "malicious", "cases": ["IV_CASE_777"]}],
+        "cached_enrichments": [],
+        "gaps": [],
+        "summary": "1 prior case found",
+    }
+
+
+def test_slim_recall_truncates_excerpt_keeps_conclusions():
+    from mcp_server.tools import _slim_recall, _RECALL_EXCERPT_CAP
+
+    payload = _recall_payload()
+    slim = _slim_recall(payload)
+    pc = slim["prior_cases"][0]
+
+    # Excerpt kept but truncated to the cap (+ short pointer marker)
+    assert "report_excerpt" in pc
+    assert len(pc["report_excerpt"]) < 6000
+    assert pc["report_excerpt"].startswith("X" * _RECALL_EXCERPT_CAP)
+    assert "IV_CASE_777" in pc["report_excerpt"]
+    assert "verbose=True" in pc["report_excerpt"]
+    # Conclusions retained in full
+    assert pc["verdicts"]["malicious"] == ["evil.com"]
+    assert pc["findings"][0]["summary"] == "credential harvest"
+    assert pc["iocs"] == {"domain": ["evil.com"]}
+    assert slim["known_iocs"] == payload["known_iocs"]
+    # Disclosure present
+    assert "_slim_note" in slim
+    # Input not mutated (so verbose=True path still has full data)
+    assert payload["prior_cases"][0]["report_excerpt"] == "X" * 6000
+
+
+def test_slim_recall_short_excerpt_passthrough():
+    from mcp_server.tools import _slim_recall
+
+    payload = _recall_payload()
+    payload["prior_cases"][0]["report_excerpt"] = "short summary"
+    slim = _slim_recall(payload)
+
+    # Under the cap → left whole, no truncation note
+    assert slim["prior_cases"][0]["report_excerpt"] == "short summary"
+    assert "_slim_note" not in slim
+
+
+def test_slim_recall_passthrough_when_no_excerpt():
+    from mcp_server.tools import _slim_recall
+
+    payload = _recall_payload()
+    del payload["prior_cases"][0]["report_excerpt"]
+    slim = _slim_recall(payload)
+
+    assert "report_excerpt" not in slim["prior_cases"][0]
+    assert "_slim_note" not in slim
+
+
+def _correlate_payload(n_hash_hits: int):
+    hits = {
+        "ip_matches": ["10.0.0.1", "10.0.0.2"],
+        "hash_matches": [
+            {"hash": f"h{i}", "row_preview": "row " * 30} for i in range(n_hash_hits)
+        ],
+    }
+    return {
+        "case_id": "IV_CASE_000",
+        "ioc_count": {"sha256": n_hash_hits},
+        "hits": hits,
+        "hit_summary": {k: len(v) for k, v in hits.items()},
+        "timeline_events": 0,
+    }
+
+
+def test_slim_correlate_caps_hits_keeps_summary():
+    from mcp_server.tools import _slim_correlate
+
+    payload = _correlate_payload(n_hash_hits=200)
+    slim = _slim_correlate(payload, cap=50)
+
+    # Bulky array capped...
+    assert len(slim["hits"]["hash_matches"]) == 50
+    # ...but the count conclusion is untouched
+    assert slim["hit_summary"]["hash_matches"] == 200
+    # Small arrays pass through whole
+    assert slim["hits"]["ip_matches"] == ["10.0.0.1", "10.0.0.2"]
+    # Disclosure of the true total
+    assert "200" in slim["_slim_note"]["truncated"]["hash_matches"]
+    # Input not mutated
+    assert len(payload["hits"]["hash_matches"]) == 200
+
+
+def test_slim_correlate_passthrough_under_cap():
+    from mcp_server.tools import _slim_correlate
+
+    payload = _correlate_payload(n_hash_hits=10)
+    slim = _slim_correlate(payload, cap=50)
+
+    assert slim is payload  # untouched, no copy needed
+    assert "_slim_note" not in slim
+
+
+# ---------------------------------------------------------------------------
+# command-and-control + reconnaissance playbooks (kill-chain gap remediation)
+# ---------------------------------------------------------------------------
+
+def test_new_playbooks_listed():
+    """Both new playbooks appear in the unified listing as v2 format."""
+    from tools.playbooks import list_playbooks_unified
+
+    by_id = {p["id"]: p for p in list_playbooks_unified()}
+    for pid in ("command-and-control", "reconnaissance"):
+        assert pid in by_id, f"{pid} missing from playbook listing"
+        assert by_id[pid]["format"] == "v2"
+
+
+def test_c2_playbook_loads_and_renders_both_platforms():
+    """C2 is fully portable: 4 stages with queries on Sentinel and LogScale."""
+    from tools.playbooks import load_playbook_for_platform, render_stage_for_platform
+
+    for platform, params in (
+        ("sentinel", {"device_name": "WS-01", "lookback": "7d", "process_name": "__NONE__"}),
+        ("logscale", {"device_name": "WS-01"}),
+    ):
+        pb = load_playbook_for_platform("command-and-control", platform)
+        assert "error" not in pb, pb.get("error")
+        assert [s["stage"] for s in pb["stages"]] == [1, 2, 3, 4]
+        assert all(s["query"] and not s["_no_query"] for s in pb["stages"])
+
+        rendered = render_stage_for_platform("command-and-control", 1, params, platform)
+        assert isinstance(rendered, str)
+        assert "WS-01" in rendered
+        assert "{{" not in rendered  # all tokens substituted
+
+
+def test_recon_playbook_sentinel_full_logscale_partial():
+    """Reconnaissance: 3 stages on Sentinel; Stage 3 is Sentinel-only."""
+    from tools.playbooks import load_playbook_for_platform, render_stage_for_platform
+
+    sent = load_playbook_for_platform("reconnaissance", "sentinel")
+    assert "error" not in sent, sent.get("error")
+    assert [s["stage"] for s in sent["stages"]] == [1, 2, 3]
+    assert all(s["query"] and not s["_no_query"] for s in sent["stages"])
+
+    rendered = render_stage_for_platform(
+        "reconnaissance", 1,
+        {"lookback": "24h", "target_upn": "__NONE__", "source_ip": "__NONE__"},
+        "sentinel",
+    )
+    assert isinstance(rendered, str) and "24h" in rendered and "{{" not in rendered
+
+    log = load_playbook_for_platform("reconnaissance", "logscale")
+    assert "error" not in log, log.get("error")
+    stage3 = next(s for s in log["stages"] if s["stage"] == 3)
+    assert stage3["_no_query"] is True  # authoritative-DNS enumeration is Sentinel-only
+
+    err = render_stage_for_platform("reconnaissance", 3, {}, "logscale")
+    assert isinstance(err, dict) and err["code"] == "stage_not_implemented_for_platform"
+
+
+def test_classify_routes_command_and_control():
+    from tools.classify_attack import classify_attack_type
+
+    for title in ("C2 beacon callback on host", "DNS tunnelling via LOLBin callout",
+                  "Cobalt Strike beaconing detected"):
+        assert classify_attack_type(title=title)["attack_type"] == "command_and_control"
+
+
+def test_classify_routes_reconnaissance():
+    from tools.classify_attack import classify_attack_type
+
+    for title in ("Password spray across many accounts", "Port scanning and enumeration",
+                  "Credential stuffing brute force"):
+        assert classify_attack_type(title=title)["attack_type"] == "reconnaissance"
+
+
+def test_classify_malware_account_unaffected():
+    """Removing C2/recon keywords must not break the donor types' core routing."""
+    from tools.classify_attack import classify_attack_type
+
+    assert classify_attack_type(title="Malicious macro dropper execution")["attack_type"] == "malware"
+    assert classify_attack_type(
+        title="Compromised account impossible travel sign-in")["attack_type"] == "account_compromise"
+
+
+def test_new_attack_types_have_profiles_and_toolsets():
+    from tools.classify_attack import (
+        ATTACK_TYPES, PIPELINE_PROFILES, ATTACK_TYPE_TOOLSETS,
+    )
+
+    for at in ("command_and_control", "reconnaissance"):
+        assert at in ATTACK_TYPES
+        assert at in PIPELINE_PROFILES
+        assert "sandbox_detonate" in PIPELINE_PROFILES[at]["skip"]
+        assert at in ATTACK_TYPE_TOOLSETS  # [] = core toolset covers it

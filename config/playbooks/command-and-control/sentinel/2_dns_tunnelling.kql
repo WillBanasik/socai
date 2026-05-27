@@ -1,0 +1,36 @@
+// DNS tunnelling - abnormal query patterns to a single parent domain.
+// MDE DeviceNetworkEvents exposes the FQDN in RemoteUrl but NOT the DNS record
+// type. Where the DNS Analytics connector is present, the DnsEvents variant at
+// the bottom adds record-type (TXT/NULL/CNAME) and query-volume fidelity.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+DeviceNetworkEvents
+| where TimeGenerated > ago(lookback)
+| where DeviceName =~ device
+| where isnotempty(RemoteUrl)
+| extend Labels = split(RemoteUrl, ".")
+| where array_length(Labels) >= 2
+| extend ParentDomain = strcat(tostring(Labels[array_length(Labels) - 2]), ".", tostring(Labels[array_length(Labels) - 1]))
+| extend Subdomain = tostring(Labels[0])
+| extend SubLen = strlen(Subdomain)
+| summarize
+    QueryCount = count(),
+    DistinctSubdomains = dcount(RemoteUrl),
+    MaxSubdomainLen = max(SubLen),
+    AvgSubdomainLen = round(avg(SubLen), 1),
+    Processes = make_set(InitiatingProcessFileName, 10),
+    SampleFqdns = make_set(RemoteUrl, 15),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated)
+  by DeviceName, ParentDomain
+// Tunnelling signature: many unique, long subdomains under one parent domain.
+| where DistinctSubdomains >= 50 or MaxSubdomainLen >= 40
+| project DeviceName, ParentDomain, QueryCount, DistinctSubdomains,
+          MaxSubdomainLen, AvgSubdomainLen, Processes, SampleFqdns, FirstSeen, LastSeen
+| sort by DistinctSubdomains desc, MaxSubdomainLen desc
+// --- Optional: DNS Analytics connector variant (record types + volume) ---
+// DnsEvents
+// | where TimeGenerated > ago(lookback) and Computer has device
+// | where QueryType in ("TXT", "NULL", "CNAME")
+// | summarize QueryCount = count(), DistinctNames = dcount(Name) by ClientIP, QueryType
+// | where QueryCount > 100

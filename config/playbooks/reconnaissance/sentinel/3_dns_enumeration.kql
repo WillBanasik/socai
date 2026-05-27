@@ -1,0 +1,30 @@
+// Sub-domain / MX enumeration - anomalous DNS query volume against the client's
+// own registered domains (authoritative-DNS recon ahead of phishing / mail
+// spoofing). LOG-SOURCE DEPENDENT: requires the DNS Analytics connector
+// (DnsEvents) or an external/authoritative DNS log feed. Set the ClientDomains
+// list below to the client's registered domains before running.
+let lookback = {{lookback}};
+let srcip = "{{source_ip}}";
+// Replace with the client's registered domains, e.g. dynamic(["contoso.com","contoso.co.uk"]).
+let ClientDomains = dynamic(["__CLIENT_DOMAIN__"]);
+DnsEvents
+| where TimeGenerated > ago(lookback)
+| where SubType == "LookupQuery"
+| where srcip == "__NONE__" or ClientIP == srcip
+| extend Labels = split(Name, ".")
+| where array_length(Labels) >= 2
+| extend ParentDomain = strcat(tostring(Labels[array_length(Labels) - 2]), ".", tostring(Labels[array_length(Labels) - 1]))
+| where ParentDomain in~ (ClientDomains) or Name has_any (ClientDomains)
+| summarize
+    QueryCount = count(),
+    DistinctNames = dcount(Name),
+    MxOrTxtQueries = countif(QueryType in ("MX", "TXT", "SOA", "NS")),
+    RecordTypes = make_set(QueryType, 10),
+    SampleNames = make_set(Name, 30),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated)
+  by ClientIP, ParentDomain
+| where DistinctNames >= 20 or MxOrTxtQueries >= 10
+| project ClientIP, ParentDomain, QueryCount, DistinctNames, MxOrTxtQueries,
+          RecordTypes, SampleNames, FirstSeen, LastSeen
+| sort by DistinctNames desc, MxOrTxtQueries desc

@@ -1,0 +1,39 @@
+// Beaconing detection - regular-interval outbound callbacks from LOLBins.
+// DeviceNetworkEvents carries no byte counts; regularity is inferred from
+// inter-connection timing (low jitter ratio = automated beacon). For byte-size
+// fingerprinting, pivot to firewall logs (CommonSecurityLog) on a candidate IP.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+let proc = "{{process_name}}";
+let LOLBins = dynamic(["powershell.exe","pwsh.exe","rundll32.exe","mshta.exe",
+                       "wscript.exe","cscript.exe","certutil.exe","regsvr32.exe",
+                       "bitsadmin.exe","msbuild.exe","installutil.exe","msiexec.exe"]);
+DeviceNetworkEvents
+| where TimeGenerated > ago(lookback)
+| where DeviceName =~ device
+| where ActionType == "ConnectionSuccess"
+| where isnotempty(RemoteIP) and not(ipv4_is_private(RemoteIP))
+| where (proc == "__NONE__" and InitiatingProcessFileName in~ (LOLBins))
+     or (proc != "__NONE__" and InitiatingProcessFileName =~ proc)
+| sort by DeviceName asc, InitiatingProcessFileName asc, RemoteIP asc, TimeGenerated asc
+| serialize
+| extend grp = strcat(DeviceName, "|", InitiatingProcessFileName, "|", RemoteIP)
+| extend DeltaSec = iff(prev(grp) == grp, datetime_diff('second', TimeGenerated, prev(TimeGenerated)), long(null))
+| where isnotnull(DeltaSec) and DeltaSec > 0
+| summarize
+    IntervalSamples = count(),
+    AvgIntervalSec = avg(DeltaSec),
+    StdevIntervalSec = stdev(DeltaSec),
+    Ports = make_set(RemotePort, 20),
+    Domains = make_set(RemoteUrl, 20),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated)
+  by DeviceName, InitiatingProcessFileName, RemoteIP
+| extend Connections = IntervalSamples + 1
+| extend JitterRatio = round(StdevIntervalSec / AvgIntervalSec, 3)
+// Low jitter + enough samples + non-trivial interval = beacon candidate.
+| where Connections >= 6 and AvgIntervalSec >= 30 and JitterRatio < 0.30
+| project DeviceName, Process = InitiatingProcessFileName, RemoteIP, Ports, Domains,
+          Connections, AvgIntervalSec = round(AvgIntervalSec, 1), JitterRatio,
+          FirstSeen, LastSeen
+| sort by JitterRatio asc, Connections desc

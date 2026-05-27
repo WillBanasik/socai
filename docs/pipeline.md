@@ -35,11 +35,14 @@ Case creation is **deferred** — the analyst investigates caseless during triag
 15. analyse_email         → email header/content analysis (if email)
 16. analyse_pe            → PE static analysis + auto-run YARA scan (run_yara=True)
 
-── Deliverable phase (case auto-created + promoted if needed) ──
-17. prepare_mdr_report         → MDR report (auto-creates case if needed, auto-closes)
-    prepare_pup_report         → PUP report (auto-creates case if needed, auto-closes)
-    prepare_fp_ticket          → FP ticket (auto-creates case if needed, auto-closes)
-    prepare_fp_tuning_ticket   → SIEM tuning ticket (auto-creates case if needed, auto-closes)
+── Deliverable phase (analyst-initiated — NOT auto-generated) ──
+17. Conclude with a disposition. A full report is produced only for TRUE POSITIVE
+    cases, and only on analyst request. For any other disposition, close via
+    close_case (no deliverable). All deliverable tools stay available on demand:
+    prepare_mdr_report         → MDR report (TP, analyst-requested; auto-closes on save)
+    prepare_pup_report         → PUP report (on request only; auto-closes pup_pua on save)
+    prepare_fp_ticket          → FP ticket (on request only; auto-closes false_positive)
+    prepare_fp_tuning_ticket   → SIEM tuning ticket (on request only)
 ```
 
 **Typical analyst flow:** `quick_enrich` (caseless IOC lookup) → if malicious, `create_case(enrichment_id=...)` → case-bound analysis → deliverable. The enrichment results carry over without re-running provider calls.
@@ -105,9 +108,9 @@ Prompts handle: report generation, analytical reasoning, disposition analysis, q
 
 `classify_attack_type()` from `tools/classify_attack.py` analyses the case title, notes, and input shape (URLs, ZIPs, logs, EML) to determine the attack type. This is a deterministic keyword + input-shape scorer — no LLM call.
 
-**Attack types:** `phishing`, `malware`, `account_compromise`, `privilege_escalation`, `pup_pua`, `generic`
+**Attack types:** `phishing`, `malware`, `account_compromise`, `privilege_escalation`, `data_exfiltration`, `lateral_movement`, `command_and_control`, `reconnaissance`, `pup_pua`, `generic`
 
-Each type has a pipeline profile in `PIPELINE_PROFILES` defining which steps to skip:
+Each type has a pipeline profile in `PIPELINE_PROFILES` defining which steps to skip (`socai://pipeline-profiles` is the authoritative source):
 
 | Type | Skipped steps |
 |------|---------------|
@@ -115,8 +118,14 @@ Each type has a pipeline profile in `PIPELINE_PROFILES` defining which steps to 
 | `malware` | phishing_detection |
 | `account_compromise` | sandbox, phishing_detection |
 | `privilege_escalation` | sandbox, phishing_detection, web_capture |
-| `pup_pua` | Full short-circuit: enrich → PUP report → done |
+| `data_exfiltration` | web_capture, phishing_detection, sandbox |
+| `lateral_movement` | web_capture, phishing_detection, sandbox |
+| `command_and_control` | web_capture, phishing_detection, sandbox, file/static analysis (behavioural — no artefact) |
+| `reconnaissance` | web_capture, phishing_detection, sandbox, file/email analysis (behavioural — no artefact) |
+| `pup_pua` | Full short-circuit: enrich → `close_case(disposition="pup_pua")`. PUP report only on analyst request (not auto-generated) |
 | `generic` | Nothing skipped (fallback) |
+
+`command_and_control` (beaconing, DNS tunnelling, LOLBin callbacks) and `reconnaissance` (credential spray, port scanning, DNS enumeration) are **behavioural** types — they hunt activity from SIEM log patterns rather than a supplied file/URL artefact, and route to the `command-and-control` / `reconnaissance` playbooks respectively.
 
 **Score threshold:** A single weak signal (score ≤ 1) falls through to `generic` to avoid misrouting on ambiguous input.
 
@@ -124,7 +133,7 @@ The classified `attack_type` and `attack_type_confidence` are stored in `case_me
 
 ### PUP/PUA Short-Circuit
 
-When classified as `pup_pua`, the workflow short-circuits after enrichment. Use the `write_pup_report` prompt to produce a lightweight HTML report covering: summary, path & file details, access vector, actions taken, and recommendations. The report is saved to `cases/<ID>/reports/pup_report.html` via `save_report`. The case is auto-closed with disposition `pup_pua`.
+When classified as `pup_pua`, the workflow short-circuits after enrichment and the case is closed with disposition `pup_pua` via `close_case`. A PUP report is **not** auto-generated. If the analyst requests one, the `write_pup_report` prompt produces a lightweight HTML report (summary, path & file details, access vector, actions taken, recommendations) saved to `cases/<ID>/reports/pup_report.html` via `save_report`, which then auto-closes the case with `pup_pua`.
 
 ## Auto-disposition
 
@@ -138,7 +147,7 @@ Alternatively, when a deliverable is needed, case creation is deferred entirely 
 
 ## Auto-close on Deliverable Collection
 
-Deliverable reports auto-close the case when saved via `save_report`. Executive summary and security arch review are supplementary outputs that do NOT auto-close. The close logic lives in the tool layer so it works consistently across all entry points (CLI, MCP server, client-side save):
+**Deliverables are analyst-initiated, not auto-generated.** A full MDR report is produced only for True Positive cases on analyst request; every other disposition closes via `close_case` (see *Direct Close from Triage* above) with no generated report. When a deliverable *is* saved (because the analyst requested it), it auto-closes the case via `save_report`. Executive summary and security arch review are supplementary outputs that do NOT auto-close. The close logic lives in the tool layer so it works consistently across all entry points (CLI, MCP server, client-side save):
 
 | Deliverable | Client-Side Prompt + Save | Auto-closes | Disposition |
 |---|---|---|---|

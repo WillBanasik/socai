@@ -43,6 +43,8 @@ ATTACK_TYPES = (
     "privilege_escalation",
     "data_exfiltration",
     "lateral_movement",
+    "command_and_control",
+    "reconnaissance",
     "pup_pua",
     "generic",
 )
@@ -60,23 +62,23 @@ _KEYWORD_RULES: list[tuple[str, list[str], int]] = [
         "aitm", "adversary.in.the.middle", "evilginx",
     ], 3),
 
-    # Malware — file/execution/payload focused
+    # Malware — file/execution/payload focused (C2/beacon terms belong to
+    # the dedicated command_and_control type below).
     ("malware", [
         "malware", "ransomware", "trojan", "backdoor", " rat ",
         "remote access tool", "dropper", "loader", "cryptominer",
-        "crypto miner", "miner detected", "c2 beacon", "cobalt strike",
-        "cobaltstrike", "sliver", "brute ratel", "havoc", "mythic",
-        "implant", "command and control", "command.and.control",
+        "crypto miner", "miner detected",
         "download cradle", "powershell download", "macro execution",
         "malicious macro", "shellcode", "payload execution",
         "suspicious execution", "suspicious process",
         "malicious file", "malicious binary",
     ], 3),
 
-    # Account compromise — identity/auth focused
+    # Account compromise — identity/auth focused (inbound-recon precursors
+    # like password spray / brute force / credential stuffing route to the
+    # dedicated reconnaissance type below).
     ("account_compromise", [
         "account compromise", "compromised account", "stolen credential",
-        "password spray", "brute force", "credential stuffing",
         "impossible travel", "suspicious sign-in", "risky sign-in",
         "mfa fatigue", "mfa bombing", "token theft", "session hijack",
         "token replay", "anomalous sign-in", "unfamiliar sign-in",
@@ -114,6 +116,29 @@ _KEYWORD_RULES: list[tuple[str, list[str], int]] = [
         "credential relay", "ntlm relay", "kerberoast",
         "golden ticket", "silver ticket", "dcsync",
         "internal pivot", "network pivot", "host compromise spread",
+    ], 3),
+
+    # Command & Control — behavioural C2 (beaconing, tunnelling, callbacks).
+    # Note: combined_norm normalises -, _ and / to spaces, so "command-and-
+    # control" matches "command and control"; dots are preserved, so the dotted
+    # variant is kept separately.
+    ("command_and_control", [
+        "command and control", "command.and.control", " c2 ", " c2", "c2 ",
+        "c2 beacon", "c2 callback", "c2 framework", "beacon", "beaconing",
+        "callback", "call back", "implant", "dns tunnel", "dns tunnelling",
+        "dns tunneling", "tunnelling", "tunneling", "lolbin", "lolbin callout",
+        "lolbas", "living off the land", "cobalt strike", "cobaltstrike",
+        "sliver", "brute ratel", "havoc", "mythic", "empire", "covenant",
+    ], 3),
+
+    # Reconnaissance — active inbound recon (spray, scanning, enumeration).
+    ("reconnaissance", [
+        "reconnaissance", "recon ", "password spray", "password spraying",
+        "credential stuffing", "port scan", "port scanning", "network scan",
+        "service scan", "scanning activity", "enumeration", "enumerate",
+        "brute force", "subdomain enumeration", "dns enumeration",
+        "mx enumeration", "directory enumeration", "user enumeration",
+        "spray attack", "login attempts",
     ], 3),
 
     # PUP/PUA — handled by detect_pup() separately, but classify here too
@@ -189,6 +214,34 @@ PIPELINE_PROFILES: dict[str, dict] = {
         },
         "description": "Internal movement focused — RDP/SMB/WMI connections, credential access, blast radius mapping",
     },
+    "command_and_control": {
+        # No file artefact — skip all static/file analysis and sandbox steps.
+        "skip": {
+            "domain_investigate",
+            "recursive_capture",
+            "detect_phishing_page",
+            "sandbox_analyse",
+            "sandbox_detonate",
+            "static_file_analyse",
+            "analyse_file",
+            "analyse_email",
+        },
+        "description": "Behavioural C2 hunt — beaconing, DNS tunnelling, long-haul low-volume sessions, LOLBin callbacks; network + process log correlation, no file artefact",
+    },
+    "reconnaissance": {
+        # Identity + network log correlation — no email/file artefact.
+        "skip": {
+            "domain_investigate",
+            "recursive_capture",
+            "detect_phishing_page",
+            "sandbox_analyse",
+            "sandbox_detonate",
+            "static_file_analyse",
+            "analyse_file",
+            "analyse_email",
+        },
+        "description": "Inbound recon detection — credential spray/stuffing, port/service scanning, DNS enumeration; identity + network log correlation",
+    },
     "pup_pua": {
         # Full short-circuit handled in chief.py — this profile is for reference
         "skip": {
@@ -213,6 +266,30 @@ PIPELINE_PROFILES: dict[str, dict] = {
         "skip": set(),
         "description": "Unknown/mixed type — run all steps permitted by inputs",
     },
+}
+
+
+# ---------------------------------------------------------------------------
+# Specialist MCP toolset(s) to load for each attack type.
+#
+# Empty list = the always-on "core" toolset (case mgmt, enrichment, log
+# hunting, reporting) fully covers it — true for the log-based investigation
+# types. The classify_attack MCP tool surfaces this so the LLM can call
+# load_toolset() and have the right specialist tools appear on demand,
+# instead of every session loading all 113 tools up front.
+# ---------------------------------------------------------------------------
+
+ATTACK_TYPE_TOOLSETS: dict[str, list[str]] = {
+    "phishing": ["phishing"],
+    "malware": ["malware"],
+    "account_compromise": [],
+    "privilege_escalation": [],
+    "data_exfiltration": [],
+    "lateral_movement": [],
+    "command_and_control": [],
+    "reconnaissance": [],
+    "pup_pua": [],
+    "generic": [],
 }
 
 

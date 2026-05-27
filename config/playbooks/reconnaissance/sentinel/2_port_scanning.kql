@@ -1,0 +1,34 @@
+// Port / service scanning - a single external IP touching many internal hosts
+// or many distinct ports in a short window. Endpoint inbound visibility depends
+// on the MDE sensor; perimeter firewall logs (CommonSecurityLog) are the richer
+// source where forwarded - see the optional block below.
+let lookback = {{lookback}};
+let srcip = "{{source_ip}}";
+DeviceNetworkEvents
+| where TimeGenerated > ago(lookback)
+| where ActionType in ("InboundConnectionAccepted", "ConnectionRequest", "ConnectionFailed", "ListeningConnectionCreated")
+| where isnotempty(RemoteIP) and not(ipv4_is_private(RemoteIP))
+| where srcip == "__NONE__" or RemoteIP == srcip
+| summarize
+    DistinctHosts = dcount(DeviceName),
+    DistinctPorts = dcount(LocalPort),
+    Hosts = make_set(DeviceName, 50),
+    Ports = make_set(LocalPort, 50),
+    Connections = count(),
+    Actions = make_set(ActionType, 5),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated)
+  by RemoteIP, TimeWindow = bin(TimeGenerated, 1h)
+| where DistinctPorts >= 10 or DistinctHosts >= 5
+| extend ScanType = case(
+    DistinctHosts >= 5 and DistinctPorts <= 3, "horizontal_host_sweep",
+    DistinctPorts >= 10 and DistinctHosts <= 2, "vertical_port_scan",
+    "broad_scan")
+| project RemoteIP, TimeWindow, ScanType, DistinctHosts, DistinctPorts,
+          Connections, Ports, Hosts, Actions, FirstSeen, LastSeen
+| sort by DistinctPorts desc, DistinctHosts desc
+// --- Optional: perimeter firewall variant (CommonSecurityLog) ---
+// CommonSecurityLog
+// | where TimeGenerated > ago(lookback) and DeviceAction in ("deny", "drop", "reset")
+// | summarize DistinctPorts = dcount(DestinationPort), DistinctHosts = dcount(DestinationIP) by SourceIP, bin(TimeGenerated, 1h)
+// | where DistinctPorts >= 20 or DistinctHosts >= 10

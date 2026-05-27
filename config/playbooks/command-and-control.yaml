@@ -1,0 +1,53 @@
+id: command-and-control
+name: Command & Control (C2) Behavioural Hunt
+description: >
+  Behavioural detection of command-and-control activity when no IOC is yet
+  known: beaconing (regular-interval callbacks), DNS tunnelling, long-duration
+  low-volume implant keep-alive sessions, and LOLBin-initiated outbound
+  callbacks. Reactive IOC matching is covered by the ioc-hunt playbook; this
+  playbook finds C2 from behaviour alone. DeviceNetworkEvents carries no byte
+  counts, so regularity and volume are inferred from connection timing and
+  frequency (see per-stage comments for the firewall-log variants that add
+  byte fidelity). Stage 1 always runs; Stages 2-4 are conditional on prior
+  findings.
+required_capabilities:
+  sentinel:
+  - device_network_events
+  - device_process_events
+  logscale:
+  - device_network_events
+  - device_process_events
+parameters:
+- name: device_name
+  type: string
+  description: DeviceName / hostname to hunt on (the host suspected of C2 activity).
+- name: lookback
+  type: string
+  description: Time range to investigate (default 7d).
+  default: 7d
+- name: process_name
+  type: string
+  description: Optional process to focus on (e.g. powershell.exe). Set to __NONE__ to scan all LOLBins.
+  default: __NONE__
+stages:
+- id: 1
+  name: Beaconing detection
+  description: Regular-interval outbound connections (low timing jitter) from LOLBins to a single external destination.
+  run: "ALWAYS — entry point; surfaces candidate C2 destinations and processes."
+  query_file: 1_beaconing_detection
+- id: 2
+  name: DNS tunnelling patterns
+  description: High query volume with long/high-entropy subdomains under a single parent domain; uncommon record types where DNS logs are present.
+  run: When Stage 1 is inconclusive or DNS-based C2 is suspected (high-volume DNS to one domain).
+  query_file: 2_dns_tunnelling
+- id: 3
+  name: Long-duration low-volume sessions
+  description: Persistent outbound contact spread over a long window with few connections - implant keep-alive.
+  run: When Stage 1 surfaces a candidate destination, or to catch slow beacons Stage 1's interval test missed.
+  query_file: 3_long_duration_sessions
+- id: 4
+  name: LOLBin C2 callbacks
+  description: LOLBin processes initiating outbound connections to non-Microsoft destinations on non-standard ports, with parent-process context.
+  run: When Stage 1 or 3 implicates a LOLBin, or to confirm process to network attribution for a candidate destination.
+  query_file: 4_lolbin_callbacks
+definitions: []

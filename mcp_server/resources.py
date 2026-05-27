@@ -985,7 +985,8 @@ def register_resources(mcp: FastMCP) -> None:
         - **description** — what the investigation focuses on
 
         Attack types: phishing, malware, account_compromise,
-        privilege_escalation, pup_pua, generic.
+        privilege_escalation, data_exfiltration, lateral_movement,
+        command_and_control, reconnaissance, pup_pua, generic.
 
         The LLM should read this to understand investigation routing.
         Use ``classify_attack`` or ``plan_investigation`` tools for
@@ -1291,6 +1292,31 @@ def register_resources(mcp: FastMCP) -> None:
     # Capabilities overview
     # ------------------------------------------------------------------
 
+    @mcp.resource("socai://toolsets")
+    def toolsets_overview() -> str:
+        """Catalogue of modular tool groups and which are currently loaded.
+
+        Only the core toolset loads at startup; specialist groups load on
+        demand via load_toolset (classify_attack recommends one). Read this to
+        see what capabilities exist even when their tools aren't loaded yet.
+        """
+        from mcp_server.tools import TOOLSETS, _TOOLSET_DESCRIPTIONS
+        live = set(mcp._tool_manager._tools)
+        groups = {
+            name: {
+                "loaded": names.issubset(live),
+                "description": _TOOLSET_DESCRIPTIONS.get(name, ""),
+                "tools": sorted(names),
+            }
+            for name, names in TOOLSETS.items()
+        }
+        return _json({
+            "model": "core loads at startup; specialist groups load on demand via load_toolset (pushes tools/list_changed).",
+            "active_profile_env": "SOCAI_MCP_TOOLSETS (default 'core'; 'all' = every tool up front)",
+            "how_to_load": "Call load_toolset('<group>'). classify_attack returns recommended_toolsets for the alert type.",
+            "toolsets": groups,
+        })
+
     @mcp.resource("socai://capabilities")
     def capabilities_overview() -> str:
         """Complete capability map for the local Claude Desktop agent.
@@ -1307,7 +1333,7 @@ def register_resources(mcp: FastMCP) -> None:
             },
             "start_here": (
                 "1. Read socai://role for your analyst permissions.\n"
-                "2. Call lookup_client — returns platforms PLUS full knowledge base, response playbook, and Sentinel reference. Read and internalise before proceeding.\n"
+                "2. Call lookup_client — returns the client's platforms and workspace IDs (slim by default). Call lookup_client(slim=false) when you need the knowledge base, response playbook, or Sentinel reference inline (~25 KB).\n"
                 "3. Call classify_attack or plan_investigation with alert data.\n"
                 "4. Follow the returned plan, calling tools step by step.\n"
                 "5. When ready to deliver, use a write_* prompt then save_report."
@@ -1328,14 +1354,7 @@ def register_resources(mcp: FastMCP) -> None:
                         "correlate_evtx": "Windows event log attack chain detection. Returns chains (not saved).",
                         "contextualise_cves": "NVD/EPSS/KEV lookups for CVEs. Returns context (not saved).",
                         "parse_logs": "Parse CSV/JSON/JSONL log files. Saves parsed output to disk.",
-                        "analyse_pe": "Deep PE file analysis — imports, entropy, packers. Saves to disk.",
-                        "analyse_office": "Office macro / DDE / template-injection analysis (DOC/XLS/DOCX/XLSX/PPTM/RTF).",
-                        "analyse_pdf": "Deep PDF analysis — JS bodies, action triggers, embedded files, URI annotations.",
-                        "analyse_lnk": "Windows shell link (.lnk) — target, args, tracker block, volume info.",
-                        "analyse_onenote": "OneNote section (.one) — embedded-file extraction via FileDataStoreObject walk.",
-                        "analyse_macho": "Mach-O (macOS) static analysis — slices, dylibs, code-signature, encrypted segments.",
-                        "analyse_disk_image": "ISO/IMG/VHD/VHDX container analysis with auto-extraction of risky files from ISO.",
-                        "analyse_msi": "MSI installer — OLE2 streams, CustomAction, embedded payload extraction.",
+                        "analyse_file": "Tiered single-entry file analysis. Tier 1: hash/magic/entropy/strings/reputation. Tier 2 (auto on signal): format-specific specialist parse — PE imports, Office macros, PDF JS, LNK, OneNote, MSI, Mach-O, disk image. Tier 3 (auto on strong signal): YARA + sandbox suggestion. depth=fast|auto|full, run_yara=auto|true|false.",
                         "yara_scan": "YARA rule scanning against case files. Saves results to disk.",
                         "analyse_memory_dump": "Fast memory-dump triage — strings, IOCs, suspicious patterns, embedded PE detection.",
                         "analyse_memory_volatility": "Volatility3 deep analysis — pslist/netscan/malfind/cmdline/svcscan with auto OS detection.",
@@ -1345,7 +1364,7 @@ def register_resources(mcp: FastMCP) -> None:
                 "siem_and_queries": {
                     "description": "Query SIEM platforms and generate hunt queries.",
                     "tools": {
-                        "lookup_client": "Identify client, confirm SIEM platforms and workspace IDs. Returns full knowledge base, response playbook, and Sentinel reference inline. Call FIRST.",
+                        "lookup_client": "Identify client and confirm SIEM platforms / workspace IDs. Slim by default (just platforms). Pass slim=false to additionally pull the knowledge base, response playbook, and Sentinel reference inline. Call FIRST.",
                         "run_kql": "Execute KQL query against Azure Sentinel. Read-only.",
                         "run_kql_batch": "Execute multiple KQL queries in parallel.",
                         "load_kql_playbook": "Load a KQL investigation playbook template.",
@@ -1499,6 +1518,7 @@ def register_resources(mcp: FastMCP) -> None:
                 },
                 "meta": {
                     "socai://capabilities": "This capability map.",
+                    "socai://toolsets": "Modular tool groups and which are loaded; call load_toolset to load specialist tools on demand.",
                     "socai://role": "Your analyst role and permissions.",
                 },
             },
@@ -1528,7 +1548,7 @@ def register_resources(mcp: FastMCP) -> None:
             ],
             "common_workflows": {
                 "phishing": "lookup_client → classify_attack → add_evidence → enrich_iocs → capture_urls → detect_phishing → analyse_email → kql_investigation(playbook=phishing) → write_mdr_report prompt → save_report",
-                "malware": "lookup_client → classify_attack → add_evidence → enrich_iocs → analyse_pe → yara_scan → start_sandbox_session → kql_investigation(playbook=malware-execution) → write_mdr_report prompt → save_report",
+                "malware": "lookup_client → classify_attack → add_evidence → enrich_iocs → analyse_file(depth=full) → start_sandbox_session → kql_investigation(playbook=malware-execution) → write_mdr_report prompt → save_report",
                 "account_compromise": "lookup_client → classify_attack → add_evidence → enrich_iocs → kql_investigation(playbook=account-compromise) → detect_anomalies → write_mdr_report prompt → save_report",
                 "false_positive": "add_evidence → enrich_iocs → write_fp_closure prompt → save_report(type=fp_ticket) → optionally write_fp_tuning prompt → save_report(type=fp_tuning_ticket)",
                 "pup_pua": "classify_attack → enrich_iocs → write_pup_report prompt → save_report(type=pup_report)",

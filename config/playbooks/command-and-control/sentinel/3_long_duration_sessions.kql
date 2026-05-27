@@ -1,0 +1,32 @@
+// Long-duration, low-volume sessions - implant keep-alive.
+// True byte volume needs firewall logs (CommonSecurityLog); from
+// DeviceNetworkEvents we approximate with a long FirstSeen->LastSeen span and a
+// low connection count to a single external destination (slow check-ins).
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+let MicrosoftDomains = dynamic(["microsoft.com","windowsupdate.com","windows.com",
+                                "office.com","office365.com","azure.com","azureedge.net",
+                                "msftncsi.com","msedge.net","live.com","skype.com",
+                                "akamaitechnologies.com","akamai.net","cloudflare.com",
+                                "digicert.com","msft.net"]);
+DeviceNetworkEvents
+| where TimeGenerated > ago(lookback)
+| where DeviceName =~ device
+| where ActionType == "ConnectionSuccess"
+| where isnotempty(RemoteIP) and not(ipv4_is_private(RemoteIP))
+| where isempty(RemoteUrl) or not(RemoteUrl has_any (MicrosoftDomains))
+| summarize
+    Connections = count(),
+    Ports = make_set(RemotePort, 20),
+    Processes = make_set(InitiatingProcessFileName, 10),
+    Domains = make_set(RemoteUrl, 10),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated)
+  by DeviceName, RemoteIP
+| extend SessionSpanHours = round(datetime_diff('minute', LastSeen, FirstSeen) / 60.0, 2)
+| extend ConnectionsPerHour = round(Connections / (SessionSpanHours + 0.01), 2)
+// Long span + few, low-rate connections = persistent low-volume session.
+| where SessionSpanHours >= 1 and Connections between (2 .. 60) and ConnectionsPerHour <= 12
+| project DeviceName, RemoteIP, Domains, Ports, Processes, Connections,
+          SessionSpanHours, ConnectionsPerHour, FirstSeen, LastSeen
+| sort by SessionSpanHours desc, ConnectionsPerHour asc

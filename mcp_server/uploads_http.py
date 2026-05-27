@@ -1,7 +1,7 @@
 """Sample-upload HTTP endpoint for cross-sandbox file transfer.
 
 Claude Desktop's bash sandbox has its own filesystem; the MCP server runs on
-the WSL/host filesystem. ``analyse_static_file`` is path-based, so a file
+the WSL/host filesystem. ``analyse_file`` is path-based, so a file
 sitting in ``/home/claude/...`` inside the bash sandbox is invisible to it.
 
 This middleware closes that gap. The analyst (or the model on their behalf)
@@ -13,7 +13,7 @@ sample to::
 The server writes the bytes to
 ``cases/<case_id>/artefacts/uploads/<filename>`` and returns the absolute
 path + SHA-256. The analyst then passes that path straight into
-``analyse_static_file`` / ``analyse_pe``.
+``analyse_file``.
 
 Auth & safety:
   - JWT bound to (case_id, filename), audience ``socai-upload``, short TTL.
@@ -110,7 +110,7 @@ def build_upload_url(*, case_id: str, filename: str, token: str) -> str:
 
 def expected_artefact_path(*, case_id: str, filename: str) -> Path:
     """Where the upload will land — returned to callers so they can chain into
-    ``analyse_static_file`` without waiting for the upload response."""
+    ``analyse_file`` without waiting for the upload response."""
     return CASES_DIR / case_id / _UPLOAD_SUBDIR / filename
 
 
@@ -187,7 +187,7 @@ def store_inband_upload(
         "bytes": len(data),
         "sha256": sha256,
         "next_step": (
-            f"Call analyse_static_file(file_path='{target}', "
+            f"Call analyse_file(file_path='{target}', "
             f"case_id='{case_id}') to triage the sample."
         ),
     }
@@ -358,7 +358,7 @@ class UploadsMiddleware:
             "bytes": total,
             "sha256": sha256,
             "next_step": (
-                f"Call analyse_static_file(file_path='{target}', "
+                f"Call analyse_file(file_path='{target}', "
                 f"case_id='{case_id}') to triage the sample."
             ),
         })

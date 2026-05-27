@@ -5,7 +5,7 @@ socai exposes its investigation tools to external MCP clients over HTTPS SSE wit
 ## Quick Start
 
 ```bash
-# Start MCP server (SSE transport, port 8001)
+# Start MCP server (SSE transport, port 8001) — loads the core toolset
 python3 -m mcp_server
 
 # Custom port
@@ -13,7 +13,43 @@ SOCAI_MCP_PORT=9001 python3 -m mcp_server
 
 # Streamable HTTP transport
 SOCAI_MCP_TRANSPORT=streamable-http python3 -m mcp_server
+
+# Register every tool up front (legacy 113-tool behaviour)
+SOCAI_MCP_TOOLSETS=all python3 -m mcp_server
 ```
+
+## Toolset Profiles (on-demand loading)
+
+To keep per-session upfront context cost down (every tool schema loads into the
+Claude Desktop context at session start), tools are split into modular
+**toolsets** and only the **core** group loads at startup. The rest load on
+demand.
+
+- **core** (~63 tools, always loaded) — case management, enrichment/triage, log
+  hunting (KQL/Defender/Falcon), recall, GeoIP, coverage, reporting/close-out,
+  plus the `load_toolset` / `list_toolsets` meta-tools.
+- **phishing** — phishing detection, email parsing, browser page-capture sessions.
+- **malware** — static file analysis, file upload, sandbox sessions, YARA.
+- **forensics** — EVTX correlation, Velociraptor/MDE ingest, memory (Volatility3).
+- **intel** — OpenCTI, Confluence, threat articles, Cyberint, CVE context, secarch.
+- **darkweb** — stealer-log/breach parsing, Ahmia/IntelX, client exposure testing.
+- **analysis** — investigation matrix, report quality gate, determination, follow-ups.
+- **admin** — rebuild memory/baseline indexes, refresh GeoIP, audit.
+
+**How it works:** `register_tools()` registers every tool once, snapshots them,
+then prunes to the active profile (`SOCAI_MCP_TOOLSETS`, default `core`).
+`load_toolset(name)` restores a pruned group from the snapshot and pushes a
+`tools/list_changed` notification so the client picks the new tools up
+mid-session. `classify_attack` returns `recommended_toolsets` for the alert
+type, and the `hitl_investigation` prompt instructs the agent to load them
+straight after classifying. The catalogue (with live load state) is exposed at
+`socai://toolsets`.
+
+`SOCAI_MCP_TOOLSETS` accepts a comma list (e.g. `core,intel`); `all`/`full`
+registers everything up front — use this as a fallback if a client does not
+honour `tools/list_changed`. The mapping lives in `TOOLSETS` in
+`mcp_server/tools.py`; **every new tool must be added to a group** (unassigned
+tools fall back to core with a `toolset_unassigned` log warning).
 
 ## Architecture
 
@@ -91,8 +127,7 @@ Set `SOCAI_MCP_AUTH=entra_id` to validate Azure AD tokens instead. `SocaiTokenVe
 | `SOCAI_JWT_SECRET` | (insecure default) | JWT signing secret — **must set in production** |
 | `SOCAI_JWT_TTL_HOURS` | `8` | Token expiry (hours); `720` = 30 days |
 | `MAXMIND_LICENSE_KEY` | — | MaxMind license key for local GeoIP database (free at maxmind.com) |
-| `SOCAI_MCP_PUBLIC_BASE_URL` | `http://127.0.0.1:<port>` | Public origin used to build one-click `report_url` and `upload_url` links. Override with the public Azure URL in production. |
-| `SOCAI_MCP_REPORT_TOKEN_TTL_SECONDS` | `28800` (8 h) | TTL for one-click report URLs returned by `save_report` |
+| `SOCAI_MCP_PUBLIC_BASE_URL` | `http://127.0.0.1:<port>` | Public origin used to build signed `upload_url` links (file uploads only — reports are returned inline in the `save_report` response, not via URL). Override with the public Azure URL in production. |
 | `SOCAI_MCP_UPLOAD_TOKEN_TTL_SECONDS` | `900` (15 min) | TTL for HTTP upload URLs minted by `prepare_file_upload` |
 | `SOCAI_MCP_UPLOAD_MAX_BYTES` | `104857600` (100 MB) | Hard cap on HTTP-uploaded sample size |
 | `SOCAI_MCP_INBAND_UPLOAD_MAX_BYTES` | `2097152` (2 MB) | Hard cap on **in-band base64** uploads via `upload_file_content`. Kept small because in-band bytes land in the chat transcript and persist for the rest of the session — use the HTTP path for anything larger. |
@@ -304,6 +339,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | URI | Description |
 |---|---|
 | `socai://capabilities` | Structured overview of all tools, prompts, and resources |
+| `socai://toolsets` | Modular tool groups, load state, and how to `load_toolset` on demand |
 | `socai://cases` | All cases from registry |
 | `socai://cases/{case_id}/meta` | Case metadata |
 | `socai://cases/{case_id}/report` | Final HTML report (MDR, PUP, or legacy — whichever exists) |

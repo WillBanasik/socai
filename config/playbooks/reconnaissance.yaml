@@ -1,0 +1,48 @@
+id: reconnaissance
+name: Inbound Reconnaissance Detection
+description: >
+  Detects active inbound reconnaissance preceding intrusion: credential
+  stuffing / password spray, external port and service scanning, and
+  sub-domain / MX enumeration of the client's registered domains. Stages 1
+  (identity) and 2 (network scanning) are portable across Sentinel and
+  LogScale; Stage 3 (authoritative-DNS enumeration) is Sentinel-only and
+  log-source dependent (requires the DNS Analytics connector). Stage 1 always
+  runs; Stages 2-3 are conditional on prior findings.
+required_capabilities:
+  sentinel:
+  - sign_in_events
+  - device_network_events
+  - security_alerts
+  logscale:
+  - sign_in_events
+  - device_network_events
+parameters:
+- name: lookback
+  type: string
+  description: Time range to investigate (default 24h).
+  default: 24h
+- name: target_upn
+  type: string
+  description: Optional UPN to focus a credential-spray hunt on. Set to __NONE__ to scan all accounts.
+  default: __NONE__
+- name: source_ip
+  type: string
+  description: Optional external source IP to focus on. Set to __NONE__ to scan all sources.
+  default: __NONE__
+stages:
+- id: 1
+  name: Credential stuffing / password spray
+  description: High-volume failed sign-ins across many accounts from a single IP in a short window.
+  run: "ALWAYS — entry point; surfaces spraying source IPs and the accounts targeted."
+  query_file: 1_credential_spray
+- id: 2
+  name: Port / service scanning
+  description: A single external IP contacting many internal hosts or ports in a short window.
+  run: When Stage 1 surfaces a candidate source IP, or network-layer recon is suspected.
+  query_file: 2_port_scanning
+- id: 3
+  name: Sub-domain / MX enumeration
+  description: Anomalous DNS query volume against the client's registered domains (authoritative-DNS recon). Log-source dependent; Sentinel-only.
+  run: When mail-infrastructure / authoritative-DNS enumeration is suspected and DNS logs are ingested.
+  query_file: 3_dns_enumeration
+definitions: []

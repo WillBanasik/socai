@@ -69,6 +69,8 @@ TOOL_TAXONOMY: dict[str, dict[str, str]] = {
     "can_investigate_attack":   {"category": "lookup",      "goal": "quick_answer"},
     "get_client_exposure_report": {"category": "lookup",    "goal": "quick_answer"},
     "load_kql_playbook":        {"category": "lookup",      "goal": "investigate"},
+    "list_toolsets":            {"category": "lookup",      "goal": "quick_answer"},
+    "load_toolset":             {"category": "triage",      "goal": "investigate"},
 
     # Quick enrichment — no case required
     "quick_enrich":             {"category": "enrichment",  "goal": "quick_answer"},

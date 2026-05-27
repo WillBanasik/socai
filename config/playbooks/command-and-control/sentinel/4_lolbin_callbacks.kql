@@ -1,0 +1,31 @@
+// LOLBin C2 callbacks - LOLBin processes calling out to non-Microsoft
+// destinations on non-standard ports, with parent-process context for
+// injection / living-off-the-land chains.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+let proc = "{{process_name}}";
+let LOLBins = dynamic(["powershell.exe","pwsh.exe","rundll32.exe","mshta.exe",
+                       "wscript.exe","cscript.exe","certutil.exe","regsvr32.exe",
+                       "bitsadmin.exe","msbuild.exe","installutil.exe","msiexec.exe"]);
+let StandardPorts = dynamic([80, 443, 53, 123, 389, 636]);
+DeviceNetworkEvents
+| where TimeGenerated > ago(lookback)
+| where DeviceName =~ device
+| where ActionType == "ConnectionSuccess"
+| where isnotempty(RemoteIP) and not(ipv4_is_private(RemoteIP))
+| where (proc == "__NONE__" and InitiatingProcessFileName in~ (LOLBins))
+     or (proc != "__NONE__" and InitiatingProcessFileName =~ proc)
+| where RemotePort !in (StandardPorts)
+| summarize
+    Connections = count(),
+    Ports = make_set(RemotePort, 20),
+    Domains = make_set(RemoteUrl, 10),
+    CmdLines = make_set(InitiatingProcessCommandLine, 5),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated)
+  by DeviceName, Process = InitiatingProcessFileName,
+     ParentProcess = InitiatingProcessParentFileName, RemoteIP,
+     AccountName = InitiatingProcessAccountName
+| project DeviceName, Process, ParentProcess, AccountName, RemoteIP, Ports,
+          Domains, CmdLines, Connections, FirstSeen, LastSeen
+| sort by Connections desc

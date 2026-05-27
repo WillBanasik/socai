@@ -9,6 +9,14 @@ MCP_TRANSPORT: str = os.getenv("SOCAI_MCP_TRANSPORT", "sse")
 MCP_AUTH_MODE: str = os.getenv("SOCAI_MCP_AUTH", "local")
 MCP_MOUNT_PATH: str = os.getenv("SOCAI_MCP_MOUNT_PATH", "/")
 
+# Tool profile — which toolsets register at startup (comma-separated).
+# "core" is always included and covers the common log/case path. Specialist
+# groups (phishing, malware, forensics, intel, darkweb, analysis, admin) load
+# on demand via the load_toolset tool, which pushes a tools/list_changed
+# notification so the client picks them up mid-session. "all" (or "full")
+# registers every toolset up front — legacy behaviour / dynamic-load fallback.
+MCP_TOOLSETS: str = os.getenv("SOCAI_MCP_TOOLSETS", "core")
+
 # Public origin used to build clickable links returned by tools (e.g. report URLs).
 # Production must override with the public Azure URL.
 # 127.0.0.1 is the WSL2-friendly default for local dev — Windows Edge resolves it
@@ -26,7 +34,7 @@ MCP_REPORT_TOKEN_TTL_SECONDS: int = int(
 )
 
 # Upload endpoint — used by Claude Desktop's bash sandbox to ship a sample into
-# the MCP server's filesystem before calling analyse_static_file / analyse_pe.
+# the MCP server's filesystem before calling analyse_file.
 # TTL is short because the upload URL is single-purpose (one-shot transfer).
 MCP_UPLOAD_TOKEN_TTL_SECONDS: int = int(
     os.getenv("SOCAI_MCP_UPLOAD_TOKEN_TTL_SECONDS", str(15 * 60))

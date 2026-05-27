@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import load_json, log_error, utcnow
+from tools.common import eprint, load_json, log_error, utcnow
 
 
 def _load_all_entities(logs_dir: Path) -> dict[str, list]:
@@ -132,7 +132,7 @@ def correlate(case_id: str) -> dict:
         except Exception:
             pass
 
-    print(f"[correlate] Correlation complete for {case_id}: {result['hit_summary']}")
+    eprint(f"[correlate] Correlation complete for {case_id}: {result['hit_summary']}")
     return result
 
 

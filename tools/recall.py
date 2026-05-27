@@ -67,6 +67,50 @@ def _extract_domains(urls: list[str]) -> list[str]:
     return list(domains)
 
 
+def _html_to_text(html: str) -> str:
+    """Strip an HTML report to readable text (drops script/style + markup)."""
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        text = soup.get_text(separator=" ")
+    except Exception:
+        import re
+        text = re.sub(r"<[^>]+>", " ", html)
+    return " ".join(text.split())
+
+
+def _report_excerpt(case_dir: Path) -> str | None:
+    """Return a capped text excerpt of a case's report for recall context.
+
+    Prefers the modern HTML deliverable (tag-stripped so the model sees prose,
+    not markup); falls back to legacy Markdown. Returns None if no report
+    exists. Capped at ``_MAX_REPORT_CHARS`` — the MCP layer truncates further
+    for the default (non-verbose) return.
+    """
+    reports = case_dir / "reports"
+    html_report = next(
+        (reports / n for n in
+         ("mdr_report.html", "pup_report.html", "investigation_report.html")
+         if (reports / n).exists()), None)
+    md_report = next(
+        (reports / n for n in ("mdr_report.md", "investigation_report.md")
+         if (reports / n).exists()), None)
+    try:
+        if html_report:
+            text = _html_to_text(html_report.read_text(encoding="utf-8", errors="replace"))
+        elif md_report:
+            text = md_report.read_text(encoding="utf-8", errors="replace")
+        else:
+            return None
+    except Exception:
+        return None
+    if len(text) > _MAX_REPORT_CHARS:
+        text = text[:_MAX_REPORT_CHARS] + "\n\n[...truncated...]"
+    return text
+
+
 def recall(
     *,
     iocs: list[str] | None = None,
@@ -270,18 +314,10 @@ def recall(
                         for f in findings[:10]
                     ]
 
-            # Load MDR report if available (prefer over pipeline report)
-            mdr_path = case_dir / "reports" / "mdr_report.md"
-            report_path = case_dir / "reports" / "investigation_report.md"
-            rpath = mdr_path if mdr_path.exists() else (report_path if report_path.exists() else None)
-            if rpath:
-                try:
-                    text = rpath.read_text(encoding="utf-8", errors="replace")
-                    if len(text) > _MAX_REPORT_CHARS:
-                        text = text[:_MAX_REPORT_CHARS] + "\n\n[...truncated...]"
-                    case_summary["report_excerpt"] = text
-                except Exception:
-                    pass
+            # Load report excerpt (prefer HTML deliverable, tag-stripped)
+            excerpt = _report_excerpt(case_dir)
+            if excerpt:
+                case_summary["report_excerpt"] = excerpt
         else:
             # ── Redacted: cross-client case ──────────────────────────
             # Only expose that an IOC overlap exists + verdict.  No title,

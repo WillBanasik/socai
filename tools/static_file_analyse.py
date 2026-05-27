@@ -249,6 +249,13 @@ _SPECIALIST_DISPATCH: dict[str, tuple[str, str]] = {
 }
 
 
+def dispatch_specialist(file_type: str, file_path: Path | str, case_id: str) -> dict | None:
+    """Public wrapper for specialist routing — used by the tiered
+    ``file_analyse`` orchestrator. Returns ``None`` when no specialist
+    matches the detected file type."""
+    return _dispatch_specialist(file_type, Path(file_path), case_id)
+
+
 def _dispatch_specialist(file_type: str, file_path: Path, case_id: str) -> dict | None:
     """Route OOXML / legacy Office / specialist types to dedicated analysers."""
     if file_type.startswith("Office OOXML") or file_type.startswith("Office legacy"):
@@ -276,13 +283,21 @@ def _dispatch_specialist(file_type: str, file_path: Path, case_id: str) -> dict 
         return None
 
 
-def static_file_analyse(file_path: str | Path, case_id: str) -> dict:
+def static_file_analyse(
+    file_path: str | Path,
+    case_id: str,
+    dispatch_specialist: bool = True,
+) -> dict:
     """
     Run static analysis on *file_path* and save results under the case.
 
     Detection routes specialist file types (Office, PDF, LNK, OneNote, MSI,
     Mach-O, ISO/IMG/VHD/VHDX) to their dedicated analysers; the deep manifest
     is returned under ``specialist_analysis`` and key flags are merged in.
+
+    Pass ``dispatch_specialist=False`` to run only the magic-byte / hash /
+    entropy / strings triage — used by the tiered ``file_analyse`` orchestrator
+    so it can decide whether the specialist parse is worth the cost.
     """
     file_path = Path(file_path)
     data = file_path.read_bytes()
@@ -338,16 +353,17 @@ def static_file_analyse(file_path: str | Path, case_id: str) -> dict:
             result["flags"].append(f"PDF_SUSPICIOUS_KEYWORD: {kw} found")
 
     # ---- Specialist dispatch --------------------------------------------
-    specialist = _dispatch_specialist(file_type, file_path, case_id)
-    if specialist is not None:
-        result["specialist_analysis"] = specialist
-        for sf in specialist.get("flags", []) or []:
-            result["flags"].append(f"SPECIALIST: {sf}")
-        if specialist.get("status") not in ("ok", None):
-            result["flags"].append(
-                f"SPECIALIST_STATUS: {specialist.get('status')}"
-                + (f" — {specialist.get('reason')}" if specialist.get('reason') else "")
-            )
+    if dispatch_specialist:
+        specialist = _dispatch_specialist(file_type, file_path, case_id)
+        if specialist is not None:
+            result["specialist_analysis"] = specialist
+            for sf in specialist.get("flags", []) or []:
+                result["flags"].append(f"SPECIALIST: {sf}")
+            if specialist.get("status") not in ("ok", None):
+                result["flags"].append(
+                    f"SPECIALIST_STATUS: {specialist.get('status')}"
+                    + (f" — {specialist.get('reason')}" if specialist.get('reason') else "")
+                )
 
     out_path = analysis_dir / f"{filename}.analysis.json"
     write_artefact(out_path, json.dumps(result, indent=2))

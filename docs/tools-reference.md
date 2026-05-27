@@ -446,7 +446,7 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 
 ### Pipeline Integration
 
-`classify_attack.py` detects PUP/PUA early via keyword matching. `chief.py` also checks post-enrichment verdicts via `detect_pup()`. When PUP is detected, the pipeline short-circuits: enrich → PUP report → done (skipping phishing detection, sandbox, correlation, campaign clustering, etc.). The case auto-closes at pipeline completion since the PUP report (the deliverable) is generated inline.
+`classify_attack.py` detects PUP/PUA early via keyword matching. `chief.py` also checks post-enrichment verdicts via `detect_pup()`. When PUP is detected, the pipeline short-circuits after enrichment (skipping phishing detection, sandbox, correlation, campaign clustering, etc.) and the case is closed with `close_case(disposition="pup_pua")`. A PUP report is **not** auto-generated — it is produced only if the analyst requests one (`prepare_pup_report` → `save_report`), which then auto-closes the case.
 
 ## Attack-Type Classification
 
@@ -454,11 +454,13 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 
 ### Attack Types
 
-`phishing`, `malware`, `account_compromise`, `privilege_escalation`, `pup_pua`, `generic`
+`phishing`, `malware`, `account_compromise`, `privilege_escalation`, `data_exfiltration`, `lateral_movement`, `command_and_control`, `reconnaissance`, `pup_pua`, `generic`
+
+`command_and_control` (behavioural C2 — beaconing, DNS tunnelling, LOLBin callbacks) and `reconnaissance` (inbound recon — credential spray, port scanning, DNS enumeration) are **behavioural** hunt types: they find activity from log patterns rather than a supplied file/URL artefact. C2 keyword routing: beacon, C2, callback, tunnelling, LOLBin callout. Reconnaissance routing: password spray, credential stuffing, port scan, enumeration, brute force.
 
 ### Pipeline Profiles
 
-Each attack type defines a `PIPELINE_PROFILES` entry specifying which steps to skip. For example, `phishing` skips sandbox; `malware` skips phishing detection; `account_compromise` skips domain investigation, phishing detection, and sandbox. `generic` skips nothing.
+Each attack type defines a `PIPELINE_PROFILES` entry specifying which steps to skip. For example, `phishing` skips sandbox; `malware` skips phishing detection; `account_compromise` skips domain investigation, phishing detection, and sandbox; `command_and_control` and `reconnaissance` skip all file/email/sandbox steps (no artefact). `generic` skips nothing. `socai://pipeline-profiles` is the authoritative source.
 
 ### Usage
 
@@ -667,7 +669,7 @@ Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 
 Investigation playbooks live in `config/playbooks/<id>.yaml` and describe stage logic, parameters, required capabilities, and definitions in a vendor-neutral form. Per-stage query bodies live under `config/playbooks/<id>/<platform>/*.<ext>` — one subdirectory per SIEM platform. The unified loader (`tools/playbooks.py`) merges the YAML structure with the right query files at render time. KQL parameters use `{{param}}` placeholders sanitised via `_sanitise_kql_value()` (rejects control characters, escapes quotes/backslashes) to prevent query-structure injection.
 
-**Available playbooks** (8 total, 6 with multi-platform support):
+**Available playbooks** (10 total, 8 with multi-platform support):
 
 | Playbook | Stages | Sentinel | LogScale | Key parameters |
 |----------|--------|----------|----------|----------------|
@@ -679,6 +681,8 @@ Investigation playbooks live in `config/playbooks/<id>.yaml` and describe stage 
 | `ioc-hunt` | 2 (IOC presence sweep, context pivot) | yes | yes | `iocs`, `lookback` (default 30d), `hit_table`/`hit_time`/`hit_device` |
 | `data-exfiltration` | 3 (volume anomaly + DLP, cloud application access, network exfil indicators) | yes | — | `target_upn`, `threshold_mb` (default 100), `lookback` (default 7d) |
 | `privilege-escalation` | 3 (escalation event detail, actor legitimacy, post-escalation activity) | yes | — | `actor_upn`, `target_user`, `target_group`, `lookback` (default 14d) |
+| `command-and-control` | 4 (beaconing detection, DNS tunnelling, long-duration low-volume sessions, LOLBin callbacks) | yes | yes | `device_name`, `lookback` (default 7d), `process_name` (optional, `__NONE__` = all LOLBins) |
+| `reconnaissance` | 3 (credential spray/stuffing, port/service scanning, sub-domain/MX enumeration) | yes | yes (stages 1–2; stage 3 DNS enumeration is Sentinel-only) | `lookback` (default 24h), `target_upn` (optional), `source_ip` (optional) |
 
 `bec` and `phishing` Stage 0 implements the **broad scope principle** — every email-campaign investigation expands the alert seed (one NetworkMessageId) into the full set of related messages (sender + subject) before any narrow-scope stage runs. Operating on a single NetworkMessageId leads to under-blocked campaigns and missed clickers.
 

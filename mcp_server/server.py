@@ -82,6 +82,31 @@ by calling tools step by step. There is no autonomous pipeline.
 2. Follow the returned plan. It tells you which tools to call, in what order, and what to skip.
 3. Execute each step, present findings to the analyst, and proceed on their direction.
 
+## Modular Toolsets — most tools load on demand
+
+Only the **core** toolset is callable at startup (case management, enrichment/triage,
+log hunting, recall, reporting, close-out). Everything else lives in a specialist
+group that you must pull in **before** calling its tools — otherwise the call fails
+with `Tool not found`, even though the tool is listed under "Tool Categories" below.
+
+**Before using a specialist tool, call `load_toolset('<group>')` first.** It becomes
+callable immediately (the tool list refreshes mid-session). `classify_attack` also
+returns `recommended_toolsets` — load those when it does.
+
+| Group | Load when you need… | Key tools |
+|-------|--------------------|-----------|
+| `phishing` | email / URL investigation | detect_phishing, analyse_email, start_browser_session |
+| `malware` | file / payload analysis | analyse_file, prepare_file_upload, start_sandbox_session, yara_scan |
+| `forensics` | host DFIR | correlate_evtx, ingest_velociraptor, analyse_memory_volatility |
+| `intel` | **threat articles**, OSINT, CVE context | search_threat_articles, generate_threat_article, save_threat_article, assess_landscape, query_opencti, web_search, contextualise_cves, query_cyberint_alerts |
+| `darkweb` | breach / exposure / dark-web | ahmia_darkweb_search, intelx_search_tool, parse_stealer_logs_tool, run_client_exposure_test |
+| `analysis` | deep analytical rigour | build_investigation_matrix, review_report, run_determination, execute_followup |
+| `admin` | maintenance | rebuild_case_memory, refresh_geoip, audit_user_activity |
+
+Call `list_toolsets` (or read `socai://toolsets`) any time to see the full list and
+what's currently loaded. **Monthly threat articles:** `load_toolset('intel')` →
+`search_threat_articles` → write → `save_threat_article`.
+
 ## Report Generation (Client-Side)
 
 Reports can be generated **locally in Claude Desktop** using MCP prompts — no
@@ -131,7 +156,7 @@ Analysts select these from the Claude Desktop prompt picker for structured workf
 | Case Management | list_cases, case_summary, read_report, read_case_file, new_investigation, close_case, link_cases, merge_cases, add_evidence, add_finding |
 | Enrichment & Analysis | enrich_iocs, correlate, contextualise_cves, recall_cases, campaign_cluster, web_search |
 | Email & Phishing | analyse_email, capture_urls, detect_phishing |
-| SIEM & Endpoint | lookup_client (returns full client knowledge base, playbook & Sentinel reference), run_kql, load_kql_playbook, generate_sentinel_query, generate_queries, ingest_velociraptor, ingest_mde_package |
+| SIEM & Endpoint | lookup_client (slim by default — platforms + workspace IDs; slim=false to pull full knowledge base, playbook & Sentinel reference inline), run_kql, load_kql_playbook, generate_sentinel_query, generate_queries, ingest_velociraptor, ingest_mde_package |
 | Dynamic Analysis | start_sandbox_session, stop_sandbox_session, list_sandbox_sessions, start_browser_session, stop_browser_session, list_browser_sessions |
 | Reporting | generate_report, prepare_mdr_report, prepare_pup_report, prepare_executive_summary, generate_weekly, prepare_fp_ticket, prepare_fp_tuning_ticket, reconstruct_timeline, security_arch_review, response_actions |
 | Threat Intelligence | assess_landscape, search_threat_articles, generate_threat_article, search_confluence (ET/EV articles only) |
@@ -497,6 +522,34 @@ def create_mcp_server(*, transport: str = MCP_TRANSPORT) -> FastMCP:
     register_resources(server)
     register_prompts(server)
 
+    # ------------------------------------------------------------------
+    # Advertise dynamic-capability notifications. (AI-assisted — review)
+    #
+    # FastMCP's per-transport runners call create_initialization_options()
+    # with no args, which defaults to NotificationOptions(tools_changed=False).
+    # The server then advertises `tools: {listChanged: false}` at init, so a
+    # compliant client (Claude Desktop) has no reason to re-fetch tools/list
+    # after a tools/list_changed notification. The result: on-demand
+    # load_toolset() adds tools server-side, fires send_tool_list_changed(),
+    # but the client never sees them -> "Tool not found". Force the capability
+    # on so modular toolset loading works. prompts/resources are dynamic too.
+    # ------------------------------------------------------------------
+    from mcp.server.lowlevel.server import NotificationOptions
+
+    _low = server._mcp_server
+    _orig_init_opts = _low.create_initialization_options
+
+    def _init_opts_with_listchanged(notification_options=None, experimental_capabilities=None):
+        if notification_options is None:
+            notification_options = NotificationOptions(
+                prompts_changed=True,
+                resources_changed=True,
+                tools_changed=True,
+            )
+        return _orig_init_opts(notification_options, experimental_capabilities)
+
+    _low.create_initialization_options = _init_opts_with_listchanged
+
     from mcp_server.usage import install_usage_watcher
     install_usage_watcher(server)
 
@@ -511,15 +564,13 @@ def create_mcp_server(*, transport: str = MCP_TRANSPORT) -> FastMCP:
         except Exception:
             mcp_log("sse_middleware_skip", note="could not install connection logging")
 
-    # One-click report URLs work on any network transport (sse or streamable-http).
+    # Reports are now returned inline in the save_report tool response and
+    # rendered directly in Claude Desktop's chat (HTML supported). The
+    # one-click signed-URL endpoint that previously lived at
+    # /cases/<id>/reports/<type> is no longer installed — kept the module
+    # in place for now in case the flow is needed for non-Desktop clients
+    # later, but it is not wired into the server.
     if is_network:
-        try:
-            from mcp_server.reports_http import install_reports_endpoint
-            install_reports_endpoint(server)
-        except Exception as exc:
-            mcp_log("reports_middleware_skip", error=str(exc),
-                    note="one-click report links will not be available")
-
         try:
             from mcp_server.uploads_http import install_uploads_endpoint
             install_uploads_endpoint(server)

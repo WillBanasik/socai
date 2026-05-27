@@ -502,8 +502,8 @@ def generate_queries(case_id: str,
 def run_campaign_cluster(case_id: str) -> dict:
     """Run cross-case campaign clustering."""
     def _do():
-        from tools.campaign_cluster import campaign_cluster
-        result = campaign_cluster(case_id)
+        from tools.campaign_cluster import cluster_campaigns
+        result = cluster_campaigns(case_id)
 
         campaigns = result.get("campaigns", []) if isinstance(result, dict) else []
         if not campaigns:

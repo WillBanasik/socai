@@ -77,7 +77,7 @@ Valid disposition values: `true_positive`, `benign_positive`, `false_positive`, 
 
 `classify_attack` returns a deterministic attack type. Each attack type has a **pipeline profile** defining which steps to skip. Read `socai://pipeline-profiles` for the authoritative list of attack types and their skip rules — never assume from this document.
 
-**Trust the classification.** Do not run tools the profile says to skip. Phishing cases don't need sandbox analysis. PUP cases don't need attack-chain analysis. When classified as `pup_pua`, short-circuit after enrichment: use the PUP report prompt → `save_report` to produce a lightweight HTML report (summary, path & file details, access vector, actions taken, recommendations). The report auto-closes with disposition `pup_pua`.
+**Trust the classification.** Do not run tools the profile says to skip. Phishing cases don't need sandbox analysis. PUP cases don't need attack-chain analysis. When classified as `pup_pua`, short-circuit after enrichment and close the case with `close_case(disposition="pup_pua")` — do **not** auto-generate a PUP report. If the analyst wants a written PUP report, they will ask; only then use the PUP report prompt → `save_report`.
 
 ---
 
@@ -85,19 +85,21 @@ Valid disposition values: `true_positive`, `benign_positive`, `false_positive`, 
 
 All LLM reasoning (report writing, disposition analysis, quality review) happens in YOUR local session. The MCP server provides **prompts** that load system instructions and case data, and **save tools** that persist the output.
 
+**Reports are analyst-initiated — do not auto-generate.** A full MDR report is produced only for **True Positive** cases, and only when the analyst asks for it (for a TP that is the expected deliverable — recommend it, then produce it on the analyst's go-ahead). For every other disposition — benign positive, false positive, PUP/PUA, benign, inconclusive — do **not** auto-generate any report. Close the case with the appropriate disposition via `close_case` plus a brief closure note. Every deliverable prompt below stays available on demand: if the analyst decides a non-TP case needs written output, they will ask, and only then do you generate it.
+
 **Workflow:** Select an MCP prompt → generate the report as a **complete HTML document** using the template CSS and structure → call `save_report` (or the prompt-specific save tool) to persist. Read the relevant template resource for the exact HTML skeleton and styling. If the template resource is inaccessible, the `load_report_template` tool returns the same content.
 
 **All reports are HTML.** Never produce markdown reports. The template resources provide the exact HTML structure, CSS styling, and section layout. `save_report` accepts HTML directly.
 
-**One-click open in browser.** `save_report` returns a `report_url` field (and a human-readable `open_in_browser` string) — a short-lived signed link the analyst can click to open the rendered HTML in their default browser. **Always surface this URL in your reply to the analyst** after `save_report` succeeds. Claude Desktop renders http(s) URLs as clickable links, so the analyst gets a single-click path to the report with no follow-up prompt. Never ask the analyst to "stage" or "collect" the report locally — the URL is the entire flow.
+**Render in the visualiser.** `save_report` returns the persisted (defanged) HTML as `report_html` in its response. **Render `report_html` as a self-contained HTML artifact** so Claude Desktop opens it in the visualiser (the Artifacts side panel) — the analyst reviews the report there, with styled cards, severity/verdict badges, headers, and syntax-highlighted defanged IOCs. Do not paste the raw HTML into the chat body, summarise it, truncate it, or wrap it in a code fence. The HTML is also persisted on disk for the customer deliverable, but the analyst's review happens in the visualiser. Never ask the analyst to "stage", "open", or "collect" the report — rendering the artifact is the entire flow.
 
-**Enhanced recommendations.** For TP/BP cases, run the security-architecture-review prompt **before** the MDR report prompt. The sec arch review analyses control gaps and produces platform-specific hardening recommendations (Conditional Access policies, ASR rules, Sentinel analytics rules, CrowdStrike prevention settings). The MDR report prompt automatically loads sec arch findings and instructs you to distil them into concrete, actionable items in the **Client-Responsible Remediation** subsection. This transforms generic advice ("review your CA policies") into specific actions ("deploy a CA policy requiring MFA for sign-ins from non-compliant devices targeting the Finance group").
+**Enhanced recommendations.** For True Positive cases (where an MDR report is being produced), run the security-architecture-review prompt **before** the MDR report prompt. The sec arch review analyses control gaps and produces platform-specific hardening recommendations (Conditional Access policies, ASR rules, Sentinel analytics rules, CrowdStrike prevention settings). The MDR report prompt automatically loads sec arch findings and instructs you to distil them into concrete, actionable items in the **Client-Responsible Remediation** subsection. This transforms generic advice ("review your CA policies") into specific actions ("deploy a CA policy requiring MFA for sign-ins from non-compliant devices targeting the Finance group").
 
 ### Auto-Close Behaviour
 
 Some prompts auto-close the case on save; some do not. Each prompt's description (in the picker) states its auto-close behaviour and the disposition it applies. Read the description before invoking — do not assume from this document.
 
-General pattern: **deliverables** (MDR, PUP, FP ticket, FP tuning) auto-close. **Supplementary outputs** (executive summary, security arch review, threat articles, response plans) do not.
+General pattern: **deliverables** (MDR, PUP, FP ticket, FP tuning) auto-close. **Supplementary outputs** (executive summary, security arch review, threat articles, response plans) do not. Note: for non-TP dispositions you normally close via `close_case` rather than generating a deliverable — the auto-close-on-save behaviour only applies when the analyst has explicitly requested a deliverable.
 
 ### Threat Article Workflow — Two Paths
 
@@ -270,7 +272,7 @@ Discover the full URI list via `socai://capabilities`.
 - **Defanging** — malicious and suspicious IOCs are defanged in all final reports. Hashes and file paths are never defanged. The save tools handle this automatically.
 - **Be concise** — lead with findings, not process narration. Skip preamble.
 - **Default to open cases** — when asked for recent/latest cases, show open cases only unless the analyst asks for all or closed.
-- **HTML reports only** — all reports must be produced as complete HTML documents using the template CSS. Pass the HTML directly to `save_report`. After saving, surface the `report_url` from the response as a clickable link so the analyst can open the rendered HTML in their browser in one click.
+- **HTML reports only** — all reports must be produced as complete HTML documents using the template CSS. Pass the HTML directly to `save_report`. After saving, render the returned `report_html` as a self-contained HTML artifact — Claude Desktop opens it in the visualiser (Artifacts side panel) so the analyst reviews the report there, not pasted inline in the chat.
 
 ---
 
