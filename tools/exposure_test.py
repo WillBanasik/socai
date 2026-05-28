@@ -20,16 +20,14 @@ Usage:
 """
 from __future__ import annotations
 
-import json
 import re
-import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import EXPOSURE_DIR, BASE_DIR
+from config.settings import EXPOSURE_DIR
 from tools.common import load_json, log_error, save_json, utcnow, write_artefact
 
 try:
@@ -943,199 +941,156 @@ def get_exposure_report(client: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# HTML Report
+# Markdown Report
 # ---------------------------------------------------------------------------
 
-def generate_exposure_html(client: str) -> dict:
-    """Generate an interactive HTML exposure report."""
+def generate_exposure_report(client: str) -> dict:
+    """Generate a markdown exposure report at ``registry/exposure/<client>_exposure.md``."""
     data = get_exposure_report(client)
     if not isinstance(data, dict) or "scores" not in data:
         return {"status": "error", "reason": data.get("reason", "No data")}
 
     ck = _client_key(client)
-    html = _render_exposure_html(client, data)
+    md = _render_exposure_md(client, data)
     EXPOSURE_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = EXPOSURE_DIR / f"{ck}_exposure.html"
-    manifest = write_artefact(out_path, html)
+    out_path = EXPOSURE_DIR / f"{ck}_exposure.md"
+    write_artefact(out_path, md)
     return {"status": "ok", "path": str(out_path)}
 
 
-def _render_exposure_html(client: str, data: dict) -> str:
-    """Build self-contained HTML for exposure report."""
+def _exposure_band(overall: int) -> str:
+    if overall <= 20:
+        return "Low Exposure"
+    if overall <= 50:
+        return "Moderate Exposure"
+    return "High Exposure"
+
+
+def _render_exposure_md(client: str, data: dict) -> str:
+    """Build the markdown exposure report."""
     scores = data.get("scores", {})
     findings = data.get("findings", [])
     summary = data.get("summary", {})
     phases = data.get("phases", {})
     domains = data.get("domains_tested", [])
 
-    overall = scores.get("overall", 0)
-    if overall <= 20:
-        score_colour = "#1e8b4c"
-        score_label = "Low Exposure"
-    elif overall <= 50:
-        score_colour = "#f39c12"
-        score_label = "Moderate Exposure"
-    else:
-        score_colour = "#c0392b"
-        score_label = "High Exposure"
+    overall = int(scores.get("overall", 0))
+    band = _exposure_band(overall)
+    tested_at = data.get("tested_at", "unknown")
 
-    # Category score bars
-    cat_bars = ""
+    lines: list[str] = []
+    lines.append(f"# External Exposure Assessment — {client}")
+    lines.append("")
+    lines.append(f"**Tested:** {tested_at}  ")
+    lines.append(f"**Domains:** {', '.join(domains) if domains else '_(none)_'}")
+    lines.append("")
+    lines.append("## Scorecard")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|---|---|")
+    lines.append(f"| Overall exposure | **{overall}** — {band} |")
+    lines.append(f"| Critical findings | {summary.get('critical_findings', 0)} |")
+    lines.append(f"| High findings | {summary.get('high_findings', 0)} |")
+    lines.append(f"| Live subdomains | {summary.get('live_subdomains', 0)} |")
+    lines.append(f"| Unique IPs | {summary.get('unique_ips', 0)} |")
+    lines.append(f"| Active typosquats | {summary.get('active_typosquats', 0)} |")
+    lines.append("")
+
+    # Category scores
     cat_labels = {
-        "email_security": "Email Security",
-        "service_exposure": "Service Exposure",
+        "email_security":      "Email Security",
+        "service_exposure":    "Service Exposure",
         "credential_exposure": "Credential Exposure",
-        "certificate_issues": "Certificate Issues",
-        "unknown_assets": "Unknown Assets",
-        "typosquats": "Typosquats",
+        "certificate_issues":  "Certificate Issues",
+        "unknown_assets":      "Unknown Assets",
+        "typosquats":          "Typosquats",
     }
+    lines.append("## Category Scores")
+    lines.append("")
+    lines.append("| Category | Score | Band |")
+    lines.append("|---|---|---|")
     for cat, label in cat_labels.items():
         val = scores.get("by_category", {}).get(cat, 0)
-        bar_colour = "#1e8b4c" if val <= 15 else "#f39c12" if val <= 40 else "#c0392b"
-        cat_bars += f"""
-        <div style="margin:6px 0">
-          <div style="display:flex;justify-content:space-between;font-size:0.85em;margin-bottom:2px">
-            <span>{label}</span><span style="color:{bar_colour}">{val}</span>
-          </div>
-          <div style="background:#21262d;border-radius:4px;height:8px">
-            <div style="background:{bar_colour};width:{min(val, 100)}%;height:100%;border-radius:4px"></div>
-          </div>
-        </div>"""
+        if val <= 15:
+            cat_band = "Low"
+        elif val <= 40:
+            cat_band = "Moderate"
+        else:
+            cat_band = "High"
+        lines.append(f"| {label} | {val} | {cat_band} |")
+    lines.append("")
 
-    # Email security per domain
-    email_html = ""
-    for domain in domains:
-        em = phases.get("email_security", {}).get(domain, {})
-        spf_p = em.get("spf_policy", "?")
-        dmarc_p = em.get("dmarc_policy", "?")
-        dkim_n = em.get("dkim_selectors_found", 0)
-        spf_c = "#1e8b4c" if spf_p == "-all" else "#f39c12" if spf_p == "~all" else "#c0392b"
-        dmarc_c = "#1e8b4c" if dmarc_p == "reject" else "#f39c12" if dmarc_p == "quarantine" else "#c0392b"
-        dkim_c = "#1e8b4c" if dkim_n > 0 else "#f39c12"
-        email_html += f"""
-        <tr>
-          <td style="padding:8px;font-family:monospace">{domain}</td>
-          <td style="padding:8px;color:{spf_c};font-weight:bold">{spf_p}</td>
-          <td style="padding:8px;color:{dmarc_c};font-weight:bold">{dmarc_p}</td>
-          <td style="padding:8px;color:{dkim_c}">{dkim_n} selector(s)</td>
-          <td style="padding:8px">{em.get('score', '?')}/100</td>
-        </tr>"""
+    # Email security
+    lines.append("## Email Security")
+    lines.append("")
+    if domains:
+        lines.append("| Domain | SPF | DMARC | DKIM selectors | Score |")
+        lines.append("|---|---|---|---|---|")
+        for domain in domains:
+            em = phases.get("email_security", {}).get(domain, {})
+            lines.append(
+                f"| `{domain}` | {em.get('spf_policy', '?')} | "
+                f"{em.get('dmarc_policy', '?')} | {em.get('dkim_selectors_found', 0)} | "
+                f"{em.get('score', '?')}/100 |"
+            )
+    else:
+        lines.append("_No domains tested._")
+    lines.append("")
 
-    # Subdomain table
-    sub_rows = ""
+    # Subdomains
+    discovered = summary.get("subdomains_discovered", 0)
+    live = summary.get("live_subdomains", 0)
+    lines.append(f"## Subdomains ({discovered} discovered, {live} live)")
+    lines.append("")
+    sub_rows: list[str] = []
     for domain in domains:
         for sub in phases.get("subdomains", {}).get(domain, [])[:50]:
-            live_c = "#1e8b4c" if sub.get("live") else "#555"
-            live_t = "live" if sub.get("live") else "dead"
+            status = "live" if sub.get("live") else "dead"
             ips = ", ".join(sub.get("a_records", [])[:3])
-            sub_rows += f"""
-            <tr>
-              <td style="padding:6px;font-family:monospace;font-size:0.85em">{sub['subdomain']}</td>
-              <td style="padding:6px;font-size:0.85em">{sub.get('source', '')}</td>
-              <td style="padding:6px;color:{live_c}">{live_t}</td>
-              <td style="padding:6px;font-family:monospace;font-size:0.8em">{ips}</td>
-            </tr>"""
+            sub_rows.append(
+                f"| `{sub['subdomain']}` | {sub.get('source', '')} | {status} | "
+                f"{ips if ips else '_(none)_'} |"
+            )
+    if sub_rows:
+        lines.append("| Subdomain | Source | Status | IPs |")
+        lines.append("|---|---|---|---|")
+        lines.extend(sub_rows)
+    else:
+        lines.append("_No subdomains discovered._")
+    lines.append("")
 
-    # Typosquat rows
-    typo_rows = ""
+    # Typosquats
+    typo_rows: list[str] = []
     for domain in domains:
         for t in phases.get("typosquats", {}).get(domain, []):
-            typo_rows += f"""
-            <tr>
-              <td style="padding:6px;font-family:monospace">{t['domain']}</td>
-              <td style="padding:6px">{t.get('type', '')}</td>
-              <td style="padding:6px;font-family:monospace;font-size:0.85em">{', '.join(t.get('ips', []))}</td>
-            </tr>"""
+            typo_rows.append(
+                f"| `{t['domain']}` | {t.get('type', '')} | "
+                f"{', '.join(t.get('ips', [])) or '_(none)_'} |"
+            )
+    if typo_rows:
+        lines.append("## Registered Typosquats")
+        lines.append("")
+        lines.append("| Domain | Type | IPs |")
+        lines.append("|---|---|---|")
+        lines.extend(typo_rows)
+        lines.append("")
 
-    # Findings table
-    sev_colours = {"critical": "#c0392b", "high": "#e74c3c", "medium": "#f39c12", "low": "#58a6ff"}
-    finding_rows = ""
-    for f in findings[:40]:
-        sev = f.get("severity", "low")
-        finding_rows += f"""
-        <tr>
-          <td style="color:{sev_colours.get(sev, '#888')};font-weight:bold;text-transform:uppercase;padding:8px">{sev}</td>
-          <td style="padding:8px">{f.get('category', '').replace('_', ' ')}</td>
-          <td style="padding:8px">{f.get('title', '')}</td>
-        </tr>"""
+    # Findings
+    lines.append(f"## Findings ({len(findings)})")
+    lines.append("")
+    if findings:
+        lines.append("| Severity | Category | Finding |")
+        lines.append("|---|---|---|")
+        for f in findings[:40]:
+            sev = (f.get("severity") or "low").upper()
+            category = f.get("category", "").replace("_", " ")
+            title = f.get("title", "")
+            lines.append(f"| **{sev}** | {category} | {title} |")
+        if len(findings) > 40:
+            lines.append("")
+            lines.append(f"_…{len(findings) - 40} more findings truncated._")
+    else:
+        lines.append("_No findings._")
+    lines.append("")
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Exposure Assessment — {client}</title>
-<style>
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; padding: 20px 30px; }}
-  h1 {{ color: #58a6ff; margin-bottom: 8px; font-size: 1.6em; }}
-  h2 {{ color: #58a6ff; margin: 30px 0 15px 0; font-size: 1.2em; border-bottom: 1px solid #21262d; padding-bottom: 8px; }}
-  .meta {{ color: #8b949e; font-size: 0.9em; margin-bottom: 20px; }}
-  .scorecard {{ display: flex; gap: 20px; flex-wrap: wrap; margin: 20px 0; }}
-  .score-card {{ background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 20px; text-align: center; min-width: 140px; }}
-  .score-big {{ font-size: 2.5em; font-weight: bold; }}
-  .score-label {{ font-size: 0.85em; color: #8b949e; margin-top: 4px; }}
-  table {{ width: 100%; border-collapse: collapse; }}
-  th {{ text-align: left; padding: 8px; color: #8b949e; font-size: 0.85em; border-bottom: 1px solid #21262d; }}
-  tr:hover {{ background: #161b22; }}
-  .categories {{ background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 20px; max-width: 500px; }}
-</style>
-</head>
-<body>
-
-<h1>External Exposure Assessment</h1>
-<div class="meta">{client} &mdash; tested {data.get('tested_at', 'unknown')} &mdash; domains: {', '.join(domains)}</div>
-
-<div class="scorecard">
-  <div class="score-card">
-    <div class="score-big" style="color:{score_colour}">{int(overall)}</div>
-    <div class="score-label">{score_label}</div>
-  </div>
-  <div class="score-card">
-    <div class="score-big" style="color:#c0392b">{summary.get('critical_findings', 0)}</div>
-    <div class="score-label">Critical</div>
-  </div>
-  <div class="score-card">
-    <div class="score-big" style="color:#e74c3c">{summary.get('high_findings', 0)}</div>
-    <div class="score-label">High</div>
-  </div>
-  <div class="score-card">
-    <div class="score-big" style="color:#8b949e">{summary.get('live_subdomains', 0)}</div>
-    <div class="score-label">Live Subdomains</div>
-  </div>
-  <div class="score-card">
-    <div class="score-big" style="color:#8b949e">{summary.get('unique_ips', 0)}</div>
-    <div class="score-label">Unique IPs</div>
-  </div>
-  <div class="score-card">
-    <div class="score-big" style="color:#f39c12">{summary.get('active_typosquats', 0)}</div>
-    <div class="score-label">Typosquats</div>
-  </div>
-</div>
-
-<div class="categories">{cat_bars}</div>
-
-<h2>Email Security</h2>
-<table>
-  <tr><th>Domain</th><th>SPF</th><th>DMARC</th><th>DKIM</th><th>Score</th></tr>
-  {email_html}
-</table>
-
-<h2>Subdomains ({summary.get('subdomains_discovered', 0)} discovered, {summary.get('live_subdomains', 0)} live)</h2>
-<table>
-  <tr><th>Subdomain</th><th>Source</th><th>Status</th><th>IPs</th></tr>
-  {sub_rows if sub_rows else '<tr><td colspan="4" style="padding:12px;color:#8b949e">No subdomains discovered</td></tr>'}
-</table>
-
-{"<h2>Registered Typosquats</h2><table><tr><th>Domain</th><th>Type</th><th>IPs</th></tr>" + typo_rows + "</table>" if typo_rows else ""}
-
-<h2>Findings ({len(findings)})</h2>
-<table>
-  <tr><th>Severity</th><th>Category</th><th>Finding</th></tr>
-  {finding_rows if finding_rows else '<tr><td colspan="3" style="padding:12px;color:#8b949e">No findings</td></tr>'}
-</table>
-
-</body>
-</html>"""
-
-    return html
+    return "\n".join(lines)

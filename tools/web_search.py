@@ -13,10 +13,8 @@ Writes: nothing (stateless lookup, results returned to LLM context only)
 """
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
-from urllib.parse import quote_plus
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

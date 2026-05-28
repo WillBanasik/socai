@@ -158,6 +158,12 @@ def score_verdicts(case_id: str) -> dict:
         elif composite == "clean":
             clean_iocs.append(ioc)
 
+    # Count IOCs with mixed provider verdicts (kept as a metric signal)
+    conflicting_count = sum(
+        1 for info in ioc_scores.values()
+        if len(set(info.get("providers", {}).values()) - {"unknown"}) > 1
+    )
+
     output = {
         "case_id":      case_id,
         "ts":           utcnow(),
@@ -167,25 +173,6 @@ def score_verdicts(case_id: str) -> dict:
         "clean":        clean_iocs,
         "iocs":         ioc_scores,
     }
-
-    # LLM verdict conflict reconciliation (advisory — only for IOCs with mixed verdicts)
-    conflicting = []
-    for ioc, info in ioc_scores.items():
-        providers = info.get("providers", {})
-        verdicts_set = set(providers.values())
-        if len(verdicts_set) > 1 and verdicts_set - {"unknown"}:
-            conflicting.append({"ioc": ioc, "type": info["ioc_type"], "providers": providers})
-    if conflicting:
-        try:
-            from tools.llm_insight import reconcile_verdict_conflicts
-            reconciliation = reconcile_verdict_conflicts(conflicting[:10])
-            if reconciliation:
-                output["llm_verdict_reconciliation"] = reconciliation
-        except Exception as exc:
-            log_error(case_id, "score_verdicts.llm_reconciliation", str(exc),
-                      severity="warning", traceback=True,
-                      context={"conflicting_count": len(conflicting)})
-            pass
 
     out_path = CASES_DIR / case_id / "artefacts" / "enrichment" / "verdict_summary.json"
     save_json(out_path, output)
@@ -200,7 +187,7 @@ def score_verdicts(case_id: str) -> dict:
                    "MEDIUM": sum(1 for s in ioc_scores.values() if s.get("confidence") == "MEDIUM"),
                    "LOW": sum(1 for s in ioc_scores.values() if s.get("confidence") == "LOW"),
                },
-               conflicting_iocs=len(conflicting))
+               conflicting_iocs=conflicting_count)
     eprint(
         f"[score_verdicts] {len(high_priority)} malicious, "
         f"{len(needs_review)} suspicious, {len(clean_iocs)} clean "

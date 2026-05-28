@@ -299,7 +299,7 @@ _TOR_PROXY_DEFAULT = "socks5h://127.0.0.1:9050"
 _tor_session_local = threading.local()
 
 
-def _get_tor_session() -> "requests.Session":
+def _get_tor_session():
     """Return a requests session routed through Tor SOCKS5."""
     import requests as _req
 

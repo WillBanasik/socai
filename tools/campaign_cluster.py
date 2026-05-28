@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -275,14 +275,6 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
             ),
             "updated_at": utcnow(),
         }
-        # LLM campaign narrative (advisory)
-        try:
-            from tools.llm_insight import generate_campaign_narrative
-            narrative = generate_campaign_narrative(campaign)
-            if narrative:
-                campaign["narrative"] = narrative
-        except Exception:
-            pass
         campaigns.append(campaign)
 
     # Save global campaigns registry

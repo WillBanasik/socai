@@ -17,11 +17,9 @@ from __future__ import annotations
 
 import email
 import email.policy
-import hashlib
 import html.parser
 import re
 import sys
-import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

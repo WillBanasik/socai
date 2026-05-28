@@ -30,7 +30,7 @@ import atexit
 import threading
 
 from config.settings import BROWSER_BACKEND, CAPTURE_SPA_DWELL, CAPTURE_TIMEOUT, CAPTURE_UA, CASES_DIR, SOCAI_BROWSER_POOL_IDLE_SECS, SOCAI_BROWSER_POOL_MAX_USES
-from tools.common import log_error, sha256_bytes, utcnow, write_artefact
+from tools.common import log_error, utcnow, write_artefact
 
 
 # ---------------------------------------------------------------------------
@@ -786,7 +786,6 @@ async def _async_capture_page(url: str, context, semaphore) -> dict:
     Mirrors the logic in ``_capture_with_playwright_context`` but uses the
     async API so multiple pages can load concurrently.
     """
-    import asyncio
 
     async with semaphore:
         redirect_chain: list[dict] = []

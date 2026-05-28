@@ -51,7 +51,6 @@ Usage (standalone):
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -866,7 +865,7 @@ def stop_session(session_id: str) -> dict:
         # Calculate duration
         duration = 0
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
             start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
             from tools.common import utcnow as _utcnow
             _now = datetime.fromisoformat(_utcnow().replace("Z", "+00:00"))

@@ -386,14 +386,12 @@ class TestIntelX:
 class TestStealerParser:
 
     def test_missing_dependency(self):
-        from tools.darkweb import parse_stealer_logs
         from tools.case_create import case_create
 
         case_create(TEST_CASE, title="stealer test", severity="low")
 
         with patch.dict("sys.modules", {"stealer_parser": None}):
             # Force re-import to hit ImportError
-            import importlib
             import tools.darkweb as dw
             # The function handles ImportError gracefully
             result = dw.parse_stealer_logs(TEST_CASE)

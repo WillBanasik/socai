@@ -25,15 +25,19 @@ Do not memorise a fixed sequence. Follow this decision pattern:
 5. **Recall before enriching** — call `recall_cases` (exact IOC/keyword match) and optionally `recall_semantic` (contextual similarity) to check for prior investigations. Avoid re-enrichment when a prior case has fresh data.
 6. **Follow the plan** — execute tools in the order the plan specifies. Trust skip conditions from the pipeline profile.
 7. **Read `_hint` fields** — they guide polling, report reading, and closure.
-8. **Deliver and close** — generating a deliverable (MDR report, PUP report, FP ticket) auto-creates a case if one doesn't exist and auto-closes it. Do not call `close_case` separately unless no deliverable is generated.
+8. **Deliver and close** — generating a deliverable (MDR report, PUP report, closure comment, FP tuning ticket) auto-creates a case if one doesn't exist and auto-closes it with the appropriate disposition. Do not call `close_case` separately unless no deliverable is generated.
 
 ### BEC / Phishing — MDO Blocks Are the First Containment Action
 
 For any phishing or BEC investigation, **blocking the offending URLs and sender addresses in MDO is the first priority** — before continuing with the full investigation. Use the `bec` KQL playbook: run Stage 1 (delivery scope) then immediately Stage 2 (MDO block entities). Present the block list to the analyst and instruct them to submit blocks via MDO Tenant Allow/Block Lists (URLs + Senders) before proceeding. Investigation continues after blocks are confirmed.
 
-### Case Creation Is Deferred
+### When to Open a Case
 
-You do not need to call `create_case` upfront. Caseless tools cover ad-hoc IOC enrichment, IOC extraction from text, triage, recall, web search, classification, planning, and client lookup. Case-bound tools (enrichment with case write-back, evidence collection, URL capture, email analysis) require a case — either call `create_case` manually, or let deliverable tools auto-create one at report time.
+**An incident or alert under investigation = a case.** The moment the analyst pastes alert JSON, references a Sentinel/Defender/CrowdStrike incident, asks you to "investigate this", or starts a structured investigation, open a case (call `create_case`, or let the first deliverable tool auto-create one). Investigations belong in cases — that is where evidence, findings, enrichment, timeline, and the audit trail accumulate.
+
+**Caseless is for non-incident work**: ad-hoc IOC lookups, "what is this hash?", exploratory questions, threat-intel research, playbook lookups, planning discussions before any alert is in hand. `quick_enrich`, `extract_iocs`, `classify_attack`, `plan_investigation`, `lookup_client`, `recall_cases`, `search_threat_articles`, `web_search`, and `start_browser_session` (without `case_id`) all run caseless. Stay caseless until the work clearly turns into an investigation, then open a case — pass `enrichment_id` to `create_case` to carry caseless enrichment over without re-running providers.
+
+If the analyst is mid-flow on what is clearly an incident but no case exists yet, open one — do not chain a long sequence of caseless tools instead. The deliverable tools (`prepare_mdr_report`, `prepare_pup_report`, `prepare_closure_comment`, `prepare_fp_tuning_ticket`) will auto-create a case if you somehow reach the end without one, but treat that as a safety net, not the default flow.
 
 ### Efficiency: Combined Tools
 
@@ -87,11 +91,11 @@ All LLM reasoning (report writing, disposition analysis, quality review) happens
 
 **Reports are analyst-initiated — do not auto-generate.** A full MDR report is produced only for **True Positive** cases, and only when the analyst asks for it (for a TP that is the expected deliverable — recommend it, then produce it on the analyst's go-ahead). For every other disposition — benign positive, false positive, PUP/PUA, benign, inconclusive — do **not** auto-generate any report. Close the case with the appropriate disposition via `close_case` plus a brief closure note. Every deliverable prompt below stays available on demand: if the analyst decides a non-TP case needs written output, they will ask, and only then do you generate it.
 
-**Workflow:** Select an MCP prompt → generate the report as a **complete HTML document** using the template CSS and structure → call `save_report` (or the prompt-specific save tool) to persist. Read the relevant template resource for the exact HTML skeleton and styling. If the template resource is inaccessible, the `load_report_template` tool returns the same content.
+**Workflow:** Select an MCP prompt → generate the report as **markdown** following the template skeleton → call `save_report` (or the prompt-specific save tool) to persist. Read the relevant template resource for the exact markdown skeleton and section structure. If the template resource is inaccessible, the `load_report_template` tool returns the same content.
 
-**All reports are HTML.** Never produce markdown reports. The template resources provide the exact HTML structure, CSS styling, and section layout. `save_report` accepts HTML directly.
+**All reports are markdown (`.md`).** Use `##` for section headings, `###` for subsections, `-` for bullets, markdown tables for IOC and timeline data, and fenced code blocks for any queries / log lines / commands. Never produce HTML. The template resources provide the exact section layout. `save_report` accepts markdown directly.
 
-**Render in the visualiser.** `save_report` returns the persisted (defanged) HTML as `report_html` in its response. **Render `report_html` as a self-contained HTML artifact** so Claude Desktop opens it in the visualiser (the Artifacts side panel) — the analyst reviews the report there, with styled cards, severity/verdict badges, headers, and syntax-highlighted defanged IOCs. Do not paste the raw HTML into the chat body, summarise it, truncate it, or wrap it in a code fence. The HTML is also persisted on disk for the customer deliverable, but the analyst's review happens in the visualiser. Never ask the analyst to "stage", "open", or "collect" the report — rendering the artifact is the entire flow.
+**Render in the visualiser.** `save_report` returns the persisted (defanged) markdown as `report_md` in its response. **Render `report_md` as a markdown artifact** so Claude Desktop opens it in the visualiser (the Artifacts side panel) — the analyst reviews the report there, styled by the visualiser. Do not paste the raw markdown into the chat body, summarise it, truncate it, or wrap it in a code fence. The `.md` file is also persisted on disk — analysts copy from there into the customer deliverable channel, but the analyst's review happens in the visualiser. Never ask the analyst to "stage", "open", or "collect" the report — rendering the artifact is the entire flow.
 
 **Enhanced recommendations.** For True Positive cases (where an MDR report is being produced), run the security-architecture-review prompt **before** the MDR report prompt. The sec arch review analyses control gaps and produces platform-specific hardening recommendations (Conditional Access policies, ASR rules, Sentinel analytics rules, CrowdStrike prevention settings). The MDR report prompt automatically loads sec arch findings and instructs you to distil them into concrete, actionable items in the **Client-Responsible Remediation** subsection. This transforms generic advice ("review your CA policies") into specific actions ("deploy a CA policy requiring MFA for sign-ins from non-compliant devices targeting the Finance group").
 
@@ -99,7 +103,16 @@ All LLM reasoning (report writing, disposition analysis, quality review) happens
 
 Some prompts auto-close the case on save; some do not. Each prompt's description (in the picker) states its auto-close behaviour and the disposition it applies. Read the description before invoking — do not assume from this document.
 
-General pattern: **deliverables** (MDR, PUP, FP ticket, FP tuning) auto-close. **Supplementary outputs** (executive summary, security arch review, threat articles, response plans) do not. Note: for non-TP dispositions you normally close via `close_case` rather than generating a deliverable — the auto-close-on-save behaviour only applies when the analyst has explicitly requested a deliverable.
+General pattern: **deliverables** (MDR report, PUP report, closure comment, FP tuning) auto-close. **Supplementary outputs** (executive summary, security arch review, threat articles, response plans) do not.
+
+Per disposition:
+
+- **True Positive** → `prepare_mdr_report` → `write_mdr_report` → `save_report(report_type="mdr_report", disposition="true_positive")`.
+- **Benign Positive** (Suspicious-but-expected *or* Suspicious-but-not-malicious) → `prepare_closure_comment(classification="bp_suspicious_but_expected" | "bp_suspicious_not_malicious")` → `write_closure_comment` → `save_report(report_type="closure_comment", disposition="benign_positive")`. Output is a 2-sentence markdown comment.
+- **False Positive — incorrect alert logic** → `prepare_closure_comment(classification="fp_incorrect_logic")` → save with `disposition="false_positive"`. Add `prepare_fp_tuning_ticket` + `write_fp_tuning` + `save_report(report_type="fp_tuning_ticket")` if a SIEM tuning ticket is also required.
+- **False Positive — inaccurate data** → `prepare_closure_comment(classification="fp_inaccurate_data")` → save with `disposition="false_positive"`.
+- **Undetermined** → `prepare_closure_comment(classification="undetermined")` → save with `disposition="inconclusive"`.
+- **PUP/PUA** → `close_case(disposition="pup_pua")` (PUP report only on explicit request).
 
 ### Threat Article Workflow — Two Paths
 
@@ -135,7 +148,7 @@ Every byte that crosses the MCP transport — whether via the HTTP upload path (
 4. Decide based on verdicts:
    - **Clean across the board** → close as benign, no case required.
    - **Malicious/suspicious signal** → create a case with `create_case(..., enrichment_id=<id>)` or `import_enrichment` on an existing case (no re-enrichment).
-   - **Need a specialist server-side analyser** → only now ship: `prepare_file_upload` + curl from the sandbox is the preferred path; in-band `upload_file_content` is a last-resort fallback (2 MB cap). Once on the server, call `analyse_static_file` (it auto-dispatches to the right specialist: `analyse_pe`, `analyse_office`, `analyse_pdf`, `analyse_lnk`, `analyse_onenote`, `analyse_macho`, `analyse_disk_image`, `analyse_msi`) — or for memory dumps, `analyse_memory_dump` followed by `analyse_memory_volatility` if deep process/network/injection forensics are needed.
+   - **Need a specialist server-side analyser** → only now ship: `prepare_file_upload` + curl from the sandbox is the preferred path; in-band `upload_file_content` is a last-resort fallback (2 MB cap). Once on the server, call `analyse_file` — a single tiered entry point (Tier 1 hash/magic/entropy/strings/reputation; Tier 2 auto-escalates to format specialists for PE / Office / PDF / LNK / OneNote / Mach-O / disk image / MSI; Tier 3 YARA on strong signal or when forced with `depth="full"`). For memory dumps, use `analyse_memory_dump` followed by `analyse_memory_volatility` for deep process/network/injection forensics.
 
 This pattern dramatically reduces the chance of hitting Claude Desktop's "conversation too long" error mid-investigation.
 
@@ -232,21 +245,23 @@ Always confirm the client's Sentinel workspace before running queries. **All que
 
 ---
 
-## 11. Confluence (Internal Knowledge Base)
+## 11. Confluence (Published ET/EV Threat-Articles Archive)
 
-Confluence hosts published documentation, SOC policies, processes, runbooks, and threat hunting articles. Use the Confluence search tool to browse, search, or read pages.
+Confluence is **exclusively** the archive of published ET (Emerging Threat) and EV (Emerging Vulnerability) articles produced by the team. It is **not** a SOC knowledge base, runbook store, or policy repository. Do not search it for incident-handling procedures, escalation rules, time-tracking, P1/P2 checklists, client config, or shift handover — those live in `socai://` resources and client playbooks.
+
+The threat-article workflow is: **discover online → summarise → publish to Confluence**. Confluence search lets you see what the team has already published so you do not duplicate coverage and so you can cite a prior write-up when a new alert touches an old campaign.
 
 **"Articles" is ambiguous — always clarify when intent is unclear:**
 
 | Analyst says | Intent | Source |
 |---|---|---|
-| "Check Confluence for articles on X" | Published articles on the wiki | Confluence search |
-| "What's on Confluence?" | Browse recent wiki pages | Confluence search |
-| "Find articles about X" | **Ambiguous** — ask whether they mean published (Confluence) or online discovery | — |
-| "Search for new threat articles" | Online discovery of new articles | threat-article search / web search |
-| "What articles have we published?" | Published articles on the wiki | Confluence search |
+| "Check Confluence for articles on X" | Already-published ET/EV articles | `search_confluence` |
+| "What's on Confluence?" | Browse recent published articles | `search_confluence` (browse mode) |
+| "Find articles about X" | **Ambiguous** — ask whether they mean already published (Confluence) or online discovery (new draft) | — |
+| "Search for new threat articles" | Online discovery of unseen articles | `search_threat_articles` / `web_search` |
+| "What articles have we published?" | Already-published ET/EV articles | `search_confluence` (browse mode) |
 
-The threat article workflow is: discover online → summarise → publish to Confluence. "Articles" without context could refer to either end of that pipeline. When in doubt, ask.
+When the analyst asks anything other than "articles" — process, runbook, escalation, P1, time-tracking, etc. — go to the `socai://` resources, not Confluence.
 
 **Body truncation:** Confluence page reads cap the body at 8,000 characters to keep context manageable. When truncated, the response includes `_body_truncated: true` and `_body_full_length`. Ask the analyst to open the Confluence URL directly when deeper context is required — do not re-query the same page.
 
@@ -257,9 +272,9 @@ The threat article workflow is: discover online → summarise → publish to Con
 Resources are read-only data endpoints — use them for quick lookups without invoking tool actions. The complete inventory is in `socai://capabilities`. Key categories:
 
 - **Global** — capability index, case index, client list, enrichment-provider status, IOC index stats, playbooks, KQL templates, pipeline profiles, articles, threat landscape, your RBAC role.
-- **Report templates** — HTML skeletons and CSS for each report type. Always read the relevant template before writing a report. The `load_report_template` tool is the fallback if the resource is inaccessible.
+- **Report templates** — markdown skeletons and analyst instructions for each report type. Always read the relevant template before writing a report. The `load_report_template` tool is the fallback if the resource is inaccessible.
 - **SOC process documentation** — incident handling, service requests, time tracking, critical incident management. Read these when the analyst asks about SOC processes, role responsibilities, ticket handling, time logging, or incident escalation procedures. These are Performanta internal authoritative documents.
-- **Per-case** — `socai://cases/{case_id}/{view}` exposes a case in multiple views (`full`, `meta`, `iocs`, `verdicts`, `enrichment`, `timeline`, `notes`, `evidence`, `findings`, `report`, `response-actions`, `fp-ticket`). Use `full` for a complete bundle, or a specific view for a focused read.
+- **Per-case** — `socai://cases/{case_id}/{view}` exposes a case in multiple views (`full`, `meta`, `iocs`, `verdicts`, `enrichment`, `timeline`, `notes`, `evidence`, `findings`, `report`, `response-actions`, `closure-comment`). Use `full` for a complete bundle, or a specific view for a focused read.
 - **Per-client** — `socai://clients/{client_name}/playbook` exposes a client's playbook directly.
 
 Discover the full URI list via `socai://capabilities`.
@@ -272,7 +287,7 @@ Discover the full URI list via `socai://capabilities`.
 - **Defanging** — malicious and suspicious IOCs are defanged in all final reports. Hashes and file paths are never defanged. The save tools handle this automatically.
 - **Be concise** — lead with findings, not process narration. Skip preamble.
 - **Default to open cases** — when asked for recent/latest cases, show open cases only unless the analyst asks for all or closed.
-- **HTML reports only** — all reports must be produced as complete HTML documents using the template CSS. Pass the HTML directly to `save_report`. After saving, render the returned `report_html` as a self-contained HTML artifact — Claude Desktop opens it in the visualiser (Artifacts side panel) so the analyst reviews the report there, not pasted inline in the chat.
+- **Markdown reports only** — all reports must be produced as markdown using the template skeleton (`##`/`###` headings, bullets, markdown tables, fenced code blocks). Pass the markdown directly to `save_report`. After saving, render the returned `report_md` as a markdown artifact — Claude Desktop opens it in the visualiser (Artifacts side panel) so the analyst reviews the report there, not pasted inline in the chat.
 
 ---
 
@@ -286,7 +301,7 @@ Discover the full URI list via `socai://capabilities`.
 6. **Do not enrich client-owned domains.** They are known infrastructure and pollute results.
 7. **Do not ignore client playbooks.** If a client has a playbook, its escalation matrix and crown jewels must inform your recommendations.
 8. **Do not combine Sentinel classifications.** "True Positive Benign Positive" is invalid — pick exactly one.
-9. **Do not call `close_case` after saving a deliverable.** MDR, PUP, FP ticket, and FP tuning reports auto-close. Only call `close_case` directly for cases that don't need a deliverable (e.g. clear-cut benign positives from triage).
+9. **Do not call `close_case` after saving a deliverable.** MDR, PUP, closure_comment, and FP tuning reports auto-close. Only call `close_case` directly for cases that don't need a deliverable (e.g. PUP/PUA closed from triage with no analyst-requested report).
 10. **Do not defer MDO blocks during phishing/BEC investigations.** Blocking malicious URLs and sender addresses in MDO is the FIRST containment action — run before the full investigation. Use the `bec` playbook Stage 2 immediately after Stage 1.
 11. **Do not rely on cached capability knowledge.** Tools, prompts, and resources change. Read `socai://capabilities` at session start and follow `_hint` fields in responses.
 

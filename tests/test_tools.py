@@ -263,7 +263,6 @@ def test_analyse_email_spoofing_return_path():
 def test_triage_no_matches():
     from tools.case_create import case_create
     from tools.triage import triage
-    from config.settings import CASES_DIR
 
     case_create(TEST_CASE)
     result = triage(TEST_CASE, urls=["https://example.com"], severity="medium")
@@ -279,7 +278,7 @@ def test_triage_known_malicious():
     from tools.case_create import case_create
     from tools.triage import triage
     from tools.common import save_json
-    from config.settings import CASES_DIR, IOC_INDEX_FILE
+    from config.settings import IOC_INDEX_FILE
 
     case_create(TEST_CASE)
 

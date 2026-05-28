@@ -103,12 +103,12 @@ def mdr_report_on_disk():
 
     case_create(TEST_CASE, title="report http test", severity="low",
                 client="Test Client")
-    html = "<!DOCTYPE html><html><body><h1>MDR — test</h1></body></html>"
+    md = "## MDR — test\n\nMarkdown body."
     result = save_report_to_case(
-        case_id=TEST_CASE, report_type="mdr_report", report_text=html,
+        case_id=TEST_CASE, report_type="mdr_report", report_text=md,
     )
     assert result["status"] == "ok"
-    return html
+    return md
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_middleware_serves_report_with_valid_token(passthrough_middleware,
     assert pass_state["called"] is False  # intercepted, not passed through
     assert b"MDR \xe2\x80\x94 test" in resp.body  # em-dash UTF-8
     headers = {k.decode(): v.decode() for k, v in resp.headers}
-    assert headers["content-type"].startswith("text/html")
+    assert headers["content-type"].startswith("text/markdown")
     assert headers["content-disposition"] == "inline"
 
 

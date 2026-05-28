@@ -415,15 +415,16 @@ Triage is automatically called by `extract_and_enrich()` before enrichment. Its 
 
 Each finding gets severity (high/medium/low) via `_classify_severity()`.
 
-## FP Ticket Generation
+## Closure Comments
 
-`tools/fp_ticket.py` collects case context for False Positive closure comments:
-- Identifies alerting platform from alert data structure (Sentinel, CrowdStrike, Defender, Entra, Cloud Apps) — or accepts `--platform` override
-- **Live workspace query** (`--live-query`): enables read-only KQL against the alert's Log Analytics workspace via `az monitor log-analytics query`. Max 1 query per ticket, 50 rows each, 60s timeout.
-- Output format: HTML closure comment (max 2 sentences) tailored to alert type (IOC-based, identity, endpoint, lateral movement, data access) — no tuning suggestions
-- **Auto-closes** the case with disposition `false_positive` on successful save
-- Use the `write_fp_closure` prompt followed by `save_report` to generate and persist
-- Outputs: `artefacts/fp_comms/fp_ticket.html` + `fp_ticket_manifest.json`
+`tools/closure_comment.py` provides the Sentinel-aligned closure-comment workflow for any non-TP disposition. Supersedes the old `fp_ticket` flow (2026-05-28).
+
+- **Classifications** (`CLASSIFICATIONS` map): `bp_suspicious_but_expected`, `bp_suspicious_not_malicious`, `fp_incorrect_logic`, `fp_inaccurate_data`, `undetermined`. Each maps to a socai disposition (`benign_positive` / `false_positive` / `inconclusive`) and a Sentinel classification+reason pair.
+- **Tone** is classification-aware: BP comments justify why authorised/non-malicious activity is benign without using the words "false positive"; FP comments explain incorrect logic or stale data; Undetermined comments name the evidence gap.
+- **Length:** maximum two sentences. Plain markdown. The save tool prepends a metadata header with classification labels.
+- **Auto-closes** the case with the classification's disposition on successful save.
+- **Workflow:** `prepare_closure_comment(classification=...)` (auto-creates case if needed) → `write_closure_comment` prompt → `save_report(report_type="closure_comment", disposition=...)`.
+- **Output:** `artefacts/closure_comments/closure_comment.md` + `closure_comment_manifest.json`. Returned as `report_md` in the save response — render as a markdown artifact in the Desktop visualiser.
 
 ## PUP/PUA Report Generation
 
@@ -438,15 +439,15 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 
 ### Report
 
-`generate_pup_report(case_id)` collects context from case artefacts for a PUP-specific report. The report covers: summary, path & file details, access vector, actions taken, and recommendations — lighter than a full MDR report. Use the `write_pup_report` prompt followed by `save_report` to generate and persist. Read `socai://templates/pup-report` for the HTML skeleton.
+`generate_pup_report(case_id)` collects context from case artefacts for a PUP-specific report. The report covers: summary, path & file details, access vector, actions taken, and recommendations — lighter than a full MDR report. Use the `write_pup_report` prompt followed by `save_report` to generate and persist. Read `socai://templates/pup-report` for the markdown skeleton.
 
-- Output: `cases/<ID>/reports/pup_report.html` + `pup_report_manifest.json`
+- Output: `cases/<ID>/reports/pup_report.md` + `pup_report_manifest.json`
 - **Auto-closes** the case with disposition `pup_pua` on successful generation
 - CLI: `python3 socai.py pup-report --case IV_CASE_001`
 
 ### Pipeline Integration
 
-`classify_attack.py` detects PUP/PUA early via keyword matching. `chief.py` also checks post-enrichment verdicts via `detect_pup()`. When PUP is detected, the pipeline short-circuits after enrichment (skipping phishing detection, sandbox, correlation, campaign clustering, etc.) and the case is closed with `close_case(disposition="pup_pua")`. A PUP report is **not** auto-generated — it is produced only if the analyst requests one (`prepare_pup_report` → `save_report`), which then auto-closes the case.
+`classify_attack.py` detects PUP/PUA early via keyword matching. When PUP is detected, the workflow short-circuits after enrichment (skipping phishing detection, sandbox, correlation, campaign clustering, etc.) and the case is closed with `close_case(disposition="pup_pua")`. A PUP report is **not** auto-generated — it is produced only if the analyst requests one (`prepare_pup_report` → `save_report`), which then auto-closes the case.
 
 ## Attack-Type Classification
 
@@ -478,7 +479,7 @@ Classification runs early in the investigation (before case creation). Results a
 
 ## Cross-Sandbox File Upload
 
-Files arriving in a separate sandbox (typically Claude Desktop's bash container) need to land on the MCP server's filesystem before server-side tools (`analyse_static_file`, `analyse_pe`, `yara_scan`, sandbox detonation) can touch them. Two paths exist; **prefer the HTTP path** wherever possible.
+Files arriving in a separate sandbox (typically Claude Desktop's bash container) need to land on the MCP server's filesystem before server-side tools (`analyse_file`, `yara_scan`, sandbox detonation) can touch them. Two paths exist; **prefer the HTTP path** wherever possible.
 
 ### Preferred — HTTP upload (`prepare_file_upload`)
 
@@ -535,7 +536,7 @@ The upload tools above are the *escalation* path, not the default.
 
 ## PDF Deep Analysis
 
-`tools/pdf_analyse.py` (MCP tool `analyse_pdf`) goes beyond `analyse_static_file`'s pymupdf metadata to do object-level extraction:
+`tools/pdf_analyse.py` (the PDF specialist invoked by `analyse_file` Tier 2) goes beyond Tier 1's pymupdf metadata to do object-level extraction:
 
 - Dependency: `pikepdf` (hard requirement)
 - Per-file: PDFiD-style keyword tallies, JavaScript object bodies, OpenAction / AdditionalActions / per-page action triggers, Launch / URI / SubmitForm action targets, embedded files (with sha256), URI annotations, encryption status
@@ -586,9 +587,9 @@ The upload tools above are the *escalation* path, not the default.
 - Embedded payloads: any stream whose first bytes are MZ / ELF / script / ZIP / PDF / CAB are extracted to `artefacts/msi/<file>__stream_<i>.<ext>` for downstream PE / YARA analysis
 - Output: `artefacts/analysis/<filename>.msi_analysis.json`
 
-## Specialist Dispatch in `analyse_static_file`
+## Specialist Dispatch in `analyse_file`
 
-`tools/static_file_analyse.py` now recognises all of the above formats from magic bytes / extension and automatically calls the matching specialist analyser. The deep manifest is returned under `specialist_analysis` on the static-file analysis result, and key flags are merged into the parent `flags` array prefixed with `SPECIALIST:`. The analyst usually only needs to call `analyse_static_file` — escalation happens for free.
+`analyse_file` is the unified entry point for static file analysis. It recognises all of the above formats from magic bytes / extension and auto-escalates on signal: Tier 1 covers hash / magic / entropy / strings / reputation; Tier 2 invokes the matching format specialist (PE, Office, PDF, LNK, OneNote, MSI, Mach-O, disk image) and returns its output under `specialist_analysis`; Tier 3 runs YARA when warranted (or when forced via `depth="full"` or `run_yara="true"`). Key flags from specialists are merged into the parent `flags` array prefixed with `SPECIALIST:`. The analyst usually only needs to call `analyse_file` — escalation happens for free.
 
 ## YARA Scanning
 
@@ -622,17 +623,17 @@ The upload tools above are the *escalation* path, not the default.
 - 6 sections: What happened, Who affected, Risk rating (RAG), What's been done, Next steps, Business risk
 - Constraints: no CVE IDs, no IPs, no hashes, no tool names, no unexplained acronyms, reading age 14, max 500 words
 - Use the `write_executive_summary` prompt followed by `save_report` to generate and persist
-- Output: `artefacts/executive_summary/executive_summary.html` + manifest
+- Output: `artefacts/executive_summary/executive_summary.md` + manifest
 
 ## Security Architecture Review
 
-`tools/security_arch_review.py` collects case context for a security architecture review. Produces a six-section HTML report: Threat Profile (MITRE ATT&CK), Control Gap Analysis, Microsoft Stack Recommendations, CrowdStrike Falcon Recommendations, Prioritised Remediation Table, Detection Engineering Notes.
+`tools/security_arch_review.py` collects case context for a security architecture review. Produces a six-section markdown report: Threat Profile (MITRE ATT&CK), Control Gap Analysis, Microsoft Stack Recommendations, CrowdStrike Falcon Recommendations, Prioritised Remediation Table, Detection Engineering Notes.
 
 Use the `write_security_arch_review` prompt followed by `save_report` to generate and persist. The local Claude session has the full investigation context for better analysis.
 
 **Recommended flow:** Run sec arch review *before* the MDR report. The MDR report's `_build_context()` automatically loads the sec arch findings and the `write_mdr_report` prompt instructs Claude Desktop to distil the control gap analysis and platform-specific recommendations into the Client-Responsible Remediation subsection — producing specific, actionable hardening steps rather than generic advice.
 
-Outputs: `security_arch_review.html`, `security_arch_structured.json`, `security_arch_manifest.json`
+Outputs: `security_arch_review.md`, `security_arch_structured.json`, `security_arch_manifest.json`
 
 ## Response Actions
 
@@ -649,7 +650,7 @@ Outputs: `security_arch_review.html`, `security_arch_structured.json`, `security
 
 ## Report Generation
 
-`generate_report.py` collects all available artefact JSON files (all optional) as context for report generation. Use the `write_mdr_report` prompt followed by `save_report` to generate and persist as HTML. Read `socai://templates/mdr-report` for the HTML skeleton and CSS styling. Report section order after the executive summary:
+`generate_report.py` collects all available artefact JSON files (all optional) as context for report generation. Use the `write_mdr_report` prompt followed by `save_report` to generate and persist as markdown. Read `socai://templates/mdr-report` for the markdown skeleton and section layout. Report section order after the executive summary:
 
 1. Triage — Known IOCs Detected (if triage found known-malicious/suspicious)
 2. Brand Impersonation Detected (if phishing_detection.json has findings)
@@ -689,8 +690,6 @@ Investigation playbooks live in `config/playbooks/<id>.yaml` and describe stage 
 **Platform adapters** at `config/platforms/<id>.yaml` declare each platform's capabilities (data sources it can query), query language, and executor binding. Today: `sentinel.yaml` (13 capabilities, KQL, auto-execute via `scripts/run_kql.py`) and `logscale.yaml` (6 capabilities, CQL, render-only). To add a new platform, drop a new adapter and the schema reference — no Python changes.
 
 **Capability gating** is enforced by the unified loader. A playbook's `required_capabilities` is either a flat list (applies to every platform) or a dict keyed by platform id. When dict-form lacks an entry for the target platform, the loader returns `platform_not_supported`. When the platform doesn't declare all required capabilities, the loader returns `capability_gate` with the missing list. This prevents Claude Desktop from running queries on a SIEM that doesn't have the underlying data forwarded into it.
-
-**External schema sync** (`tools/schema_fetcher.py`) pulls platform schemas from a configurable HTTP manifest endpoint. Configure with `SOCAI_SCHEMA_SOURCE_URL`, `SOCAI_SCHEMA_API_KEY` (optional), `SOCAI_SCHEMA_REFRESH_HOURS`. ETag-based incremental fetch, cached locally, falls back to cached copies on network failure.
 
 **API:** `tools.playbooks.list_playbooks_unified()`, `tools.playbooks.load_playbook_for_platform(id, platform_id)`, `tools.playbooks.render_stage_for_platform(id, stage, params, platform_id)`. `tools.platforms.list_platforms()`, `tools.platforms.get_platform(id)`, `tools.platforms.validate_capabilities(platform_id, required)`.
 
@@ -1147,6 +1146,6 @@ See `docs/sandbox.md` for full setup guide and safety details.
 
 Two MCP tools persist output generated by the local Claude agent:
 
-- **`save_report`** — persists a report generated via any `write_*` prompt. Accepts HTML directly (or markdown for legacy compatibility). Handles IOC defanging, auto-close (for MDR/PUP/FP deliverables), and audit logging. No LLM call. Reports are immediately available via `socai://cases/{case_id}/report` after saving.
-- **`save_threat_article`** — persists a threat article to the article index. Handles dedup, markdown + HTML output. No LLM call.
+- **`save_report`** — persists a report generated via any `write_*` prompt. Accepts markdown (`.md` is the canonical on-disk format). Handles IOC defanging, auto-close (for MDR/PUP/FP deliverables), and audit logging. Returns the persisted markdown as `report_md` so the analyst can render it as a markdown artifact in the Claude Desktop visualiser. No LLM call. Reports are immediately available via `socai://cases/{case_id}/report` after saving.
+- **`save_threat_article`** — persists a threat article to the article index as markdown (`article.md`). Handles three-store dedup, returns the persisted markdown as `article_md` so Claude Desktop renders it as a markdown artifact in the visualiser. No LLM call.
 - **`add_finding`** — persists structured analytical output (determination, investigation matrix, quality gate review) to case artefacts. Used as the save mechanism for analysis prompts (`run_determination`, `build_investigation_matrix`, `review_report`, etc.).

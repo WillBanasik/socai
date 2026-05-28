@@ -252,7 +252,7 @@ def cmd_sandbox(args: argparse.Namespace) -> None:
 
 
 def cmd_exposure(args: argparse.Namespace) -> None:
-    from tools.exposure_test import run_exposure_test, generate_exposure_html
+    from tools.exposure_test import run_exposure_test, generate_exposure_report
     domains = [d.strip() for d in args.domains.split(",")] if args.domains else None
     result = run_exposure_test(
         args.client, domains=domains,
@@ -280,10 +280,10 @@ def cmd_exposure(args: argparse.Namespace) -> None:
         bar = "#" * (val // 5) + "-" * (20 - val // 5)
         print(f"    {cat.replace('_', ' '):<24} [{bar}] {val}")
 
-    if args.html:
-        html_result = generate_exposure_html(args.client)
-        if html_result.get("status") == "ok":
-            print(f"\n  HTML report: {html_result['path']}")
+    if args.report:
+        md_result = generate_exposure_report(args.client)
+        if md_result.get("status") == "ok":
+            print(f"\n  Markdown report: {md_result['path']}")
 
     if args.json:
         print(json.dumps(result, indent=2, default=str))
@@ -291,7 +291,7 @@ def cmd_exposure(args: argparse.Namespace) -> None:
 
 def cmd_coverage(args: argparse.Namespace) -> None:
     from tools.log_coverage import (
-        collect_log_sources, get_coverage, generate_coverage_html, compare_clients,
+        collect_log_sources, get_coverage, generate_coverage_html,
     )
     if args.refresh:
         result = collect_log_sources(args.client, full=args.full)
@@ -418,16 +418,14 @@ def cmd_response_actions(args: argparse.Namespace) -> None:
         print(json.dumps(result, indent=2, default=str))
 
 
-def cmd_fp_ticket(args: argparse.Namespace) -> None:
-    from agents.fp_comms_agent import FPCommsAgent
+def cmd_closure_comment(args: argparse.Namespace) -> None:
+    from api.actions import generate_closure_comment
 
+    alert_data = ""
     if args.alert:
         alert_data = Path(args.alert).read_text(encoding="utf-8")
     elif args.alert_text:
         alert_data = args.alert_text
-    else:
-        print("[error] Provide --alert <file> or --alert-text <string>")
-        sys.exit(1)
 
     query_text = None
     if args.query:
@@ -435,27 +433,24 @@ def cmd_fp_ticket(args: argparse.Namespace) -> None:
     elif args.query_text:
         query_text = args.query_text
 
-    result = FPCommsAgent(args.case).run(
+    result = generate_closure_comment(
+        args.case,
+        classification=args.classification,
         alert_data=alert_data,
-        query_text=query_text,
         platform=args.platform,
-        live_query=args.live_query,
+        query_text=query_text,
     )
 
     status = result.get("status", "unknown")
-    if status == "ok":
-        print(f"FP ticket: {result['ticket_path']}")
-        if args.json:
-            print(json.dumps(result, indent=2, default=str))
-    elif status == "needs_clarification":
-        print(f"[fp-ticket] Platform unclear — analyst input required:")
-        print(f"  {result.get('question', '')}")
-        print("\nRe-run with --platform <sentinel|crowdstrike|defender|entra|cloudapps>")
-        sys.exit(2)
+    if status == "use_prompt":
+        print(f"[closure-comment] Case {args.case} ready. "
+              f"Use the write_closure_comment MCP prompt with "
+              f"classification=\"{args.classification}\" to produce the comment, "
+              f"then call save_report with report_type=\"closure_comment\".")
     else:
-        print(f"[fp-ticket] {status}: {result.get('reason', '')}")
-        if args.json:
-            print(json.dumps(result, indent=2, default=str))
+        print(f"[closure-comment] {status}: {result.get('reason', '')}")
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
 
 
 def cmd_fp_tuning(args: argparse.Namespace) -> None:
@@ -1413,7 +1408,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_exp.add_argument("--domains", default=None, help="Comma-separated domains (auto-detected if omitted)")
     p_exp.add_argument("--no-typosquats", action="store_true", dest="no_typosquats",
                        help="Skip typosquat detection (faster)")
-    p_exp.add_argument("--html", action="store_true", help="Generate interactive HTML report")
+    p_exp.add_argument("--report", action="store_true",
+                       help="Generate markdown exposure report at registry/exposure/<client>_exposure.md")
 
     # anomalies
     p_an = sub.add_parser("anomalies", help="Detect behavioural anomalies in parsed logs.")
@@ -1489,25 +1485,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_det = sub.add_parser("determination", help="Run evidence-chain determination analysis.")
     p_det.add_argument("--case", required=True)
 
-    # fp-ticket
-    p_fp = sub.add_parser(
-        "fp-ticket",
-        help="Generate an FP suppression ticket with platform-specific rule/control improvements.",
+    # closure-comment
+    p_cc = sub.add_parser(
+        "closure-comment",
+        help="Generate a 2-sentence incident closure comment (BP / FP / Undetermined — Sentinel-aligned).",
     )
-    p_fp.add_argument("--case",        required=True, help="Case ID (e.g. IV_CASE_001)")
-    p_fp.add_argument("--alert",       metavar="FILE", default=None,
+    p_cc.add_argument("--case",           required=True, help="Case ID (e.g. IV_CASE_001)")
+    p_cc.add_argument("--classification", required=True,
+                      choices=["bp_suspicious_but_expected",
+                               "bp_suspicious_not_malicious",
+                               "fp_incorrect_logic",
+                               "fp_inaccurate_data",
+                               "undetermined"],
+                      help="Sentinel-aligned disposition classification")
+    p_cc.add_argument("--alert",          metavar="FILE", default=None,
                       help="Path to alert JSON/text file")
-    p_fp.add_argument("--alert-text",  metavar="TEXT", default=None, dest="alert_text",
+    p_cc.add_argument("--alert-text",     metavar="TEXT", default=None, dest="alert_text",
                       help="Inline alert string")
-    p_fp.add_argument("--query",       metavar="FILE", default=None,
+    p_cc.add_argument("--query",          metavar="FILE", default=None,
                       help="Path to KQL rule file (Sentinel cases)")
-    p_fp.add_argument("--query-text",  metavar="KQL",  default=None, dest="query_text",
+    p_cc.add_argument("--query-text",     metavar="KQL",  default=None, dest="query_text",
                       help="Inline KQL rule string")
-    p_fp.add_argument("--platform",    default=None,
+    p_cc.add_argument("--platform",       default=None,
                       choices=["sentinel", "crowdstrike", "defender", "entra", "cloudapps"],
                       help="Override platform detection")
-    p_fp.add_argument("--live-query",  action="store_true", default=False, dest="live_query",
-                      help="Enable read-only KQL queries against the alert workspace (requires az CLI auth)")
 
     # fp-tuning
     p_ft = sub.add_parser(
@@ -1750,7 +1751,7 @@ def main() -> None:
         "followup":       cmd_followup,
         "quality-gate":   cmd_quality_gate,
         "determination":  cmd_determination,
-        "fp-ticket":      cmd_fp_ticket,
+        "closure-comment": cmd_closure_comment,
         "fp-tuning":      cmd_fp_tuning,
         "timeline":       cmd_timeline,
         "pe-analysis":    cmd_pe_analysis,

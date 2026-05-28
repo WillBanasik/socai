@@ -319,15 +319,6 @@ def generate_response_actions(case_id: str) -> dict:
         "ts": utcnow(),
     }
 
-    # LLM response prioritisation (advisory)
-    try:
-        from tools.llm_insight import prioritise_response_actions
-        llm_priority = prioritise_response_actions(result, meta)
-        if llm_priority:
-            result["llm_priority_assessment"] = llm_priority
-    except Exception:
-        pass
-
     print(f"[response_actions] Response plan generated for {case_id} "
           f"(client={client}, priority={priority}, source={priority_source})")
     return result

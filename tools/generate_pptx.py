@@ -14,19 +14,18 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pptx import Presentation
-from pptx.util import Inches, Pt, Emu
+from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_CONNECTOR_TYPE
 from pptx.enum.text import PP_ALIGN
 
 from config.settings import CASES_DIR
-from tools.common import audit, load_json, utcnow, write_artefact
+from tools.common import audit, load_json, utcnow
 
 # ── Palette ──────────────────────────────────────────────────────────────────
 NAVY        = RGBColor(0x0D, 0x1B, 0x2A)   # slide background

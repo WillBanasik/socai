@@ -43,7 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import BASE_DIR, CASES_DIR, REGISTRY_FILE
+from config.settings import BASE_DIR, CASES_DIR
 from tools.common import load_json, log_error, save_json, utcnow
 
 LINKS_INDEX_FILE = BASE_DIR / "registry" / "case_links.json"
@@ -423,7 +423,6 @@ def merge_cases(source_ids: list[str], target_id: str, *, close_sources: bool = 
             except Exception as exc:
                 log_error(target_id, "case_links.merge_cases.load_target_iocs", str(exc),
                           severity="warning", traceback=True, context={"path": str(target_iocs_path)})
-                pass
         for itype, vals in merged_iocs.items():
             existing_set = set(existing_iocs.get(itype, []))
             existing_set.update(vals)

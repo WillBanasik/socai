@@ -76,7 +76,7 @@ Browser Session (tools/browser_session.py)
     ├── Session lifecycle                   → start → analyst browses manually → stop → pcap parsing → artefact collection
     └── Caseless workflow                   → start without case_id → read/list session files → import into case later
 
-Confluence (tools/confluence_read.py)
+Confluence (tools/confluence_read.py)  — Published ET/EV threat-articles archive ONLY
     ├── Read-only client      → fine-grained API token, single space (MDR1)
     ├── v2 API                → pages, children, ancestors, versions, comments, attachments, labels
     └── v1 API (CQL search)   → title ~/text ~ queries via /rest/api/search
@@ -106,7 +106,7 @@ cases/<CASE_ID>/
     phishing_detection/ ← brand impersonation + heuristic analysis
   iocs/         ← iocs.json (all extracted IOCs)
   logs/         ← parsed log JSON + entity JSON
-  reports/      ← investigation_report.md
+  reports/      ← mdr_report.md / pup_report.md (analyst-initiated, TP-gated)
         │
         ▼
 registry/case_index.json  ← case registry
@@ -128,7 +128,7 @@ The system makes **no direct Anthropic API calls**. All LLM reasoning is handled
 |-----------|------|
 | **Claude Desktop agent** | All analytical reasoning, report writing, disposition analysis, quality review |
 | **MCP prompts (23)** | Load system instructions + case data into the local session |
-| **Save tools (2)** | `save_report`, `save_threat_article` — persist agent output with defanging, HTML, auto-close, audit |
+| **Save tools (2)** | `save_report`, `save_threat_article` — persist agent output (markdown reports) with defanging, auto-close, audit |
 | **MCP tools (120)** | Data gathering only: enrichment APIs, Sentinel / Defender XDR / CrowdStrike queries, file I/O, deterministic logic |
 
 ## Tool Contracts

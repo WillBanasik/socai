@@ -212,9 +212,9 @@ These files are loaded on demand by the `load_ngsiem_reference` MCP tool, which 
 
 **Adding a new connector:** Follow the template in `ngsiem_columns.yaml` — use the discovery queries in the file header to find connector IDs and field names.
 
-## Confluence (Read-Only)
+## Confluence (Read-Only — Published ET/EV Articles)
 
-Read-only integration with Confluence Cloud for searching existing articles, reading SOC policies/runbooks, and dedup checking before publishing threat articles.
+Read-only integration with Confluence Cloud, scoped to the **published ET/EV threat-articles space only**. Used for browsing/searching prior articles and for dedup checking before publishing a new article. Confluence is **not** a SOC knowledge base — process/policy/runbook content lives in `socai://` resources and client playbooks, not here.
 
 | Env var | Purpose |
 |---------|---------|

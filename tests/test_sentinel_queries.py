@@ -6,7 +6,6 @@ Run with:  cd socai && python -m pytest tests/test_sentinel_queries.py -v
 import sys
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

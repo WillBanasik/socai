@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api import timeline
 from config.settings import CASES_DIR
-from tools.common import md_file_note
 
 
 def _run_action(case_id: str, action: str, fn, **extra_data) -> dict:
@@ -468,28 +467,33 @@ def generate_report(case_id: str, close_case: bool = False) -> dict:
         if close_case:
             msg += "\nCase marked as closed."
         if path:
-            msg += md_file_note(path)
+            msg += f"\n\nReport: `{path}`"
         result["_message"] = msg
         return result
 
     return _run_action(case_id, "generate_report", _do)
 
 
-def generate_fp_ticket(case_id: str, alert_data: str,
-                       platform: str | None = None,
-                       query_text: str | None = None) -> dict:
-    """Generate FP suppression ticket — redirects to prompt workflow."""
+def generate_closure_comment(case_id: str, classification: str,
+                             alert_data: str = "",
+                             platform: str | None = None,
+                             query_text: str | None = None) -> dict:
+    """Generate a non-TP closure comment — redirects to prompt workflow."""
     def _do():
-        from tools.fp_ticket import fp_ticket
-        result = fp_ticket(case_id, alert_data=alert_data,
-                           platform=platform, query_text=query_text)
-        result["_message"] = (
-            "Use the write_fp_closure MCP prompt to generate the FP ticket, "
-            "then call save_report with report_type='fp_ticket' to persist it."
-        )
+        from tools.closure_comment import closure_comment, CLASSIFICATIONS
+        result = closure_comment(case_id, classification)
+        if classification in CLASSIFICATIONS:
+            cfg = CLASSIFICATIONS[classification]
+            result["_message"] = (
+                f"Use the write_closure_comment MCP prompt with "
+                f'classification="{classification}" to generate the comment, '
+                f'then call save_report with report_type="closure_comment" and '
+                f'disposition="{cfg["disposition"]}" to persist it.'
+            )
         return result
 
-    return _run_action(case_id, "fp_ticket", _do,
+    return _run_action(case_id, "closure_comment", _do,
+                       classification=classification,
                        platform=platform or "auto-detect")
 
 

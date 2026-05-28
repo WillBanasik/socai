@@ -84,21 +84,29 @@ def build_report_url(*, case_id: str, report_type: str, token: str) -> str:
 def _resolve_report_path(case_id: str, report_type: str) -> Path | None:
     """Resolve a (case_id, report_type) pair to the on-disk report file.
 
+    Tries the canonical (markdown) path first, then falls back to the legacy
+    ``.html`` path so pre-migration cases remain accessible.
+
     Returns ``None`` if the report_type is unknown, the path escapes the
-    case directory, or the file does not exist.
+    case directory, or no file exists.
     """
     cfg = _REPORT_TYPES.get(report_type)
     if cfg is None:
         return None
     case_dir = (CASES_DIR / case_id).resolve()
-    candidate = (case_dir / cfg["path"]).resolve()
-    try:
-        candidate.relative_to(case_dir)
-    except ValueError:
-        return None
-    if not candidate.is_file():
-        return None
-    return candidate
+    canonical = Path(cfg["path"])
+    legacy = canonical.with_suffix(".html") if canonical.suffix == ".md" else None
+    for rel in (canonical, legacy):
+        if rel is None:
+            continue
+        candidate = (case_dir / rel).resolve()
+        try:
+            candidate.relative_to(case_dir)
+        except ValueError:
+            continue
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 async def _send_error(send, status: int, message: str) -> None:
@@ -115,20 +123,27 @@ async def _send_error(send, status: int, message: str) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
-async def _send_html(send, html_bytes: bytes) -> None:
+def _content_type_for(path: Path) -> bytes:
+    """Pick the response content-type based on the report file extension."""
+    if path.suffix.lower() == ".md":
+        return b"text/markdown; charset=utf-8"
+    return b"text/html; charset=utf-8"
+
+
+async def _send_report(send, body_bytes: bytes, content_type: bytes) -> None:
     await send({
         "type": "http.response.start",
         "status": 200,
         "headers": [
-            [b"content-type", b"text/html; charset=utf-8"],
-            [b"content-length", str(len(html_bytes)).encode()],
+            [b"content-type", content_type],
+            [b"content-length", str(len(body_bytes)).encode()],
             [b"cache-control", b"private, no-store"],
             [b"content-disposition", b"inline"],
             [b"x-content-type-options", b"nosniff"],
             [b"referrer-policy", b"no-referrer"],
         ],
     })
-    await send({"type": "http.response.body", "body": html_bytes})
+    await send({"type": "http.response.body", "body": body_bytes})
 
 
 def _parse_route(path: str) -> tuple[str, str] | None:
@@ -212,29 +227,31 @@ class ReportsMiddleware:
             return
 
         try:
-            html_bytes = report_path.read_bytes()
+            body_bytes = report_path.read_bytes()
         except OSError as exc:
             mcp_log("report_read_error", path=str(report_path), error=str(exc))
             await _send_error(send, 500, "Failed to read report")
             return
 
+        content_type = _content_type_for(report_path)
+
         mcp_log("report_served",
                 case_id=case_id, report_type=report_type,
-                bytes=len(html_bytes), caller=claims.get("sub"))
+                bytes=len(body_bytes), caller=claims.get("sub"))
 
         if method == "HEAD":
             await send({
                 "type": "http.response.start",
                 "status": 200,
                 "headers": [
-                    [b"content-type", b"text/html; charset=utf-8"],
-                    [b"content-length", str(len(html_bytes)).encode()],
+                    [b"content-type", content_type],
+                    [b"content-length", str(len(body_bytes)).encode()],
                 ],
             })
             await send({"type": "http.response.body", "body": b""})
             return
 
-        await _send_html(send, html_bytes)
+        await _send_report(send, body_bytes, content_type)
 
 
 def install_reports_endpoint(server) -> None:

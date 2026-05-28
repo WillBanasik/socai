@@ -12,10 +12,10 @@ This module retains ``_SYSTEM_PROMPT``, ``_SYSTEM_CACHED``, and
 ``_resolve_workspace_id()`` and ``_build_recurrence_context()`` for
 live-query resolution and prior-case recall.
 
-Unlike fp_ticket (2-sentence closure comment), the tuning ticket is a full
-engineering handoff document with root cause analysis, before/after query
-modifications, impact assessment, and recurrence data.  Auto-closes the case
-with disposition ``false_positive`` on save.
+Unlike ``closure_comment`` (the 2-sentence Sentinel-aligned closure note),
+the tuning ticket is a full engineering handoff document with root cause
+analysis, before/after query modifications, impact assessment, and recurrence
+data. Auto-closes the case with disposition ``false_positive`` on save.
 
 Output (via save_report):
   cases/<case_id>/artefacts/fp_comms/fp_tuning_ticket.html
@@ -33,7 +33,7 @@ from config.settings import CASES_DIR
 from tools.common import load_json, log_error, utcnow
 
 # ---------------------------------------------------------------------------
-# Workspace resolution helpers (shared with fp_ticket)
+# Workspace resolution helpers
 # ---------------------------------------------------------------------------
 
 _CLIENT_ENTITIES_PATH = Path(__file__).resolve().parent.parent / "config" / "client_entities.json"
@@ -347,15 +347,21 @@ def _build_context(case_id: str) -> str:
             parts.extend(capture_chunks)
             parts.append("")
 
-    # FP ticket (if already generated — provides the closure justification)
-    fp_ticket_path = case_dir / "artefacts" / "fp_comms" / "fp_ticket.md"
-    if fp_ticket_path.exists():
-        fp_text = fp_ticket_path.read_text(encoding="utf-8")
-        if len(fp_text) > 1000:
-            fp_text = fp_text[:1000] + "\n[...truncated...]"
-        parts.append("## FP Closure Comment (already generated)")
-        parts.append(fp_text)
-        parts.append("")
+    # Closure comment (if already generated — provides the closure justification)
+    closure_candidates = (
+        case_dir / "artefacts" / "closure_comments" / "closure_comment.md",
+        # Legacy path from the pre-2026-05 fp_ticket flow
+        case_dir / "artefacts" / "fp_comms" / "fp_ticket.md",
+    )
+    for candidate in closure_candidates:
+        if candidate.exists():
+            text = candidate.read_text(encoding="utf-8")
+            if len(text) > 1000:
+                text = text[:1000] + "\n[...truncated...]"
+            parts.append("## Closure Comment (already generated)")
+            parts.append(text)
+            parts.append("")
+            break
 
     return "\n".join(parts)
 

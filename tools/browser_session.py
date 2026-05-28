@@ -46,7 +46,6 @@ import subprocess
 import sys
 import threading
 import time
-import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

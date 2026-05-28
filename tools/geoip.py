@@ -67,7 +67,6 @@ def _save_meta(meta: dict) -> None:
     except Exception as exc:
         log_error("", "geoip.save_meta", str(exc),
                   severity="warning", traceback=True, context={"path": str(_META_PATH)})
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +117,6 @@ def refresh_geoip_db(force: bool = False) -> dict:
             except Exception as exc:
                 log_error("", "geoip.refresh.parse_date", str(exc),
                           severity="info", traceback=True, context={"last_updated": last_updated})
-                pass
 
     try:
         session = get_session()

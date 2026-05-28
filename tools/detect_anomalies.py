@@ -418,18 +418,6 @@ def detect_anomalies(case_id: str) -> dict:
         "ts": utcnow(),
     }
 
-    # LLM anomaly contextualisation (advisory)
-    if all_findings:
-        try:
-            from tools.llm_insight import contextualise_anomalies
-            meta_path = CASES_DIR / case_id / "case_meta.json"
-            meta = _load_optional(meta_path) or {"case_id": case_id}
-            llm_context = contextualise_anomalies(result, meta)
-            if llm_context:
-                result["llm_context"] = llm_context
-        except Exception:
-            pass
-
     # Print summary
     print(f"[detect_anomalies] Analysed {len(events)} events, found {len(all_findings)} anomaly(ies)")
     for atype, count in type_counts.most_common():

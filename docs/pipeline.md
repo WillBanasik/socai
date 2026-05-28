@@ -6,7 +6,7 @@ Investigations are human-in-the-loop (HITL). The analyst drives each step via MC
 
 ### Typical Tool Sequence
 
-Case creation is **deferred** — the analyst investigates caseless during triage and assessment. The case materialises automatically when a deliverable tool is called (`prepare_mdr_report`, `prepare_pup_report`, `prepare_fp_ticket`, `prepare_fp_tuning_ticket`). Analysts can still call `create_case` manually at any point.
+**An incident or alert under investigation belongs in a case.** Open a case (`create_case`, or let the first deliverable tool auto-create one) as soon as the work is clearly an investigation. Caseless tools (`quick_enrich`, `extract_iocs`, `classify_attack`, `plan_investigation`, `lookup_client`, `recall_cases`, `start_browser_session` without `case_id`) exist for **non-incident** work — ad-hoc IOC lookups, exploratory questions, planning. Promote caseless work to a case (`create_case(enrichment_id=...)`) the moment it turns into an investigation. The deferred / auto-create path on deliverable tools is a safety net for the rare case where no case exists by report time, not the default flow.
 
 ```
 ── Caseless tools (no case_id required) ──
@@ -41,7 +41,7 @@ Case creation is **deferred** — the analyst investigates caseless during triag
     close_case (no deliverable). All deliverable tools stay available on demand:
     prepare_mdr_report         → MDR report (TP, analyst-requested; auto-closes on save)
     prepare_pup_report         → PUP report (on request only; auto-closes pup_pua on save)
-    prepare_fp_ticket          → FP ticket (on request only; auto-closes false_positive)
+    prepare_closure_comment    → 2-sentence closure comment (BP / FP / Undetermined; auto-closes with classification's disposition)
     prepare_fp_tuning_ticket   → SIEM tuning ticket (on request only)
 ```
 
@@ -53,26 +53,26 @@ The exact sequence depends on attack type. `classify_attack` returns the recomme
 
 All LLM reasoning — report writing, disposition analysis, quality review — is handled by the analyst's local Claude Desktop agent. The MCP server provides prompts that load system instructions and case data into the local session, and save tools that persist the output.
 
-**Workflow:** Select MCP prompt (e.g. `write_mdr_report`) -> local Claude generates the report as a complete HTML document using the template CSS -> call `save_report` / `save_threat_article` to persist (handles defanging, auto-close, audit). Read `socai://templates/mdr-report` or `socai://templates/pup-report` for the HTML skeleton and styling.
+**Workflow:** Select MCP prompt (e.g. `write_mdr_report`) -> local Claude generates the report as **markdown** following the template skeleton -> call `save_report` / `save_threat_article` to persist (handles defanging, auto-close, audit). Read `socai://templates/mdr-report` or `socai://templates/pup-report` for the markdown skeleton and analyst instructions.
 
 **Recommended flow for enhanced recommendations:** Run `write_security_arch_review` before `write_mdr_report`. The sec arch review analyses control gaps and produces platform-specific hardening recommendations (CA policies, ASR rules, Sentinel analytics, CrowdStrike prevention). When the MDR report is generated, `_build_context()` automatically loads the sec arch findings, and the prompt instructs Claude Desktop to distil them into the Client-Responsible Remediation subsection. If sec arch hasn't been run, the MDR report still works — it just has standard recommendations.
 
 **Why local:** The analyst's session has the full investigation conversation, producing better output than a cold context-free call. The analyst can iterate ("rewrite section 3") without re-invoking tools.
 
-**All reports are HTML.** Prompts include the CSS styling inline. Template resources (`socai://templates/mdr-report`, `socai://templates/pup-report`) provide complete HTML skeletons. `save_report` accepts HTML directly — if markdown is passed (legacy), it is converted automatically.
+**All reports are markdown (`.md`).** Prompts instruct markdown output (`##`/`###` headings, bullet lists, markdown tables for IOCs, fenced code blocks for queries). Template resources (`socai://templates/mdr-report`, `socai://templates/pup-report`) provide the markdown skeleton and section structure. `save_report` accepts markdown directly. The Claude Desktop visualiser renders the markdown — no HTML, no inline CSS required. The persisted `.md` file is the analyst's copy-paste source for the customer deliverable; legacy `.html` reports on disk remain readable via `read_report` and the reports HTTP middleware.
 
-**Template access fallback:** If `prepare_mdr_report` or `prepare_pup_report` is blocked (e.g. the case is already closed), call `load_report_template(template="mdr_report")` or `load_report_template(template="pup_report")` instead. This tool returns the full HTML skeleton, CSS, and analyst instructions with no case requirement and no business-logic gate — identical content to the `socai://templates/*` resources.
+**Template access fallback:** If `prepare_mdr_report` or `prepare_pup_report` is blocked (e.g. the case is already closed), call `load_report_template(template="mdr_report")` or `load_report_template(template="pup_report")` instead. This tool returns the markdown skeleton and analyst instructions with no case requirement and no business-logic gate — identical content to the `socai://templates/*` resources.
 
-Note: The server-side tool names (`prepare_mdr_report`, `prepare_pup_report`, `prepare_fp_ticket`, etc.) still exist as MCP tools but now redirect to the prompt workflow — they collect case data and return it for the local agent to process, rather than making direct API calls.
+Note: The server-side tool names (`prepare_mdr_report`, `prepare_pup_report`, `prepare_closure_comment`, etc.) still exist as MCP tools but now redirect to the prompt workflow — they collect case data and return it for the local agent to process, rather than making direct API calls.
 
 ### Report Prompts
 
 | Prompt | Auto-closes | Disposition | Save tool |
 |---|---|---|---|
-| `write_mdr_report` | Yes | Preserves existing | `save_report` |
-| `write_pup_report` | Yes | `pup_pua` | `save_report` |
-| `write_fp_closure` | Yes | `false_positive` | `save_report` |
-| `write_fp_tuning` | Yes | `false_positive` | `save_report` |
+| `write_mdr_report` | Yes | Preserves existing | `save_report(report_type="mdr_report")` |
+| `write_pup_report` | Yes | `pup_pua` | `save_report(report_type="pup_report")` |
+| `write_closure_comment` | Yes | From `classification` (BP/FP/Undetermined) | `save_report(report_type="closure_comment", disposition=...)` |
+| `write_fp_tuning` | Yes | `false_positive` | `save_report(report_type="fp_tuning_ticket")` |
 | `write_executive_summary` | No | — | `save_report` |
 | `write_security_arch_review` | No | — | `save_report` |
 | `write_threat_article` | N/A | — | `save_threat_article` |
@@ -90,7 +90,7 @@ Note: The server-side tool names (`prepare_mdr_report`, `prepare_pup_report`, `p
 
 **Claude Desktop agent does all reasoning. MCP tools provide data and persistence.**
 
-Tools handle: API calls (enrichment, Sentinel, sandbox), file I/O (case management, artefact persistence), external integrations (Confluence, OpenCTI, Cyberint), and deterministic logic (attack classification, response matrix resolution).
+Tools handle: API calls (enrichment, Sentinel, sandbox), file I/O (case management, artefact persistence), external integrations (OpenCTI, Cyberint, and Confluence for the published ET/EV threat-articles archive only), and deterministic logic (attack classification, response matrix resolution).
 
 Prompts handle: report generation, analytical reasoning, disposition analysis, quality review, threat article writing — anything that requires LLM judgement. The local Claude session has the full investigation conversation, so it produces better output than any context-free call could.
 
@@ -133,7 +133,7 @@ The classified `attack_type` and `attack_type_confidence` are stored in `case_me
 
 ### PUP/PUA Short-Circuit
 
-When classified as `pup_pua`, the workflow short-circuits after enrichment and the case is closed with disposition `pup_pua` via `close_case`. A PUP report is **not** auto-generated. If the analyst requests one, the `write_pup_report` prompt produces a lightweight HTML report (summary, path & file details, access vector, actions taken, recommendations) saved to `cases/<ID>/reports/pup_report.html` via `save_report`, which then auto-closes the case with `pup_pua`.
+When classified as `pup_pua`, the workflow short-circuits after enrichment and the case is closed with disposition `pup_pua` via `close_case`. A PUP report is **not** auto-generated. If the analyst requests one, the `write_pup_report` prompt produces a lightweight markdown report (summary, path & file details, access vector, actions taken, recommendations) saved to `cases/<ID>/reports/pup_report.md` via `save_report`, which then auto-closes the case with `pup_pua`.
 
 ## Auto-disposition
 
@@ -143,7 +143,7 @@ After enrichment, if verdict_summary has 0 malicious and 0 suspicious IOCs, the 
 
 For clear-cut dispositions that don't need a full investigation cycle (e.g. obvious benign positives, known PUP software, duplicate alerts), the `close_case` MCP tool allows closing directly from triage status. This enables a lightweight two-step flow: `create_case` → `close_case(disposition="benign_positive")` — ideal for straightforward alerts.
 
-Alternatively, when a deliverable is needed, case creation is deferred entirely — deliverable tools (`prepare_mdr_report`, `prepare_pup_report`, `prepare_fp_ticket`) auto-create and promote a case if one doesn't exist. The analyst can also call `create_case` manually at any point during the investigation.
+Deliverable tools (`prepare_mdr_report`, `prepare_pup_report`, `prepare_closure_comment`) will auto-create and promote a case if none exists at the point the report is requested, but this is a **safety net** — for any investigation, open a case at the start of evidence collection (see "An incident or alert under investigation belongs in a case" above).
 
 ## Auto-close on Deliverable Collection
 
@@ -153,8 +153,8 @@ Alternatively, when a deliverable is needed, case creation is deferred entirely 
 |---|---|---|---|
 | MDR report | `write_mdr_report` → `save_report` | Yes | Preserves existing |
 | PUP report | `write_pup_report` → `save_report` | Yes | `pup_pua` |
-| FP ticket | `write_fp_closure` → `save_report` | Yes | `false_positive` |
-| FP tuning ticket | `write_fp_tuning` → `save_report` | Yes | `false_positive` |
+| Closure comment (BP / FP / Undetermined) | `prepare_closure_comment(classification=...)` → `write_closure_comment` → `save_report(report_type="closure_comment", disposition=...)` | Yes | From classification (`benign_positive` / `false_positive` / `inconclusive`) |
+| FP tuning ticket | `write_fp_tuning` → `save_report(report_type="fp_tuning_ticket")` | Yes | `false_positive` |
 | Executive summary | `write_executive_summary` → `save_report` | No | — |
 | Security arch review | `write_security_arch_review` → `save_report` | No | — |
 

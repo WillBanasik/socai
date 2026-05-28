@@ -5,7 +5,7 @@ socai exposes its investigation tools to external MCP clients over HTTPS SSE wit
 ## Quick Start
 
 ```bash
-# Start MCP server (SSE transport, port 8001) — loads the core toolset
+# Start MCP server (SSE transport, port 8001) — registers EVERY toolset up front (default profile is `all`)
 python3 -m mcp_server
 
 # Custom port
@@ -14,42 +14,26 @@ SOCAI_MCP_PORT=9001 python3 -m mcp_server
 # Streamable HTTP transport
 SOCAI_MCP_TRANSPORT=streamable-http python3 -m mcp_server
 
-# Register every tool up front (legacy 113-tool behaviour)
-SOCAI_MCP_TOOLSETS=all python3 -m mcp_server
+# Narrow profile (opt-in) — start with `core` only and use `load_toolset` to add specialists on demand
+SOCAI_MCP_TOOLSETS=core python3 -m mcp_server
 ```
 
-## Toolset Profiles (on-demand loading)
+## Toolset Profiles
 
-To keep per-session upfront context cost down (every tool schema loads into the
-Claude Desktop context at session start), tools are split into modular
-**toolsets** and only the **core** group loads at startup. The rest load on
-demand.
+Tools are split into modular **toolsets**. The default profile is **`all`** — every toolset registers at startup. This matches what Claude Desktop's client-side tool-search expects: the index it builds at session start does not pick up tools added later via `tools/list_changed` notifications, so dynamic loading is effectively dead weight in Desktop. The narrower profiles remain available for transports that honour `tools/list_changed` and for any client where per-turn tool budget matters more than discoverability.
 
-- **core** (~63 tools, always loaded) — case management, enrichment/triage, log
-  hunting (KQL/Defender/Falcon), recall, GeoIP, coverage, reporting/close-out,
-  plus the `load_toolset` / `list_toolsets` meta-tools.
+- **core** — case management, enrichment/triage, log hunting (KQL/Defender/Falcon), recall, GeoIP, coverage, reporting/close-out, plus the `load_toolset` / `list_toolsets` meta-tools.
 - **phishing** — phishing detection, email parsing, browser page-capture sessions.
-- **malware** — static file analysis, file upload, sandbox sessions, YARA.
+- **malware** — static file analysis (`analyse_file` and friends), file upload, sandbox sessions, YARA.
 - **forensics** — EVTX correlation, Velociraptor/MDE ingest, memory (Volatility3).
-- **intel** — OpenCTI, Confluence, threat articles, Cyberint, CVE context, secarch.
+- **intel** — OpenCTI, threat articles (and `search_confluence` for the published ET/EV archive only), Cyberint, CVE context, secarch.
 - **darkweb** — stealer-log/breach parsing, Ahmia/IntelX, client exposure testing.
 - **analysis** — investigation matrix, report quality gate, determination, follow-ups.
 - **admin** — rebuild memory/baseline indexes, refresh GeoIP, audit.
 
-**How it works:** `register_tools()` registers every tool once, snapshots them,
-then prunes to the active profile (`SOCAI_MCP_TOOLSETS`, default `core`).
-`load_toolset(name)` restores a pruned group from the snapshot and pushes a
-`tools/list_changed` notification so the client picks the new tools up
-mid-session. `classify_attack` returns `recommended_toolsets` for the alert
-type, and the `hitl_investigation` prompt instructs the agent to load them
-straight after classifying. The catalogue (with live load state) is exposed at
-`socai://toolsets`.
+**How it works:** `register_tools()` registers every tool once, snapshots them, then prunes to the active profile (`SOCAI_MCP_TOOLSETS`, default `all`). When a narrower profile is selected, `load_toolset(name)` restores a pruned group from the snapshot and pushes a `tools/list_changed` notification so cooperating clients pick the new tools up mid-session. `classify_attack` returns `recommended_toolsets` for the alert type — useful documentation, and actionable for clients that honour `tools/list_changed`. The catalogue (with live load state) is exposed at `socai://toolsets`.
 
-`SOCAI_MCP_TOOLSETS` accepts a comma list (e.g. `core,intel`); `all`/`full`
-registers everything up front — use this as a fallback if a client does not
-honour `tools/list_changed`. The mapping lives in `TOOLSETS` in
-`mcp_server/tools.py`; **every new tool must be added to a group** (unassigned
-tools fall back to core with a `toolset_unassigned` log warning).
+`SOCAI_MCP_TOOLSETS` accepts a comma list (e.g. `core,intel`); the default `all` (alias `full`) registers everything up front. The mapping lives in `TOOLSETS` in `mcp_server/tools.py`; **every new tool must be added to a group** (unassigned tools fall back to core with a `toolset_unassigned` log warning).
 
 ## Architecture
 
@@ -80,7 +64,7 @@ All LLM reasoning is handled by the analyst's local Claude Desktop agent. The MC
 
 - **Tools** — do real work: API calls (enrichment, Sentinel, sandbox), file I/O (case management), external integrations (Confluence, OpenCTI), deterministic logic (classification, response matrix). No LLM reasoning.
 - **Prompts** — load instructions + case data into the analyst's local Claude Desktop session for report generation, analytical reasoning, and quality review.
-- **Save tools** — persist output generated by the local agent: `save_report`, `save_threat_article`. Handle defanging, auto-close, and audit logging. Accept HTML directly (markdown fallback for legacy compatibility).
+- **Save tools** — persist output generated by the local agent: `save_report`, `save_threat_article`. Handle defanging, auto-close, and audit logging. `save_report` accepts markdown — reports are persisted as `.md` files for analyst copy-paste, and the visualiser renders them.
 
 **Workflow:** Select prompt -> local Claude generates -> call save tool to persist.
 
@@ -138,7 +122,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 
 | Permission | Grants |
 |---|---|
-| `investigations:read` | list_cases, case_summary, read_report, read_case_file, recall_cases, recall_semantic, classify_attack, plan_investigation, get_client_baseline, analyse_static_file, analyse_office, analyse_pdf, analyse_lnk, analyse_onenote, analyse_macho, analyse_disk_image, analyse_msi, resources |
+| `investigations:read` | list_cases, case_summary, read_report, read_case_file, recall_cases, recall_semantic, classify_attack, plan_investigation, get_client_baseline, analyse_file, resources |
 | `investigations:submit` | capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, analyse_pe, yara_scan, analyse_memory_dump, analyse_memory_volatility, memory_dump_guide, all write tools, rebuild_client_baseline |
 | `enrichment:run` | geoip_lookup |
 | `campaigns:read` | campaign_cluster, assess_landscape, search_threat_articles |
@@ -195,7 +179,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `add_finding` | `investigations:submit` | Record analytical finding/conclusion |
 | `enrich_iocs` | `investigations:submit` | Extract and enrich IOCs |
 | `generate_report` | `investigations:submit` | Collect case context for report (use `write_mdr_report` prompt to generate) |
-| `load_report_template` | `investigations:read` | Return HTML skeleton, CSS, and analyst instructions for `mdr_report` or `pup_report` — no case required, no business-logic gate |
+| `load_report_template` | `investigations:read` | Return markdown skeleton and analyst instructions for `mdr_report` or `pup_report` — no case required, no business-logic gate |
 | `prepare_mdr_report` | `investigations:submit` | Collect context for MDR report (redirects to prompt workflow) |
 | `prepare_pup_report` | `investigations:submit` | Collect context for PUP/PUA report (redirects to prompt workflow) |
 | `generate_queries` | `investigations:submit` | Generate SIEM hunt queries (KQL/Splunk/LogScale) incl. contextual CrowdStrike queries |
@@ -233,7 +217,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `correlate_evtx` | `investigations:submit` | Windows EVTX attack chain correlation (7 detectors) |
 | `triage_iocs` | `investigations:submit` | Pre-pipeline IOC reputation check |
 | `score_ioc_verdicts` | `investigations:submit` | Composite verdict scoring + IOC index update |
-| `analyse_static_file` | `investigations:submit` | Quick binary file triage (PE headers, entropy, strings) — server-side, requires file on MCP filesystem |
+| `analyse_file` | `investigations:submit` | Unified tiered static-file analysis (Tier 1 hash/magic/entropy/strings/reputation; Tier 2 auto-escalates to format specialists: PE, Office, PDF, LNK, OneNote, Mach-O, disk image, MSI; Tier 3 YARA on signal) — server-side, requires file on MCP filesystem |
 | `prepare_file_upload` | `investigations:read` | Mint a signed URL the caller can `curl` to ship a sample from a different sandbox to the MCP server (HTTP path; preferred) |
 | `upload_file_content` | `investigations:read` | Last-resort in-band base64 file upload — capped at 2 MB; bytes land in chat history. Use only when HTTP upload is unreachable |
 | `sandbox_api_lookup` | `investigations:submit` | API-based sandbox report lookup (Hybrid Analysis, Any.Run, Joe) |
@@ -306,11 +290,11 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `ingest_velociraptor` | `investigations:submit` | Ingest Velociraptor offline collector data |
 | `ingest_mde_package` | `investigations:submit` | Ingest MDE investigation package |
 | `generate_weekly` | `investigations:read` | Weekly SOC report |
-| `save_report` | `investigations:submit` | Persist a locally-generated report (defang, HTML, auto-close, audit). No LLM call. |
+| `save_report` | `investigations:submit` | Persist a locally-generated markdown report (defang, auto-close, audit). No LLM call. |
 | `link_cases` | `investigations:submit` | Link related cases |
 | `merge_cases` | `admin` | Merge duplicate cases |
 | `response_actions` | `investigations:submit` | Recommend containment/response actions |
-| `prepare_fp_ticket` | `investigations:submit` | Collect context for FP ticket (redirects to prompt workflow; auto-closes on save) |
+| `prepare_closure_comment` | `investigations:submit` | Collect context for a Sentinel-aligned closure comment (BP / FP / Undetermined). Takes `classification`. Auto-closes on save with the classification's disposition. |
 | `prepare_fp_tuning_ticket` | `investigations:submit` | Collect context for SIEM tuning ticket (auto-closes with false_positive on save) |
 | `start_sandbox_session` | `admin` | Containerised malware detonation |
 | `stop_sandbox_session` | `admin` | Stop sandbox and collect artefacts |
@@ -342,14 +326,14 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://toolsets` | Modular tool groups, load state, and how to `load_toolset` on demand |
 | `socai://cases` | All cases from registry |
 | `socai://cases/{case_id}/meta` | Case metadata |
-| `socai://cases/{case_id}/report` | Final HTML report (MDR, PUP, or legacy — whichever exists) |
+| `socai://cases/{case_id}/report` | Final markdown report (MDR, PUP — falls back to legacy HTML if no markdown copy exists) |
 | `socai://cases/{case_id}/iocs` | Extracted IOCs |
 | `socai://cases/{case_id}/verdicts` | Verdict summary |
 | `socai://cases/{case_id}/enrichment` | Enrichment data |
 | `socai://cases/{case_id}/timeline` | Timeline events |
 | `socai://cases/{case_id}/notes` | Analyst notes (free-text investigation context) |
 | `socai://cases/{case_id}/response-actions` | Client response actions and containment plan |
-| `socai://cases/{case_id}/fp-ticket` | Existing FP closure comment |
+| `socai://cases/{case_id}/closure-comment` | Existing closure comment (BP / FP / Undetermined). Legacy `fp_ticket.md` is surfaced if no new-style closure_comment.md exists. |
 | `socai://cases/{case_id}/evidence` | Raw evidence files added via `add_evidence` |
 | `socai://cases/{case_id}/findings` | Analytical findings recorded via `add_finding` |
 | `socai://cases/{case_id}/full` | Complete case bundle (meta + IOCs + enrichment + verdicts + timeline + findings) |
@@ -362,8 +346,8 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://clients/{client_name}/playbook` | Client response playbook |
 | `socai://clients/{client_name}/knowledge` | Client knowledge base (environment, security stack, network, identity, historical patterns) |
 | `socai://clients/{client_name}/sentinel` | Sentinel workspace reference (workspace ID, available tables, key query patterns) |
-| `socai://templates/mdr-report` | MDR report HTML template — 5-section structure, Gold Analyst Instruction Set, CSS styling |
-| `socai://templates/pup-report` | PUP/PUA report HTML template — lightweight 5-section structure, CSS styling |
+| `socai://templates/mdr-report` | MDR report markdown template — 5-section structure, Gold Analyst Instruction Set, markdown skeleton |
+| `socai://templates/pup-report` | PUP/PUA report markdown template — lightweight 5-section structure, markdown skeleton |
 | `socai://enrichment-providers` | Configured TI providers and availability per IOC type |
 | `socai://enrichment-depths` | Decision matrix for `enrich_iocs` / `quick_enrich` depth (auto / fast / full) |
 | `socai://report-types` | `save_report` `report_type` values and per-type auto-close behaviour |
@@ -395,20 +379,20 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `hitl_investigation` | Guided step-by-step investigation (client gate → intake → playbook → disposition → output) |
 | `triage_alert` | Guided alert triage workflow |
 | `triage_file` | Desktop-side file triage for potentially malicious files — hash locally, enrich, extract IOCs in sandbox, ship only when deep server-side analysis is warranted |
-| `write_fp_ticket` | FP ticket generation workflow |
+| `write_fp_ticket` | FP analysis + suppression workflow (analyst guidance for working through an FP). Distinct from `write_closure_comment` (which produces the 2-sentence closure note) and `write_fp_tuning` (the SIEM engineering tuning ticket). |
 | `kql_investigation` | Unified KQL playbook prompt (select playbook: bec, phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, ioc-hunt) |
 | `cql_investigation` | Unified CQL (LogScale) playbook prompt (select playbook: account-compromise, ioc-hunt, lateral-movement, malware-execution) |
 | `user_security_check` | Broad-scope user account security review (identity validation → alerts → sign-in risk → email threats → activity audit → risk assessment) |
 
 ### Report Generation (8)
 
-These prompts load system instructions, CSS styling, and case data into the analyst's local Claude Desktop session. The agent generates the report as a complete HTML document, then `save_report` / `save_threat_article` persists it (handles defanging, auto-close, audit). Template resources (`socai://templates/mdr-report`, `socai://templates/pup-report`) provide the HTML skeleton.
+These prompts load system instructions and case data into the analyst's local Claude Desktop session. The agent generates the report as **markdown**, then `save_report` / `save_threat_article` persists it (handles defanging, auto-close, audit). Template resources (`socai://templates/mdr-report`, `socai://templates/pup-report`) provide the markdown skeleton and section layout. The Claude Desktop visualiser renders the markdown — no HTML, no inline CSS required.
 
 | Prompt | Purpose | Auto-closes |
 |---|---|---|
 | `write_mdr_report` | MDR client report | Yes (preserves disposition) |
 | `write_pup_report` | PUP/PUA report | Yes (`pup_pua`) |
-| `write_fp_closure` | FP closure comment | Yes (`false_positive`) |
+| `write_closure_comment` | 2-sentence Sentinel-aligned closure comment (BP / FP / Undetermined) | Yes (disposition from `classification`) |
 | `write_fp_tuning` | SIEM tuning ticket | Yes (`false_positive`) |
 | `write_executive_summary` | Non-technical leadership briefing | No |
 | `write_security_arch_review` | Security architecture review | No |

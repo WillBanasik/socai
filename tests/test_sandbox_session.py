@@ -207,7 +207,7 @@ class TestStraceParsing:
 
 class TestSystemChanges:
     def test_detect_new_files(self, tmp_path):
-        from docker.sandbox.monitor import detect_system_changes, TELEMETRY
+        from docker.sandbox.monitor import detect_system_changes
 
         # Temporarily override TELEMETRY
         import docker.sandbox.monitor as monitor_mod

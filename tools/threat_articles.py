@@ -10,10 +10,8 @@ from __future__ import annotations
 import hashlib
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from html import unescape
-from pathlib import Path
-from typing import Any
 
 from tools.common import get_session
 
@@ -26,13 +24,11 @@ from config.settings import (
     OPENCTI_URL,
 )
 from tools.common import (
-    defang_ioc,
     load_json,
     log_error,
     save_json,
     utcnow,
     write_artefact,
-    write_report,
 )
 
 _SOURCES_FILE = BASE_DIR / "config" / "article_sources.json"
@@ -559,9 +555,11 @@ def save_article(
     seq = len(index.get("articles", [])) + 1
     art_id = f"ART-{now.strftime('%Y%m%d')}-{seq:04d}"
 
-    # Write artefacts
+    # Write artefacts — markdown only. Claude Desktop's visualiser renders
+    # the .md file, and analysts copy from it for the customer deliverable.
     art_dir = ARTICLES_DIR / month_dir / art_id
-    md_manifest = write_report(art_dir / "article.md", article_text, title=title)
+    article_path = art_dir / "article.md"
+    md_manifest = write_artefact(article_path, article_text)
 
     manifest = {
         "article_id": art_id,
@@ -571,7 +569,7 @@ def save_article(
         "date": now.strftime("%Y-%m-%d"),
         "source_urls": source_urls or [],
         "fingerprint": _topic_fingerprint(title),
-        "article_path": md_manifest["path"],
+        "article_path": str(article_path),
         "source": "claude_desktop",
         "confluence_page_id": None,
         "confluence_url": None,
@@ -589,7 +587,7 @@ def save_article(
     if case_id:
         from config.settings import CASES_DIR
         case_art_dir = CASES_DIR / case_id / "artefacts" / "articles"
-        write_report(case_art_dir / f"{art_id}.md", article_text, title=title)
+        write_artefact(case_art_dir / f"{art_id}.md", article_text)
 
     invalidate_dedup_caches()
     return manifest

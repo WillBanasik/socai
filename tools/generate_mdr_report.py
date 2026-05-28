@@ -326,10 +326,16 @@ def _build_context(case_id: str) -> str:
         parts.append("")
 
     # Security architecture review (if produced before the MDR report)
-    sec_arch_html = case_dir / "artefacts" / "security_architecture" / "security_arch_review.html"
-    if sec_arch_html.exists():
+    sec_arch_dir = case_dir / "artefacts" / "security_architecture"
+    sec_arch_file = None
+    for candidate in (sec_arch_dir / "security_arch_review.md",
+                      sec_arch_dir / "security_arch_review.html"):
+        if candidate.exists():
+            sec_arch_file = candidate
+            break
+    if sec_arch_file is not None:
         try:
-            sec_arch_text = sec_arch_html.read_text(encoding="utf-8")
+            sec_arch_text = sec_arch_file.read_text(encoding="utf-8")
             if len(sec_arch_text) > 12000:
                 sec_arch_text = sec_arch_text[:12000] + "\n\n[...truncated...]"
             parts.append("## Security Architecture Review (pre-computed)")

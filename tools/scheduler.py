@@ -129,7 +129,7 @@ def start_scheduler() -> None:
         try:
             if client_names:
                 def _refresh_all_coverage(_names=client_names):
-                    from tools.log_coverage import collect_log_sources, build_coverage_graph
+                    from tools.log_coverage import collect_log_sources
                     results = {}
                     for name in _names:
                         r = collect_log_sources(name)

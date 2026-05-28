@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any, Sequence
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -178,7 +178,7 @@ TOOL_TAXONOMY: dict[str, dict[str, str]] = {
     "prepare_pup_report":       {"category": "delivery",    "goal": "deliver"},
     "prepare_executive_summary": {"category": "delivery",   "goal": "deliver"},
     "save_report":              {"category": "delivery",    "goal": "deliver"},
-    "prepare_fp_ticket":        {"category": "delivery",    "goal": "deliver"},
+    "prepare_closure_comment":  {"category": "delivery",    "goal": "deliver"},
     "prepare_fp_tuning_ticket": {"category": "delivery",    "goal": "deliver"},
     "response_actions":         {"category": "delivery",    "goal": "deliver"},
     "review_report_quality":    {"category": "delivery",    "goal": "deliver"},

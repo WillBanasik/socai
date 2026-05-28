@@ -23,7 +23,6 @@ Usage:
 """
 from __future__ import annotations
 
-import json
 import sys
 import urllib.parse
 from datetime import datetime, timedelta, timezone

@@ -7,7 +7,7 @@
 ``user_security_check``
 
 **Client-side report generation (8):** ``write_mdr_report``,
-``write_pup_report``, ``write_fp_closure``, ``write_fp_tuning``,
+``write_pup_report``, ``write_closure_comment``, ``write_fp_tuning``,
 ``write_executive_summary``, ``write_security_arch_review``,
 ``write_threat_article``, ``write_response_plan``
 
@@ -616,16 +616,21 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "### 6. Response Recommendation",
             "- If TP: recommend containment, eradication, and recovery actions",
-            "- If BP: document the finding and any tuning recommendations",
-            "- If FP: document the finding, generate suppression ticket with `prepare_fp_ticket`",
-            "- If Inconclusive: identify what additional data is needed",
+            "- If BP: produce a closure comment via `prepare_closure_comment`",
+            "      (classification=bp_suspicious_but_expected | bp_suspicious_not_malicious)",
+            "- If FP: produce a closure comment via `prepare_closure_comment`",
+            "      (classification=fp_incorrect_logic | fp_inaccurate_data), then",
+            "      `prepare_fp_tuning_ticket` if a rule tuning ticket is also required",
+            "- If Inconclusive: produce a closure comment via `prepare_closure_comment`",
+            "      (classification=undetermined) and identify what additional data is needed",
             "",
             "### 7. Documentation & Deliverables",
             "- Case creation is **deferred** — deliverable tools (`prepare_mdr_report`,",
-            "  `prepare_pup_report`, `prepare_fp_ticket`) auto-create and promote a case",
+            "  `prepare_pup_report`, `prepare_closure_comment`) auto-create and promote a case",
             "  if one doesn't exist yet. You can also call `create_case` manually at any point.",
             "- Generate the MDR report with `prepare_mdr_report` (auto-creates case)",
-            "- If FP, generate suppression ticket with `prepare_fp_ticket` (auto-creates case)",
+            "- For BP/FP/Undetermined, produce the closure comment via `prepare_closure_comment`",
+            "  with the appropriate Sentinel-aligned classification (auto-creates case)",
             "- Once a case exists, register evidence with `add_evidence` and run `enrich_iocs`",
         ])
 
@@ -853,9 +858,9 @@ def register_prompts(mcp: FastMCP) -> None:
             "- Consider allowlisting vs. query refinement vs. threshold adjustment",
             "",
             "### 4. Generate Tickets",
-            "- Use `prepare_fp_ticket` with the alert data and platform → 2-sentence closure comment",
+            "- Use `prepare_closure_comment` with classification=fp_incorrect_logic (or fp_inaccurate_data) → 2-sentence closure comment",
             "- Use `prepare_fp_tuning_ticket` with the alert data, platform, and detection query → structured SIEM engineering handoff",
-            "- The FP ticket closes the alert; the tuning ticket tells detection engineering how to fix the rule",
+            "- The closure comment closes the alert; the tuning ticket tells detection engineering how to fix the rule",
             "- Generate BOTH when the analyst wants the alert closed AND the rule tuned",
         ])
 
@@ -929,32 +934,41 @@ def register_prompts(mcp: FastMCP) -> None:
             "- Any prior case overlap",
             "- Proposed case title and severity",
             "",
-            "**Wait for analyst approval.** No case is created yet — caseless tools",
-            "(`quick_enrich`, `extract_iocs_from_text`, KQL queries, `recall_cases`,",
-            "browser sessions) work without a case. Case-bound tools like `enrich_iocs`",
-            "and `add_evidence` require a case_id. The case materialises automatically",
-            "when a deliverable is generated in Phase 4, or you can call `create_case`",
-            "at any point to unlock case-bound tools.",
+            "**Wait for analyst approval.** Once approved, **open a case** via",
+            "`create_case` before moving into evidence collection — this work is",
+            "an investigation and belongs in a case. If a `quick_enrich` was run",
+            "during triage, pass `enrichment_id=<id>` to `create_case` so the",
+            "caseless enrichment is imported without re-running providers.",
+            "",
+            "Caseless tools (`quick_enrich`, `extract_iocs_from_text`, `recall_cases`,",
+            "`classify_attack`, `lookup_client`, browser sessions without `case_id`)",
+            "are for the moments **before** an investigation starts — initial triage,",
+            "ad-hoc IOC checks, planning. Once the analyst approves the plan, stop",
+            "chaining caseless tools and open the case. Deliverable tools auto-create",
+            "a case as a safety net at report time, but that is a fallback, not the",
+            "default flow.",
             "",
             "---",
             "",
             "### PHASE 2 — COLLECT (evidence gathering)",
             "",
-            "Follow the tool sequence from classify_attack. Use caseless tools when",
-            "no case exists yet, or call `create_case` to unlock case-bound tools.",
+            "By this phase a case should exist. Follow the tool sequence from",
+            "classify_attack and write everything into the case.",
             "",
-            "Caseless enrichment:",
-            "- `quick_enrich` — fast IOC lookups (no case required)",
-            "- `extract_iocs_from_text` — IOC extraction (no case required)",
-            "- `run_kql_batch` — Sentinel queries in parallel (prefer over sequential `run_kql`)",
-            "- `recall_cases` — prior investigation search (no case required)",
-            "",
-            "Case-bound (call `create_case` first, or defer to Phase 4):",
+            "Case-bound (the workhorse tools for this phase):",
             "- `enrich_iocs` — extract and enrich all IOCs (writes to case)",
             "- `add_evidence` — attach raw alert data (writes to case)",
             "- `capture_urls` → `detect_phishing` — for URL/phishing cases",
             "- `analyse_email` — for email-based alerts",
             "- `start_sandbox_session` — for file/malware cases (if warranted)",
+            "",
+            "Caseless helpers still permitted during this phase for ad-hoc lookups",
+            "that don't belong in the case record (e.g. one-off `quick_enrich` on a",
+            "potential pivot IOC before deciding whether to fold it in):",
+            "- `quick_enrich` — fast IOC lookups (no case required)",
+            "- `extract_iocs_from_text` — IOC extraction (no case required)",
+            "- `run_kql_batch` — Sentinel queries in parallel (prefer over sequential `run_kql`)",
+            "- `recall_cases` — prior investigation search (no case required)",
             "",
             "Dark web intelligence (use when account compromise or credential theft suspected):",
             "- `xposed_breach_check` — check historical breach databases for email/domain (no case required)",
@@ -1009,14 +1023,13 @@ def register_prompts(mcp: FastMCP) -> None:
             "when the analyst requests output).",
             "",
             "- **True Positive:** recommend `prepare_mdr_report`; generate on analyst approval (auto-closes on save)",
-            "- **Benign Positive:** `close_case(disposition=\"benign_positive\")` + brief note — no report",
-            "- **False Positive:** `close_case(disposition=\"false_positive\")`; FP ticket (`prepare_fp_ticket`,",
-            "  + `prepare_fp_tuning_ticket`) only if the analyst asks",
+            "- **Benign Positive:** `prepare_closure_comment` (classification=bp_suspicious_but_expected | bp_suspicious_not_malicious) — 2-sentence closure note, auto-closes",
+            "- **False Positive:** `prepare_closure_comment` (classification=fp_incorrect_logic | fp_inaccurate_data); add `prepare_fp_tuning_ticket` if rule tuning is also required",
             "- **PUP/PUA:** `close_case(disposition=\"pup_pua\")`; PUP report only on request",
-            "- **Inconclusive:** `close_case(disposition=\"inconclusive\")`, marking gaps; report only on request",
+            "- **Inconclusive:** `prepare_closure_comment` (classification=undetermined) — 2-sentence note, marking gaps",
             "",
             "Available on demand if the analyst wants written output: `prepare_mdr_report`,",
-            "`prepare_pup_report`, `prepare_fp_ticket`, `prepare_fp_tuning_ticket`,",
+            "`prepare_pup_report`, `prepare_closure_comment`, `prepare_fp_tuning_ticket`,",
             "`prepare_executive_summary` (leadership summary), `generate_queries` (SIEM hunts),",
             "`response_actions` (containment guidance).",
             "",
@@ -1031,7 +1044,7 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "### PHASE 5 — DELIVER (case closure)",
             "",
-            "- If a report was generated and saved, the save auto-closes the case (MDR, PUP, FP ticket).",
+            "- If a report or closure comment was generated and saved, the save auto-closes the case (MDR, PUP, closure_comment, FP tuning).",
             "- Otherwise (the common non-TP path), call `close_case` with the confirmed disposition.",
             "",
             "---",
@@ -1460,9 +1473,6 @@ def register_prompts(mcp: FastMCP) -> None:
         from tools.generate_pup_report import _build_context
         context = _build_context(case_id)
 
-        # Load CSS for inline inclusion in the prompt
-        from tools.common import _REPORT_CSS
-
         return (
             f"# PUP/PUA Report Generation — Instructions\n\n"
             f"{prompt}\n\n"
@@ -1470,52 +1480,77 @@ def register_prompts(mcp: FastMCP) -> None:
             f"# Case Data\n\n"
             f"{context}\n\n"
             f"---\n\n"
-            f"# Output Format — HTML\n\n"
-            f"Produce the report as a **complete HTML document**. Use the styling below "
-            f"and wrap each section in `<div class=\"section\">`. Use `<div class=\"meta\">` "
-            f"for the header metadata block. If you need the full HTML skeleton, read "
-            f"the `socai://templates/pup-report` resource.\n\n"
-            f"```css\n{_REPORT_CSS}```\n\n"
+            f"# Output Format — Markdown\n\n"
+            f"Produce the report as **GitHub-flavoured markdown**. Use `##` for each "
+            f"section heading, `###` for subsections, `-` for bullets, and standard "
+            f"markdown tables for tabular data (IOCs, file details). No HTML wrappers, "
+            f"no inline styles — Claude Desktop's visualiser renders the markdown.\n\n"
+            f"See `socai://templates/pup-report` for the section skeleton.\n\n"
             f"---\n\n"
             f"# Task\n\n"
-            f"Produce a PUP/PUA report for case **{case_id}** as a complete HTML "
-            f"document following the 5-section structure: Summary, Path & File Details, "
-            f"Access Vector, Actions Taken, Recommendations.\n\n"
+            f"Produce a PUP/PUA report for case **{case_id}** as markdown following "
+            f"the 5-section structure: Summary, Path & File Details, Access Vector, "
+            f"Actions Taken, Recommendations.\n\n"
             f"When the report is complete, call `save_report` with:\n"
             f"- `case_id`: \"{case_id}\"\n"
             f"- `report_type`: \"pup_report\"\n"
-            f"- `report_text`: the full HTML report\n"
+            f"- `report_text`: the full markdown report\n"
         )
 
     @mcp.prompt()
-    def write_fp_closure(
+    def write_closure_comment(
         case_id: str,
+        classification: str,
         alert_data: str = "",
         platform: str = "",
         query_text: str = "",
     ) -> str:
-        """Generate an FP closure comment locally in Claude Desktop.
+        """Generate a two-sentence incident closure comment locally in Claude Desktop.
 
-        Loads the FP ticket system prompt, case context, and alert data.
-        When done, call ``save_report`` with report_type="fp_ticket".
+        Use for any non-TP disposition: BP (suspicious-but-expected /
+        suspicious-but-not-malicious), FP (incorrect-logic / inaccurate-data),
+        or Undetermined. Aligned with Sentinel incident closure reasons.
+        When done, call ``save_report`` with ``report_type="closure_comment"``
+        and the disposition shown in the prompt.
 
         Parameters
         ----------
         case_id : str
-            Case to generate the ticket for.
+            Case to generate the comment for.
+        classification : str
+            One of: ``bp_suspicious_but_expected``, ``bp_suspicious_not_malicious``,
+            ``fp_incorrect_logic``, ``fp_inaccurate_data``, ``undetermined``.
         alert_data : str
             Raw alert JSON or text.
         platform : str
             Detection platform override (sentinel, crowdstrike, defender, etc.).
         query_text : str
-            Original detection query (KQL/SPL).
+            Original detection query (KQL/SPL/CQL).
         """
-        from tools.fp_ticket import _SYSTEM_PROMPT as prompt
-        from tools.fp_ticket import _build_context
+        from tools.closure_comment import (
+            CLASSIFICATIONS, _SYSTEM_PROMPT_FOR, _build_context,
+        )
+
+        if classification not in CLASSIFICATIONS:
+            valid = ", ".join(CLASSIFICATIONS)
+            return (
+                f"# Error\n\nUnknown classification {classification!r}. "
+                f"Valid values: {valid}.\n"
+            )
+
+        cfg = CLASSIFICATIONS[classification]
+        prompt = _SYSTEM_PROMPT_FOR(classification)
         context = _build_context(case_id)
 
         parts = [
-            f"# FP Closure Comment — Instructions\n\n",
+            f"# Closure Comment — {cfg['label']}\n\n",
+            f"**Case:** {case_id}  \n",
+            f"**Classification:** {cfg['label']}  \n",
+            f"**Sentinel:** {cfg['sentinel_classification']}"
+            + (f" / {cfg['sentinel_reason']}" if cfg['sentinel_reason'] else "")
+            + "  \n",
+            f"**Disposition on close:** `{cfg['disposition']}`\n\n",
+            f"---\n\n",
             f"{prompt}\n\n",
             f"---\n\n",
             f"# Case Context\n\n{context}\n\n",
@@ -1529,14 +1564,14 @@ def register_prompts(mcp: FastMCP) -> None:
         parts.append(
             f"---\n\n"
             f"# Task\n\n"
-            f"Write a two-sentence FP closure comment for case **{case_id}**.\n\n"
-            f"Produce the output as a complete HTML document using the socai report "
-            f"styling (`socai://templates/mdr-report` has the CSS). A minimal HTML "
-            f"page with the closure comment is sufficient.\n\n"
+            f"Write a two-sentence closure comment for case **{case_id}** as "
+            f"plain markdown — no HTML, no styling, no headers, no bullet list. "
+            f"The save tool will prepend the classification header automatically.\n\n"
             f"When done, call `save_report` with:\n"
             f"- `case_id`: \"{case_id}\"\n"
-            f"- `report_type`: \"fp_ticket\"\n"
-            f"- `report_text`: the full HTML\n"
+            f"- `report_type`: \"closure_comment\"\n"
+            f"- `disposition`: \"{cfg['disposition']}\"\n"
+            f"- `report_text`: the two-sentence markdown closure comment\n"
         )
         return "".join(parts)
 
@@ -1585,13 +1620,13 @@ def register_prompts(mcp: FastMCP) -> None:
         parts.append(
             f"---\n\n"
             f"# Task\n\n"
-            f"Write a structured SIEM tuning ticket for case **{case_id}**.\n\n"
-            f"Produce the output as a complete HTML document using the socai report "
-            f"styling (`socai://templates/mdr-report` has the CSS).\n\n"
+            f"Write a structured SIEM tuning ticket for case **{case_id}** as "
+            f"markdown. Use `##`/`###` for sections, bullet lists for "
+            f"recommendations, fenced code blocks for KQL/SPL/CQL snippets.\n\n"
             f"When done, call `save_report` with:\n"
             f"- `case_id`: \"{case_id}\"\n"
             f"- `report_type`: \"fp_tuning_ticket\"\n"
-            f"- `report_text`: the full HTML\n"
+            f"- `report_text`: the full markdown ticket\n"
         )
         return "".join(parts)
 
@@ -1622,12 +1657,12 @@ def register_prompts(mcp: FastMCP) -> None:
             f"Produce an executive summary for case **{case_id}** following the "
             f"instructions above. Target audience: non-technical business leadership. "
             f"Maximum 500 words. Use RAG (Red/Amber/Green) risk rating.\n\n"
-            f"Produce the output as a complete HTML document using the socai report "
-            f"styling (`socai://templates/mdr-report` has the CSS).\n\n"
+            f"Produce the output as **markdown** — `##` for sections, bullet lists "
+            f"for key points. No HTML, no inline styling.\n\n"
             f"When the summary is complete, call `save_report` with:\n"
             f"- `case_id`: \"{case_id}\"\n"
             f"- `report_type`: \"executive_summary\"\n"
-            f"- `report_text`: the full HTML\n"
+            f"- `report_text`: the full markdown summary\n"
         )
 
     @mcp.prompt()
@@ -1656,12 +1691,13 @@ def register_prompts(mcp: FastMCP) -> None:
             f"# Task\n\n"
             f"Produce a security architecture review for case **{case_id}** "
             f"following the instructions above exactly.\n\n"
-            f"Produce the output as a complete HTML document using the socai report "
-            f"styling (`socai://templates/mdr-report` has the CSS).\n\n"
+            f"Produce the output as **markdown** — `##`/`###` headings, bullet "
+            f"lists for recommendations, fenced code blocks for any policy "
+            f"snippets. No HTML, no inline styling.\n\n"
             f"When the review is complete, call `save_report` with:\n"
             f"- `case_id`: \"{case_id}\"\n"
             f"- `report_type`: \"security_arch_review\"\n"
-            f"- `report_text`: the full HTML\n"
+            f"- `report_text`: the full markdown review\n"
         )
 
     # ------------------------------------------------------------------
@@ -1688,8 +1724,6 @@ def register_prompts(mcp: FastMCP) -> None:
         from tools.timeline_reconstruct import _SYSTEM_PROMPT as prompt
         from tools.timeline_reconstruct import _extract_events
 
-        from config.settings import CASES_DIR
-        from tools.common import load_json
         import json
 
         events, sources = _extract_events(case_id)
@@ -2460,15 +2494,13 @@ def register_prompts(mcp: FastMCP) -> None:
         # Load artefact context (same data the server-side report would see)
         artefact_context = _build_context(case_id)
 
-        # Load CSS for inline inclusion in the prompt
-        from tools.common import _REPORT_CSS
-
         # Check whether a security architecture review exists for this case
         from config.settings import CASES_DIR
+        _sec_arch_dir = CASES_DIR / case_id / "artefacts" / "security_architecture"
         _has_sec_arch = (
-            CASES_DIR / case_id / "artefacts" / "security_architecture"
-            / "security_arch_review.html"
-        ).exists()
+            (_sec_arch_dir / "security_arch_review.md").exists()
+            or (_sec_arch_dir / "security_arch_review.html").exists()
+        )
 
         sec_arch_note = ""
         if _has_sec_arch:
@@ -2508,21 +2540,22 @@ def register_prompts(mcp: FastMCP) -> None:
             f"investigation).\n\n"
             f"---\n\n"
             f"{sec_arch_note}"
-            f"# Output Format — HTML\n\n"
-            f"Produce the report as a **complete HTML document**. Use the styling below "
-            f"and wrap each section in `<div class=\"section\">`. Use `<div class=\"meta\">` "
-            f"for the header metadata block. If you need the full HTML skeleton, read "
-            f"the `socai://templates/mdr-report` resource.\n\n"
-            f"```css\n{_REPORT_CSS}```\n\n"
+            f"# Output Format — Markdown\n\n"
+            f"Produce the report as **GitHub-flavoured markdown**. Use `##` for each "
+            f"of the 5 main sections, `###` for subsections, `-` for bullet lists, "
+            f"and markdown tables for IOCs and timeline data. Use fenced code blocks "
+            f"(```` ``` ````) for any raw query text, log lines, or commands. "
+            f"No HTML wrappers, no inline styles — Claude Desktop's visualiser "
+            f"renders the markdown.\n\n"
+            f"See `socai://templates/mdr-report` for the full section skeleton.\n\n"
             f"---\n\n"
             f"# Task\n\n"
-            f"Write the MDR incident report for case **{case_id}** as a complete HTML "
-            f"document following the mandatory 5-section structure from the instructions "
-            f"above.\n\n"
+            f"Write the MDR incident report for case **{case_id}** as markdown "
+            f"following the mandatory 5-section structure from the instructions above.\n\n"
             f"When your report is complete, call `save_report` with:\n"
             f"- `case_id`: `{case_id}`\n"
             f"- `report_type`: `mdr_report`\n"
-            f"- `report_text`: the full HTML report\n"
+            f"- `report_text`: the full markdown report\n"
             f"- `disposition`: the appropriate disposition value "
             f"(`true_positive`, `benign_positive`, `false_positive`, `benign`, "
             f"`pup_pua`, `inconclusive`)\n"

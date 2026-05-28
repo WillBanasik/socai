@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 

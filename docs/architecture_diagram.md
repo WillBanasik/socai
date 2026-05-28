@@ -43,7 +43,7 @@ graph TB
             GQ["generate_queries"]
             MDR["prepare_mdr_report"]
             ES["executive_summary"]
-            FP["prepare_fp_ticket"]
+            CC["prepare_closure_comment"]
             SAR["security_arch_review"]
             PPTX["generate_pptx"]
         end
@@ -95,7 +95,7 @@ graph TB
             IOCS["iocs/iocs.json"]
             ART["artefacts/<br/>web/ zip/ analysis/<br/>enrichment/ phishing/<br/>sandbox/ anomalies/<br/>campaign/ timeline/<br/>yara/ evtx/ cve/"]
             LOGS["logs/<br/>parsed_logs.json<br/>entity_correlation.json"]
-            RPT["reports/<br/>mdr_report.html / pup_report.html"]
+            RPT["reports/<br/>mdr_report.md / pup_report.md"]
         end
         subgraph Registry["registry/"]
             CI["case_index.json"]
@@ -133,16 +133,21 @@ sequenceDiagram
     E-->>T: results
     M->>A: enrichment summary
 
-    A->>M: run_kql(workspace, query)
-    M->>A: Sentinel query results
+    Note over A,M: Investigation confirmed — open the case
 
-    Note over A,M: Deliverable phase — case auto-created + promoted
-
-    A->>M: prepare_mdr_report()
-    M->>T: _ensure_case() → case_create + promote
+    A->>M: create_case(enrichment_id=<from quick_enrich>)
     T->>F: cases/IV_CASE_042/case_meta.json (status=active)
-    T->>F: cases/IV_CASE_042/reports/mdr_report.html
-    Note over M,T: Auto-closes case
-    M->>A: report generated, case closed
+    Note over T,F: Caseless enrichment imported, no provider re-run
+
+    A->>M: run_kql(workspace, query) / enrich_iocs / add_evidence
+    M->>A: Sentinel query results, evidence recorded
+
+    Note over A,M: Deliverable phase — TP
+
+    A->>M: prepare_mdr_report() → write_mdr_report prompt
+    A->>M: save_report(report_type="mdr_report", disposition="true_positive")
+    T->>F: cases/IV_CASE_042/reports/mdr_report.md
+    Note over M,T: Auto-closes case (case already exists; auto-create is the safety-net path)
+    M->>A: report_md returned for visualiser render, case closed
 ```
 

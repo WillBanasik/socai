@@ -34,6 +34,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 # Ensure repo root is on sys.path (same pattern as socai.py)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -48,7 +49,6 @@ from mcp_server.prompts import register_prompts
 from mcp_server.logging_config import setup_mcp_logger, mcp_log
 
 from config.settings import MCP_SERVER_PID
-from tools.common import utcnow
 
 _server_start_time: float = 0.0
 
@@ -119,7 +119,7 @@ better reports, at zero server-side API cost.
 Available report prompts:
 - `write_mdr_report` — MDR incident report (Gold Analyst Instruction Set)
 - `write_pup_report` — PUP/PUA report
-- `write_fp_closure` — FP closure comment (2-sentence)
+- `write_closure_comment` — 2-sentence Sentinel-aligned closure comment (BP / FP / Undetermined)
 - `write_fp_tuning` — SIEM engineering tuning ticket
 - `write_executive_summary` — Non-technical executive summary (RAG rated)
 - `write_security_arch_review` — Security architecture review
@@ -141,7 +141,7 @@ Local Claude does the analytical reasoning using case data loaded by prompts:
 
 Analysts select these from the Claude Desktop prompt picker for structured workflows:
 
-- `hitl_investigation` — **primary workflow**: guided step-by-step from raw alert to MDR report or FP closure.
+- `hitl_investigation` — **primary workflow**: guided step-by-step from raw alert to MDR report or closure comment.
 - `triage_alert` — structured alert triage (classify → enrich → verdict → next steps).
 - `write_fp_ticket` — false-positive analysis and suppression ticket generation.
 - `kql_investigation` — unified KQL playbook prompt. Select a playbook ID: `phishing`, `account-compromise`, `malware-execution`, `privilege-escalation`, `data-exfiltration`, `lateral-movement`, or `ioc-hunt`.
@@ -158,7 +158,7 @@ Analysts select these from the Claude Desktop prompt picker for structured workf
 | Email & Phishing | analyse_email, capture_urls, detect_phishing |
 | SIEM & Endpoint | lookup_client (platforms, workspace IDs, knowledge base, playbook & Sentinel reference inline), run_kql, load_kql_playbook, generate_sentinel_query, generate_queries, ingest_velociraptor, ingest_mde_package |
 | Dynamic Analysis | start_sandbox_session, stop_sandbox_session, list_sandbox_sessions, start_browser_session, stop_browser_session, list_browser_sessions |
-| Reporting | generate_report, prepare_mdr_report, prepare_pup_report, prepare_executive_summary, generate_weekly, prepare_fp_ticket, prepare_fp_tuning_ticket, reconstruct_timeline, security_arch_review, response_actions |
+| Reporting | generate_report, prepare_mdr_report, prepare_pup_report, prepare_executive_summary, generate_weekly, prepare_closure_comment, prepare_fp_tuning_ticket, reconstruct_timeline, security_arch_review, response_actions |
 | Threat Intelligence | assess_landscape, search_threat_articles, generate_threat_article, search_confluence (ET/EV articles only) |
 | Dark Web Intelligence | xposed_breach_check (breach data), ahmia_darkweb_search (.onion search), intelx_search (pastes/leaks/darknet), parse_stealer_logs, darkweb_exposure_summary |
 
@@ -169,7 +169,7 @@ Analysts select these from the Claude Desktop prompt picker for structured workf
 Read case data, client config, playbooks, and threat intel without invoking tools:
 
 - `socai://cases` — full case registry
-- `socai://cases/{case_id}/meta`, `/report`, `/iocs`, `/verdicts`, `/enrichment`, `/timeline`, `/notes`, `/response-actions`, `/fp-ticket`, `/matrix`, `/determination`, `/quality-gate`, `/followups`
+- `socai://cases/{case_id}/meta`, `/report`, `/iocs`, `/verdicts`, `/enrichment`, `/timeline`, `/notes`, `/response-actions`, `/closure-comment`, `/matrix`, `/determination`, `/quality-gate`, `/followups`
 - `socai://clients` — client registry; `socai://clients/{client_name}` — full config; `socai://clients/{client_name}/playbook` — response playbook
 - `socai://playbooks` — KQL playbook index; `socai://playbooks/{playbook_id}` — full playbook
 - `socai://sentinel-queries` — Sentinel composite query scenarios (single-execution full-picture queries)
@@ -194,7 +194,9 @@ Every workflow starts with classification. The `classify_attack` result includes
 - **Phishing:** lookup_client → classify_attack → add_evidence → enrich_iocs → capture_urls → detect_phishing → analyse_email → run_kql (phishing playbook) → prepare_mdr_report
 - **Malware:** lookup_client → classify_attack → add_evidence → enrich_iocs → start_sandbox_session → run_kql (malware-execution playbook) → prepare_mdr_report
 - **Account Compromise:** lookup_client → classify_attack → add_evidence → enrich_iocs → xposed_breach_check (check breach exposure) → generate_sentinel_query (suspicious-signin / mailbox-permission-change) → run_kql → prepare_mdr_report
-- **False Positive:** add_evidence → enrich_iocs → prepare_fp_ticket → prepare_fp_tuning_ticket (if tuning needed)
+- **Benign Positive:** add_evidence → prepare_closure_comment (classification=bp_suspicious_but_expected | bp_suspicious_not_malicious)
+- **False Positive:** add_evidence → enrich_iocs → prepare_closure_comment (classification=fp_incorrect_logic | fp_inaccurate_data) → prepare_fp_tuning_ticket (if rule tuning needed)
+- **Undetermined:** add_evidence → prepare_closure_comment (classification=undetermined)
 - **PUP/PUA:** classify_attack → enrich_iocs → prepare_pup_report
 
 ## Analyst Role Adaptation
@@ -222,7 +224,7 @@ and response style accordingly:
 
 - Always identify the client before running queries (`lookup_client`).
 - Always call `recall_cases` before enrichment to check prior investigations.
-- Reports auto-close cases via `save_report` (called after `prepare_mdr_report`, `prepare_pup_report`, `prepare_fp_ticket`).
+- Reports auto-close cases via `save_report` (called after `prepare_mdr_report`, `prepare_pup_report`, `prepare_closure_comment`).
 - Analytical standards: every finding must be provable with data. Never speculate or fill evidence gaps.
 - Language: "Confirmed" = data proves it. "Assessed" = inference. "Unknown" = no data.
 """

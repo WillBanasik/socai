@@ -24,7 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools.common import load_json
 from tools.defender_hunting import (
     DefenderHuntingError,
-    DefenderNotConfigured,
     is_defender_configured,
     run_defender_kql,
 )

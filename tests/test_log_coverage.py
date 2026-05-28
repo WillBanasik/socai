@@ -3,7 +3,6 @@ Tests for log source coverage mapping.
 Run with:  cd socai && python -m pytest tests/test_log_coverage.py -v
 """
 import json
-import shutil
 import sys
 from pathlib import Path
 from unittest.mock import patch

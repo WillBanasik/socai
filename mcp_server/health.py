@@ -16,7 +16,6 @@ import os
 import time
 from pathlib import Path
 
-from mcp_server.config import MCP_HOST, MCP_PORT
 
 
 # Set by server.py at startup

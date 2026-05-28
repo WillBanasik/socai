@@ -14,7 +14,7 @@ python3 socai.py create-case --title "Alert title" --severity high --analyst <na
 
 # Re-run stages
 python3 socai.py enrich --case IV_CASE_001
-python3 socai.py fp-ticket --case IV_CASE_001 --alert alert.json
+python3 socai.py closure-comment --case IV_CASE_001 --classification fp_incorrect_logic --alert alert.json
 python3 socai.py fp-tuning --case IV_CASE_001 --alert alert.json [--query rule.kql] [--platform sentinel]
 
 # Deliverable reports (mdr-report, pup-report, secarch, exec-summary)
@@ -63,9 +63,16 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 - **Caseless enrichment** (`registry/quick_enrichments/`) — `quick_enrich` persists ad-hoc IOC lookups here. Import into a case via `enrichment_id` parameter on `create_case` or `import_enrichment` tool
 - **Caseless browser sessions** (`browser_sessions/<session_id>/artefacts/`) — `start_browser_session` without `case_id` stores artefacts here. Read via `read_browser_session_file` / `list_browser_session_files`. Import into a case via `import_browser_session(session_id, case_id)`
 - **Intelligence layer** — `tools/case_memory.py` (BM25 semantic recall), `tools/client_baseline.py` (per-client profiles), `tools/geoip.py` (local MaxMind GeoLite2)
-- **Reports are analyst-initiated and TP-gated** — Do **not** auto-generate reports. A full MDR report is produced only for **True Positive** cases, and only on analyst request (for a TP it is the expected deliverable — recommend it, then produce it on the analyst's go-ahead). Every other disposition (`benign_positive`, `false_positive`, `pup_pua`, `benign`, `inconclusive`) closes via `close_case` with a brief note and **no** auto-generated report. All deliverable prompts/tools remain available on demand — if the analyst decides a non-TP case needs written output, they ask, and only then is it generated. This supersedes any older "PUP short-circuit → auto PUP report" or "TP/BP → MDR report" wording.
-- **Auto-close on Deliverable Collection** — `save_report` (after MCP prompt for MDR report, PUP report, etc.) and `fp_ticket` (`false_positive`). These tools auto-create and promote a case if one doesn't exist. Close logic in tool layer. Deliverable workflow: use MCP prompt to produce HTML report → `save_report` to persist and auto-close. All reports are HTML — `save_report` accepts HTML directly (markdown fallback for legacy). Template resources (`socai://templates/mdr-report`, `socai://templates/pup-report`) provide HTML skeletons and CSS. Reports are viewable via `socai://cases/{case_id}/report` after saving. `fp_tuning_ticket` auto-closes with `false_positive`. `executive_summary` and `security_arch_review` do NOT auto-close (supplementary outputs, typically produced after the primary deliverable has already closed the case). `read_report` is read-only (no auto-close). `close_case` is idempotent (no-op if already closed).
-- **Report rendering in the visualiser** — `save_report` returns the persisted (defanged) HTML as `report_html` in its response. **Render `report_html` as a self-contained HTML artifact** so Claude Desktop opens it in the visualiser (the Artifacts side panel) — cards, badges, styled headers, syntax-highlighted IOCs. Do not paste the raw HTML into the chat body, summarise, truncate, paraphrase, or wrap it in code fences. The HTML is also persisted on disk for the customer deliverable, but the analyst's review happens in the visualiser.
+- **Disposition workflow — finalised** — Reports/comments are analyst-initiated. Per disposition:
+  - **True Positive** → analyst-approved `prepare_mdr_report` → `write_mdr_report` prompt → `save_report(report_type="mdr_report", disposition="true_positive")`. The MDR report is the expected deliverable; recommend it, produce on the go-ahead.
+  - **Benign Positive** (Suspicious but expected *or* Suspicious but not malicious) → `prepare_closure_comment(classification="bp_suspicious_but_expected" | "bp_suspicious_not_malicious")` → `write_closure_comment` prompt → `save_report(report_type="closure_comment", disposition="benign_positive")`. Output is a 2-sentence markdown comment.
+  - **False Positive — incorrect alert logic** → `prepare_closure_comment(classification="fp_incorrect_logic")` → save as closure_comment, `disposition="false_positive"`. Optionally follow with `prepare_fp_tuning_ticket` + `save_report(report_type="fp_tuning_ticket")` when rule tuning is also required.
+  - **False Positive — inaccurate data** → `prepare_closure_comment(classification="fp_inaccurate_data")` → save as closure_comment, `disposition="false_positive"`.
+  - **Undetermined** → `prepare_closure_comment(classification="undetermined")` → save as closure_comment, `disposition="inconclusive"`.
+  - **PUP/PUA** → `close_case(disposition="pup_pua")` with brief note. PUP report only on explicit analyst request via `write_pup_report` prompt → `save_report(report_type="pup_report")`.
+  - All save tools auto-create and promote a case if none exists, then auto-close on save. `executive_summary` and `security_arch_review` are supplementary and do NOT auto-close. `read_report` and `close_case` are idempotent.
+- **All reports and closure comments are markdown (`.md`)** — `save_report` accepts markdown directly. Template resources (`socai://templates/mdr-report`, `socai://templates/pup-report`) provide markdown skeletons. The persisted `.md` file is the analyst's copy-paste source for the customer deliverable; legacy `.html` files remain readable via `read_report` and the reports HTTP middleware.
+- **Report / comment rendering in the visualiser** — `save_report` returns the persisted (defanged) markdown as `report_md` in its response. **Render `report_md` as a markdown artifact** so Claude Desktop opens it in the visualiser (the Artifacts side panel). Do not paste the raw markdown into the chat body, summarise, truncate, paraphrase, or wrap it in code fences. The `.md` file on disk is the deliverable copy-paste source; the visualiser is the review surface. The same pattern applies to `save_threat_article` — it returns the article as `article_md` with the same `display_hint`.
 
 ## Sentinel Incident Classification
 
@@ -83,6 +90,14 @@ Never combine classifications ("True Positive Benign Positive" is invalid). Disp
 
 **One alert = one case.** Every new alert gets its own case, even when the same user/host/IOCs appear in prior cases. Never append new alert data to an existing case. Cross-case correlation is on-demand via `recall_cases` (historical IOC/keyword lookup) and `campaign_cluster` (IOC overlap comparison).
 
+## When to Open a Case (Case vs Caseless)
+
+**An incident or alert under investigation = a case.** Open a case (`create_case`, or let the first deliverable tool auto-create one) as soon as the work is clearly an investigation: an alert JSON is pasted, a SIEM/EDR incident is referenced, the analyst says "investigate this", a structured triage starts. Investigations belong in cases — that is where evidence, findings, enrichment, timeline, and the audit trail accumulate.
+
+**Caseless is only for non-incident work**: ad-hoc IOC lookups ("what is this hash/IP/domain?"), exploratory questions, threat-intel research, playbook lookups, planning discussions before any alert is in hand. `quick_enrich`, `extract_iocs`, `classify_attack`, `plan_investigation`, `lookup_client`, `recall_cases`, `search_threat_articles`, `web_search`, and `start_browser_session` (without `case_id`) all run caseless.
+
+Promote a caseless session to a case the moment it turns into an investigation — call `create_case(..., enrichment_id=<id>)` to carry caseless `quick_enrich` results over without re-running providers, or `import_enrichment` / `import_browser_session` on an existing case. Do not chain long sequences of caseless tools through what is plainly an incident. Deliverable tools (`prepare_mdr_report`, `prepare_pup_report`, `prepare_closure_comment`, `prepare_fp_tuning_ticket`) will auto-create a case as a safety net if you somehow reach the end without one — treat that as a safety net, not the default flow.
+
 ## Analytical Standards (MANDATORY)
 
 All investigative output — conversational analysis, reports, case artefacts — must comply with these rules. No exceptions.
@@ -94,16 +109,26 @@ All investigative output — conversational analysis, reports, case artefacts �
 5. **Actively seek disconfirming evidence.** When a hypothesis forms, identify what data would disprove it and check that data before proceeding.
 6. **Never produce final reports on incomplete evidence** without clearly marking what is confirmed, what is assessed (inference), and what is unknown.
 7. **Language discipline:** "Confirmed" = data proves it. "Assessed" / "Assessed with [high/medium/low] confidence" = inference supported by evidence. "Unknown" / "Not determined" = no data. Never use "confirmed" for an inference.
+8. **Evidence and findings MUST be logged via tools before any report is produced.** `save_report` (MDR, PUP, exec summary, sec arch) requires a prior chain of `add_evidence` (raw observations: query hits, file analysis, enrichment verdicts, audit log entries) and `add_finding` (analyst conclusions tied to specific evidence IDs). A report on a case with no recorded `evidence` or `findings` artefacts is by definition unprovable and violates rules 1–4. If the analyst asks for a report on such a case, **stop and backfill the evidence/findings record from the data already in context before generating the report.** Never paper over a missing chain by writing prose straight into the report.
+
+## Cross-Case Correlation (MANDATORY when recurrence is plausible)
+
+`recall_cases` and `campaign_cluster` are not optional polish — they are the only way to detect shared infrastructure across the one-alert-one-case boundary. Run them proactively, not reactively:
+
+- **`recall_cases`** — call at the start of any investigation with a non-trivial IOC set (domains, hashes, sender addresses, infrastructure). Cheap; surfaces prior cases that touched the same indicators.
+- **`campaign_cluster`** — call whenever `recall_cases` returns ≥1 prior case with overlapping IOCs, or whenever the alert pattern (phishing lure theme, malware family, target client) matches recent traffic. Do not wait to be asked.
+- Document the result in `add_evidence` even when it returns no overlap — "no cross-case overlap found" is itself a finding that strengthens the report.
 
 ## Enrichment & Lookup Preferences
 
 1. **Always use socai system tools first** — CLI (`socai.py enrich`, `socai.py triage`) or MCP tools (`enrich_iocs`, `quick_enrich`, `triage`, `extract_iocs`)
-2. **Caseless first** — use `quick_enrich` for ad-hoc IOC lookups before creating a case. If IOCs are malicious, create a case with `enrichment_id` to auto-import results (no re-enrichment). RFC-1918 / private IPs are tagged `private_internal` instantly (no provider calls).
-3. **Choose enrichment depth based on the situation** — both `quick_enrich` and `enrich_iocs` accept a `depth` parameter (`"auto"` default, `"fast"` for FP/PUP/bulk triage, `"full"` for high-severity / novel IOCs). See `socai://enrichment-depths` for the full decision matrix.
-4. **Triage runs automatically before enrichment** — IOCs with sufficient cached coverage and IOCs that are routine for the client (via client baseline) are skipped automatically to save API quota.
-5. **Use combined tools for efficiency** — `capture_urls` auto-runs phishing detection (`detect_phishing=True` default). `analyse_file` is tiered (`depth="auto"` smart escalates; `"fast"` Tier 1 only; `"full"` runs all tiers including YARA). Use `run_kql_batch` for multiple independent queries instead of sequential `run_kql`. `lookup_client` always returns the full knowledge base, response playbook, and Sentinel reference inline — raw context, no slimming.
-6. **Web search is a last resort** — only when system tools return nothing or query is pure OSINT context
-7. **Never use generic web lookups when a structured tool exists**
+2. **Client baseline is MANDATORY, not optional.** Call `get_client_baseline` (and `lookup_client` for the knowledge base) on every case before drawing behavioural conclusions. Behavioural context is the primary defence against VPN/geo false positives, against misclassifying authorised activity as malicious, and against missing genuinely anomalous activity that looks routine in isolation. "Optional but recommended" wording elsewhere is superseded by this rule. Skip only when the case is closed at triage as a pure infrastructure FP (e.g. detection-logic bug with no user/host context required).
+3. **Caseless first** — use `quick_enrich` for ad-hoc IOC lookups before creating a case. If IOCs are malicious, create a case with `enrichment_id` to auto-import results (no re-enrichment). RFC-1918 / private IPs are tagged `private_internal` instantly (no provider calls).
+4. **Choose enrichment depth based on the situation** — both `quick_enrich` and `enrich_iocs` accept a `depth` parameter (`"auto"` default, `"fast"` for FP/PUP/bulk triage, `"full"` for high-severity / novel IOCs). See `socai://enrichment-depths` for the full decision matrix.
+5. **Triage runs automatically before enrichment** — IOCs with sufficient cached coverage and IOCs that are routine for the client (via client baseline) are skipped automatically to save API quota.
+6. **Use combined tools for efficiency** — `capture_urls` auto-runs phishing detection (`detect_phishing=True` default). `analyse_file` is tiered (`depth="auto"` smart escalates; `"fast"` Tier 1 only; `"full"` runs all tiers including YARA). Use `run_kql_batch` for multiple independent queries instead of sequential `run_kql`. `lookup_client` always returns the full knowledge base, response playbook, and Sentinel reference inline — raw context, no slimming.
+7. **Web search is a last resort** — only when system tools return nothing or query is pure OSINT context
+8. **Never use generic web lookups when a structured tool exists**
 
 ## Handling Files in Claude Desktop
 
@@ -150,11 +175,15 @@ The upload tools (`prepare_file_upload`, `upload_file_content`) are the escalati
 ### Tool return shape (raw data, no slimming)
 - **No slimming, no summarisation, no truncation.** Tools return raw payloads in full. Summaries lose accuracy: a "top-N" or per-type cap drops evidence the model would otherwise use to back a finding. Per-turn payload size is the cost of correctness, not a budget to optimise against.
 - Findings that enter a report must be backed by the raw data already in context (see Analytical Standards rule 1) — never by an on-disk pointer the model "could" fetch.
-- All enrichment payloads (`quick_enrich`, `enrich_iocs`), recall results, correlation hits, and client context (`lookup_client`) are returned full. The `_slim_*` helpers and `verbose`/`slim` parameters have been removed. `save_report`'s inline `report_html` is a deliberate *terminal* payload — also full.
+- All enrichment payloads (`quick_enrich`, `enrich_iocs`), recall results, correlation hits, and client context (`lookup_client`) are returned full. The `_slim_*` helpers and `verbose`/`slim` parameters have been removed. `save_report`'s inline `report_md` is a deliberate *terminal* payload — also full.
 
 ### Report defanging
 - Malicious + suspicious IOCs are defanged in final reports via `defang_report()` in `tools/common.py`
 - Hashes and file paths are never defanged
+
+### Tool discipline (Claude Desktop side)
+- **Load schemas before calling.** Deferred MCP tools listed in `<system-reminder>` blocks are name-only — calling them blind produces schema errors (e.g. recurring `add_finding` missing `finding_type`). Run `tool_search "select:<tool>[,<tool>...]"` on the first use in a session, then call. Treat a schema error as a signal to schema-fetch, not to retry-with-guesses.
+- One schema fetch per session per tool is enough — schemas are stable within a session.
 
 ### Tests
 - All tests use case ID `IV_CASE_000` with autouse fixture for setup/teardown

@@ -371,7 +371,7 @@ class TestGeoIP:
 
     def test_refresh_skip_recent(self):
         """Should skip download if database updated within 7 days."""
-        from tools.geoip import refresh_geoip_db, _META_PATH, utcnow
+        from tools.geoip import refresh_geoip_db, utcnow
 
         meta = {"updated_at": utcnow()}
         with patch("tools.geoip.MAXMIND_LICENSE_KEY", "test-key"), \
@@ -390,7 +390,7 @@ class TestGeoIP:
             assert db_available() is False
 
     def test_meta_helpers(self):
-        from tools.geoip import _load_meta, _save_meta, _META_PATH
+        from tools.geoip import _load_meta, _save_meta
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:

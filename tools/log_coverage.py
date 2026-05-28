@@ -236,7 +236,6 @@ def collect_log_sources(client: str, *, full: bool = False) -> dict:
         except Exception as exc:
             log_error("", "coverage.collect.load_existing", str(exc),
                       severity="warning", traceback=True, context={"path": str(out_path)})
-            pass
 
     data = {
         "client": ck,
@@ -491,7 +490,6 @@ def get_coverage(client: str) -> dict:
         except Exception as exc:
             log_error("", "coverage.get_coverage.load_cached", str(exc),
                       severity="warning", traceback=True, context={"client": client, "path": str(cov_path)})
-            pass
 
     # Auto-collect
     result = collect_log_sources(client)

@@ -107,7 +107,7 @@ def index_case(
         pts = meta.get("phase_timestamps", {})
         durations = {}
         try:
-            from datetime import datetime as _dt, timezone as _tz
+            from datetime import datetime as _dt
             def _parse_ts(s):
                 return _dt.fromisoformat(s.replace("Z", "+00:00"))
             if pts.get("created_at") and pts.get("closed_at"):

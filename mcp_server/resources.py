@@ -110,11 +110,12 @@ def register_resources(mcp: FastMCP) -> None:
 
     @mcp.resource("socai://cases/{case_id}/report")
     def case_report(case_id: str) -> str:
-        """Final HTML report for a case.
+        """Final markdown report for a case.
 
-        Searches for MDR, PUP, and legacy report files in order and
-        returns the first match. The report is always HTML — ready to
-        view, copy, or download.
+        Searches MDR, PUP, and legacy report files in order and returns
+        the first match. Reports are markdown — render as a markdown
+        artifact in the Desktop visualiser. Legacy HTML files (pre-2026-05
+        migration) are still surfaced for older cases.
         """
         _require_scope("investigations:read")
         if not _validated_case_id(case_id):
@@ -124,6 +125,10 @@ def register_resources(mcp: FastMCP) -> None:
 
         reports_dir = CASES_DIR / case_id / "reports"
         for candidate in [
+            reports_dir / "mdr_report.md",
+            reports_dir / "pup_report.md",
+            reports_dir / "investigation_report.md",
+            # Legacy HTML (pre-markdown migration)
             reports_dir / "mdr_report.html",
             reports_dir / "pup_report.html",
             reports_dir / "investigation_report.html",
@@ -221,19 +226,26 @@ def register_resources(mcp: FastMCP) -> None:
             return _json({"error": "No response actions found."})
         return _json(load_json(path))
 
-    @mcp.resource("socai://cases/{case_id}/fp-ticket")
-    def case_fp_ticket(case_id: str) -> str:
-        """Existing FP closure comment (if generated)."""
+    @mcp.resource("socai://cases/{case_id}/closure-comment")
+    def case_closure_comment(case_id: str) -> str:
+        """Existing closure comment (BP / FP / Undetermined — if generated).
+
+        Falls back to the legacy ``artefacts/fp_comms/fp_ticket.md`` path
+        for pre-2026-05 cases.
+        """
         _require_scope("investigations:read")
         if not _validated_case_id(case_id):
             return _json({"error": "Invalid case_id."})
 
         from config.settings import CASES_DIR
 
-        path = CASES_DIR / case_id / "artefacts" / "fp_comms" / "fp_ticket.md"
-        if not path.exists():
-            return f"No FP ticket found for case {case_id!r}."
-        return path.read_text(encoding="utf-8")
+        for candidate in (
+            CASES_DIR / case_id / "artefacts" / "closure_comments" / "closure_comment.md",
+            CASES_DIR / case_id / "artefacts" / "fp_comms" / "fp_ticket.md",
+        ):
+            if candidate.exists():
+                return candidate.read_text(encoding="utf-8")
+        return f"No closure comment found for case {case_id!r}."
 
     @mcp.resource("socai://cases/{case_id}/evidence")
     def case_evidence(case_id: str) -> str:
@@ -488,161 +500,101 @@ def register_resources(mcp: FastMCP) -> None:
 
     @mcp.resource("socai://templates/mdr-report")
     def mdr_report_template() -> str:
-        """MDR report template: HTML structure, CSS styling, and analyst instructions.
+        """MDR report template: markdown skeleton and analyst instructions.
 
-        Use this resource to produce an MDR report as a complete HTML
-        document. Contains the Gold Analyst Instruction Set (mandatory
-        5-section structure), the CSS styling, and an HTML skeleton.
+        Contains the Gold Analyst Instruction Set (mandatory 5-section
+        structure) and a markdown skeleton. Reports are written as markdown
+        and rendered by the Claude Desktop visualiser.
 
-        Always produce reports as **complete HTML documents** using the
-        template below. Pass the HTML to ``save_report`` with
+        Pass the filled-in markdown to ``save_report`` with
         ``report_type="mdr_report"`` to persist it.
         """
         from tools.generate_mdr_report import _SYSTEM_PROMPT
-        from tools.common import _REPORT_CSS
 
-        html_skeleton = (
-            '<!DOCTYPE html>\n'
-            '<html lang="en">\n<head>\n'
-            '<meta charset="UTF-8">\n'
-            '<title>MDR Incident Report — {case_id}</title>\n'
-            f'<style>\n{_REPORT_CSS}</style>\n'
-            '</head>\n\n<body>\n\n'
-            '<h1>MDR Incident Report — {case_id}</h1>\n'
-            '<div class="meta">\n'
-            '  <strong>Generated:</strong> {timestamp}<br>\n'
-            '  <strong>Analyst:</strong> {analyst}<br>\n'
-            '  <strong>Client:</strong> {client}<br>\n'
-            '  <strong>Severity:</strong> {severity}\n'
-            '</div>\n\n'
-            '<div class="section">\n'
-            '  <h2>Executive Summary</h2>\n'
-            '  <p>[One paragraph: what was detected, by which platform, '
-            'users/hosts involved, overall assessment, confidence level, '
-            'evidence gaps.]</p>\n'
-            '</div>\n\n'
-            '<div class="section">\n'
-            '  <h2>Technical Analysis</h2>\n'
-            '  <p>[Chronological technical narrative: timestamps, processes, '
-            'IOCs inline, enrichment verdicts. Mark gaps as UNKNOWN.]</p>\n'
-            '</div>\n\n'
-            '<div class="section">\n'
-            '  <h2>Plain-Language Risk Explanation</h2>\n'
-            '  <p>[Non-technical: what happened, business impact, '
-            'what could happen if no action.]</p>\n'
-            '</div>\n\n'
-            '<div class="section">\n'
-            '  <h2>What Was NOT Observed</h2>\n'
-            '  <ul>\n'
-            '    <li>[Tailored list of notable absences relevant to this '
-            'detection type]</li>\n'
-            '  </ul>\n'
-            '</div>\n\n'
-            '<div class="section">\n'
-            '  <h2>Recommendations</h2>\n'
-            '  <h3>SOC-Executed Containment</h3>\n'
-            '  <ul>\n'
-            '    <li>[Reference Approved Response Actions and containment '
-            'capabilities]</li>\n'
-            '  </ul>\n'
-            '  <h3>Client-Responsible Remediation</h3>\n'
-            '  <ul>\n'
-            '    <li>[Specific actions the client must take — name the user, '
-            'host, or IOC]</li>\n'
-            '  </ul>\n'
-            '</div>\n\n'
-            '</body>\n</html>'
+        md_skeleton = (
+            "# MDR Incident Report — {case_id}\n\n"
+            "**Generated:** {timestamp}  \n"
+            "**Analyst:** {analyst}  \n"
+            "**Client:** {client}  \n"
+            "**Severity:** {severity}\n\n"
+            "---\n\n"
+            "## Executive Summary\n\n"
+            "[One paragraph: what was detected, by which platform, users/hosts "
+            "involved, overall assessment, confidence level, evidence gaps.]\n\n"
+            "## Technical Analysis\n\n"
+            "[Chronological technical narrative: timestamps, processes, IOCs "
+            "inline, enrichment verdicts. Mark gaps as UNKNOWN.]\n\n"
+            "## Plain-Language Risk Explanation\n\n"
+            "[Non-technical: what happened, business impact, what could happen "
+            "if no action.]\n\n"
+            "## What Was NOT Observed\n\n"
+            "- [Tailored list of notable absences relevant to this detection type]\n\n"
+            "## Recommendations\n\n"
+            "### SOC-Executed Containment\n\n"
+            "- [Reference Approved Response Actions and containment capabilities]\n\n"
+            "### Client-Responsible Remediation\n\n"
+            "- [Specific actions the client must take — name the user, host, or IOC]\n"
         )
 
         return (
             "# MDR Report Template\n\n"
             "## How to Use\n\n"
-            "1. Produce the report as a **complete HTML document** using the skeleton below\n"
+            "1. Produce the report as **markdown** using the skeleton below\n"
             "2. Fill in each section with investigation findings\n"
-            "3. Call `save_report` with `report_type=\"mdr_report\"` and the full HTML as `report_text`\n\n"
+            "3. Call `save_report` with `report_type=\"mdr_report\"` and the full markdown as `report_text`\n\n"
+            "The Claude Desktop visualiser renders the markdown directly — "
+            "no HTML, no inline styles required.\n\n"
             "---\n\n"
             "## Analyst Instructions (Gold MDR / XDR Instruction Set)\n\n"
             f"{_SYSTEM_PROMPT}\n\n"
             "---\n\n"
-            "## HTML Skeleton\n\n"
+            "## Markdown Skeleton\n\n"
             "Use this exact structure. Replace placeholder text with actual findings.\n\n"
-            "```html\n"
-            f"{html_skeleton}\n"
+            "```markdown\n"
+            f"{md_skeleton}"
             "```\n"
         )
 
     @mcp.resource("socai://templates/pup-report")
     def pup_report_template() -> str:
-        """PUP/PUA report template: lightweight HTML structure and styling.
+        """PUP/PUA report template: lightweight markdown structure.
 
         PUP/PUA reports are shorter than full MDR reports. They focus on
         software identification, file details, access vector, actions taken,
         and a standing recommendation to confirm whether the application is
         approved for use on corporate machines.
 
-        Always produce reports as **complete HTML documents** using the
-        template below. Pass the HTML to ``save_report`` with
+        Pass the filled-in markdown to ``save_report`` with
         ``report_type="pup_report"`` to persist it.
         """
-        from tools.common import _REPORT_CSS
-
-        html_skeleton = (
-            '<!DOCTYPE html>\n'
-            '<html lang="en">\n<head>\n'
-            '<meta charset="UTF-8">\n'
-            '<title>PUP/PUA Report — {case_id}</title>\n'
-            f'<style>\n{_REPORT_CSS}</style>\n'
-            '</head>\n\n<body>\n\n'
-            '<h1>PUP/PUA Report — {case_id}</h1>\n'
-            '<div class="meta">\n'
-            '  <strong>Generated:</strong> {timestamp}<br>\n'
-            '  <strong>Analyst:</strong> {analyst}<br>\n'
-            '  <strong>Client:</strong> {client}\n'
-            '</div>\n\n'
-            '<div class="section">\n'
-            '  <h2>Summary</h2>\n'
-            '  <p>[One line: hostname, username, software name, PUP category, '
-            'detection platform.]</p>\n'
-            '</div>\n\n'
-            '<div class="section">\n'
-            '  <h2>Path &amp; File Details</h2>\n'
-            '  <ul>\n'
-            '    <li><strong>File name:</strong> [name]</li>\n'
-            '    <li><strong>File path:</strong> [full path on disk]</li>\n'
-            '    <li><strong>SHA256:</strong> [hash if available]</li>\n'
-            '    <li><strong>Publisher / signer:</strong> [if known]</li>\n'
-            '    <li><strong>Detection name:</strong> [EDR/AV signature or '
-            'heuristic label]</li>\n'
-            '    <li><strong>Category:</strong> [adware / browser hijacker / '
-            'bundleware / toolbar / crypto miner / system optimiser / other]</li>\n'
-            '  </ul>\n'
-            '</div>\n\n'
-            '<div class="section">\n'
-            '  <h2>Access Vector</h2>\n'
-            '  <p>[How the software arrived: user-installed, bundled with '
-            'legitimate software, drive-by download, group policy, unknown. '
-            'Include evidence — process tree, parent process, download source '
-            'URL, installer name.]</p>\n'
-            '</div>\n\n'
-            '<div class="section">\n'
-            '  <h2>Actions Taken</h2>\n'
-            '  <ul>\n'
-            '    <li>[What the SOC/EDR has already done: quarantined, blocked, '
-            'alerted only. Include timestamps.]</li>\n'
-            '  </ul>\n'
-            '</div>\n\n'
-            '<div class="section">\n'
-            '  <h2>Recommendations</h2>\n'
-            '  <ul>\n'
-            '    <li>Confirm whether this application is approved for use on '
-            'corporate machines</li>\n'
-            '    <li>[If not approved: removal steps — uninstall, EDR quarantine, '
-            'manual cleanup]</li>\n'
-            '    <li>[Prevention: block publisher hash, restrict user installs, '
-            'browser policy]</li>\n'
-            '  </ul>\n'
-            '</div>\n\n'
-            '</body>\n</html>'
+        md_skeleton = (
+            "# PUP/PUA Report — {case_id}\n\n"
+            "**Generated:** {timestamp}  \n"
+            "**Analyst:** {analyst}  \n"
+            "**Client:** {client}\n\n"
+            "---\n\n"
+            "## Summary\n\n"
+            "[One line: hostname, username, software name, PUP category, "
+            "detection platform.]\n\n"
+            "## Path & File Details\n\n"
+            "- **File name:** [name]\n"
+            "- **File path:** [full path on disk]\n"
+            "- **SHA256:** [hash if available]\n"
+            "- **Publisher / signer:** [if known]\n"
+            "- **Detection name:** [EDR/AV signature or heuristic label]\n"
+            "- **Category:** [adware / browser hijacker / bundleware / toolbar / "
+            "crypto miner / system optimiser / other]\n\n"
+            "## Access Vector\n\n"
+            "[How the software arrived: user-installed, bundled with legitimate "
+            "software, drive-by download, group policy, unknown. Include evidence "
+            "— process tree, parent process, download source URL, installer name.]\n\n"
+            "## Actions Taken\n\n"
+            "- [What the SOC/EDR has already done: quarantined, blocked, alerted "
+            "only. Include timestamps.]\n\n"
+            "## Recommendations\n\n"
+            "- Confirm whether this application is approved for use on corporate machines\n"
+            "- [If not approved: removal steps — uninstall, EDR quarantine, manual cleanup]\n"
+            "- [Prevention: block publisher hash, restrict user installs, browser policy]\n"
         )
 
         instructions = (
@@ -665,16 +617,16 @@ def register_resources(mcp: FastMCP) -> None:
         return (
             "# PUP/PUA Report Template\n\n"
             "## How to Use\n\n"
-            "1. Produce the report as a **complete HTML document** using the skeleton below\n"
+            "1. Produce the report as **markdown** using the skeleton below\n"
             "2. Fill in each section with investigation findings\n"
-            "3. Call `save_report` with `report_type=\"pup_report\"` and the full HTML as `report_text`\n\n"
+            "3. Call `save_report` with `report_type=\"pup_report\"` and the full markdown as `report_text`\n\n"
             "---\n\n"
             f"{instructions}\n"
             "---\n\n"
-            "## HTML Skeleton\n\n"
+            "## Markdown Skeleton\n\n"
             "Use this exact structure. Replace placeholder text with actual findings.\n\n"
-            "```html\n"
-            f"{html_skeleton}\n"
+            "```markdown\n"
+            f"{md_skeleton}"
             "```\n"
         )
 
@@ -1161,11 +1113,22 @@ def register_resources(mcp: FastMCP) -> None:
                 "prompt": "write_pup_report",
                 "use_for": "Potentially Unwanted Program / Adware findings.",
             },
-            "fp_ticket": {
+            "closure_comment": {
                 "auto_close": True,
-                "disposition": "false_positive",
-                "prompt": "write_fp_closure",
-                "use_for": "False positive closure ticket.",
+                "disposition": "from_classification",
+                "prompt": "write_closure_comment",
+                "classifications": [
+                    "bp_suspicious_but_expected",
+                    "bp_suspicious_not_malicious",
+                    "fp_incorrect_logic",
+                    "fp_inaccurate_data",
+                    "undetermined",
+                ],
+                "use_for": (
+                    "2-sentence Sentinel-aligned closure comment for any "
+                    "non-TP disposition (BP / FP / Undetermined). Pass "
+                    "`disposition` explicitly when calling save_report."
+                ),
             },
             "fp_tuning_ticket": {
                 "auto_close": True,
@@ -1395,11 +1358,11 @@ def register_resources(mcp: FastMCP) -> None:
                 "report_delivery": {
                     "description": "These tools trigger the prompt+save workflow for deliverables. They auto-create cases if needed.",
                     "tools": {
-                        "load_report_template": "Returns HTML skeleton, CSS, and analyst instructions for mdr_report or pup_report. No case required — use when prepare_* is blocked (e.g. closed case).",
+                        "load_report_template": "Returns markdown skeleton and analyst instructions for mdr_report or pup_report. No case required — use when prepare_* is blocked (e.g. closed case).",
                         "prepare_mdr_report": "Loads context for write_mdr_report prompt → save_report. Primary client deliverable.",
                         "prepare_pup_report": "Loads context for write_pup_report prompt → save_report.",
                         "prepare_executive_summary": "Loads context for write_executive_summary prompt → save_report.",
-                        "prepare_fp_ticket": "Loads context for write_fp_closure prompt → save_report.",
+                        "prepare_closure_comment": "Loads context for write_closure_comment prompt → save_report(report_type=closure_comment). Sentinel-aligned BP/FP/Undetermined.",
                         "prepare_fp_tuning_ticket": "Loads context for write_fp_tuning prompt → save_report.",
                         "security_arch_review": "Redirects to write_security_arch_review prompt → save_report.",
                         "save_report": "Persist a locally-written report as HTML. Handles defanging, auto-close, audit.",
@@ -1455,7 +1418,7 @@ def register_resources(mcp: FastMCP) -> None:
                 "report_writing": {
                     "write_mdr_report": "Gold MDR/XDR Analyst Instruction Set + case data → write report → save_report(type=mdr_report).",
                     "write_pup_report": "PUP/PUA report → save_report(type=pup_report).",
-                    "write_fp_closure": "2-sentence FP closure comment → save_report(type=fp_ticket).",
+                    "write_closure_comment": "2-sentence Sentinel-aligned closure comment for BP/FP/Undetermined → save_report(type=closure_comment).",
                     "write_fp_tuning": "SIEM engineering tuning ticket → save_report(type=fp_tuning_ticket).",
                     "write_executive_summary": "Non-technical RAG-rated summary → save_report(type=executive_summary).",
                     "write_security_arch_review": "Security architecture gaps and recommendations → save_report(type=security_arch_review).",
@@ -1481,7 +1444,7 @@ def register_resources(mcp: FastMCP) -> None:
                     "socai://cases/{case_id}/iocs": "Extracted IOCs.",
                     "socai://cases/{case_id}/verdicts": "Verdict summary (malicious/suspicious/clean).",
                     "socai://cases/{case_id}/enrichment": "Full enrichment data from all providers.",
-                    "socai://cases/{case_id}/report": "Final HTML report.",
+                    "socai://cases/{case_id}/report": "Final markdown report (legacy HTML fallback).",
                     "socai://cases/{case_id}/full": "Complete case bundle.",
                 },
                 "client_and_config": {
@@ -1501,8 +1464,8 @@ def register_resources(mcp: FastMCP) -> None:
                     "socai://report-types": "save_report report_type values + auto-close behaviour.",
                 },
                 "report_templates": {
-                    "socai://templates/mdr-report": "MDR report template — 5-section structure, analyst instructions, CSS styling, markdown skeleton.",
-                    "socai://templates/pup-report": "PUP/PUA report template — lightweight 5-section structure, styling, markdown skeleton.",
+                    "socai://templates/mdr-report": "MDR report template — 5-section structure, analyst instructions, and markdown skeleton.",
+                    "socai://templates/pup-report": "PUP/PUA report template — lightweight 5-section structure and markdown skeleton.",
                 },
                 "intelligence": {
                     "socai://ioc-index/stats": "IOC index — recurring indicators across cases.",
@@ -1510,7 +1473,7 @@ def register_resources(mcp: FastMCP) -> None:
                     "socai://landscape": "Cross-case threat landscape.",
                 },
                 "soc_processes": {
-                    "_routing": "ALWAYS check these local resources FIRST for any SOC process, policy, escalation, or P1/P2 question. Only use search_confluence if the topic is not covered here.",
+                    "_routing": "Use these local resources for any SOC process, policy, escalation, or P1/P2 question. `search_confluence` does NOT cover SOC processes — Confluence is exclusively the published ET/EV threat-articles archive.",
                     "socai://incident-handling": "Role priorities (L1-L3), SOAR queue workflow, alert sorting, escalation rules.",
                     "socai://service-requests": "Service Desk queues, ticket lifecycle, merging, blueprint, Teams channels.",
                     "socai://time-tracking": "Kantata time categories, overtime logging (1.5x/2x), on-call hours.",
@@ -1550,7 +1513,9 @@ def register_resources(mcp: FastMCP) -> None:
                 "phishing": "lookup_client → classify_attack → add_evidence → enrich_iocs → capture_urls → detect_phishing → analyse_email → kql_investigation(playbook=phishing) → write_mdr_report prompt → save_report",
                 "malware": "lookup_client → classify_attack → add_evidence → enrich_iocs → analyse_file(depth=full) → start_sandbox_session → kql_investigation(playbook=malware-execution) → write_mdr_report prompt → save_report",
                 "account_compromise": "lookup_client → classify_attack → add_evidence → enrich_iocs → kql_investigation(playbook=account-compromise) → detect_anomalies → write_mdr_report prompt → save_report",
-                "false_positive": "add_evidence → enrich_iocs → write_fp_closure prompt → save_report(type=fp_ticket) → optionally write_fp_tuning prompt → save_report(type=fp_tuning_ticket)",
+                "benign_positive": "add_evidence → write_closure_comment(classification=bp_suspicious_but_expected | bp_suspicious_not_malicious) → save_report(type=closure_comment, disposition=benign_positive)",
+                "false_positive": "add_evidence → enrich_iocs → write_closure_comment(classification=fp_incorrect_logic | fp_inaccurate_data) → save_report(type=closure_comment, disposition=false_positive) → optionally write_fp_tuning prompt → save_report(type=fp_tuning_ticket)",
+                "undetermined": "add_evidence → write_closure_comment(classification=undetermined) → save_report(type=closure_comment, disposition=inconclusive)",
                 "pup_pua": "classify_attack → enrich_iocs → write_pup_report prompt → save_report(type=pup_report)",
             },
         })

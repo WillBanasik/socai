@@ -16,8 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import CASES_DIR, REGISTRY_FILE, WEEKLY_REPORTS
-from tools.common import load_json, log_error, utcnow, write_artefact, write_report
+from config.settings import REGISTRY_FILE, WEEKLY_REPORTS
+from tools.common import load_json, log_error, utcnow, write_artefact
 
 
 def _week_bounds(year: int, week: int) -> tuple[datetime, datetime]:
@@ -161,8 +161,8 @@ def generate_weekly_report(
     lines.append("- Ensure all CRITICAL cases have been escalated or formally closed.\n")
 
     report_text = "\n".join(lines)
-    report_path = WEEKLY_REPORTS / f"weekly_{week_label}.html"
-    write_report(report_path, report_text, title=f"Weekly Report — {week_label}")
+    report_path = WEEKLY_REPORTS / f"weekly_{week_label}.md"
+    write_artefact(report_path, report_text)
     print(f"[generate_weekly_report] Report written to {report_path} "
           f"({len(included)} case(s))")
     return {

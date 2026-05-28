@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sys
 import urllib.parse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -144,16 +144,6 @@ def triage(case_id: str, urls: list[str] | None = None, severity: str = "medium"
         "escalate_severity": escalate_severity,
         "ts": utcnow(),
     }
-
-    # LLM triage contextualisation (advisory)
-    if known_malicious or known_suspicious:
-        try:
-            from tools.llm_insight import contextualise_triage
-            context = contextualise_triage(result, severity)
-            if context:
-                result["llm_context"] = context
-        except Exception:
-            pass
 
     # Print summary
     eprint(f"[triage] Checked {len(input_iocs)} IOC(s) against intelligence")

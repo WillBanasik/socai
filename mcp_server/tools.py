@@ -10,21 +10,20 @@ Tools are organised in three tiers:
   Tier 3 — Advanced / Restricted
 
 Deliverable tools (``prepare_mdr_report``, ``prepare_pup_report``,
-``prepare_fp_ticket``, ``prepare_fp_tuning_ticket``) accept an optional
+``prepare_closure_comment``, ``prepare_fp_tuning_ticket``) accept an optional
 ``case_id`` — if omitted, ``_ensure_case()`` auto-creates and promotes a case.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-from functools import partial
 from pathlib import Path
 from typing import Annotated
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from mcp_server.auth import _get_caller_email, _get_caller_scopes, _require_scope
+from mcp_server.auth import _require_scope
 
 # ---------------------------------------------------------------------------
 # Boundary stubs — client and case boundaries have been removed.
@@ -103,7 +102,7 @@ TOOLSETS: dict[str, set[str]] = {
         # reporting / close-out
         "generate_report", "prepare_mdr_report", "prepare_pup_report",
         "prepare_executive_summary", "load_report_template", "save_report",
-        "generate_weekly", "response_actions", "prepare_fp_ticket",
+        "generate_weekly", "response_actions", "prepare_closure_comment",
         "prepare_fp_tuning_ticket",
     },
     "phishing": {
@@ -148,7 +147,7 @@ _TOOLSET_DESCRIPTIONS: dict[str, str] = {
     "phishing": "Email/URL investigation — phishing detection, email parsing, browser-based page-capture sessions.",
     "malware": "File/payload analysis — static file analysis, file upload, sandbox detonation sessions, YARA.",
     "forensics": "Host DFIR — EVTX correlation, Velociraptor/MDE package ingest, memory-dump analysis (incl. Volatility3).",
-    "intel": "Threat intelligence & OSINT — OpenCTI, Confluence, threat articles, Cyberint, CVE context, security architecture review.",
+    "intel": "Threat intelligence & OSINT — OpenCTI, threat articles (published ET/EV archive on Confluence), Cyberint, CVE context, security architecture review.",
     "darkweb": "Dark-web & exposure — stealer-log/breach parsing, Ahmia/IntelX search, client exposure testing.",
     "analysis": "Deep analytical rigour — investigation matrix, report quality gate, determination analysis, follow-up proposals.",
     "admin": "Maintenance — rebuild case-memory/baseline indexes, refresh GeoIP, audit user activity.",
@@ -868,11 +867,14 @@ def _register_tier1(mcp: FastMCP) -> None:
         _check_client_boundary(case_id)
 
         from config.settings import CASES_DIR
-        from tools.common import load_json
 
         reports_dir = CASES_DIR / case_id / "reports"
         report_path = None
         for candidate in [
+            reports_dir / "mdr_report.md",
+            reports_dir / "pup_report.md",
+            reports_dir / "investigation_report.md",
+            # Legacy HTML reports (pre-markdown migration)
             reports_dir / "mdr_report.html",
             reports_dir / "pup_report.html",
             reports_dir / "investigation_report.html",
@@ -881,7 +883,7 @@ def _register_tier1(mcp: FastMCP) -> None:
                 report_path = candidate
                 break
         if report_path is None:
-            return f"No report found for case {case_id!r}. Run prepare_mdr_report or prepare_pup_report first."
+            return f"No report found for case {case_id!r}. Use the write_mdr_report or write_pup_report MCP prompt first."
 
         return report_path.read_text(encoding="utf-8")
 
@@ -1325,145 +1327,88 @@ def _register_tier1(mcp: FastMCP) -> None:
 
     @mcp.tool(title="Load Report Template")
     def load_report_template(template: str) -> str:
-        """Return the HTML skeleton, CSS, and analyst instructions for a report template.
+        """Return the markdown skeleton and analyst instructions for a report template.
         Use when ``prepare_mdr_report``/``prepare_pup_report`` is unavailable (e.g. case is closed).
         ``template``: ``"mdr_report"`` or ``"pup_report"``.
         """
         _require_scope("investigations:read")
 
-        from tools.common import _REPORT_CSS
-
         if template == "mdr_report":
             from tools.generate_mdr_report import _SYSTEM_PROMPT
 
-            html_skeleton = (
-                '<!DOCTYPE html>\n'
-                '<html lang="en">\n<head>\n'
-                '<meta charset="UTF-8">\n'
-                '<title>MDR Incident Report — {case_id}</title>\n'
-                f'<style>\n{_REPORT_CSS}</style>\n'
-                '</head>\n\n<body>\n\n'
-                '<h1>MDR Incident Report — {case_id}</h1>\n'
-                '<div class="meta">\n'
-                '  <strong>Generated:</strong> {timestamp}<br>\n'
-                '  <strong>Analyst:</strong> {analyst}<br>\n'
-                '  <strong>Client:</strong> {client}<br>\n'
-                '  <strong>Severity:</strong> {severity}\n'
-                '</div>\n\n'
-                '<div class="section">\n'
-                '  <h2>Executive Summary</h2>\n'
-                '  <p>[One paragraph: what was detected, by which platform, '
-                'users/hosts involved, overall assessment, confidence level, '
-                'evidence gaps.]</p>\n'
-                '</div>\n\n'
-                '<div class="section">\n'
-                '  <h2>Technical Analysis</h2>\n'
-                '  <p>[Chronological technical narrative: timestamps, processes, '
-                'IOCs inline, enrichment verdicts. Mark gaps as UNKNOWN.]</p>\n'
-                '</div>\n\n'
-                '<div class="section">\n'
-                '  <h2>Plain-Language Risk Explanation</h2>\n'
-                '  <p>[Non-technical: what happened, business impact, '
-                'what could happen if no action.]</p>\n'
-                '</div>\n\n'
-                '<div class="section">\n'
-                '  <h2>What Was NOT Observed</h2>\n'
-                '  <ul>\n'
-                '    <li>[Tailored list of notable absences relevant to this '
-                'detection type]</li>\n'
-                '  </ul>\n'
-                '</div>\n\n'
-                '<div class="section">\n'
-                '  <h2>Recommendations</h2>\n'
-                '  <h3>SOC-Executed Containment</h3>\n'
-                '  <ul>\n'
-                '    <li>[Reference Approved Response Actions and containment '
-                'capabilities]</li>\n'
-                '  </ul>\n'
-                '  <h3>Client-Responsible Remediation</h3>\n'
-                '  <ul>\n'
-                '    <li>[Specific actions the client must take — name the user, '
-                'host, or IOC]</li>\n'
-                '  </ul>\n'
-                '</div>\n\n'
-                '</body>\n</html>'
+            md_skeleton = (
+                "# MDR Incident Report — {case_id}\n\n"
+                "**Generated:** {timestamp}  \n"
+                "**Analyst:** {analyst}  \n"
+                "**Client:** {client}  \n"
+                "**Severity:** {severity}\n\n"
+                "---\n\n"
+                "## Executive Summary\n\n"
+                "[One paragraph: what was detected, by which platform, users/hosts "
+                "involved, overall assessment, confidence level, evidence gaps.]\n\n"
+                "## Technical Analysis\n\n"
+                "[Chronological technical narrative: timestamps, processes, IOCs "
+                "inline, enrichment verdicts. Mark gaps as UNKNOWN.]\n\n"
+                "## Plain-Language Risk Explanation\n\n"
+                "[Non-technical: what happened, business impact, what could happen "
+                "if no action.]\n\n"
+                "## What Was NOT Observed\n\n"
+                "- [Tailored list of notable absences relevant to this detection type]\n\n"
+                "## Recommendations\n\n"
+                "### SOC-Executed Containment\n\n"
+                "- [Reference Approved Response Actions and containment capabilities]\n\n"
+                "### Client-Responsible Remediation\n\n"
+                "- [Specific actions the client must take — name the user, host, or IOC]\n"
             )
 
             return (
                 "# MDR Report Template\n\n"
                 "## How to Use\n\n"
-                "1. Produce the report as a **complete HTML document** using the skeleton below\n"
+                "1. Produce the report as **markdown** using the skeleton below\n"
                 "2. Fill in each section with investigation findings\n"
-                "3. Call `save_report` with `report_type=\"mdr_report\"` and the full HTML as `report_text`\n\n"
+                "3. Call `save_report` with `report_type=\"mdr_report\"` and the full markdown as `report_text`\n\n"
+                "The Claude Desktop visualiser renders the markdown directly — "
+                "no HTML, no inline styles required.\n\n"
                 "---\n\n"
                 "## Analyst Instructions (Gold MDR / XDR Instruction Set)\n\n"
                 f"{_SYSTEM_PROMPT}\n\n"
                 "---\n\n"
-                "## HTML Skeleton\n\n"
+                "## Markdown Skeleton\n\n"
                 "Use this exact structure. Replace placeholder text with actual findings.\n\n"
-                "```html\n"
-                f"{html_skeleton}\n"
+                "```markdown\n"
+                f"{md_skeleton}"
                 "```\n"
             )
 
         if template == "pup_report":
-            html_skeleton = (
-                '<!DOCTYPE html>\n'
-                '<html lang="en">\n<head>\n'
-                '<meta charset="UTF-8">\n'
-                '<title>PUP/PUA Report — {case_id}</title>\n'
-                f'<style>\n{_REPORT_CSS}</style>\n'
-                '</head>\n\n<body>\n\n'
-                '<h1>PUP/PUA Report — {case_id}</h1>\n'
-                '<div class="meta">\n'
-                '  <strong>Generated:</strong> {timestamp}<br>\n'
-                '  <strong>Analyst:</strong> {analyst}<br>\n'
-                '  <strong>Client:</strong> {client}\n'
-                '</div>\n\n'
-                '<div class="section">\n'
-                '  <h2>Summary</h2>\n'
-                '  <p>[One line: hostname, username, software name, PUP category, '
-                'detection platform.]</p>\n'
-                '</div>\n\n'
-                '<div class="section">\n'
-                '  <h2>Path &amp; File Details</h2>\n'
-                '  <ul>\n'
-                '    <li><strong>File name:</strong> [name]</li>\n'
-                '    <li><strong>File path:</strong> [full path on disk]</li>\n'
-                '    <li><strong>SHA256:</strong> [hash if available]</li>\n'
-                '    <li><strong>Publisher / signer:</strong> [if known]</li>\n'
-                '    <li><strong>Detection name:</strong> [EDR/AV signature or '
-                'heuristic label]</li>\n'
-                '    <li><strong>Category:</strong> [adware / browser hijacker / '
-                'bundleware / toolbar / crypto miner / system optimiser / other]</li>\n'
-                '  </ul>\n'
-                '</div>\n\n'
-                '<div class="section">\n'
-                '  <h2>Access Vector</h2>\n'
-                '  <p>[How the software arrived: user-installed, bundled with '
-                'legitimate software, drive-by download, group policy, unknown. '
-                'Include evidence — process tree, parent process, download source '
-                'URL, installer name.]</p>\n'
-                '</div>\n\n'
-                '<div class="section">\n'
-                '  <h2>Actions Taken</h2>\n'
-                '  <ul>\n'
-                '    <li>[What the SOC/EDR has already done: quarantined, blocked, '
-                'alerted only. Include timestamps.]</li>\n'
-                '  </ul>\n'
-                '</div>\n\n'
-                '<div class="section">\n'
-                '  <h2>Recommendations</h2>\n'
-                '  <ul>\n'
-                '    <li>Confirm whether this application is approved for use on '
-                'corporate machines</li>\n'
-                '    <li>[If not approved: removal steps — uninstall, EDR quarantine, '
-                'manual cleanup]</li>\n'
-                '    <li>[Prevention: block publisher hash, restrict user installs, '
-                'browser policy]</li>\n'
-                '  </ul>\n'
-                '</div>\n\n'
-                '</body>\n</html>'
+            md_skeleton = (
+                "# PUP/PUA Report — {case_id}\n\n"
+                "**Generated:** {timestamp}  \n"
+                "**Analyst:** {analyst}  \n"
+                "**Client:** {client}\n\n"
+                "---\n\n"
+                "## Summary\n\n"
+                "[One line: hostname, username, software name, PUP category, "
+                "detection platform.]\n\n"
+                "## Path & File Details\n\n"
+                "- **File name:** [name]\n"
+                "- **File path:** [full path on disk]\n"
+                "- **SHA256:** [hash if available]\n"
+                "- **Publisher / signer:** [if known]\n"
+                "- **Detection name:** [EDR/AV signature or heuristic label]\n"
+                "- **Category:** [adware / browser hijacker / bundleware / toolbar / "
+                "crypto miner / system optimiser / other]\n\n"
+                "## Access Vector\n\n"
+                "[How the software arrived: user-installed, bundled with legitimate "
+                "software, drive-by download, group policy, unknown. Include evidence "
+                "— process tree, parent process, download source URL, installer name.]\n\n"
+                "## Actions Taken\n\n"
+                "- [What the SOC/EDR has already done: quarantined, blocked, alerted "
+                "only. Include timestamps.]\n\n"
+                "## Recommendations\n\n"
+                "- Confirm whether this application is approved for use on corporate machines\n"
+                "- [If not approved: removal steps — uninstall, EDR quarantine, manual cleanup]\n"
+                "- [Prevention: block publisher hash, restrict user installs, browser policy]\n"
             )
 
             instructions = (
@@ -1486,16 +1431,16 @@ def _register_tier1(mcp: FastMCP) -> None:
             return (
                 "# PUP/PUA Report Template\n\n"
                 "## How to Use\n\n"
-                "1. Produce the report as a **complete HTML document** using the skeleton below\n"
+                "1. Produce the report as **markdown** using the skeleton below\n"
                 "2. Fill in each section with investigation findings\n"
-                "3. Call `save_report` with `report_type=\"pup_report\"` and the full HTML as `report_text`\n\n"
+                "3. Call `save_report` with `report_type=\"pup_report\"` and the full markdown as `report_text`\n\n"
                 "---\n\n"
                 f"{instructions}\n"
                 "---\n\n"
-                "## HTML Skeleton\n\n"
+                "## Markdown Skeleton\n\n"
                 "Use this exact structure. Replace placeholder text with actual findings.\n\n"
-                "```html\n"
-                f"{html_skeleton}\n"
+                "```markdown\n"
+                f"{md_skeleton}"
                 "```\n"
             )
 
@@ -2200,10 +2145,14 @@ def _register_tier1(mcp: FastMCP) -> None:
         page_id: str = "",
         limit: int = 15,
     ) -> str:
-        """Browse or search published ET/EV threat articles on the team Confluence wiki.
+        """Browse or search **published ET/EV threat articles** on the team Confluence space.
+
+        Confluence is exclusively the archive of published threat articles (ET/EV).
+        It is **not** a SOC knowledge base — do not use for processes, policies,
+        runbooks, escalation matrices, or shift handover. Those live in
+        ``socai://`` resources and client playbooks.
 
         Modes: browse (no args) → recent pages; search (query) → title match; read (page_id) → full body.
-        DO NOT use for SOC process/runbook questions — those are in ``socai://`` resources.
         """
         _require_scope("investigations:read")
 
@@ -2861,6 +2810,25 @@ def _register_tier2(mcp: FastMCP) -> None:
                 "call save_threat_article again with force=True."
             )
             return _json(result)
+
+        # Reload the persisted article so Claude Desktop can render it as a
+        # markdown artifact in the visualiser. The .md file is the analyst's
+        # copy-paste source for the customer deliverable / Confluence post.
+        try:
+            from pathlib import Path as _Path
+            ap = _Path(result.get("article_path", ""))
+            if ap.is_file():
+                result["article_md"] = ap.read_text(encoding="utf-8")
+                result["display_hint"] = (
+                    "Render `article_md` as a markdown artifact so Claude Desktop "
+                    "opens it in the visualiser (Artifacts side panel). Do not "
+                    "paste the raw markdown into the chat body."
+                )
+        except Exception as exc:
+            from tools.common import log_error
+            import traceback as _tb
+            log_error(case_id or "", "save_threat_article.read_back", str(exc),
+                      severity="warning", traceback=_tb.format_exc())
 
         from config.settings import OPENCTI_PUBLISH_ENABLED
         if OPENCTI_PUBLISH_ENABLED:
@@ -3935,11 +3903,13 @@ def _register_tier3(mcp: FastMCP) -> None:
         report_text: str,
         disposition: str | None = None,
     ) -> str:
-        """Persist a locally-generated report (HTML preferred) with defanging, audit, and auto-close.
+        """Persist a locally-generated **markdown** report with defanging, audit, and auto-close.
         Call after the matching ``write_*`` prompt. ``report_type``: ``mdr_report`` | ``pup_report`` |
-        ``fp_ticket`` | ``fp_tuning_ticket`` | ``executive_summary`` | ``security_arch_review``.
-        On success, render ``report_html`` as a self-contained HTML artifact so Claude Desktop
-        opens it in the visualiser (Artifacts side panel) — do not paste the raw HTML into the chat body.
+        ``closure_comment`` | ``fp_tuning_ticket`` | ``executive_summary`` | ``security_arch_review``.
+        For ``closure_comment`` (BP/FP/Undetermined) pass ``disposition`` explicitly
+        (``benign_positive`` / ``false_positive`` / ``inconclusive``). ``report_text`` must be
+        markdown. On success, render ``report_md`` as a markdown artifact so Claude Desktop opens
+        it in the visualiser (Artifacts side panel) for analyst review.
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
@@ -3956,18 +3926,18 @@ def _register_tier3(mcp: FastMCP) -> None:
 
         # Reload the persisted file and return its contents so the analyst
         # sees the (defanged, header-prefixed) report rendered in the Desktop
-        # visualiser. Claude Desktop renders a self-contained HTML document as
-        # an artifact (side panel) — no signed URL or browser round-trip needed.
+        # visualiser as a markdown artifact. The .md file on disk is the
+        # copy-paste source for the customer deliverable.
         if isinstance(result, dict) and result.get("status") == "ok":
             try:
                 from pathlib import Path as _Path
                 rp = _Path(result.get("report_path", ""))
                 if rp.is_file():
-                    result["report_html"] = rp.read_text(encoding="utf-8")
+                    result["report_md"] = rp.read_text(encoding="utf-8")
                     result["display_hint"] = (
-                        "Render `report_html` as a self-contained HTML artifact "
-                        "so Claude Desktop opens it in the visualiser (Artifacts "
-                        "side panel). Do not paste the raw HTML into the chat body."
+                        "Render `report_md` as a markdown artifact so Claude "
+                        "Desktop opens it in the visualiser (Artifacts side "
+                        "panel). Do not paste the raw markdown into the chat body."
                     )
             except Exception as exc:
                 from tools.common import log_error
@@ -4022,40 +3992,64 @@ def _register_tier3(mcp: FastMCP) -> None:
         result = await asyncio.to_thread(lambda: generate_response_actions(case_id))
         return _json(result)
 
-    @mcp.tool(title="Prepare False Positive Ticket")
-    async def prepare_fp_ticket(
-        alert_data: str,
+    @mcp.tool(title="Prepare Closure Comment")
+    async def prepare_closure_comment(
+        classification: str,
+        alert_data: str = "",
         case_id: str = "",
         platform: str | None = None,
         query_text: str | None = None,
     ) -> str:
-        """Prepare a false positive ticket. Use the ``write_fp_closure`` prompt to write the
-        FP closure comment, then call ``save_report(report_type="fp_ticket")`` to persist it.
+        """Prepare a two-sentence incident closure comment for any non-TP disposition.
 
-        ``case_id`` optional — auto-created if empty. ``alert_data`` stored as evidence for the prompt.
+        ``classification``: one of ``bp_suspicious_but_expected``,
+        ``bp_suspicious_not_malicious``, ``fp_incorrect_logic``,
+        ``fp_inaccurate_data``, ``undetermined`` (Sentinel-aligned).
+        Use the ``write_closure_comment`` prompt to write the comment, then call
+        ``save_report(report_type="closure_comment", disposition=<...>)`` to persist it.
+
+        ``case_id`` optional — auto-created if empty. ``alert_data`` stored as evidence.
         """
         _require_scope("investigations:submit")
 
-        case_id = _ensure_case(case_id, disposition="false_positive")
+        from tools.closure_comment import CLASSIFICATIONS
+        if classification not in CLASSIFICATIONS:
+            return _json({
+                "status": "error",
+                "reason": f"Unknown classification {classification!r}.",
+                "valid_classifications": list(CLASSIFICATIONS),
+            })
+
+        cfg = CLASSIFICATIONS[classification]
+        case_id = _ensure_case(case_id, disposition=cfg["disposition"])
         _check_client_boundary(case_id)
 
         # Store alert as evidence so the prompt can access it
-        try:
-            from api import actions
-            actions.add_evidence(case_id, alert_data)
-        except Exception:
-            pass  # best-effort
+        if alert_data:
+            try:
+                from api import actions
+                actions.add_evidence(case_id, alert_data)
+            except Exception:
+                pass  # best-effort
 
         return _json({
             "status": "use_prompt",
             "case_id": case_id,
-            "prompt": "write_fp_closure",
+            "classification": classification,
+            "label": cfg["label"],
+            "disposition": cfg["disposition"],
+            "prompt": "write_closure_comment",
             "save_tool": "save_report",
-            "save_args": {"report_type": "fp_ticket"},
+            "save_args": {
+                "report_type": "closure_comment",
+                "disposition": cfg["disposition"],
+            },
             "message": (
-                f"Case {case_id} is ready with alert evidence. Use the "
-                f"write_fp_closure prompt to generate the FP ticket, then "
-                f'call save_report with report_type="fp_ticket" to persist it.'
+                f"Case {case_id} is ready ({cfg['label']}). Use the "
+                f"write_closure_comment prompt with classification="
+                f'"{classification}" to generate the closure comment, then '
+                f'call save_report with report_type="closure_comment" and '
+                f'disposition="{cfg["disposition"]}" to persist it.'
             ),
         })
 
