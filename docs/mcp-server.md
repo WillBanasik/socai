@@ -180,7 +180,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | Tool | Permission | Description |
 |---|---|---|
 | `new_investigation` | — | Reset conversation boundaries and session tracking for new case/client |
-| `lookup_client` | `investigations:read` | Confirm client and platform config; returns full knowledge base + playbook inline. Pass `slim=True` on re-lookup within a session to skip the ~25 KB payload. Name is auto-normalised (case + whitespace/hyphens → underscores); explicit aliases supported, fuzzy/substring matching is not. |
+| `lookup_client` | `investigations:read` | Confirm client and platform config; returns full knowledge base, response playbook, and Sentinel reference inline (raw, no slimming). Name is auto-normalised (case + whitespace/hyphens → underscores); explicit aliases supported, fuzzy/substring matching is not. |
 | `update_client_knowledge` | `investigations:submit` | Update client knowledge base with investigation insights |
 | `create_case` | `investigations:submit` | Create new case in triage status (auto-generates ID) |
 | `promote_case` | `investigations:submit` | Promote case from triage to active |

@@ -10,12 +10,14 @@ MCP_AUTH_MODE: str = os.getenv("SOCAI_MCP_AUTH", "local")
 MCP_MOUNT_PATH: str = os.getenv("SOCAI_MCP_MOUNT_PATH", "/")
 
 # Tool profile — which toolsets register at startup (comma-separated).
-# "core" is always included and covers the common log/case path. Specialist
-# groups (phishing, malware, forensics, intel, darkweb, analysis, admin) load
-# on demand via the load_toolset tool, which pushes a tools/list_changed
-# notification so the client picks them up mid-session. "all" (or "full")
-# registers every toolset up front — legacy behaviour / dynamic-load fallback.
-MCP_TOOLSETS: str = os.getenv("SOCAI_MCP_TOOLSETS", "core")
+# "all" (default) registers every toolset up front, which is what Claude
+# Desktop needs: its client-side tool-search indexes the session-start tool
+# list, so tools loaded later via load_toolset are invisible to the model.
+# "core" + explicit groups remains available for transports/clients that
+# honour tools/list_changed notifications; specialist groups (phishing,
+# malware, forensics, intel, darkweb, analysis, admin) then load on demand
+# via the load_toolset tool.
+MCP_TOOLSETS: str = os.getenv("SOCAI_MCP_TOOLSETS", "all")
 
 # Public origin used to build clickable links returned by tools (e.g. report URLs).
 # Production must override with the public Azure URL.

@@ -13,11 +13,32 @@ from tools.common import md_file_note
 
 
 def _run_action(case_id: str, action: str, fn, **extra_data) -> dict:
-    """Run a pipeline action, update timeline, return result."""
+    """Run a pipeline action, update timeline, return result.
+
+    If ``fn()`` returns a dict carrying a truthy ``error`` key, surface that as
+    ``status: "error"`` so callers don't see a happy outer envelope wrapping a
+    failed inner result (e.g. closed-case guards, missing-artefact paths).
+    """
     timeline.append(case_id, "action_start", {"action": action, **extra_data})
     try:
         result = fn()
         msg = result.pop("_message", None) if isinstance(result, dict) else None
+
+        # Propagate inner errors to the outer envelope so the response shape
+        # matches the actual outcome (was: status=ok + result.error coexisting).
+        inner_error = result.get("error") if isinstance(result, dict) else None
+        if inner_error:
+            timeline.append(case_id, "action_error", {
+                "action": action,
+                "error": inner_error,
+            })
+            return {
+                "status": "error",
+                "action": action,
+                "error": inner_error,
+                "result": result,
+            }
+
         timeline.append(case_id, "action_done", {
             "action": action,
             "message": msg or f"{action} completed.",
@@ -219,7 +240,27 @@ def extract_and_enrich(
             pass  # baseline is best-effort
 
         enrich_result = enrich(case_id, skip_iocs=skip_iocs or None, depth=depth)
+
+        # Short-circuit on inner errors (e.g. closed-case guard). Without this,
+        # the summary builder below silently produces a happy "0 enriched / no
+        # malicious IOCs detected" message that reads like a clean bill of
+        # health — but the enrichment never ran. Propagate the real error so
+        # _run_action surfaces it as status: "error".
+        if isinstance(enrich_result, dict) and enrich_result.get("error"):
+            return {
+                "error": enrich_result["error"],
+                "case_id": case_id,
+                "_message": f"Enrichment skipped: {enrich_result['error']}",
+            }
+
         verdict_result = score_verdicts(case_id)
+        if isinstance(verdict_result, dict) and verdict_result.get("error"):
+            return {
+                "error": verdict_result["error"],
+                "case_id": case_id,
+                "_message": f"Verdict scoring skipped: {verdict_result['error']}",
+            }
+
         idx_result = update_ioc_index(case_id)
 
         # Build contextual summary

@@ -223,11 +223,9 @@ def register_prompts(mcp: FastMCP) -> None:
             f"**Target entity:** {target_entity or '(not specified)'}",
             f"**Timeframe:** {timeframe}",
             "",
-            "**Before proceeding:** Confirm the client via `lookup_client` and register "
-            "the alert via `add_evidence`. Call `classify_attack` if you have not already. "
-            "If you need the client's knowledge base, response playbook, or Sentinel "
-            "reference (FP patterns, tables, escalation procedures), call "
-            "`lookup_client(slim=false)` once — it skips them by default to save context.",
+            "**Before proceeding:** Confirm the client via `lookup_client` (returns the "
+            "knowledge base, response playbook, and Sentinel reference inline) and register "
+            "the alert via `add_evidence`. Call `classify_attack` if you have not already.",
             "",
             "## Overview",
             pb.get("description", ""),

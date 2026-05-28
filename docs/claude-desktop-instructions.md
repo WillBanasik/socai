@@ -37,7 +37,7 @@ You do not need to call `create_case` upfront. Caseless tools cover ad-hoc IOC e
 
 ### Efficiency: Combined Tools
 
-Several tools auto-chain to save round-trips — prefer them over separate calls. Examples (read each tool's description in `socai://capabilities` for parameter detail): URL capture that auto-runs phishing detection; PE analysis that auto-runs YARA; KQL batch execution for parallel queries; case creation with `enrichment_id` to auto-import a prior caseless enrichment; `slim=True` on `lookup_client` re-lookups to skip the ~25 KB knowledge / playbook payload already in context.
+Several tools auto-chain to save round-trips — prefer them over separate calls. Examples (read each tool's description in `socai://capabilities` for parameter detail): URL capture that auto-runs phishing detection; PE analysis that auto-runs YARA; KQL batch execution for parallel queries; case creation with `enrichment_id` to auto-import a prior caseless enrichment.
 
 ### Case Summary
 
@@ -210,7 +210,7 @@ Clients may have a playbook defining:
 Clients may also have a knowledge base with infrastructure, naming conventions, and business context.
 
 Access via:
-- `lookup_client` — confirms client identity and available platforms. Name is normalised case-insensitively, and whitespace/hyphens are collapsed to underscores (e.g. "Heidelberg Materials" → `heidelberg_materials`). Explicit aliases declared in `config/client_entities.json` (e.g. "hbm" for Heidelberg Materials) auto-resolve when there is a single match. Substring/fuzzy matching is **not** supported — if a name does not resolve, read `socai://clients` for the authoritative list rather than guessing variants. On re-lookup within a session, pass `slim=True` to skip the ~25 KB knowledge / playbook payload already in your context.
+- `lookup_client` — confirms client identity and returns platforms, workspace IDs, knowledge base, response playbook, and Sentinel reference inline (full raw context, no slimming). Name is normalised case-insensitively, and whitespace/hyphens are collapsed to underscores (e.g. "Heidelberg Materials" → `heidelberg_materials`). Explicit aliases declared in `config/client_entities.json` (e.g. "hbm" for Heidelberg Materials) auto-resolve when there is a single match. Substring/fuzzy matching is **not** supported — if a name does not resolve, read `socai://clients` for the authoritative list rather than guessing variants.
 - `socai://clients/{client_name}/playbook` — read the playbook resource directly.
 - The response-actions tool — generates a structured response plan from the playbook (deterministic, no LLM).
 

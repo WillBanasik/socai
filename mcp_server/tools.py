@@ -56,9 +56,12 @@ def _check_workspace_boundary(workspace_id: str) -> None:  # noqa: ARG001
 #
 # Every tool is registered once at startup (cheap — just a JSON schema), then
 # register_tools() prunes the live tool list down to the active profile
-# (SOCAI_MCP_TOOLSETS, default "core"). Specialist groups load on demand via
-# the load_toolset tool, which restores them from _ALL_TOOLS and pushes a
-# tools/list_changed notification so the client picks them up mid-session.
+# (SOCAI_MCP_TOOLSETS, default "all" — every toolset loaded up front, which is
+# what Claude Desktop requires since its tool-search indexes session-start
+# tools only). When the profile is narrower than "all", specialist groups can
+# still be added mid-session via the load_toolset tool, which restores them
+# from _ALL_TOOLS and pushes a tools/list_changed notification — useful for
+# transports/clients that honour the notification.
 #
 # "core" is always present: case management, enrichment/triage, all log
 # hunting (KQL/Defender/Falcon), recall, GeoIP, coverage, reporting/close-out,
@@ -383,122 +386,6 @@ def _pop_message(result: dict) -> dict:
     return result
 
 
-def _slim_enrichment(result: dict) -> dict:
-    """Compact an enrichment payload before returning it to the model.
-
-    Drops the bulky per-provider ``results`` array (often 100+ rows / many
-    thousands of tokens that then ride along in context every subsequent
-    turn). The full data is persisted to disk under ``enrichment_id`` and
-    reachable via import_enrichment / create_case, so nothing is lost. Keeps
-    the consolidated per-IOC ``verdicts`` plus a verdict-count rollup — the
-    model gets everything it needs to triage at roughly 1/6th the size.
-    """
-    if not isinstance(result, dict) or "results" not in result:
-        return result
-    slim = {k: v for k, v in result.items() if k != "results"}
-    dropped = len(result.get("results") or [])
-    verdicts = result.get("verdicts") or {}
-    if isinstance(verdicts, dict):
-        counts: dict[str, int] = {}
-        for v in verdicts.values():
-            key = v.get("verdict", "unknown") if isinstance(v, dict) else "unknown"
-            counts[key] = counts.get(key, 0) + 1
-        slim["verdict_counts"] = counts
-    eid = result.get("enrichment_id")
-    slim["results_detail"] = (
-        f"{dropped} per-provider rows omitted to save context. "
-        + (
-            f"Full detail saved as enrichment_id '{eid}' — import with "
-            f"import_enrichment(case_id, enrichment_id='{eid}') or "
-            f"create_case(enrichment_id='{eid}')."
-            if eid
-            else "Full detail persisted to disk."
-        )
-    )
-    return slim
-
-
-_RECALL_EXCERPT_CAP = 1200  # chars of report excerpt kept inline per prior case
-
-
-def _slim_recall(result: dict, excerpt_cap: int = _RECALL_EXCERPT_CAP) -> dict:
-    """Compact a recall payload before returning it to the model.
-
-    Keeps every *conclusion* (verdicts, findings, IOCs, links, dispositions)
-    and the human-readable ``summary`` untouched. The bulky per-case
-    ``report_excerpt`` is *truncated* to ``excerpt_cap`` chars rather than
-    dropped — a short snippet still gives campaign context inline, so the model
-    rarely needs N follow-up ``read_report`` calls — with a pointer to the full
-    report. ``recall_cases(..., verbose=True)`` returns the untruncated payload.
-    """
-    if not isinstance(result, dict) or "prior_cases" not in result:
-        return result
-    slim = dict(result)
-    cases: list = []
-    truncated = 0
-    for pc in result.get("prior_cases") or []:
-        if not isinstance(pc, dict):
-            cases.append(pc)
-            continue
-        excerpt = pc.get("report_excerpt")
-        if isinstance(excerpt, str) and len(excerpt) > excerpt_cap:
-            truncated += 1
-            cid = pc.get("case_id", "")
-            trimmed = dict(pc)
-            trimmed["report_excerpt"] = (
-                excerpt[:excerpt_cap]
-                + f"\n\n[...truncated to save context — full report via "
-                f"socai://cases/{cid}/report or recall_cases(..., verbose=True)]"
-            )
-            cases.append(trimmed)
-        else:
-            cases.append(pc)
-    slim["prior_cases"] = cases
-    if truncated:
-        slim["_slim_note"] = (
-            f"{truncated} prior-case report excerpt(s) truncated to ~{excerpt_cap} "
-            f"chars; all verdicts, findings and IOCs retained. Use verbose=True "
-            f"for complete reports."
-        )
-    return slim
-
-
-def _slim_correlate(result: dict, cap: int = 50) -> dict:
-    """Compact a correlation payload before returning it to the model.
-
-    Caps the raw per-type match arrays in ``hits`` (notably ``hash_matches``,
-    which can grow one row-preview per matching log row) at ``cap`` entries.
-    The full per-type *counts* live in ``hit_summary`` and are never touched —
-    the decision layer stays complete. Each truncated list discloses its true
-    total. ``correlate(..., verbose=True)`` returns every match.
-    """
-    if not isinstance(result, dict):
-        return result
-    hits = result.get("hits")
-    if not isinstance(hits, dict):
-        return result
-    capped: dict = {}
-    omitted: dict = {}
-    for key, vals in hits.items():
-        if isinstance(vals, list) and len(vals) > cap:
-            capped[key] = vals[:cap]
-            omitted[key] = f"showing {cap} of {len(vals)}"
-        else:
-            capped[key] = vals
-    if not omitted:
-        return result
-    slim = dict(result)
-    slim["hits"] = capped
-    slim["_slim_note"] = {
-        "truncated": omitted,
-        "detail": (
-            "Match lists capped to save context; full per-type counts are in "
-            "hit_summary. Re-run with verbose=True for all matches."
-        ),
-    }
-    return slim
-
-
 # ---------------------------------------------------------------------------
 # Tier 1 — Core Investigation tools
 # ---------------------------------------------------------------------------
@@ -527,12 +414,9 @@ def _register_tier1(mcp: FastMCP) -> None:
         })
 
     @mcp.tool(title="Look Up Client", annotations={"readOnlyHint": True})
-    def lookup_client(client_name: str, slim: bool = True) -> str:
-        """Resolve a client and return their registered security platforms and workspace IDs.
-
-        ``slim=True`` (default): name + platforms only (few hundred bytes). ``slim=False``: also
-        includes knowledge base, response playbook, and Sentinel reference (~25 KB) — use only
-        when writing a report, deciding escalation, or matching known-FP patterns.
+    def lookup_client(client_name: str) -> str:
+        """Resolve a client and return their registered security platforms, workspace IDs,
+        knowledge base, response playbook, and Sentinel reference.
         """
         _require_scope("investigations:read")
 
@@ -593,34 +477,16 @@ def _register_tier1(mcp: FastMCP) -> None:
             "platform_list": list(platforms.keys()),
         }
 
-        if slim:
-            # Default path. Knowledge base / playbook / sentinel reference
-            # (~25 KB) are NOT returned. Read them as resources
-            # (``socai://clients/{name}``) or call again with slim=false when
-            # the investigation actually needs that depth of context.
-            result["_hint"] = (
-                "Slim response (default). Platforms + workspace IDs only. "
-                "Call lookup_client(slim=false) when you need the knowledge "
-                "base, response playbook, or Sentinel reference inline — "
-                "e.g. when writing the report, deciding escalation, or "
-                "matching activity against known-FP patterns."
-            )
-            return _json(result)
-
-        # Load client knowledge files inline so the agent has full context
-        # from the first tool call — no separate resource read needed.
         from mcp_server.resources import _resolve_client_playbook, _resolve_client_knowledge
         from config.settings import CLIENT_PLAYBOOKS_DIR as CLIENTS_DIR
         import json as _json_mod
 
-        # Knowledge base
         kb_path = _resolve_client_knowledge(cfg["name"])
         if kb_path:
             result["knowledge_base"] = kb_path.read_text(encoding="utf-8")
         else:
             result["knowledge_base"] = None
 
-        # Response playbook
         pb_path = _resolve_client_playbook(cfg["name"])
         if pb_path:
             try:
@@ -630,19 +496,12 @@ def _register_tier1(mcp: FastMCP) -> None:
         else:
             result["response_playbook"] = None
 
-        # Sentinel reference
         sentinel_path = CLIENTS_DIR / cfg["name"] / "sentinel.md"
         if sentinel_path.exists():
             result["sentinel_reference"] = sentinel_path.read_text(encoding="utf-8")
         else:
             result["sentinel_reference"] = None
 
-        result["_hint"] = (
-            "Full client context loaded (slim=false). For subsequent "
-            "lookup_client calls in this session, omit slim — it defaults "
-            "to true and skips re-sending the knowledge base / playbook / "
-            "sentinel payload already in your context."
-        )
         return _json(result)
 
     @mcp.tool(title="List Clients", annotations={"readOnlyHint": True})
@@ -908,7 +767,12 @@ def _register_tier1(mcp: FastMCP) -> None:
         timeline = _load("timeline.json")
 
         # Error log (case-specific entries — JSONL format)
-        errors: list = []
+        # Group duplicate errors by (severity, step, error) to avoid emitting
+        # the same noise warning 90+ times in the per-turn payload. Full raw
+        # entries persist on disk and can be read via `python3 socai.py errors`.
+        errors_total = 0
+        errors_by_severity: dict[str, int] = {}
+        error_groups: dict[tuple, dict] = {}
         try:
             from config.settings import ERROR_LOG
             if ERROR_LOG.exists():
@@ -918,12 +782,45 @@ def _register_tier1(mcp: FastMCP) -> None:
                         continue
                     try:
                         entry = json.loads(line)
-                        if entry.get("case_id") == case_id:
-                            errors.append(entry)
                     except json.JSONDecodeError:
                         continue
+                    if entry.get("case_id") != case_id:
+                        continue
+                    errors_total += 1
+                    sev = entry.get("severity", "error")
+                    errors_by_severity[sev] = errors_by_severity.get(sev, 0) + 1
+                    key = (sev, entry.get("step", ""), entry.get("error", ""))
+                    g = error_groups.get(key)
+                    if g is None:
+                        error_groups[key] = {
+                            "severity": sev,
+                            "step": entry.get("step", ""),
+                            "error": entry.get("error", ""),
+                            "count": 1,
+                            "first_ts": entry.get("ts"),
+                            "last_ts": entry.get("ts"),
+                            "sample_context": entry.get("context"),
+                        }
+                    else:
+                        g["count"] += 1
+                        g["last_ts"] = entry.get("ts") or g["last_ts"]
         except Exception:
             pass
+
+        # Top groups by count (relevance-ranked, capped)
+        ERROR_GROUPS_CAP = 10
+        top_groups = sorted(error_groups.values(), key=lambda x: -x["count"])
+        errors_summary = {
+            "total": errors_total,
+            "by_severity": errors_by_severity,
+            "distinct_groups": len(error_groups),
+            "top_groups": top_groups[:ERROR_GROUPS_CAP],
+        }
+        if len(error_groups) > ERROR_GROUPS_CAP:
+            errors_summary["_truncated"] = (
+                f"Showing top {ERROR_GROUPS_CAP} of {len(error_groups)} distinct error groups. "
+                f"Run `python3 socai.py errors` for the full log."
+            )
 
         summary = {
             "case_id": case_id,
@@ -951,11 +848,12 @@ def _register_tier1(mcp: FastMCP) -> None:
             "campaign": campaign if campaign else {},
             "analyst_notes": analyst_notes,
             "timeline_events": len(timeline) if isinstance(timeline, list) else 0,
-            "errors": errors,
+            "errors": errors_summary,
             "_hint": (
                 "This is the full case summary. Use read_report to view the "
                 "investigation narrative (read-only), or read_case_file for "
-                "specific artefacts. Use close_case to close the investigation."
+                "specific artefacts. Use close_case to close the investigation. "
+                "Full raw error log: `python3 socai.py errors`."
             ),
         }
 
@@ -2209,11 +2107,10 @@ def _register_tier1(mcp: FastMCP) -> None:
     async def quick_enrich(
         iocs: list[str],
         depth: str = "auto",
-        verbose: bool = False,
     ) -> str:
         """Fast, ad-hoc IOC lookup — no case required. Auto-detects IOC type.
-        Returns per-IOC verdicts + an ``enrichment_id`` importable via ``import_enrichment``.
-        ``depth``: ``"auto"`` | ``"fast"`` | ``"full"``. ``verbose=True`` returns full per-provider rows (large). See ``socai://enrichment-depths``.
+        Returns per-IOC verdicts + full per-provider rows + an ``enrichment_id`` importable via ``import_enrichment``.
+        ``depth``: ``"auto"`` | ``"fast"`` | ``"full"``. See ``socai://enrichment-depths``.
         """
         _require_scope("investigations:read")
 
@@ -2226,7 +2123,7 @@ def _register_tier1(mcp: FastMCP) -> None:
         result = await asyncio.to_thread(
             lambda: _quick_enrich(iocs, depth=depth)
         )
-        return _json(result if verbose else _slim_enrichment(result))
+        return _json(result)
 
 
     @mcp.tool(title="Import Enrichment into Case")
@@ -2780,19 +2677,16 @@ def _register_tier2(mcp: FastMCP) -> None:
         return _json(_pop_message(result))
 
     @mcp.tool(title="Correlate IOCs Across Artefacts")
-    async def correlate(case_id: str, verbose: bool = False) -> str:
+    async def correlate(case_id: str) -> str:
         """Cross-reference IOCs across all case artefacts (enrichment, captured pages, email headers,
-        logs) to find shared infrastructure and attack chain links.
-
-        ``verbose=True`` returns every raw match (large); default caps match lists and keeps full counts.
+        logs) to find shared infrastructure and attack chain links. Returns every raw match.
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
         from api import actions
         result = await asyncio.to_thread(lambda: actions.correlate(case_id))
-        result = _pop_message(result)
-        return _json(result if verbose else _slim_correlate(result))
+        return _json(_pop_message(result))
 
     @mcp.tool(title="Reconstruct Forensic Timeline", annotations={"readOnlyHint": True})
     async def reconstruct_timeline(case_id: str) -> str:
@@ -2823,14 +2717,13 @@ def _register_tier2(mcp: FastMCP) -> None:
         iocs: list[str] | None = None,
         emails: list[str] | None = None,
         keywords: list[str] | None = None,
-        verbose: bool = False,
     ) -> str:
         """Search all prior investigations for overlapping IOCs, emails, or keywords.
         Use during every investigation to check whether entities appeared in prior cases.
 
         Note overlaps in your analysis but keep evidence in the current case — never merge.
         Use ``campaign_cluster`` for automated bulk IOC comparison across all cases.
-        ``verbose=True`` includes full prior-case report excerpts (large); default keeps conclusions + pointers.
+        Returns full prior-case report excerpts.
         """
         _require_scope("investigations:read")
 
@@ -2850,7 +2743,7 @@ def _register_tier2(mcp: FastMCP) -> None:
                 "merge cases or add evidence to prior cases. One alert = one case. "
                 "Consider whether overlap indicates a campaign or coincidence."
             )
-        return _json(result if verbose else _slim_recall(result))
+        return _json(result)
 
     @mcp.tool(title="Assess Threat Landscape", annotations={"readOnlyHint": True})
     def assess_landscape(
@@ -4997,10 +4890,11 @@ def register_tools(mcp: FastMCP) -> None:
     """Register every MCP tool, then prune to the active toolset profile.
 
     All tools register once (cheap — just a JSON schema), get snapshotted into
-    ``_ALL_TOOLS``, then tools outside the active profile (``SOCAI_MCP_TOOLSETS``,
-    default ``core``) are removed from the live list. They load on demand via
-    ``load_toolset``. ``SOCAI_MCP_TOOLSETS=all`` keeps everything registered
-    (legacy behaviour / fallback if a client ignores tools/list_changed).
+    ``_ALL_TOOLS``. The active profile is ``SOCAI_MCP_TOOLSETS`` (default
+    ``all`` — every tool stays live up front, which is what Claude Desktop
+    needs). If a narrower profile is set, tools outside it are pruned from
+    the live list and can be restored mid-session via ``load_toolset`` for
+    clients that honour ``tools/list_changed``.
     """
     _register_meta(mcp)
     _register_tier1(mcp)

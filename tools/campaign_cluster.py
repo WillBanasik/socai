@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import BASE_DIR, CASES_DIR, IOC_INDEX_FILE
-from tools.common import load_json, log_error, save_json, utcnow
+from tools.common import eprint, load_json, log_error, save_json, utcnow
 
 CAMPAIGNS_FILE = BASE_DIR / "registry" / "campaigns.json"
 CAMPAIGN_MIN_IOCS = int(os.getenv("SOCAI_CAMPAIGN_MIN_IOCS", "2"))
@@ -213,19 +213,10 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
     """
     Group cases sharing IOCs into campaigns.
     If case_id is provided, also writes per-case campaign links.
-    """
-    # --- Guard: block clustering on closed cases ---
-    if case_id:
-        meta_path = CASES_DIR / case_id / "case_meta.json"
-        if meta_path.exists():
-            try:
-                _meta = load_json(meta_path)
-                if _meta.get("status") == "closed":
-                    return {"error": f"Case {case_id} is closed — cannot cluster a closed case.",
-                            "case_id": case_id}
-            except Exception:
-                pass
 
+    Read-only against case state — safe to run on closed cases for retrospective
+    campaign analysis. Only writes to the global ``CAMPAIGNS_FILE`` registry.
+    """
     ioc_index = _load_optional(IOC_INDEX_FILE)
     if not ioc_index:
         return {"status": "no_data", "reason": "ioc_index.json not found or empty", "campaigns": []}
@@ -302,11 +293,11 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
     }
     save_json(CAMPAIGNS_FILE, campaigns_data)
 
-    # Print summary
-    print(f"[campaign_cluster] Found {len(campaigns)} campaign(s)")
+    # Progress summary — must go to stderr so MCP stdio JSON-RPC isn't corrupted
+    eprint(f"[campaign_cluster] Found {len(campaigns)} campaign(s)")
     for c in campaigns:
-        print(f"  {c['campaign_id']}: {len(c['cases'])} cases, "
-              f"{c['shared_ioc_count']} shared IOCs, confidence={c['confidence']}")
+        eprint(f"  {c['campaign_id']}: {len(c['cases'])} cases, "
+               f"{c['shared_ioc_count']} shared IOCs, confidence={c['confidence']}")
 
     return {
         "status": "ok",

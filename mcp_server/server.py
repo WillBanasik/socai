@@ -156,7 +156,7 @@ Analysts select these from the Claude Desktop prompt picker for structured workf
 | Case Management | list_cases, case_summary, read_report, read_case_file, new_investigation, close_case, link_cases, merge_cases, add_evidence, add_finding |
 | Enrichment & Analysis | enrich_iocs, correlate, contextualise_cves, recall_cases, campaign_cluster, web_search |
 | Email & Phishing | analyse_email, capture_urls, detect_phishing |
-| SIEM & Endpoint | lookup_client (slim by default — platforms + workspace IDs; slim=false to pull full knowledge base, playbook & Sentinel reference inline), run_kql, load_kql_playbook, generate_sentinel_query, generate_queries, ingest_velociraptor, ingest_mde_package |
+| SIEM & Endpoint | lookup_client (platforms, workspace IDs, knowledge base, playbook & Sentinel reference inline), run_kql, load_kql_playbook, generate_sentinel_query, generate_queries, ingest_velociraptor, ingest_mde_package |
 | Dynamic Analysis | start_sandbox_session, stop_sandbox_session, list_sandbox_sessions, start_browser_session, stop_browser_session, list_browser_sessions |
 | Reporting | generate_report, prepare_mdr_report, prepare_pup_report, prepare_executive_summary, generate_weekly, prepare_fp_ticket, prepare_fp_tuning_ticket, reconstruct_timeline, security_arch_review, response_actions |
 | Threat Intelligence | assess_landscape, search_threat_articles, generate_threat_article, search_confluence (ET/EV articles only) |
