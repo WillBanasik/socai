@@ -171,7 +171,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `discard_case` | `investigations:submit` | Discard triage case (false alarm) |
 | `list_cases` | `investigations:read` | List cases from registry (filterable by status) |
 | `case_summary` | `investigations:read` | Aggregated case view (meta + IOCs + verdicts + enrichment) |
-| `read_report` | `investigations:read` | Read investigation report (HTML) |
+| `read_report` | `investigations:read` | Read investigation report (markdown; legacy HTML files remain readable) |
 | `read_case_file` | `investigations:read` | Read any case artefact file |
 | `list_case_files` | `investigations:read` | List all artefact files for a case |
 | `close_case` | `investigations:submit` | Close case with disposition |

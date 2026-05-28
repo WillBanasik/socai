@@ -401,7 +401,7 @@ Triage is automatically called by `extract_and_enrich()` before enrichment. Its 
 - Three providers (parallel): Any.Run, Joe Sandbox, Hybrid Analysis
 - Extracts: network IOCs, MITRE TTPs, C2 beacons
 - Writes discovered IOCs to `artefacts/sandbox/sandbox_iocs.json` for downstream enrichment
-- `--detonate` flag triggers local containerised detonation when cloud sandbox lookups are inconclusive (see pipeline step 6b)
+- `--detonate` flag triggers local containerised detonation when cloud sandbox lookups are inconclusive (analyst-initiated; see `docs/sandbox.md`)
 
 ## Log Anomaly Detection
 

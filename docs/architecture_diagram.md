@@ -34,7 +34,7 @@ graph TB
             EI["extract_iocs"]
             EN["enrich (tiered)<br/>T0: ASN pre-screen<br/>T1: Fast (4 providers)<br/>T2: Deep OSINT (6 providers)"]
             SV["score_verdicts"]
-            CC["campaign_cluster"]
+            CCL["campaign_cluster"]
             TR["triage"]
             CVE["cve_contextualise"]
         end

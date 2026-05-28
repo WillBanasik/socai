@@ -129,6 +129,14 @@ Available report prompts:
 The server-side `prepare_mdr_report`, `prepare_pup_report`, etc. tools load
 context for client-side report generation via the corresponding prompt.
 
+**Rendering rule — render reports and articles in the visualiser, not in chat.**
+`save_report` and `save_threat_article` return the persisted (defanged) markdown
+as `report_md` / `article_md`. Render that field as a **markdown artifact** so
+Claude Desktop opens it in the Artifacts side panel (the visualiser). Do not
+paste the raw markdown into the chat body, summarise, truncate, paraphrase, or
+wrap it in code fences. The `.md` file on disk is the analyst's copy-paste
+source for the customer deliverable; the visualiser is the review surface.
+
 ## Analytical Prompts (Client-Side)
 
 Local Claude does the analytical reasoning using case data loaded by prompts:
