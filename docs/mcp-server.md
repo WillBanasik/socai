@@ -380,8 +380,8 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `triage_alert` | Guided alert triage workflow |
 | `triage_file` | Desktop-side file triage for potentially malicious files — hash locally, enrich, extract IOCs in sandbox, ship only when deep server-side analysis is warranted |
 | `write_fp_ticket` | FP analysis + suppression workflow (analyst guidance for working through an FP). Distinct from `write_closure_comment` (which produces the 2-sentence closure note) and `write_fp_tuning` (the SIEM engineering tuning ticket). |
-| `kql_investigation` | Unified KQL playbook prompt (select playbook: bec, phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, ioc-hunt) |
-| `cql_investigation` | Unified CQL (LogScale) playbook prompt (select playbook: account-compromise, ioc-hunt, lateral-movement, malware-execution) |
+| `kql_investigation` | Unified KQL playbook prompt (select playbook: bec, phishing, account-compromise, malware-execution, privilege-escalation, data-exfiltration, lateral-movement, command-and-control, reconnaissance, ioc-hunt, ransomware, credential-access, persistence, defence-evasion, web-shell, oauth-consent, insider-data-staging). Playbook list is resolved dynamically from `config/playbooks/*.yaml`. |
+| `cql_investigation` | Unified CQL (LogScale) playbook prompt — same 17 playbooks (every v2 playbook now ships CQL except `reconnaissance` Stage 3, authoritative-DNS enumeration, which is Sentinel-only). Email/M365 stages require the Defender/M365 forwarding connector. |
 | `user_security_check` | Broad-scope user account security review (identity validation → alerts → sign-in risk → email threats → activity audit → risk assessment) |
 
 ### Report Generation (8)

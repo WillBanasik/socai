@@ -17,6 +17,13 @@ required_capabilities:
   - email_post_delivery
   - email_url_clicks
   - identity_logon
+  logscale:
+  - device_file_events
+  - device_process_events
+  - email_events
+  - email_post_delivery
+  - email_url_clicks
+  - identity_logon
 parameters:
 - name: seed_message_id
   type: string

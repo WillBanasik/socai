@@ -12,6 +12,11 @@ required_capabilities:
   - security_alerts
   - sign_in_events
   - windows_security_events
+  logscale:
+  - office_activity
+  - security_alerts
+  - sign_in_events
+  - windows_security_events
 parameters:
 - name: actor_upn
   type: string

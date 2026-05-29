@@ -11,6 +11,12 @@ required_capabilities:
   - office_activity
   - security_alerts
   - sign_in_events
+  logscale:
+  - device_file_events
+  - device_network_events
+  - office_activity
+  - security_alerts
+  - sign_in_events
 parameters:
 - name: target_upn
   type: string

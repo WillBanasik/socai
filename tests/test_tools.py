@@ -733,8 +733,60 @@ def test_new_attack_types_have_profiles_and_toolsets():
         ATTACK_TYPES, PIPELINE_PROFILES, ATTACK_TYPE_TOOLSETS,
     )
 
-    for at in ("command_and_control", "reconnaissance"):
+    for at in ("command_and_control", "reconnaissance", "ransomware",
+               "credential_access", "persistence", "defence_evasion",
+               "web_shell", "oauth_consent", "insider_threat"):
         assert at in ATTACK_TYPES
         assert at in PIPELINE_PROFILES
         assert "sandbox_detonate" in PIPELINE_PROFILES[at]["skip"]
         assert at in ATTACK_TYPE_TOOLSETS  # [] = core toolset covers it
+
+
+def test_every_attack_type_has_a_profile():
+    """classify_attack_type does PIPELINE_PROFILES[best_type] — every declared
+    attack type MUST have a profile or that lookup KeyErrors at runtime."""
+    from tools.classify_attack import ATTACK_TYPES, PIPELINE_PROFILES
+    for at in ATTACK_TYPES:
+        assert at in PIPELINE_PROFILES, f"{at} missing PIPELINE_PROFILES entry"
+
+
+def test_classify_routes_new_playbook_types():
+    from tools.classify_attack import classify_attack_type
+    cases = {
+        "ransomware": ("Ransomware: files encrypted, shadow copies deleted via vssadmin", "ransomware"),
+        "credential_access": ("LSASS dump and Kerberoasting on the DC", "credential_access"),
+        "persistence": ("New scheduled task and Run key autostart persistence", "persistence"),
+        "defence_evasion": ("Security event log cleared (Event ID 1102), Defender disabled", "defence_evasion"),
+        "web_shell": ("Web shell dropped — w3wp spawned powershell (ProxyShell)", "web_shell"),
+        "oauth_consent": ("Illicit OAuth consent grant to a rogue enterprise app", "oauth_consent"),
+        "insider_threat": ("Insider threat: departing employee data staging to USB", "insider_threat"),
+    }
+    for label, (title, expected) in cases.items():
+        got = classify_attack_type(title=title)["attack_type"]
+        assert got == expected, f"{label}: {title!r} -> {got} (expected {expected})"
+
+
+def test_classify_donor_types_unaffected_by_repartition():
+    """Moving ransomware/kerberoast/insider keywords out of malware/lateral/
+    data_exfiltration must not break those donor types' remaining routing."""
+    from tools.classify_attack import classify_attack_type
+    assert classify_attack_type(title="Malicious macro dropper execution")["attack_type"] == "malware"
+    assert classify_attack_type(title="Pass-the-hash RDP pivot to internal host")["attack_type"] == "lateral_movement"
+    assert classify_attack_type(title="Data exfiltration via mass download to external site")["attack_type"] == "data_exfiltration"
+    # Recon spray/stuffing must stay recon, not get pulled into credential_access
+    assert classify_attack_type(title="Credential stuffing brute force")["attack_type"] == "reconnaissance"
+
+
+def test_classify_short_keywords_no_substring_false_positive():
+    """Short family-name keywords are space-padded so they don't substring-match
+    common English (conti->continues, ryuk->ryukyu, leaver->cleaver)."""
+    from tools.classify_attack import classify_attack_type
+    # Common words that previously triggered false ransomware/insider routing
+    for benign in ("Account continues to fail login",
+                   "Continuous integration build failure",
+                   "Cleaver utility detected on host"):
+        assert classify_attack_type(title=benign)["attack_type"] != "ransomware"
+        assert classify_attack_type(title=benign)["attack_type"] != "insider_threat"
+    # The padded family names still route when used as standalone tokens
+    assert classify_attack_type(title="Conti ransomware on host")["attack_type"] == "ransomware"
+    assert classify_attack_type(title="Ryuk encryption activity")["attack_type"] == "ransomware"

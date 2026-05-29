@@ -1,0 +1,22 @@
+// Insider / Data Staging Stage 3 — Removable-media writes.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+union isfuzzy=true
+(
+    DeviceEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where ActionType in ("UsbDriveMounted", "UsbDriveMount", "PnpDeviceConnected")
+    | project Source = "USBMount", Timestamp, DeviceName, ActionType, FileName,
+        FolderPath = AdditionalFields, InitiatingProcessFileName
+),
+(
+    DeviceFileEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where ActionType in ("FileCreated", "FileRenamed")
+    | where FolderPath has_any ("removable", "usb") or AdditionalFields has "Removable"
+    | project Source = "USBWrite", Timestamp, DeviceName, ActionType, FileName,
+        FolderPath, InitiatingProcessFileName
+)
+| sort by Timestamp asc

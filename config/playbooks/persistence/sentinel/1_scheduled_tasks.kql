@@ -1,0 +1,25 @@
+// Persistence Stage 1 — Scheduled tasks.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+union isfuzzy=true
+(
+    DeviceProcessEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where FileName in~ ("schtasks.exe", "at.exe")
+        or (FileName in~ ("powershell.exe", "pwsh.exe")
+            and ProcessCommandLine has_any ("New-ScheduledTask", "Register-ScheduledTask"))
+    | where ProcessCommandLine has_any ("/create", "Register-ScheduledTask", "New-ScheduledTask")
+    | project Source = "DeviceProcessEvents", Timestamp, DeviceName, AccountName,
+        FileName, ProcessCommandLine, InitiatingProcessFileName
+),
+(
+    SecurityEvent
+    | where TimeGenerated > ago(lookback)
+    | where device == "__NONE__" or Computer has device
+    | where EventID == 4698   // scheduled task created
+    | project Source = "SecurityEvent(4698)", Timestamp = TimeGenerated, DeviceName = Computer,
+        AccountName = SubjectUserName, FileName = "schtasks",
+        ProcessCommandLine = Activity, InitiatingProcessFileName = ""
+)
+| sort by Timestamp asc

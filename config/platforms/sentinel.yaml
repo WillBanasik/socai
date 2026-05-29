@@ -32,6 +32,7 @@ capabilities:
   - device_process_events   # DeviceProcessEvents (MDE)
   - device_file_events      # DeviceFileEvents (MDE)
   - device_network_events   # DeviceNetworkEvents (MDE)
+  - device_registry_events  # DeviceRegistryEvents (MDE)
   - cloud_app_events        # CloudAppEvents (MDA / MCAS)
   - security_alerts         # SecurityAlert, SecurityIncident, ThreatIntelligenceIndicator
   - windows_security_events # SecurityEvent (on-prem AD via MMA / AMA)

@@ -1,0 +1,7 @@
+// OAuth Consent Stage 2 — Service-principal sign-ins post-consent.
+let lookback = {{lookback}};
+AADServicePrincipalSignInLogs
+| where TimeGenerated > ago(lookback)
+| project TimeGenerated, ServicePrincipalName, ServicePrincipalId, AppId,
+    IPAddress, ResourceDisplayName, ResourceId, ResultType, ResultDescription
+| sort by TimeGenerated asc

@@ -1,0 +1,47 @@
+id: web-shell
+name: Web Shell / Exploited Public-Facing App Investigation
+description: >
+  Detects successful exploitation of a public-facing application and web-shell
+  activity: a web-server process spawning a shell/LOLBin, web-shell file drops in web
+  roots, and post-exploitation under a web-service identity. Complements
+  reconnaissance (which covers inbound recon but not successful exploitation). Stages
+  1-2 always run; Stage 3 is conditional.
+required_capabilities:
+  sentinel:
+  - device_file_events
+  - device_network_events
+  - device_process_events
+  logscale:
+  - device_file_events
+  - device_network_events
+  - device_process_events
+parameters:
+- name: device_name
+  type: string
+  description: Web/app server host to scope (regex/substring matched). __NONE__ to scan all.
+  default: __NONE__
+- name: lookback
+  type: string
+  description: Time range to investigate (default 7d).
+  default: 7d
+stages:
+- id: 1
+  name: Web-server process spawning a shell
+  description: w3wp/httpd/nginx/tomcat/java/php/node spawning cmd/powershell/etc.
+  run: "ALWAYS — primary web-shell execution signal."
+  query_file: 1_webserver_spawned_shell
+- id: 2
+  name: Web-shell file drops in web roots
+  description: script files (.aspx/.php/.jsp/etc.) written under web-root paths.
+  run: "ALWAYS."
+  query_file: 2_webshell_file_drops
+- id: 3
+  name: Post-exploitation from web identity
+  description: recon commands under IIS APPPOOL / www-data and outbound egress.
+  run: when Stage 1 or 2 shows web-shell activity.
+  query_file: 3_post_exploitation
+definitions:
+- term: Web Shell
+  definition: >
+    MITRE T1505.003 — a script planted in a web-accessible directory that gives an
+    attacker command execution on the server under the web-service account.

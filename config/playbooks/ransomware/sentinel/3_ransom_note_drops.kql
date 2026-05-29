@@ -1,0 +1,17 @@
+// Ransomware Stage 3 — Ransom-note drops (same note written across many folders).
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+DeviceFileEvents
+| where Timestamp > ago(lookback)
+| where DeviceName has device
+| where ActionType in ("FileCreated", "FileRenamed")
+| where FileName matches regex @"(?i)(readme|recover|restore|decrypt|how.?to.?(decrypt|recover)|unlock|_help_|ransom)"
+| summarize
+    NoteCount = count(),
+    DistinctFolders = dcount(FolderPath),
+    SampleFolders = make_set(FolderPath, 30),
+    FirstSeen = min(Timestamp),
+    LastSeen = max(Timestamp)
+  by DeviceName, FileName
+| where DistinctFolders >= 3
+| sort by DistinctFolders desc

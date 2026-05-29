@@ -1,0 +1,26 @@
+// Insider / Data Staging Stage 4 — Mass print / cloud egress.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+union isfuzzy=true
+(
+    DeviceEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where ActionType has "Print"
+    | summarize PrintJobs = count(), Docs = make_set(FileName, 30),
+        FirstSeen = min(Timestamp), LastSeen = max(Timestamp)
+      by Source = "Print", DeviceName, InitiatingProcessAccountName
+    | where PrintJobs >= 20
+),
+(
+    DeviceNetworkEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where ActionType == "ConnectionSuccess"
+    | where RemoteUrl has_any ("dropbox", "wetransfer", "mega.nz", "drive.google",
+        "sendspace", "anonfiles", "gofile", "mediafire", "pastebin")
+    | summarize ConnCount = count(), Urls = make_set(RemoteUrl, 30),
+        FirstSeen = min(Timestamp), LastSeen = max(Timestamp)
+      by Source = "CloudEgress", DeviceName, InitiatingProcessFileName
+)
+| sort by LastSeen desc

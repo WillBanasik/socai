@@ -1,0 +1,11 @@
+// Persistence Stage 5 — Startup-folder writes.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+DeviceFileEvents
+| where Timestamp > ago(lookback)
+| where device == "__NONE__" or DeviceName has device
+| where ActionType in ("FileCreated", "FileRenamed", "FileModified")
+| where FolderPath has @"\Start Menu\Programs\Startup"
+| project Timestamp, DeviceName, ActionType, FileName, FolderPath,
+    SHA256, InitiatingProcessFileName, InitiatingProcessCommandLine
+| sort by Timestamp asc

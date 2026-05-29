@@ -1,0 +1,22 @@
+// Ransomware Stage 4 — Encryption tooling & impact detections.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+union isfuzzy=true
+(
+    SecurityAlert
+    | where TimeGenerated > ago(lookback)
+    | where Entities has device
+        or AlertName has_any ("ransom", "encryption", "impact", "shadow copy", "inhibit recovery")
+    | project Source = "SecurityAlert", TimeGenerated, Name = AlertName,
+        Severity = AlertSeverity, Detail = tostring(Tactics)
+),
+(
+    SecurityEvent
+    | where TimeGenerated > ago(lookback)
+    | where Computer has device
+    | where EventID in (7036, 7045, 7040)
+    | project Source = "SecurityEvent", TimeGenerated,
+        Name = strcat("EventID ", tostring(EventID)), Severity = "",
+        Detail = RenderedDescription
+)
+| sort by TimeGenerated asc

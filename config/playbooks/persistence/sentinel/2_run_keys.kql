@@ -1,0 +1,14 @@
+// Persistence Stage 2 — Run keys / autostart (ASEP).
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+DeviceRegistryEvents
+| where Timestamp > ago(lookback)
+| where device == "__NONE__" or DeviceName has device
+| where ActionType in ("RegistryValueSet", "RegistryKeyCreated")
+| where RegistryKey has_any (
+    @"\CurrentVersion\Run", @"\CurrentVersion\RunOnce", @"\CurrentVersion\RunServices",
+    @"\Winlogon", @"Image File Execution Options", @"\Policies\Explorer\Run",
+    @"\CurrentVersion\Windows\Load", @"\CurrentVersion\Explorer\Shell Folders")
+| project Timestamp, DeviceName, ActionType, RegistryKey, RegistryValueName,
+    RegistryValueData, InitiatingProcessFileName, InitiatingProcessCommandLine
+| sort by Timestamp asc

@@ -22,6 +22,13 @@ required_capabilities:
   - email_url_clicks
   - office_activity
   - sign_in_events
+  logscale:
+  - cloud_app_events
+  - email_events
+  - email_post_delivery
+  - email_url_clicks
+  - office_activity
+  - sign_in_events
 parameters:
 - name: seed_message_id
   description: Single NetworkMessageId from the alert (used by Stage 0 to derive sender/subject)

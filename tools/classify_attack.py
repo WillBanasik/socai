@@ -37,14 +37,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # ---------------------------------------------------------------------------
 
 ATTACK_TYPES = (
+    # Order matters: on a score tie, the earlier type wins. More-specific types
+    # are placed ahead of the broader types they would otherwise tie with
+    # (ransomware before malware, oauth_consent before phishing-adjacent, etc.).
     "phishing",
+    "oauth_consent",
+    "ransomware",
     "malware",
     "account_compromise",
+    "credential_access",
     "privilege_escalation",
+    "insider_threat",
     "data_exfiltration",
     "lateral_movement",
     "command_and_control",
     "reconnaissance",
+    "persistence",
+    "defence_evasion",
+    "web_shell",
     "pup_pua",
     "generic",
 )
@@ -65,7 +75,7 @@ _KEYWORD_RULES: list[tuple[str, list[str], int]] = [
     # Malware — file/execution/payload focused (C2/beacon terms belong to
     # the dedicated command_and_control type below).
     ("malware", [
-        "malware", "ransomware", "trojan", "backdoor", " rat ",
+        "malware", "trojan", "backdoor", " rat ",
         "remote access tool", "dropper", "loader", "cryptominer",
         "crypto miner", "miner detected",
         "download cradle", "powershell download", "macro execution",
@@ -96,25 +106,27 @@ _KEYWORD_RULES: list[tuple[str, list[str], int]] = [
         "service account abuse", "token manipulation",
     ], 3),
 
-    # Data exfiltration — DLP, insider threat, mass download
+    # Data exfiltration — external-transfer focused (DLP, mass download).
+    # Insider-staging terms (insider threat / data staging) route to the
+    # dedicated insider_threat type below.
     ("data_exfiltration", [
         "data exfiltration", "data theft", "data leak", "data loss",
         "mass download", "bulk download", "unusual download",
         "dlp alert", "dlp policy", "information protection",
-        "insider threat", "insider risk", "data staging",
         "unauthorized transfer", "sensitive data", "cloud app anomaly",
         "mass file access", "bulk file", "excessive download",
         "sharepoint mass", "onedrive mass", "email forwarding rule",
     ], 3),
 
-    # Lateral movement — internal pivoting, pass-the-hash, RDP
+    # Lateral movement — internal pivoting via remote protocols. Pure AD
+    # credential-theft tradecraft (kerberoast / DCSync / golden+silver ticket)
+    # now routes to the dedicated credential_access type below.
     ("lateral_movement", [
         "lateral movement", "lateral move", "pass the hash", "pass-the-hash",
         "pass the ticket", "pass-the-ticket", "overpass the hash",
         "rdp pivot", "internal rdp", "smb lateral", "psexec",
         "wmi remote", "winrm", "dcom lateral", "host hop",
-        "credential relay", "ntlm relay", "kerberoast",
-        "golden ticket", "silver ticket", "dcsync",
+        "credential relay", "ntlm relay",
         "internal pivot", "network pivot", "host compromise spread",
     ], 3),
 
@@ -139,6 +151,75 @@ _KEYWORD_RULES: list[tuple[str, list[str], int]] = [
         "brute force", "subdomain enumeration", "dns enumeration",
         "mx enumeration", "directory enumeration", "user enumeration",
         "spray attack", "login attempts",
+    ], 3),
+
+    # Ransomware / impact — encryption behaviour and recovery inhibition.
+    ("ransomware", [
+        "ransomware", "ransom note", "ransom demand", "file encryption",
+        "files encrypted", "mass file encryption", "extension change",
+        "mass file rename", "shadow copy delet", "shadow copies delet",
+        "vssadmin", "wbadmin", "bcdedit", "recovery inhibit", "inhibit recovery",
+        "double extortion", "lockbit", "blackcat", "alphv", " akira ",
+        "royal ransom", " conti ", " ryuk ", "black basta", "rhysida",
+        # Family names padded with spaces: substring matching would otherwise
+        # fire "conti" on "continues/continuous", "ryuk" on "ryukyu", etc.
+    ], 3),
+
+    # Credential access / AD attacks — credential theft tradecraft (distinct
+    # from lateral_movement, which is the pivoting that may follow).
+    ("credential_access", [
+        "credential access", "credential dump", "credential dumping",
+        "credential theft", "lsass", "lsass dump", "lsass access",
+        "mimikatz", "kerberoast", "as-rep", "asrep roast", "as rep roast",
+        "dcsync", "ntds.dit", "ntds dump", "secretsdump", "sam dump",
+        "comsvcs", "procdump", "golden ticket", "silver ticket",
+        "ticket extraction", "hash dump", "lsa secrets",
+    ], 3),
+
+    # Insider threat / data staging — legitimate user staging data (distinct
+    # from data_exfiltration, which is the external transfer itself).
+    ("insider_threat", [
+        "insider threat", "insider risk", "data staging", "departing employee",
+        " leaver ", "disgruntled", "mass file copy", "usb exfil", "usb copy",
+        "removable media", "personal cloud upload", "archive staging",
+        "data hoarding", "rogue employee",
+    ], 3),
+
+    # Persistence — autostart / boot-or-logon survival mechanisms.
+    ("persistence", [
+        "persistence", "scheduled task", "schtasks", "run key", "runonce",
+        "registry run", "autostart", " asep ", "new service install",
+        "service install", "wmi subscription", "wmi event consumer",
+        "startup folder", "boot persistence", "logon persistence",
+        "image file execution options", " ifeo ", "registry autostart",
+    ], 3),
+
+    # Defence evasion / tamper — blinding detection.
+    ("defence_evasion", [
+        "defence evasion", "defense evasion", "log cleared", "event log cleared",
+        "clear event log", "wevtutil", "event id 1102", "edr disabled",
+        "av disabled", "antivirus disabled", "defender disabled",
+        "tamper protection", "tampering attempt", "disable security",
+        "uninstall agent", "kill security tool", "amsi bypass", "etw bypass",
+        "security tool kill",
+    ], 3),
+
+    # Web shell / exploited public-facing app.
+    ("web_shell", [
+        "web shell", "webshell", "aspx shell", "jsp shell", "php shell",
+        "china chopper", "behinder", "godzilla", "exploited public",
+        "public facing application", "iis exploit", "proxyshell", "proxylogon",
+        "server side exploit", "exploited web server", "w3wp spawn",
+    ], 3),
+
+    # Illicit OAuth consent / enterprise-app abuse (the consent-investigation
+    # itself; consent-phishing lure delivery stays under phishing).
+    ("oauth_consent", [
+        "oauth consent", "consent grant", "illicit consent",
+        "illicit application", "enterprise app abuse", "app consent grant",
+        "malicious oauth", "azure app consent", "app registration abuse",
+        "service principal credential", "consent to application",
+        "illicit oauth", "rogue oauth app",
     ], 3),
 
     # PUP/PUA — handled by detect_pup() separately, but classify here too
@@ -242,6 +323,77 @@ PIPELINE_PROFILES: dict[str, dict] = {
         },
         "description": "Inbound recon detection — credential spray/stuffing, port/service scanning, DNS enumeration; identity + network log correlation",
     },
+    "ransomware": {
+        # Endpoint behaviour via logs; file analysis allowed but no detonation.
+        "skip": {
+            "domain_investigate",
+            "recursive_capture",
+            "detect_phishing_page",
+            "sandbox_analyse",
+            "sandbox_detonate",
+        },
+        "description": "Ransomware impact — recovery tampering, mass file modification, ransom notes, encryption detections; endpoint log correlation",
+    },
+    "credential_access": {
+        "skip": {
+            "domain_investigate",
+            "recursive_capture",
+            "detect_phishing_page",
+            "sandbox_analyse",
+            "sandbox_detonate",
+        },
+        "description": "Credential theft — LSASS dumping, Kerberoasting/AS-REP, DCSync; endpoint + AD log correlation",
+    },
+    "persistence": {
+        "skip": {
+            "domain_investigate",
+            "recursive_capture",
+            "detect_phishing_page",
+            "sandbox_analyse",
+            "sandbox_detonate",
+        },
+        "description": "Persistence sweep — scheduled tasks, Run keys, services, WMI subscriptions, startup folder; endpoint log correlation",
+    },
+    "defence_evasion": {
+        "skip": {
+            "domain_investigate",
+            "recursive_capture",
+            "detect_phishing_page",
+            "sandbox_analyse",
+            "sandbox_detonate",
+        },
+        "description": "Defence evasion — log clearing, EDR/AV tamper, defensive-tool kills; endpoint log correlation",
+    },
+    "web_shell": {
+        "skip": {
+            "domain_investigate",
+            "recursive_capture",
+            "detect_phishing_page",
+            "sandbox_analyse",
+            "sandbox_detonate",
+        },
+        "description": "Web shell / exploited public app — web-server spawned shells, web-shell drops, post-exploitation; endpoint log correlation",
+    },
+    "oauth_consent": {
+        "skip": {
+            "domain_investigate",
+            "recursive_capture",
+            "detect_phishing_page",
+            "sandbox_analyse",
+            "sandbox_detonate",
+        },
+        "description": "Illicit OAuth consent — consent grants, SP sign-ins, app data access, IP sweep; identity/audit log correlation",
+    },
+    "insider_threat": {
+        "skip": {
+            "domain_investigate",
+            "recursive_capture",
+            "detect_phishing_page",
+            "sandbox_analyse",
+            "sandbox_detonate",
+        },
+        "description": "Insider / data staging — bulk cloud pull, local archiving, removable media, egress; audit + endpoint log correlation",
+    },
     "pup_pua": {
         # Full short-circuit handled in chief.py — this profile is for reference
         "skip": {
@@ -288,6 +440,13 @@ ATTACK_TYPE_TOOLSETS: dict[str, list[str]] = {
     "lateral_movement": [],
     "command_and_control": [],
     "reconnaissance": [],
+    "ransomware": [],
+    "credential_access": [],
+    "persistence": [],
+    "defence_evasion": [],
+    "web_shell": [],
+    "oauth_consent": [],
+    "insider_threat": [],
     "pup_pua": [],
     "generic": [],
 }

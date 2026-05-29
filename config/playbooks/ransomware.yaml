@@ -1,0 +1,58 @@
+id: ransomware
+name: Ransomware / Impact Investigation
+description: >
+  Detects and scopes ransomware impact behaviour: shadow-copy and recovery
+  tampering, mass file modification / extension-change bursts, ransom-note drops,
+  and encryption-tool detections. Stages 1 (recovery tampering) and 2 (mass file
+  modification) always run; Stages 3-4 are conditional on prior signal. Defender
+  DeviceFileEvents gives a clean rename/extension burst; Falcon file-rename
+  telemetry is weaker, so on LogScale Stage 2 leans on process behaviour, file-write
+  volume, and detections (see the .cql header).
+required_capabilities:
+  sentinel:
+  - device_file_events
+  - device_process_events
+  - security_alerts
+  - windows_security_events
+  logscale:
+  - device_file_events
+  - device_process_events
+  - security_alerts
+parameters:
+- name: device_name
+  type: string
+  description: Hostname / DeviceName showing impact behaviour (regex/substring matched).
+- name: user
+  type: string
+  description: Associated user account (optional; __NONE__ to scan all).
+  default: __NONE__
+- name: lookback
+  type: string
+  description: Time range to investigate (default 3d).
+  default: 3d
+stages:
+- id: 1
+  name: Shadow-copy and recovery tampering
+  description: vssadmin/wbadmin/bcdedit/wmic shadowcopy/cipher abuse to inhibit recovery.
+  run: "ALWAYS — earliest reliable ransomware signal."
+  query_file: 1_recovery_tampering
+- id: 2
+  name: Mass file modification / extension burst
+  description: high-rate file rename/modify and extension change per device.
+  run: "ALWAYS — core encryption behaviour."
+  query_file: 2_mass_file_modification
+- id: 3
+  name: Ransom-note drops
+  description: ransom-note filename patterns written across many folders.
+  run: when Stage 1 or 2 shows impact signal.
+  query_file: 3_ransom_note_drops
+- id: 4
+  name: Encryption tooling and impact detections
+  description: correlated EDR detections and service-stop events around impact.
+  run: when Stage 1 or 2 shows impact signal.
+  query_file: 4_impact_detections
+definitions:
+- term: Recovery Inhibition
+  definition: >
+    MITRE T1490 — deleting volume shadow copies and disabling Windows recovery so
+    victims cannot restore without paying. A hallmark pre-encryption step.

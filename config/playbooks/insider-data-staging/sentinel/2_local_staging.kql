@@ -1,0 +1,25 @@
+// Insider / Data Staging Stage 2 — Local staging / archiving.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+union isfuzzy=true
+(
+    DeviceProcessEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where FileName in~ ("rar.exe", "winrar.exe", "7z.exe", "7za.exe", "zip.exe",
+        "tar.exe", "makecab.exe", "powershell.exe", "pwsh.exe")
+    | where ProcessCommandLine has_any (" a ", "-hp", "Compress-Archive", "-mx", " -r ",
+        "makecab", ".rar", ".7z", ".zip")
+    | project Source = "Archiving", Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine
+),
+(
+    DeviceFileEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where ActionType in ("FileCreated", "FileRenamed")
+    | where FileName endswith ".rar" or FileName endswith ".7z" or FileName endswith ".zip"
+        or FileName endswith ".tar" or FileName endswith ".gz" or FileName endswith ".cab"
+    | project Source = "ArchiveFile", Timestamp, DeviceName,
+        AccountName = InitiatingProcessAccountName, FileName, FolderPath
+)
+| sort by Timestamp asc

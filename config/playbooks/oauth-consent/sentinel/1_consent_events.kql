@@ -1,0 +1,14 @@
+// OAuth Consent Stage 1 — Consent & app-role / SP-credential events.
+let lookback = {{lookback}};
+let upn = "{{upn}}";
+OfficeActivity
+| where TimeGenerated > ago(lookback)
+| where OfficeWorkload == "AzureActiveDirectory"
+| where UserId =~ upn
+| where Operation in ("Consent to application.", "Add OAuth2PermissionGrant.",
+    "Add app role assignment to user.", "Add app role assignment to service principal.",
+    "Add delegated permission grant.", "Add service principal.",
+    "Add service principal credentials.", "Update application.", "Update service principal.")
+| project TimeGenerated, Operation, UserId, ClientIP, ResultStatus,
+    Parameters = tostring(Parameters)
+| sort by TimeGenerated asc

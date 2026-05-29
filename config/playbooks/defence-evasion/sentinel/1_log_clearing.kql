@@ -1,0 +1,24 @@
+// Defence Evasion Stage 1 — Security-log clearing.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+union isfuzzy=true
+(
+    SecurityEvent
+    | where TimeGenerated > ago(lookback)
+    | where device == "__NONE__" or Computer has device
+    | where EventID in (1102, 104)   // 1102 = Security log cleared, 104 = a log file cleared
+    | project Source = strcat("SecurityEvent(", tostring(EventID), ")"),
+        Timestamp = TimeGenerated, DeviceName = Computer,
+        Account = SubjectUserName, Detail = Activity
+),
+(
+    DeviceProcessEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where (FileName =~ "wevtutil.exe" and ProcessCommandLine has_any ("cl ", "clear-log"))
+        or (FileName in~ ("powershell.exe", "pwsh.exe")
+            and ProcessCommandLine has_any ("Clear-EventLog", "Remove-EventLog", "wevtutil"))
+    | project Source = "DeviceProcessEvents", Timestamp, DeviceName,
+        Account = AccountName, Detail = ProcessCommandLine
+)
+| sort by Timestamp asc

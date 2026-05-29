@@ -6,8 +6,8 @@
 | RemoteAddressIP4 != /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|127\.)/
 | groupBy([RemoteAddressIP4],
           function=[count(as=Connections),
-                    countDistinct(ComputerName, as=DistinctHosts),
-                    countDistinct(LocalPort, as=DistinctPorts),
+                    count(field=ComputerName, distinct=true, as=DistinctHosts),
+                    count(field=LocalPort, distinct=true, as=DistinctPorts),
                     collect([LocalPort], limit=50)])
 | DistinctPorts >= 10 OR DistinctHosts >= 5
 | sort(DistinctPorts, order=desc)

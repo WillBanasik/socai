@@ -1,0 +1,57 @@
+id: insider-data-staging
+name: Insider Threat / Data Staging Investigation
+description: >
+  Investigates a legitimate user staging data for exfiltration — distinct from
+  data-exfiltration, which focuses on the external transfer itself. Covers bulk
+  SharePoint/OneDrive pulls, local archiving/staging, removable-media writes, and mass
+  print / personal-cloud egress. Stages 1-2 always run; Stages 3-4 are conditional.
+required_capabilities:
+  sentinel:
+  - device_file_events
+  - device_network_events
+  - device_process_events
+  - office_activity
+  logscale:
+  - device_file_events
+  - device_network_events
+  - device_process_events
+  - office_activity
+parameters:
+- name: target_upn
+  type: string
+  description: User under investigation (UPN).
+- name: device_name
+  type: string
+  description: User's device to scope endpoint stages (regex/substring). __NONE__ to scan all.
+  default: __NONE__
+- name: lookback
+  type: string
+  description: Time range to investigate (default 14d).
+  default: 14d
+stages:
+- id: 1
+  name: Bulk SharePoint / OneDrive pull
+  description: high-volume downloads / sync from cloud document stores.
+  run: "ALWAYS."
+  query_file: 1_bulk_cloud_pull
+- id: 2
+  name: Local staging / archiving
+  description: rar/7z/zip/Compress-Archive activity and archive files written to disk.
+  run: "ALWAYS."
+  query_file: 2_local_staging
+- id: 3
+  name: Removable-media writes
+  description: USB/removable device connections and files copied to them.
+  run: when staging is observed and removable media is in scope.
+  query_file: 3_removable_media
+- id: 4
+  name: Mass print / cloud egress
+  description: bulk print jobs and connections to personal file-sharing services.
+  run: when staging is observed.
+  query_file: 4_mass_print_egress
+definitions:
+- term: Data Staging
+  definition: >
+    MITRE T1074 — collecting and consolidating data (often into archives) prior to
+    exfiltration. For insiders the collection itself, by a legitimate account, is the
+    investigable behaviour.

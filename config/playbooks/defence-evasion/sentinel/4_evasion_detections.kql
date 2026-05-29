@@ -1,0 +1,12 @@
+// Defence Evasion Stage 4 — Defense-evasion detections.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+SecurityAlert
+| where TimeGenerated > ago(lookback)
+| where Tactics has "DefenseEvasion"
+    or AlertName has_any ("tamper", "defender disabled", "antivirus disabled", "log cleared",
+        "security product", "evasion", "uninstall", "exclusion")
+| where device == "__NONE__" or Entities has device
+| project TimeGenerated, AlertName, AlertSeverity, Tactics, Status,
+    Entities = substring(tostring(Entities), 0, 500)
+| sort by TimeGenerated asc

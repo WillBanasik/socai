@@ -1,0 +1,22 @@
+// Persistence Stage 3 — New services.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+union isfuzzy=true
+(
+    SecurityEvent
+    | where TimeGenerated > ago(lookback)
+    | where device == "__NONE__" or Computer has device
+    | where EventID == 7045   // a new service was installed
+    | project Source = "SecurityEvent(7045)", Timestamp = TimeGenerated, DeviceName = Computer,
+        ServiceName = Activity, Account = SubjectUserName, Detail = RenderedDescription
+),
+(
+    DeviceProcessEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where (FileName =~ "sc.exe" and ProcessCommandLine has "create")
+        or (FileName in~ ("powershell.exe", "pwsh.exe") and ProcessCommandLine has_any ("New-Service", "Set-Service"))
+    | project Source = "DeviceProcessEvents", Timestamp, DeviceName,
+        ServiceName = ProcessCommandLine, Account = AccountName, Detail = InitiatingProcessFileName
+)
+| sort by Timestamp asc

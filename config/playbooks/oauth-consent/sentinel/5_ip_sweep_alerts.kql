@@ -1,0 +1,26 @@
+// OAuth Consent Stage 5 — IP tenant sweep + correlated alerts.
+let lookback = {{lookback}};
+let upn = "{{upn}}";
+let ip = "{{ip}}";
+let object_id = "{{object_id}}";
+union isfuzzy=true
+(
+    SigninLogs
+    | where TimeGenerated > ago(lookback)
+    | where ip != "__NONE__" and IPAddress == ip
+    | where UserPrincipalName !~ upn
+    | summarize SignInCount = count(), FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated),
+        Apps = make_set(AppDisplayName, 20)
+      by UserPrincipalName, Country = tostring(LocationDetails.countryOrRegion)
+    | extend Section = "1_IPSweep"
+),
+(
+    SecurityAlert
+    | where TimeGenerated > ago(lookback)
+    | where Entities has upn
+        or (ip != "__NONE__" and Entities has ip)
+        or (object_id != "__NONE__" and Entities has object_id)
+    | project Section = "2_Alert", TimeGenerated, AlertName, AlertSeverity, Tactics, Status,
+        Entities = substring(tostring(Entities), 0, 400)
+)
+| sort by Section asc

@@ -110,9 +110,9 @@ Prompts handle: report generation, analytical reasoning, disposition analysis, q
 
 `classify_attack_type()` from `tools/classify_attack.py` analyses the case title, notes, and input shape (URLs, ZIPs, logs, EML) to determine the attack type. This is a deterministic keyword + input-shape scorer — no LLM call.
 
-**Attack types:** `phishing`, `malware`, `account_compromise`, `privilege_escalation`, `data_exfiltration`, `lateral_movement`, `command_and_control`, `reconnaissance`, `pup_pua`, `generic`
+**Attack types:** `phishing`, `oauth_consent`, `ransomware`, `malware`, `account_compromise`, `credential_access`, `privilege_escalation`, `insider_threat`, `data_exfiltration`, `lateral_movement`, `command_and_control`, `reconnaissance`, `persistence`, `defence_evasion`, `web_shell`, `pup_pua`, `generic`
 
-Each type has a pipeline profile in `PIPELINE_PROFILES` defining which steps to skip (`socai://pipeline-profiles` is the authoritative source):
+Each type has a pipeline profile in `PIPELINE_PROFILES` defining which steps to skip, and routes to its matching KQL/CQL playbook (`socai://pipeline-profiles` is the authoritative source):
 
 | Type | Skipped steps |
 |------|---------------|
@@ -124,10 +124,17 @@ Each type has a pipeline profile in `PIPELINE_PROFILES` defining which steps to 
 | `lateral_movement` | web_capture, phishing_detection, sandbox |
 | `command_and_control` | web_capture, phishing_detection, sandbox, file/static analysis (behavioural — no artefact) |
 | `reconnaissance` | web_capture, phishing_detection, sandbox, file/email analysis (behavioural — no artefact) |
+| `ransomware` | domain_investigate, recursive_capture, phishing_detection, sandbox (endpoint log-based) |
+| `credential_access` | domain_investigate, recursive_capture, phishing_detection, sandbox (endpoint/AD log-based) |
+| `persistence` | domain_investigate, recursive_capture, phishing_detection, sandbox |
+| `defence_evasion` | domain_investigate, recursive_capture, phishing_detection, sandbox |
+| `web_shell` | domain_investigate, recursive_capture, phishing_detection, sandbox |
+| `oauth_consent` | domain_investigate, recursive_capture, phishing_detection, sandbox (identity/audit log-based) |
+| `insider_threat` | domain_investigate, recursive_capture, phishing_detection, sandbox |
 | `pup_pua` | Full short-circuit: enrich → `close_case(disposition="pup_pua")`. PUP report only on analyst request (not auto-generated) |
 | `generic` | Nothing skipped (fallback) |
 
-`command_and_control` (beaconing, DNS tunnelling, LOLBin callbacks) and `reconnaissance` (credential spray, port scanning, DNS enumeration) are **behavioural** types — they hunt activity from SIEM log patterns rather than a supplied file/URL artefact, and route to the `command-and-control` / `reconnaissance` playbooks respectively.
+`command_and_control`, `reconnaissance`, and the endpoint/log types added alongside the v2 playbooks — `ransomware`, `credential_access`, `persistence`, `defence_evasion`, `web_shell` — are **behavioural** types: they hunt activity from SIEM/EDR log patterns rather than a supplied file/URL artefact, and route to the matching playbook. `ATTACK_TYPES` is ordered specific-before-broad so ties resolve correctly (e.g. "ransomware dropper" → `ransomware`); AD credential-theft (kerberoast, DCSync, golden/silver ticket) routes to `credential_access` not `lateral_movement`; insider staging routes to `insider_threat` not `data_exfiltration`; the consent-grant investigation is `oauth_consent` while consent-phishing lure delivery stays `phishing`.
 
 **Score threshold:** A single weak signal (score ≤ 1) falls through to `generic` to avoid misrouting on ambiguous input.
 

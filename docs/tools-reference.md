@@ -455,9 +455,9 @@ Each finding gets severity (high/medium/low) via `_classify_severity()`.
 
 ### Attack Types
 
-`phishing`, `malware`, `account_compromise`, `privilege_escalation`, `data_exfiltration`, `lateral_movement`, `command_and_control`, `reconnaissance`, `pup_pua`, `generic`
+`phishing`, `oauth_consent`, `ransomware`, `malware`, `account_compromise`, `credential_access`, `privilege_escalation`, `insider_threat`, `data_exfiltration`, `lateral_movement`, `command_and_control`, `reconnaissance`, `persistence`, `defence_evasion`, `web_shell`, `pup_pua`, `generic`
 
-`command_and_control` (behavioural C2 — beaconing, DNS tunnelling, LOLBin callbacks) and `reconnaissance` (inbound recon — credential spray, port scanning, DNS enumeration) are **behavioural** hunt types: they find activity from log patterns rather than a supplied file/URL artefact. C2 keyword routing: beacon, C2, callback, tunnelling, LOLBin callout. Reconnaissance routing: password spray, credential stuffing, port scan, enumeration, brute force.
+Each attack type routes to its matching KQL/CQL playbook (via `_playbook_map` / `_cql_playbook_map` in the `classify_attack` MCP tool). The `ATTACK_TYPES` tuple is ordered specific-before-broad so score ties resolve correctly (e.g. "ransomware dropper" → `ransomware`, not `malware`). The endpoint/log-based types — `ransomware`, `credential_access` (LSASS/Kerberoasting/DCSync), `persistence`, `defence_evasion`, `web_shell`, `command_and_control`, `reconnaissance` — find activity from log patterns rather than a supplied file/URL artefact. `insider_threat` is distinguished from `data_exfiltration` (the former is staging by a legitimate user; the latter the external transfer); `oauth_consent` is the consent-grant investigation itself, while consent-phishing lure delivery stays under `phishing`. Pure AD credential-theft keywords (kerberoast, DCSync, golden/silver ticket) route to `credential_access`, not `lateral_movement`.
 
 ### Pipeline Profiles
 
@@ -670,24 +670,33 @@ Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 
 Investigation playbooks live in `config/playbooks/<id>.yaml` and describe stage logic, parameters, required capabilities, and definitions in a vendor-neutral form. Per-stage query bodies live under `config/playbooks/<id>/<platform>/*.<ext>` — one subdirectory per SIEM platform. The unified loader (`tools/playbooks.py`) merges the YAML structure with the right query files at render time. KQL parameters use `{{param}}` placeholders sanitised via `_sanitise_kql_value()` (rejects control characters, escapes quotes/backslashes) to prevent query-structure injection.
 
-**Available playbooks** (10 total, 8 with multi-platform support):
+**Available playbooks** (17 total, multi-platform; the only Sentinel-only gap is `reconnaissance` Stage 3, authoritative-DNS enumeration):
 
 | Playbook | Stages | Sentinel | LogScale | Key parameters |
 |----------|--------|----------|----------|----------------|
-| `bec` | 8 (broad scope expansion → delivery scope → MDO blocks → ZAP → post-phishing signin → persistence → attacker activity → tenant sweep) | yes | — | `seed_message_id` or `sender`+`subject`, `target_ids`, `upn`, `attacker_ip`, `lookback` (default 14d) |
-| `phishing` | 5 (broad scope expansion → email core per UPN → post-delivery logon → URL scope+ZAP → attachment execution) | yes | — | `seed_message_id` or `sender`+`subject`, `target_ids`, `url`, `sha256`, `lookback` (default 14d) |
-| `account-compromise` | 5 (cloud identity triage, on-prem AD, identity protection, source host enum, persistence) | yes | yes (4 stages — persistence not implemented) | `upn`, `username`, `ip` (optional), `lookback` (default 30d) |
+| `bec` | 8 (broad scope expansion → delivery scope → MDO blocks → ZAP → post-phishing signin → persistence → attacker activity → tenant sweep) | yes | yes¹ | `seed_message_id` or `sender`+`subject`, `target_ids`, `upn`, `attacker_ip`, `lookback` (default 14d) |
+| `phishing` | 5 (broad scope expansion → email core per UPN → post-delivery logon → URL scope+ZAP → attachment execution) | yes | yes¹ | `seed_message_id` or `sender`+`subject`, `target_ids`, `url`, `sha256`, `lookback` (default 14d) |
+| `account-compromise` | 5 (cloud identity triage, on-prem AD, identity protection, source host enum, persistence) | yes | yes (all 5 stages) | `upn`, `username`, `ip` (optional), `lookback` (default 30d) |
 | `malware-execution` | 3 (execution context + process ancestry, file delivery chain, initial access vector) | yes | yes | `device_name`, `filename`, `sha256`, `lookback` (default 7d) |
 | `lateral-movement` | 3 (lateral connections RDP/SMB/WMI, credential access, movement chain) | yes | yes | `source_host`, `destination_hosts`, `lookback` (default 7d) |
 | `ioc-hunt` | 2 (IOC presence sweep, context pivot) | yes | yes | `iocs`, `lookback` (default 30d), `hit_table`/`hit_time`/`hit_device` |
-| `data-exfiltration` | 3 (volume anomaly + DLP, cloud application access, network exfil indicators) | yes | — | `target_upn`, `threshold_mb` (default 100), `lookback` (default 7d) |
-| `privilege-escalation` | 3 (escalation event detail, actor legitimacy, post-escalation activity) | yes | — | `actor_upn`, `target_user`, `target_group`, `lookback` (default 14d) |
+| `data-exfiltration` | 3 (volume anomaly + DLP, cloud application access, network exfil indicators) | yes | yes¹ | `target_upn`, `threshold_mb` (default 100), `lookback` (default 7d) |
+| `privilege-escalation` | 3 (escalation event detail, actor legitimacy, post-escalation activity) | yes | yes | `actor_upn`, `target_user`, `target_group`, `lookback` (default 14d) |
 | `command-and-control` | 4 (beaconing detection, DNS tunnelling, long-duration low-volume sessions, LOLBin callbacks) | yes | yes | `device_name`, `lookback` (default 7d), `process_name` (optional, `__NONE__` = all LOLBins) |
 | `reconnaissance` | 3 (credential spray/stuffing, port/service scanning, sub-domain/MX enumeration) | yes | yes (stages 1–2; stage 3 DNS enumeration is Sentinel-only) | `lookback` (default 24h), `target_upn` (optional), `source_ip` (optional) |
+| `ransomware` | 4 (recovery tampering, mass file modification, ransom-note drops, impact detections) | yes | yes | `device_name`, `user` (optional), `lookback` (default 3d) |
+| `credential-access` | 4 (LSASS dumping, Kerberoasting/AS-REP, DCSync, credential-theft detections) | yes | yes | `device_name`, `target_account`, `dc_name`, `lookback` (default 7d) |
+| `persistence` | 5 (scheduled tasks, Run keys/ASEP, new services, WMI subscriptions, startup folder) | yes | yes | `device_name`, `user`, `lookback` (default 7d) |
+| `defence-evasion` | 4 (log clearing, EDR/AV tamper, defensive-tool kills, evasion detections) | yes | yes | `device_name`, `user`, `lookback` (default 7d) |
+| `oauth-consent` | 5 (consent events, SP sign-ins, app data access, sign-in context, IP sweep + alerts) | yes | yes¹ | `upn`, `ip`, `object_id`, `lookback` (default 14d) |
+| `web-shell` | 3 (web-server spawned shell, web-shell file drops, post-exploitation) | yes | yes | `device_name`, `lookback` (default 7d) |
+| `insider-data-staging` | 4 (bulk cloud pull, local archiving, removable media, mass print/egress) | yes | yes¹ | `target_upn`, `device_name`, `lookback` (default 14d) |
+
+¹ LogScale email/M365 stages require the Microsoft Defender / M365 forwarding connector (`#event.dataset="windows-defender-365.event"`, `#event.module=m365`); endpoint stages ride Falcon-native telemetry. Some Falcon event names in the new endpoint playbooks (e.g. registry-autostart `AsepValueUpdate`) are flagged in the `.cql` headers as needing per-client discovery, with a `ProcessRollup2` command-line fallback.
 
 `bec` and `phishing` Stage 0 implements the **broad scope principle** — every email-campaign investigation expands the alert seed (one NetworkMessageId) into the full set of related messages (sender + subject) before any narrow-scope stage runs. Operating on a single NetworkMessageId leads to under-blocked campaigns and missed clickers.
 
-**Platform adapters** at `config/platforms/<id>.yaml` declare each platform's capabilities (data sources it can query), query language, and executor binding. Today: `sentinel.yaml` (13 capabilities, KQL, auto-execute via `scripts/run_kql.py`) and `logscale.yaml` (6 capabilities, CQL, render-only). To add a new platform, drop a new adapter and the schema reference — no Python changes.
+**Platform adapters** at `config/platforms/<id>.yaml` declare each platform's capabilities (data sources it can query), query language, and executor binding. Today: `sentinel.yaml` (14 capabilities, KQL, auto-execute via `scripts/run_kql.py`) and `logscale.yaml` (13 capabilities, CQL, render-only — the email/office/cloud-app capabilities depend on the M365/Defender forwarding connector being configured for the client). To add a new platform, drop a new adapter and the schema reference — no Python changes.
 
 **Capability gating** is enforced by the unified loader. A playbook's `required_capabilities` is either a flat list (applies to every platform) or a dict keyed by platform id. When dict-form lacks an entry for the target platform, the loader returns `platform_not_supported`. When the platform doesn't declare all required capabilities, the loader returns `capability_gate` with the missing list. This prevents Claude Desktop from running queries on a SIEM that doesn't have the underlying data forwarded into it.
 

@@ -28,15 +28,23 @@ capabilities:
   - identity_logon             # Falcon UserLogon (and on-prem if Windows connector forwards)
   - windows_security_events    # Windows Event Log (4624/4625/4769 etc.) via Windows connector
   - sign_in_events             # dedicated entraid connector; dataset entraid.signin (NOT azure.signinlogs / NOT via M365)
-  # The following capabilities are NOT declared by default — declare them when
-  # the relevant connector is configured for a client:
-  #   - email_events           # M365 email connector forwarding MDO events
-  #   - email_url_clicks       # M365 email connector
-  #   - email_post_delivery    # M365 email connector
-  #   - office_activity        # M365 audit connector
-  #   - cloud_app_events       # MCAS / MDA connector
-  #   - service_principal_signins
-  #   - security_alerts
+  # The following ride the Microsoft 365 / Defender forwarding connectors. They
+  # are the *maximum* this adapter supports — a client only satisfies them when
+  # the relevant connector is configured. The vendor+module tags below are
+  # verified against onboarded clients (see config/ngsiem/ngsiem_rules.md §4 and
+  # config/ngsiem/ngsiem_columns.yaml). Email/attachment/URL/click/post-delivery
+  # data arrives via the Defender advanced-hunting stream
+  # (#event.module=windows-defender-365); inbox-rule / mailbox / OAuth audit and
+  # SharePoint/OneDrive activity via the M365 unified audit log
+  # (#event.module=m365). Clients without the connector simply return no rows —
+  # the same behaviour as Sentinel when the corresponding table is not ingested.
+  - email_events               # Defender AdvancedHunting EmailEvents (windows-defender-365)
+  - email_url_clicks           # Defender AdvancedHunting UrlClickEvents (windows-defender-365)
+  - email_post_delivery        # Defender AdvancedHunting EmailPostDeliveryEvents (windows-defender-365)
+  - office_activity            # M365 unified audit log: inbox rules, mailbox ops, SharePoint/OneDrive (m365)
+  - cloud_app_events           # M365 / Defender for Cloud Apps activity (m365 audit; MDA where forwarded)
+  - service_principal_signins  # Entra service-principal sign-ins (entraid connector)
+  - security_alerts            # Defender / Falcon detections (windows-defender-365 AlertInfo; DetectionSummaryEvent)
 
 template_syntax:
   parameter_pattern: "{{name}}"

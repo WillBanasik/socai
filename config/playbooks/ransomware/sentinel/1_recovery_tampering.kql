@@ -1,0 +1,17 @@
+// Ransomware Stage 1 — Shadow-copy & recovery tampering (MITRE T1490).
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+let user = "{{user}}";
+DeviceProcessEvents
+| where Timestamp > ago(lookback)
+| where DeviceName has device
+| where user == "__NONE__" or AccountName has user
+| where FileName in~ ("vssadmin.exe", "wbadmin.exe", "bcdedit.exe", "wmic.exe",
+    "cipher.exe", "diskshadow.exe", "powershell.exe", "pwsh.exe")
+| where ProcessCommandLine has_any ("delete shadows", "delete catalog",
+    "resize shadowstorage", "shadowcopy delete", "win32_shadowcopy",
+    "recoveryenabled no", "bootstatuspolicy ignoreallfailures", "wbadmin delete",
+    "deletecatalog", "/purge")
+| project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine,
+    InitiatingProcessFileName, InitiatingProcessCommandLine, SHA256
+| sort by Timestamp asc

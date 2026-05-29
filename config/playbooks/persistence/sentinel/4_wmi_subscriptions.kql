@@ -1,0 +1,26 @@
+// Persistence Stage 4 — WMI event subscriptions.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+union isfuzzy=true
+(
+    DeviceEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where ActionType has_any ("WmiBindEventFilter", "WmiBindEventConsumer",
+        "WmiBindEventFilterToConsumer")
+    | project Source = "DeviceEvents", Timestamp, DeviceName, ActionType,
+        InitiatingProcessFileName, InitiatingProcessCommandLine, AdditionalFields
+),
+(
+    DeviceProcessEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where (FileName =~ "wmic.exe" and ProcessCommandLine has_any ("__EventFilter",
+        "CommandLineEventConsumer", "__FilterToConsumerBinding", "ActiveScriptEventConsumer"))
+        or (FileName in~ ("powershell.exe", "pwsh.exe") and ProcessCommandLine has_any (
+        "__EventFilter", "CommandLineEventConsumer", "Register-WmiEvent", "Set-WmiInstance"))
+    | project Source = "DeviceProcessEvents", Timestamp, DeviceName, ActionType = FileName,
+        InitiatingProcessFileName, InitiatingProcessCommandLine = ProcessCommandLine,
+        AdditionalFields = ""
+)
+| sort by Timestamp asc

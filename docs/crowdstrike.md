@@ -132,6 +132,16 @@ Tools exposed:
 
 Trigger phrases: *"check CrowdStrike"*, *"Falcon detection"*, *"what did the CS sensor see"*, *"NG-SIEM query"*, *"process tree on CrowdStrike host"*.
 
+### CQL investigation playbooks
+
+All 17 v2 playbooks ship a CrowdStrike NG-SIEM (LogScale/CQL) implementation — select them via the `cql_investigation` prompt or load with `load_cql_playbook(<id>)`. `classify_attack` returns the matching playbook in its `cql_playbook` field. Coverage:
+
+- **Falcon-native** (endpoint telemetry, `#event_simpleName=...`): `malware-execution`, `lateral-movement`, `command-and-control`, `ioc-hunt`, `ransomware`, `credential-access`, `persistence`, `defence-evasion`, `web-shell`, and the endpoint stages of `account-compromise` / `data-exfiltration` / `insider-data-staging`.
+- **Microsoft connector-dependent** (email/identity/audit forwarded into NG-SIEM): `phishing`, `bec`, `oauth-consent` and the email/M365 stages of `data-exfiltration` / `insider-data-staging` use `#event.dataset="windows-defender-365.event"` (Defender advanced-hunting; sub-table on `Vendor.Workload`) and `#event.module=m365` / `#event.module=entraid`. These return rows only where the client forwards the M365/Defender connector into NG-SIEM.
+- **Sentinel-only**: `reconnaissance` Stage 3 (authoritative-DNS enumeration) has no Falcon equivalent — Falcon `DnsRequest` is endpoint-outbound, not authoritative-inbound.
+
+Some endpoint playbook stages reference Falcon events not yet seen across onboarded clients (e.g. registry-autostart `AsepValueUpdate`, USB device fields); these are flagged in the `.cql` headers with the discovery query to confirm per client, and fall back to `ProcessRollup2` command-line analysis. Always confirm against the stowed connector inventory (Step 6) before relying on a query.
+
 ## Limits & gotchas
 
 - **No `union`-style cross-repo queries** — CQL is per-repo. Each client = one repo.

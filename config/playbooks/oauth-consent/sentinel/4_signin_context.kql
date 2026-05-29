@@ -1,0 +1,13 @@
+// OAuth Consent Stage 4 — Granting-user sign-in context.
+let lookback = {{lookback}};
+let upn = "{{upn}}";
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where UserPrincipalName =~ upn
+| extend City = tostring(LocationDetails.city),
+    Country = tostring(LocationDetails.countryOrRegion),
+    ErrorCode = tostring(Status.errorCode)
+| project TimeGenerated, UserPrincipalName, IPAddress, City, Country,
+    AppDisplayName, ResourceDisplayName, RiskLevelDuringSignIn, RiskState,
+    ConditionalAccessStatus, AuthenticationRequirement, ErrorCode
+| sort by TimeGenerated asc

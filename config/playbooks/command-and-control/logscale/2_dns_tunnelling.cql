@@ -6,6 +6,6 @@
 | regex("^(?<sub>[^.]+)\\.(?<parent>.+)$", field=DomainName)
 | SubLen := length("sub")
 | groupBy([ComputerName, parent],
-          function=[count(as=QueryCount), countDistinct(DomainName, as=DistinctSubdomains), max("SubLen", as=MaxSubLen)])
+          function=[count(as=QueryCount), count(field=DomainName, distinct=true, as=DistinctSubdomains), max("SubLen", as=MaxSubLen)])
 | DistinctSubdomains >= 50 OR MaxSubLen >= 40
 | sort(DistinctSubdomains, order=desc)

@@ -1,0 +1,12 @@
+// Insider / Data Staging Stage 1 — Bulk SharePoint / OneDrive pull.
+let lookback = {{lookback}};
+let upn = "{{target_upn}}";
+OfficeActivity
+| where TimeGenerated > ago(lookback)
+| where UserId =~ upn
+| where Operation in ("FileDownloaded", "FileSyncDownloadedFull", "FileAccessed")
+| summarize EventCount = count(), UniqueFiles = dcount(SourceFileName),
+    UniqueSites = dcount(Site_Url), Operations = make_set(Operation)
+  by bin(TimeGenerated, 1h), UserId
+| where EventCount >= 50
+| sort by EventCount desc

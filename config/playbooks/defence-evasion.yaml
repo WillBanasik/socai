@@ -1,0 +1,56 @@
+id: defence-evasion
+name: Defence Evasion / Tamper Investigation
+description: >
+  Hunts attempts to blind detection: security-log clearing, EDR/AV disablement and
+  tamper, defensive-tool process kills, and correlated defense-evasion detections.
+  Stages 1, 2 and 4 always run; Stage 3 is conditional. Defender exposes dedicated
+  tamper/AV-config telemetry; on Falcon behavioural attempts come from ProcessRollup2
+  command-line analysis and sensor tamper detections (see .cql headers).
+required_capabilities:
+  sentinel:
+  - device_process_events
+  - security_alerts
+  - windows_security_events
+  logscale:
+  - device_process_events
+  - security_alerts
+  - windows_security_events
+parameters:
+- name: device_name
+  type: string
+  description: Host to scope (regex/substring matched). __NONE__ to scan all.
+  default: __NONE__
+- name: user
+  type: string
+  description: Associated user account (optional; __NONE__ to scan all).
+  default: __NONE__
+- name: lookback
+  type: string
+  description: Time range to investigate (default 7d).
+  default: 7d
+stages:
+- id: 1
+  name: Security-log clearing
+  description: Security/log clearing via 1102/104 and wevtutil / Clear-EventLog.
+  run: "ALWAYS."
+  query_file: 1_log_clearing
+- id: 2
+  name: EDR / AV disablement and tamper
+  description: Defender/AV disable, exclusion adds, EDR service stop, tamper attempts.
+  run: "ALWAYS."
+  query_file: 2_edr_av_tamper
+- id: 3
+  name: Defensive-tool process kills
+  description: taskkill / Stop-Process targeting security tooling.
+  run: when Stage 1 or 2 shows tamper signal.
+  query_file: 3_tool_kills
+- id: 4
+  name: Defense-evasion detections
+  description: correlated EDR/SIEM defense-evasion alerts.
+  run: "ALWAYS."
+  query_file: 4_evasion_detections
+definitions:
+- term: Tamper Protection
+  definition: >
+    Vendor control that blocks modification/disabling of the security agent. Tamper
+    attempts (MITRE T1562) are high-fidelity evasion indicators.

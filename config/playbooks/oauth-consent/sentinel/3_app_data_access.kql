@@ -1,0 +1,14 @@
+// OAuth Consent Stage 3 — Post-consent data access.
+// NOTE: the legacy playbook also queried MicrosoftGraphActivityLogs (the consented
+// app's Graph API calls). If Graph activity logging is enabled, add a section for it;
+// it has no NG-SIEM equivalent so the CQL side omits it.
+let lookback = {{lookback}};
+let upn = "{{upn}}";
+OfficeActivity
+| where TimeGenerated > ago(lookback)
+| where UserId =~ upn
+| where Operation in ("MailItemsAccessed", "FileDownloaded", "FileAccessed",
+    "Send", "SendAs", "SharingSet", "AnonymousLinkCreated")
+| project TimeGenerated, Operation, UserId, ClientIP, OfficeWorkload,
+    OfficeObjectId, ResultStatus, ExternalAccess
+| sort by TimeGenerated asc

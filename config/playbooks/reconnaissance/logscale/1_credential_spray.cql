@@ -6,7 +6,7 @@
 | Vendor.properties.status.errorCode != 0
 | groupBy([source.ip],
           function=[count(as=FailedAttempts),
-                    countDistinct(Vendor.properties.userPrincipalName, as=DistinctUsers),
+                    count(field=Vendor.properties.userPrincipalName, distinct=true, as=DistinctUsers),
                     collect([Vendor.properties.userPrincipalName], limit=50)])
 | AttemptsPerUser := FailedAttempts / DistinctUsers
 | DistinctUsers >= 5 OR FailedAttempts >= 25

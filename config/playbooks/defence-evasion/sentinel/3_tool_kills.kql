@@ -1,0 +1,15 @@
+// Defence Evasion Stage 3 — Defensive-tool process kills.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+let secTools = dynamic(["MsMpEng.exe", "MsSense.exe", "SenseIR.exe", "CSFalconService.exe",
+    "CSFalconContainer.exe", "sophos", "cb.exe", "cylancesvc.exe", "xagt.exe",
+    "SentinelAgent.exe", "SentinelOne", "SecurityHealthService.exe", "windefend"]);
+DeviceProcessEvents
+| where Timestamp > ago(lookback)
+| where device == "__NONE__" or DeviceName has device
+| where FileName in~ ("taskkill.exe", "ntsd.exe", "pskill.exe", "pskill64.exe")
+    or (FileName in~ ("powershell.exe", "pwsh.exe") and ProcessCommandLine has "Stop-Process")
+| where ProcessCommandLine has_any (secTools)
+| project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine,
+    InitiatingProcessFileName
+| sort by Timestamp asc

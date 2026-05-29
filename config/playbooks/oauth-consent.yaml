@@ -1,0 +1,68 @@
+id: oauth-consent
+name: Illicit OAuth Consent / App Abuse Investigation
+description: >
+  Investigates illicit OAuth consent-grant phishing and enterprise-app abuse: consent
+  events and app-role / service-principal credential additions, service-principal
+  sign-in activity post-consent, data the consented app accessed, the granting user's
+  sign-in context, and an attacker-IP tenant sweep with correlated alerts. Migrated
+  from the legacy Sentinel-only oauth-consent-grant playbook and extended with CQL.
+  Stages 1, 2 and 4 always run; Stages 3 and 5 are conditional.
+required_capabilities:
+  sentinel:
+  - office_activity
+  - security_alerts
+  - service_principal_signins
+  - sign_in_events
+  logscale:
+  - office_activity
+  - security_alerts
+  - service_principal_signins
+  - sign_in_events
+parameters:
+- name: upn
+  type: string
+  description: UserPrincipalName who granted consent.
+- name: ip
+  type: string
+  description: IP address at time of consent (optional; used in Stage 5 sweep). __NONE__ to skip.
+  default: __NONE__
+- name: object_id
+  type: string
+  description: Entra object ID of the user (optional, for alert correlation). __NONE__ to skip.
+  default: __NONE__
+- name: lookback
+  type: string
+  description: Time range to investigate (default 14d).
+  default: 14d
+stages:
+- id: 1
+  name: Consent & app-role / SP-credential events
+  description: consent grants, OAuth2 permission grants, app-role assignments, SP credential adds.
+  run: "ALWAYS — the consent event itself."
+  query_file: 1_consent_events
+- id: 2
+  name: Service-principal sign-ins post-consent
+  description: app/service-principal authentication activity after the grant.
+  run: "ALWAYS — shows whether the app started acting."
+  query_file: 2_sp_signins
+- id: 3
+  name: Post-consent data access
+  description: mail/file access, sends, sharing performed by the user / app.
+  run: when the consent looks illicit.
+  query_file: 3_app_data_access
+- id: 4
+  name: Granting-user sign-in context
+  description: location / risk / CA context around the consent.
+  run: "ALWAYS."
+  query_file: 4_signin_context
+- id: 5
+  name: IP tenant sweep + correlated alerts
+  description: other accounts from the consent IP, plus correlated security alerts.
+  run: when an attacker IP is known or the grant is confirmed malicious.
+  query_file: 5_ip_sweep_alerts
+definitions:
+- term: Illicit Consent Grant
+  definition: >
+    MITRE T1528 — phishing a user into granting OAuth permissions to an attacker-
+    controlled app, giving token-based access to mail/files that survives password
+    resets and is not blocked by MFA.

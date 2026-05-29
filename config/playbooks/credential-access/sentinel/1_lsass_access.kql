@@ -1,0 +1,26 @@
+// Credential Access Stage 1 — LSASS access / credential dumping.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+union isfuzzy=true
+(
+    DeviceEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where ActionType in ("OpenProcessApiCall", "ReadProcessMemory")
+    | where FileName =~ "lsass.exe" or AdditionalFields has "lsass"
+    | project Source = "DeviceEvents", Timestamp, DeviceName, Behaviour = ActionType,
+        InitiatingProcessFileName, InitiatingProcessCommandLine, InitiatingProcessAccountName
+),
+(
+    DeviceProcessEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where FileName in~ ("procdump.exe", "procdump64.exe", "rundll32.exe", "taskmgr.exe",
+        "nanodump.exe", "sqldumper.exe", "werfault.exe")
+        or ProcessCommandLine has_any ("lsass", "MiniDump", "sekurlsa", "mimikatz", "comsvcs.dll")
+    | where ProcessCommandLine has_any ("lsass", "MiniDump", "sekurlsa", "dump")
+    | project Source = "DeviceProcessEvents", Timestamp, DeviceName, Behaviour = FileName,
+        InitiatingProcessFileName, InitiatingProcessCommandLine = ProcessCommandLine,
+        InitiatingProcessAccountName = AccountName
+)
+| sort by Timestamp asc

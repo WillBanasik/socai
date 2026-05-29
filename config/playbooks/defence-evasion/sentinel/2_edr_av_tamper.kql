@@ -1,0 +1,26 @@
+// Defence Evasion Stage 2 — EDR / AV disablement & tamper.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+union isfuzzy=true
+(
+    DeviceEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where ActionType has_any ("TamperingAttempt", "AntivirusDisabled",
+        "DefenderConfigChanged", "SecurityControlConfigChanged")
+    | project Source = "DeviceEvents", Timestamp, DeviceName, ActionType,
+        InitiatingProcessFileName, InitiatingProcessCommandLine, AdditionalFields
+),
+(
+    DeviceProcessEvents
+    | where Timestamp > ago(lookback)
+    | where device == "__NONE__" or DeviceName has device
+    | where ProcessCommandLine has_any ("Set-MpPreference", "DisableRealtimeMonitoring",
+        "DisableBehaviorMonitoring", "Add-MpPreference", "MpCmdRun", "fltMC", "sc stop",
+        "sc config", "Stop-Service", "net stop")
+    | where ProcessCommandLine has_any ("defend", "windefend", "sense", "csagent", "csfalcon",
+        "crowdstrike", "sentinel", "sophos", "cylance", "carbonblack", "mpssvc")
+    | project Source = "DeviceProcessEvents", Timestamp, DeviceName, FileName,
+        ProcessCommandLine, InitiatingProcessFileName, AccountName
+)
+| sort by Timestamp asc

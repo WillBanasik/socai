@@ -1,0 +1,13 @@
+// Web Shell Stage 1 — Web-server process spawning a shell / LOLBin.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+DeviceProcessEvents
+| where Timestamp > ago(lookback)
+| where device == "__NONE__" or DeviceName has device
+| where InitiatingProcessFileName in~ ("w3wp.exe", "httpd.exe", "nginx.exe", "tomcat.exe",
+    "tomcat9.exe", "java.exe", "php-cgi.exe", "php.exe", "node.exe")
+| where FileName in~ ("cmd.exe", "powershell.exe", "pwsh.exe", "bash.exe", "sh.exe",
+    "wscript.exe", "cscript.exe", "net.exe", "whoami.exe", "certutil.exe", "bitsadmin.exe")
+| project Timestamp, DeviceName, AccountName, InitiatingProcessFileName,
+    FileName, ProcessCommandLine, InitiatingProcessCommandLine
+| sort by Timestamp asc

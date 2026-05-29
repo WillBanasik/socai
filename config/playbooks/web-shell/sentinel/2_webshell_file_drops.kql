@@ -1,0 +1,15 @@
+// Web Shell Stage 2 — Web-shell file drops in web roots.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+DeviceFileEvents
+| where Timestamp > ago(lookback)
+| where device == "__NONE__" or DeviceName has device
+| where ActionType in ("FileCreated", "FileModified", "FileRenamed")
+| where FolderPath has_any (@"\inetpub\wwwroot", @"\wwwroot", @"\webapps", @"\htdocs",
+    @"\www\", @"\httpdocs", "tomcat", @"\App_Data")
+| where FileName endswith ".aspx" or FileName endswith ".asp" or FileName endswith ".ashx"
+    or FileName endswith ".php" or FileName endswith ".jsp" or FileName endswith ".jspx"
+    or FileName endswith ".war" or FileName endswith ".cfm"
+| project Timestamp, DeviceName, ActionType, FileName, FolderPath, SHA256,
+    InitiatingProcessFileName, InitiatingProcessCommandLine
+| sort by Timestamp asc

@@ -1,0 +1,26 @@
+// Credential Access Stage 2 — Kerberoasting / AS-REP roasting.
+let lookback = {{lookback}};
+let account = "{{target_account}}";
+union isfuzzy=true
+(
+    SecurityEvent
+    | where TimeGenerated > ago(lookback)
+    | where EventID == 4769
+    | where TicketEncryptionType in ("0x17", "0x18")   // RC4 / DES = roastable
+    | where ServiceName != "krbtgt" and ServiceName !endswith "$"
+    | where account == "__NONE__" or TargetUserName has account or ServiceName has account
+    | summarize RequestCount = count(), Services = make_set(ServiceName, 20),
+        FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated)
+      by Activity = "Kerberoasting (4769 RC4/DES)", TargetUserName, IpAddress
+    | where RequestCount >= 5
+),
+(
+    SecurityEvent
+    | where TimeGenerated > ago(lookback)
+    | where EventID == 4768
+    | where PreAuthType == "0"   // pre-auth not required = AS-REP roastable
+    | where account == "__NONE__" or TargetUserName has account
+    | summarize RequestCount = count(), FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated)
+      by Activity = "AS-REP roasting (4768 no preauth)", TargetUserName, IpAddress
+)
+| sort by LastSeen desc

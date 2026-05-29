@@ -126,7 +126,9 @@ def register_prompts(mcp: FastMCP) -> None:
         Available playbooks: ``bec``, ``phishing``, ``account-compromise``,
         ``malware-execution``, ``privilege-escalation``, ``data-exfiltration``,
         ``lateral-movement``, ``command-and-control``, ``reconnaissance``,
-        ``ioc-hunt``. Call ``classify_attack`` first to pick the right one.
+        ``ioc-hunt``, ``ransomware``, ``credential-access``, ``persistence``,
+        ``defence-evasion``, ``web-shell``, ``oauth-consent``,
+        ``insider-data-staging``. Call ``classify_attack`` first to pick the right one.
         When a playbook has a Stage 0 broad-scope expansion, run it before any
         narrow stage.
 
@@ -198,6 +200,13 @@ def register_prompts(mcp: FastMCP) -> None:
                 "data-exfiltration": "target_upn",
                 "lateral-movement": "source_host",
                 "ioc-hunt": "ioc_value",
+                "ransomware": "device_name",
+                "credential-access": "device_name",
+                "persistence": "device_name",
+                "defence-evasion": "device_name",
+                "web-shell": "device_name",
+                "oauth-consent": "upn",
+                "insider-data-staging": "target_upn",
             }
             param_name = _entity_map.get(playbook_id, "target_entity")
             params[param_name] = target_entity
@@ -379,6 +388,13 @@ def register_prompts(mcp: FastMCP) -> None:
         - **account-compromise** — Azure sign-in, Windows events, endpoint logons
         - **command-and-control** — beaconing, DNS tunnelling, long-haul sessions, LOLBin callbacks (Falcon)
         - **reconnaissance** — credential spray, port/service scanning (Falcon; DNS enumeration is Sentinel-only)
+        - **ransomware** — recovery tampering, mass file modification, ransom notes, impact detections
+        - **credential-access** — LSASS dumping, Kerberoasting/AS-REP, DCSync, credential-theft detections
+        - **persistence** — scheduled tasks, Run keys, services, WMI subscriptions, startup folder
+        - **defence-evasion** — log clearing, EDR/AV tamper, defensive-tool kills, evasion detections
+        - **web-shell** — web-server spawned shells, web-shell drops, post-exploitation
+        - **oauth-consent** — illicit consent grants, SP sign-ins, app data access, IP sweep
+        - **insider-data-staging** — bulk cloud pull, local archiving, removable media, egress
 
         Tip: call `classify_attack` first to determine which playbook to use,
         then select this prompt with the matching playbook ID.
@@ -430,6 +446,13 @@ def register_prompts(mcp: FastMCP) -> None:
                 "lateral-movement": "source_host",
                 "ioc-hunt": "ioc_value",
                 "account-compromise": "upn",
+                "ransomware": "device_name",
+                "credential-access": "device_name",
+                "persistence": "device_name",
+                "defence-evasion": "device_name",
+                "web-shell": "device_name",
+                "oauth-consent": "upn",
+                "insider-data-staging": "target_upn",
             }
             param_name = _entity_map.get(playbook_id, "target_entity")
             params[param_name] = target_entity

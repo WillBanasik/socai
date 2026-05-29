@@ -1,0 +1,64 @@
+id: persistence
+name: Persistence Sweep
+description: >
+  Standalone persistence hunt across the common autostart mechanisms: scheduled
+  tasks, registry Run keys / ASEP, new services, WMI event subscriptions, and
+  startup-folder writes. Currently only incidentally covered inside malware-execution.
+  Stages 1-3 and 5 always run; Stage 4 (WMI) is conditional. Defender provides
+  dedicated registry/WMI telemetry; on Falcon several mechanisms fall back to
+  ProcessRollup2 command-line analysis of the LOLBins involved (see .cql headers).
+required_capabilities:
+  sentinel:
+  - device_file_events
+  - device_process_events
+  - device_registry_events
+  - windows_security_events
+  logscale:
+  - device_file_events
+  - device_process_events
+  - windows_security_events
+parameters:
+- name: device_name
+  type: string
+  description: Host to scope (regex/substring matched). __NONE__ to scan all.
+  default: __NONE__
+- name: user
+  type: string
+  description: Associated user account (optional; __NONE__ to scan all).
+  default: __NONE__
+- name: lookback
+  type: string
+  description: Time range to investigate (default 7d).
+  default: 7d
+stages:
+- id: 1
+  name: Scheduled tasks
+  description: schtasks/at and Register-ScheduledTask creation (process + 4698).
+  run: "ALWAYS."
+  query_file: 1_scheduled_tasks
+- id: 2
+  name: Run keys / autostart (ASEP)
+  description: registry writes to Run/RunOnce/Winlogon/IFEO and related autostart keys.
+  run: "ALWAYS."
+  query_file: 2_run_keys
+- id: 3
+  name: New services
+  description: service installation via sc.exe / New-Service / 7045.
+  run: "ALWAYS."
+  query_file: 3_new_services
+- id: 4
+  name: WMI event subscriptions
+  description: __EventFilter / EventConsumer / FilterToConsumerBinding creation.
+  run: when fileless / advanced persistence is suspected.
+  query_file: 4_wmi_subscriptions
+- id: 5
+  name: Startup-folder writes
+  description: files written to a Start Menu\Programs\Startup folder.
+  run: "ALWAYS."
+  query_file: 5_startup_folder
+definitions:
+- term: ASEP
+  definition: >
+    Auto-Start Extensibility Point — any registry/filesystem location Windows reads to
+    launch code automatically at boot or logon (Run keys, services, scheduled tasks,
+    Winlogon, IFEO). MITRE T1547 / T1053 / T1543.

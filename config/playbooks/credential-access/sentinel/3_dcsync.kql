@@ -1,0 +1,25 @@
+// Credential Access Stage 3 — DCSync / directory replication abuse.
+let lookback = {{lookback}};
+let dc = "{{dc_name}}";
+union isfuzzy=true
+(
+    SecurityEvent
+    | where TimeGenerated > ago(lookback)
+    | where EventID == 4662
+    // DS-Replication-Get-Changes / -All control-access rights
+    | where Properties has "1131f6aa-9c07-11d1-f79f-00c04fc2dcd2"
+        or Properties has "1131f6ad-9c07-11d1-f79f-00c04fc2dcd2"
+    | where SubjectUserName !endswith "$"   // exclude DC machine accounts (legit replication)
+    | project Source = "SecurityEvent(4662)", TimeGenerated, Computer,
+        Actor = SubjectUserName, ObjectName, AccessMask
+),
+(
+    IdentityDirectoryEvents
+    | where Timestamp > ago(lookback)
+    | where ActionType has "replication" or ActionType has "DCSync"
+    | where dc == "__NONE__" or DestinationDeviceName has dc
+    | project Source = "IdentityDirectoryEvents", TimeGenerated = Timestamp,
+        Computer = DestinationDeviceName, Actor = AccountUpn,
+        ObjectName = TargetAccountUpn, AccessMask = ""
+)
+| sort by TimeGenerated asc

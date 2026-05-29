@@ -15,6 +15,7 @@ required_capabilities:
   logscale:
   - device_process_events
   - identity_logon
+  - office_activity
   - sign_in_events
 parameters:
 - name: upn

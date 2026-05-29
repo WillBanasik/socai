@@ -1,0 +1,19 @@
+// Ransomware Stage 2 — Mass file modification / extension burst.
+let lookback = {{lookback}};
+let device = "{{device_name}}";
+DeviceFileEvents
+| where Timestamp > ago(lookback)
+| where DeviceName has device
+| where ActionType in ("FileRenamed", "FileModified", "FileCreated")
+| extend Ext = tolower(extract(@"\.([A-Za-z0-9_-]{1,12})$", 1, FileName))
+| summarize
+    ModCount = count(),
+    DistinctExtensions = dcount(Ext),
+    DistinctFolders = dcount(FolderPath),
+    SampleExtensions = make_set(Ext, 30),
+    SampleFiles = make_set(FileName, 20),
+    FirstSeen = min(Timestamp),
+    LastSeen = max(Timestamp)
+  by DeviceName, InitiatingProcessFileName, bin(Timestamp, 5m)
+| where ModCount >= 200
+| sort by ModCount desc

@@ -1519,9 +1519,12 @@ def _register_tier1(mcp: FastMCP) -> None:
         eml_provided: bool = False,
         logs_provided: bool = False,
     ) -> str:
-        """Classify alert into attack_type (phishing, malware,
-        account_compromise, privilege_escalation, pup_pua, generic) and
-        return ordered tool sequence + skip profile. Deterministic
+        """Classify alert into attack_type (phishing, malware, ransomware,
+        account_compromise, credential_access, privilege_escalation,
+        data_exfiltration, insider_threat, lateral_movement,
+        command_and_control, reconnaissance, persistence, defence_evasion,
+        web_shell, oauth_consent, pup_pua, generic) and return ordered tool
+        sequence + skip profile + the matching KQL/CQL playbook. Deterministic
         keyword/shape match, no LLM, no case required. Call EARLY to
         decide the investigation path.
 
@@ -1664,6 +1667,78 @@ def _register_tier1(mcp: FastMCP) -> None:
                 {"tool": "response_actions", "reason": "Containment guidance (block source, enforce MFA / smart lockout)"},
                 {"tool": "generate_queries", "reason": "Generate SIEM hunt queries"},
             ],
+            "ransomware": _prefix + [
+                {"tool": "enrich_iocs", "reason": "Enrich file hashes, ransom-note IOCs, C2 IPs"},
+                {"tool": "recall_cases", "reason": "Check for prior related cases / same ransomware family"},
+            ] + _kql("ransomware", "recovery tampering, mass file modification, ransom notes, impact detections") + [
+                {"tool": "correlate", "reason": "Cross-reference encryption tooling and impacted hosts"},
+                {"tool": "generate_report", "reason": "Generate investigation narrative"},
+                {"tool": "prepare_mdr_report", "reason": "Prepare client-facing MDR deliverable"},
+                {"tool": "response_actions", "reason": "Containment (isolate hosts, disable accounts, preserve for recovery)"},
+                {"tool": "generate_queries", "reason": "Generate SIEM hunt queries"},
+            ],
+            "credential_access": _prefix + [
+                {"tool": "enrich_iocs", "reason": "Enrich actor/source identities and hosts"},
+                {"tool": "recall_cases", "reason": "Check for prior related investigations"},
+            ] + _kql("credential-access", "LSASS dumping, Kerberoasting/AS-REP, DCSync, credential-theft detections") + [
+                {"tool": "correlate", "reason": "Cross-reference credential-theft tradecraft across hosts"},
+                {"tool": "generate_report", "reason": "Generate investigation narrative"},
+                {"tool": "prepare_mdr_report", "reason": "Prepare client-facing MDR deliverable"},
+                {"tool": "response_actions", "reason": "Containment (reset credentials, KRBTGT double-reset, isolate hosts)"},
+                {"tool": "generate_queries", "reason": "Generate SIEM hunt queries"},
+            ],
+            "persistence": _prefix + [
+                {"tool": "enrich_iocs", "reason": "Enrich persistence-related hashes, paths, domains"},
+                {"tool": "recall_cases", "reason": "Check for prior related investigations"},
+            ] + _kql("persistence", "scheduled tasks, Run keys, services, WMI subscriptions, startup folder") + [
+                {"tool": "correlate", "reason": "Cross-reference persistence mechanisms across hosts"},
+                {"tool": "generate_report", "reason": "Generate investigation narrative"},
+                {"tool": "prepare_mdr_report", "reason": "Prepare client-facing MDR deliverable"},
+                {"tool": "response_actions", "reason": "Containment (remove persistence, isolate host)"},
+                {"tool": "generate_queries", "reason": "Generate SIEM hunt queries"},
+            ],
+            "defence_evasion": _prefix + [
+                {"tool": "enrich_iocs", "reason": "Enrich tooling hashes and source identities"},
+                {"tool": "recall_cases", "reason": "Check for prior related investigations"},
+            ] + _kql("defence-evasion", "log clearing, EDR/AV tamper, defensive-tool kills, detections") + [
+                {"tool": "correlate", "reason": "Cross-reference tamper activity across hosts"},
+                {"tool": "generate_report", "reason": "Generate investigation narrative"},
+                {"tool": "prepare_mdr_report", "reason": "Prepare client-facing MDR deliverable"},
+                {"tool": "response_actions", "reason": "Containment (re-enable protection, isolate host, investigate blind spot)"},
+                {"tool": "generate_queries", "reason": "Generate SIEM hunt queries"},
+            ],
+            "web_shell": _prefix + [
+                {"tool": "enrich_iocs", "reason": "Enrich source IPs and dropped-file hashes"},
+                {"tool": "recall_cases", "reason": "Check for prior related investigations"},
+            ] + _kql("web-shell", "web-server spawned shells, web-shell drops, post-exploitation") + [
+                {"tool": "correlate", "reason": "Cross-reference web-shell activity and egress"},
+                {"tool": "generate_report", "reason": "Generate investigation narrative"},
+                {"tool": "prepare_mdr_report", "reason": "Prepare client-facing MDR deliverable"},
+                {"tool": "response_actions", "reason": "Containment (remove web shell, patch app, isolate server)"},
+                {"tool": "generate_queries", "reason": "Generate SIEM hunt queries"},
+            ],
+            "oauth_consent": _prefix + [
+                {"tool": "enrich_iocs", "reason": "Enrich consent IP and app/SP identifiers"},
+                {"tool": "recall_cases", "reason": "Check for prior related investigations / same app"},
+            ] + _kql("oauth-consent", "consent grants, SP sign-ins, app data access, IP tenant sweep")
+              + _composite("oauth-consent-grant", "OAuth consent, app role assignments, post-consent activity") + [
+                {"tool": "correlate", "reason": "Cross-reference the app/SP across accounts"},
+                {"tool": "generate_report", "reason": "Generate investigation narrative"},
+                {"tool": "prepare_mdr_report", "reason": "Prepare client-facing MDR deliverable"},
+                {"tool": "response_actions", "reason": "Containment (revoke consent, disable app/SP, revoke tokens)"},
+                {"tool": "generate_queries", "reason": "Generate SIEM hunt queries"},
+            ],
+            "insider_threat": _prefix + [
+                {"tool": "enrich_iocs", "reason": "Enrich egress destinations and devices"},
+                {"tool": "recall_cases", "reason": "Check for prior related investigations"},
+            ] + _kql("insider-data-staging", "bulk cloud pull, local archiving, removable media, egress")
+              + _composite("dlp-exfiltration", "DLP alerts, bulk downloads, external sharing") + [
+                {"tool": "correlate", "reason": "Cross-reference staging and egress activity"},
+                {"tool": "generate_report", "reason": "Generate investigation narrative"},
+                {"tool": "prepare_mdr_report", "reason": "Prepare client-facing MDR deliverable"},
+                {"tool": "response_actions", "reason": "Containment guidance (preserve evidence, HR/legal coordination, restrict access)"},
+                {"tool": "generate_queries", "reason": "Generate SIEM hunt queries"},
+            ],
             "pup_pua": _prefix + [
                 {"tool": "enrich_iocs", "reason": "Enrich file hashes and domains"},
                 {"tool": "prepare_pup_report", "reason": "Prepare PUP/PUA report"},
@@ -1691,6 +1766,13 @@ def _register_tier1(mcp: FastMCP) -> None:
             "lateral_movement": "lateral-movement",
             "command_and_control": "command-and-control",
             "reconnaissance": "reconnaissance",
+            "ransomware": "ransomware",
+            "credential_access": "credential-access",
+            "persistence": "persistence",
+            "defence_evasion": "defence-evasion",
+            "web_shell": "web-shell",
+            "oauth_consent": "oauth-consent",
+            "insider_threat": "insider-data-staging",
         }
 
         # Map attack types to composite Sentinel query scenarios.
@@ -1702,6 +1784,8 @@ def _register_tier1(mcp: FastMCP) -> None:
             "privilege_escalation": ["suspicious-signin", "oauth-consent-grant"],
             "data_exfiltration": ["dlp-exfiltration"],
             "lateral_movement": ["suspicious-signin"],
+            "oauth_consent": ["oauth-consent-grant"],
+            "insider_threat": ["dlp-exfiltration"],
         }
 
         profile = PIPELINE_PROFILES.get(attack_type, PIPELINE_PROFILES["generic"])
@@ -1732,6 +1816,16 @@ def _register_tier1(mcp: FastMCP) -> None:
             # on LogScale (Stage 3 authoritative-DNS enumeration is Sentinel-only).
             "command_and_control": "command-and-control",
             "reconnaissance": "reconnaissance",
+            # New playbooks all ship Sentinel KQL + NGSIEM CQL. Email-backed
+            # types (oauth_consent, insider_threat) need the M365/Defender
+            # forwarding connector on LogScale; endpoint types ride Falcon native.
+            "ransomware": "ransomware",
+            "credential_access": "credential-access",
+            "persistence": "persistence",
+            "defence_evasion": "defence-evasion",
+            "web_shell": "web-shell",
+            "oauth_consent": "oauth-consent",
+            "insider_threat": "insider-data-staging",
         }
         cql_playbook_id = _cql_playbook_map.get(attack_type)
         if cql_playbook_id:
