@@ -43,19 +43,19 @@ Tags (`#field=value`) are repo/index-level filters applied before the pipeline. 
 
 ```cql
 // CORRECT — vendor + module scoping (portable)
-#Vendor="Microsoft" #event.module=windows EventCode=4769
+#Vendor="microsoft" #event.module=windows EventCode=4769
 
 // CORRECT — module + kind when vendor tag unavailable
 #event.module=windows #event.kind=event EventCode=4769
 
 // CORRECT — vendor-specific component filtering
-#Vendor="fortinet" #event.module=fortigate
+#Vendor="fortinet" #event.module=fortinet
 
 // CORRECT — exclude non-relevant repos (wildcard)
-#Vendor="Microsoft" #event.module=windows #repo!=xdr*
+#Vendor="microsoft" #event.module=windows #repo!=xdr*
 
 // CORRECT — AWS CloudTrail
-#Vendor="AWS" #event.module=cloudtrail
+#Vendor="aws" #event.module=cloudtrail
 
 // AVOID — #repo is client-specific and non-portable
 #repo="winlog" EventCode=4769
@@ -151,7 +151,7 @@ Use `match()` to check a field against a named lookup file (CSV).
 Line 1 is always a bare filter expression (with optional tags). Every subsequent step starts with `|`.
 
 ```cql
-#Vendor="Microsoft" #event.module=windows EventCode=4769
+#Vendor="microsoft" #event.module=windows EventCode=4769
 | in(TicketEncryptionType, values=["0x17", "0x18"])
 | not match(field=UserName, file="suppressed-accounts.csv", strict=false)
 | groupBy([UserName, HostName, SourceIP], function=[count(as=RequestCount), min(timestamp, as=FirstSeen), max(timestamp, as=LastSeen)])
@@ -182,28 +182,40 @@ Full field lists per connector are in `config/ngsiem/ngsiem_columns.yaml` (MCP: 
 
 ## 4. Log Source Filter Mapping
 
-When writing or migrating rules, use `#Vendor` and `#event.module` to scope queries to the correct data source. The table below maps common vendors/products to their correct tag values:
+When writing or migrating rules, use `#Vendor` and `#event.module` to scope queries to the correct data source. The table below maps common vendors/products to their correct tag values. Rows marked ✓ are verified against live platform discovery output (see `registry/ngsiem_connectors/`). Rows marked ⚠ are engineering reference only — not yet seen in any onboarded client and may need verification before relying on them.
 
-| Vendor | Product/Component | Tags |
-|---|---|---|
-| Microsoft | Windows Event Logs | `#Vendor="Microsoft" #event.module=windows` |
-| Microsoft | Entra ID (Azure AD) | `#Vendor="Microsoft" #event.module=entraid` |
-| Microsoft | Microsoft 365 | `#Vendor="Microsoft" #event.module=m365` |
-| Microsoft | Defender | `#Vendor="Microsoft" #event.module=defender` |
-| Fortinet | FortiGate | `#Vendor="fortinet" #event.module=fortigate` |
-| Fortinet | FortiWeb | `#Vendor="fortinet" #event.module=fortiweb` |
-| Cisco | ISE | `#Vendor="cisco" #event.module=ise` |
-| Cisco | Duo | `#Vendor="cisco" #event.module=duo` |
-| Cisco | ASA | `#Vendor="cisco" #event.module=asa` |
-| Check Point | Firewall | `#Vendor="checkpoint" #event.module=checkpoint` |
-| CrowdStrike | Falcon (XDR) | `#Vendor="CrowdStrike" #event.module=falcon` |
-| Darktrace | Darktrace | `#Vendor="darktrace" #event.module=darktrace` |
-| Delinea | Secret Server | `#Vendor="delinea" #event.module=delinea` |
-| Netskope | Cloud Security | `#Vendor="netskope" #event.module=netskope` |
-| AWS | CloudTrail | `#Vendor="AWS" #event.module=cloudtrail` |
-| Linux | Syslog / auditd | `#Vendor="linux" #event.module=linux` |
+| Vendor | Product/Component | Tags | Status |
+|---|---|---|---|
+| Microsoft | Windows Event Logs | `#Vendor="microsoft" #event.module=windows` | ✓ |
+| Microsoft | Entra ID (Azure AD) | `#Vendor="microsoft" #event.module=entraid` | ✓ |
+| Microsoft | Microsoft 365 | `#Vendor="microsoft" #event.module=m365` | ✓ |
+| Microsoft | Defender 365 | `#Vendor="microsoft" #event.module=windows-defender-365` | ✓ |
+| Microsoft | SQL Audit | `#Vendor="microsoft" #event.module=sql` | ✓ |
+| Microsoft | Windows DHCP | `#Vendor="microsoft" #event.module=windows #event.dataset="windows.dhcp-server"` | ✓ |
+| Fortinet | FortiGate | `#Vendor="fortinet" #event.module=fortinet #event.dataset=/^fortigate\./` | ✓ |
+| Fortinet | FortiWeb | `#Vendor="fortinet" #event.module=fortiweb` | ⚠ unverified |
+| Cisco | ISE | `#Vendor="cisco" #event.dataset=/^ise\./` (note: `#event.module` is null on ISE — scope by dataset) | ✓ |
+| Cisco | Duo | `#Vendor="cisco" #event.module=duo` | ✓ |
+| Cisco | ASA | `#Vendor="cisco" #event.module=asa` | ✓ |
+| Cisco | Viptela SD-WAN | `#Vendor="cisco" #event.module=cisco #event.dataset="cisco.viptela_ips"` | ✓ |
+| Cisco | NetFlow | `#Vendor="cisco" #event.module=netflow` | ✓ |
+| Check Point | NGFW | `#Vendor="checkpoint" #event.module=checkpoint #event.dataset=/^ngfw\./` | ✓ |
+| CrowdStrike | Falcon (XDR/endpoint) | endpoint events use `#event_simpleName=...` (e.g. `ProcessRollup2`, `DnsRequest`) — there is no `#event.module=falcon` on the platform | ✓ (use `#event_simpleName`) |
+| Darktrace | Detect | `#Vendor="darktrace" #event.module=detect` | ✓ |
+| Delinea | Secret Server | `#Vendor="delinea" #event.module=secretserver` | ✓ |
+| Cloudflare | Zero Trust | `#Vendor="cloudflare" #event.module=zerotrust` | ✓ |
+| F5 Networks | BIG-IP | `#Vendor="f5networks" #event.module=bigip` | ✓ |
+| Netskope | SSE | `#Vendor="netskope" #event.module=sse` | ✓ |
+| ManageEngine | ADAuditPlus | `#Vendor="manageengine" #event.module=adauditplus` | ✓ |
+| ManageEngine | ADSelfServicePlus | `#Vendor="manageengine" #event.module=adselfserviceplus` | ✓ |
+| ManageEngine | DataSecurityPlus | `#Vendor="manageengine" #event.module=datasecurityplus` | ✓ |
+| Wallix | Bastion (PAM) | `#Vendor="wallix" #event.module=wab` | ✓ |
+| Linux | Syslog / auditd | `#Vendor="linux" #event.module=syslog` | ✓ |
+| AWS | CloudTrail | `#Vendor="aws" #event.module=cloudtrail` | ⚠ unverified |
 
 **Migration rule:** When converting from Sentinel KQL or other platforms, map the source table/workspace to the appropriate `#Vendor` + `#event.module` tags from this table. Never map to `#repo`.
+
+**Verification:** Run the connector discovery query (`socai://cql-playbooks` → `DISCOVERY_QUERIES[0]`) against any client's repo to confirm available tags before relying on a `⚠ unverified` row. Discovery output for verified clients is stored in `registry/ngsiem_connectors/<client>.json`.
 
 For the full list of fields available per connector, see `config/ngsiem/ngsiem_columns.yaml` (MCP: `socai://ngsiem-columns`).
 
@@ -215,7 +227,7 @@ For the full list of fields available per connector, see `config/ngsiem/ngsiem_c
 The standard pattern for counting events per group over the lookback window:
 
 ```cql
-#Vendor="Microsoft" #event.module=windows EventCode=4769
+#Vendor="microsoft" #event.module=windows EventCode=4769
 | in(TicketEncryptionType, values=["0x17", "0x18"])
 | !endsWith(ServiceName, suffix="$")
 | ServiceName != "krbtgt"
@@ -320,9 +332,9 @@ These are recurring errors seen in rule reviews. Do not repeat them.
 
 | Anti-Pattern | Problem | Fix |
 |---|---|---|
-| `#repo="winlog"` as primary filter | `#repo` values are GUIDs or client-specific names — non-portable across deployments | Use `#Vendor="Microsoft" #event.module=windows` |
-| `\| winlog` mid-pipeline | `winlog` is a table name, not a pipe stage | Use `#Vendor="Microsoft" #event.module=windows` on line 1 |
-| `#event_simpleName=HashSpanningTrees` on a Windows 4769 rule | `HashSpanningTrees` is a CrowdStrike Falcon event — unrelated to Windows Security EventCode 4769 | Use `#Vendor="Microsoft" #event.module=windows EventCode=4769` |
+| `#repo="winlog"` as primary filter | `#repo` values are GUIDs or client-specific names — non-portable across deployments | Use `#Vendor="microsoft" #event.module=windows` |
+| `\| winlog` mid-pipeline | `winlog` is a table name, not a pipe stage | Use `#Vendor="microsoft" #event.module=windows` on line 1 |
+| `#event_simpleName=HashSpanningTrees` on a Windows 4769 rule | `HashSpanningTrees` is a CrowdStrike Falcon event — unrelated to Windows Security EventCode 4769 | Use `#Vendor="microsoft" #event.module=windows EventCode=4769` |
 | `\| RequestCount >= 1` after `count()` | Every group has count ≥ 1 by definition — this filter does nothing | Use a meaningful threshold: `>= 3`, `>= 5` |
 | `timestamp` in `table()` after `groupBy()` | Field is out of scope after aggregation | Use `FirstSeen` / `LastSeen` from `min/max(timestamp, ...)` |
 | `format(..., "%d", ...)` | `%d` has inconsistent support across CQL versions | Replace all `%d` with `%s` |
@@ -340,7 +352,7 @@ These are recurring errors seen in rule reviews. Do not repeat them.
 
 ### Windows Kerberoasting Detection (EventCode 4769)
 ```cql
-#Vendor="Microsoft" #event.module=windows #event.kind=event
+#Vendor="microsoft" #event.module=windows #event.kind=event
 | EventCode=4769
 | in(TicketEncryptionType, values=["0x17", "0x18"])
 | !endsWith(ServiceName, suffix="$")
@@ -362,7 +374,7 @@ These are recurring errors seen in rule reviews. Do not repeat them.
 
 ### Vertical Port Scan — Fortinet FortiGate (Inbound)
 ```cql
-#Vendor="fortinet" #event.module=fortigate
+#Vendor="fortinet" #event.module=fortinet
 | network.direction="inbound"
 | in(field="destination.port", values=[21, 22, 23, 25, 53, 79, 80, 110, 111, 135, 139, 143, 161, 443, 445, 1080, 1433, 1434, 1521, 1522, 1523, 1524, 1525, 1526, 1527, 1723, 3128, 3306, 3389, 5985, 8080])
 | not match(field=source.ip, file="Customer Domain Controllers - IP", strict=false)
@@ -376,7 +388,7 @@ These are recurring errors seen in rule reviews. Do not repeat them.
 
 ### Outbound Threat / Malware Communication — Multi-vendor
 ```cql
-#Vendor="fortinet" #event.module=fortigate
+#Vendor="fortinet" #event.module=fortinet
 | network.direction="outbound"
 | in(field="event.category", values=["misc exploit", "misc malware", "backdoor detected", "web exploit", "potential botnet connection", "command execution"])
 | not match(field=source.ip, file="Customer VA Scanners - AlphaNumeric", strict=false)
@@ -385,7 +397,7 @@ These are recurring errors seen in rule reviews. Do not repeat them.
 
 ### AWS CloudTrail — IAM Privilege Escalation
 ```cql
-#Vendor="AWS" #event.module=cloudtrail
+#Vendor="aws" #event.module=cloudtrail
 | Vendor.eventSource="iam.amazonaws.com"
 | in(field="Vendor.eventName", values=["AttachUserPolicy", "AttachRolePolicy", "PutUserPolicy", "PutRolePolicy", "CreatePolicyVersion", "AddUserToGroup", "CreateAccessKey", "UpdateAssumeRolePolicy"])
 | table([@timestamp, Vendor.eventName, user.name, Vendor.userIdentity.type, Vendor.userIdentity.arn, Vendor.sourceIPAddress, Vendor.awsRegion, Vendor.recipientAccountId])

@@ -96,9 +96,13 @@ connectors:
     vendor: "Fortinet"
     product: "FortiGate"
     description: "Firewall traffic, UTM, and security events"
-    filter: 'observer.vendor="fortinet" | observer.product="fortigate"'
+    filter: '#Vendor="fortinet" #event.module=fortinet'
     tags:
+    - '#Vendor="fortinet"'
     - '#event.module="fortinet"'
+    - '#event.dataset="fortigate.event"'
+    - '#event.dataset="fortigate.traffic"'
+    - '#event.dataset="fortigate.utm"'
     data_connection_id: ""  # Fill from discovery query
     fields:
       ecs:
@@ -174,14 +178,16 @@ connectors:
   # ---------------------------------------------------------------------------
   # Azure AD Sign-In Logs
   # ---------------------------------------------------------------------------
-  azure_ad_signin:
+  entraid_signin:
     vendor: "Microsoft"
-    product: "Azure AD Sign-In Logs"
+    product: "Entra ID Sign-In Logs"
     description: "Interactive and non-interactive authentication events from Entra
-      ID"
-    filter: '#event.dataset="azure.signinlogs"'
+      ID (dedicated entraid connector, not M365)"
+    filter: '#Vendor="microsoft" #event.module=entraid #event.dataset="entraid.signin"'
     tags:
-    - '#event.dataset="azure.signinlogs"'
+    - '#Vendor="microsoft"'
+    - '#event.module="entraid"'
+    - '#event.dataset="entraid.signin"'
     data_connection_id: ""  # Fill from discovery query
     fields:
       ecs:
@@ -335,8 +341,12 @@ connectors:
     vendor: "Microsoft"
     product: "Windows Event Logs"
     description: "Security, System, and Application event logs from Windows endpoints"
-    filter: 'observer.product="windows"'
-    tags: []
+    filter: '#Vendor="microsoft" #event.module=windows'
+    tags:
+    - '#Vendor="microsoft"'
+    - '#event.module="windows"'
+    - '#event.dataset="windows.security"'
+    - '#event.dataset="windows.dhcp-server"'
     data_connection_id: ""  # Fill from discovery query
     fields:
       ecs:

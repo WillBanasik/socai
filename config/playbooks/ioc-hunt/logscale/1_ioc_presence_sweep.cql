@@ -20,10 +20,10 @@
 | head(50)
 
 
-// --- Sub-query C: IP — Azure AD sign-in logs ---
+// --- Sub-query C: IP — Entra ID sign-in logs ---
 // Check if any suspect IPs were used for authentication.
 
-#event.dataset="azure.signinlogs"
+#event.module=entraid #event.dataset="entraid.signin"
 | in(source.ip, values=[{{iocs_ip}}])
 | table([@timestamp, Vendor.properties.userPrincipalName, source.ip,
          Vendor.properties.appDisplayName, Vendor.properties.status.errorCode,
@@ -36,7 +36,7 @@
 // --- Sub-query D: IP — Fortinet FortiGate firewall ---
 // Check if suspect IPs appear in firewall traffic. Adjust tags for other vendors.
 
-#Vendor="fortinet" #event.module=fortigate
+#Vendor="fortinet" #event.module=fortinet
 | in(source.ip, values=[{{iocs_ip}}]) OR in(destination.ip, values=[{{iocs_ip}}])
 | table([@timestamp, source.ip, destination.ip, destination.port,
          event.action, network.direction, observer.name,

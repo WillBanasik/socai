@@ -1,6 +1,6 @@
 // --- Sub-query A: Interactive sign-ins ---
 
-#event.dataset="azure.signinlogs"
+#event.module=entraid #event.dataset="entraid.signin"
 | Vendor.properties.userPrincipalName = /{{upn}}/i
 | Vendor.properties.isInteractive = "true"
 | groupBy([source.ip, Vendor.properties.location.city, Vendor.properties.location.countryOrRegion], function=[
@@ -18,7 +18,7 @@
 
 // --- Sub-query B: Non-interactive sign-ins ---
 
-#event.dataset="azure.signinlogs"
+#event.module=entraid #event.dataset="entraid.signin"
 | Vendor.properties.userPrincipalName = /{{upn}}/i
 | Vendor.properties.isInteractive = "false"
 | groupBy([source.ip, Vendor.properties.location.city, Vendor.properties.location.countryOrRegion], function=[

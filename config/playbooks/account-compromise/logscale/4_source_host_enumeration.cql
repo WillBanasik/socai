@@ -1,6 +1,6 @@
 // --- Sub-query A: Windows logon events from the target IP ---
 
-#Vendor="Microsoft" #event.module=windows
+#Vendor="microsoft" #event.module=windows
 | in(EventCode, values=["4624", "4625", "4768", "4769"])
 | windows.EventData.IpAddress = "{{ip}}"
 | groupBy([user.name, host.hostname, EventCode], function=[
@@ -24,9 +24,9 @@
 | sort(Count, order=desc)
 
 
-// --- Sub-query C: Azure AD sign-ins from the target IP ---
+// --- Sub-query C: Entra ID sign-ins from the target IP ---
 
-#event.dataset="azure.signinlogs"
+#event.module=entraid #event.dataset="entraid.signin"
 | source.ip = "{{ip}}"
 | groupBy([Vendor.properties.userPrincipalName, Vendor.properties.appDisplayName], function=[
     count(as=Count),

@@ -37,10 +37,10 @@
 | head(100)
 
 
-// --- Sub-query E: Azure AD sign-ins from the hit IP ---
-// Only run if the Stage 1 hit was an IP-based IOC against Azure sign-in logs.
+// --- Sub-query E: Entra ID sign-ins from the hit IP ---
+// Only run if the Stage 1 hit was an IP-based IOC against Entra sign-in logs.
 
-#event.dataset="azure.signinlogs"
+#event.module=entraid #event.dataset="entraid.signin"
 | source.ip = "{{hit_ip}}"
 | table([@timestamp, Vendor.properties.userPrincipalName, source.ip,
          Vendor.properties.appDisplayName, Vendor.properties.status.errorCode,

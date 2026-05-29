@@ -27,7 +27,7 @@ capabilities:
   - device_network_events      # Falcon NetworkConnect
   - identity_logon             # Falcon UserLogon (and on-prem if Windows connector forwards)
   - windows_security_events    # Windows Event Log (4624/4625/4769 etc.) via Windows connector
-  - sign_in_events             # via M365 connector forwarding azure.signinlogs into LogScale
+  - sign_in_events             # dedicated entraid connector; dataset entraid.signin (NOT azure.signinlogs / NOT via M365)
   # The following capabilities are NOT declared by default — declare them when
   # the relevant connector is configured for a client:
   #   - email_events           # M365 email connector forwarding MDO events

@@ -74,6 +74,14 @@ from tools.crowdstrike import is_falcon_configured
 print(is_falcon_configured("heidelberg_materials"))   # True
 ```
 
+### 6. Capture the connector inventory
+
+Run the discovery query (`DISCOVERY_QUERIES[0]` in `tools/cql_playbooks.py`, also surfaced at `socai://cql-playbooks`) against the client's NGSIEM repo to enumerate every active `@dataConnectionID` with its `#Vendor`, `#event.dataset`, `#event.module`, `observer.vendor`, `observer.product` values. Stow the parsed output at `registry/ngsiem_connectors/<client>.json`.
+
+Why: engineering grammar references drift; only the live discovery output proves which tag values produce hits in that specific repo. Building CQL queries against a stowed connector inventory eliminates the most common zero-hit failure mode (wrong vendor casing, wrong module name, dataset name that exists in docs but not in the repo).
+
+See `config/ngsiem/ngsiem_rules.md` § 4 for the curated cross-client tag mapping — rows marked ✓ are verified against at least one client's discovery output, rows marked ⚠ are engineering reference only and need verification per client before use.
+
 ## Usage
 
 ### Python — NG-SIEM event hunting (CQL)

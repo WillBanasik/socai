@@ -15,6 +15,7 @@ All persistent state is on the filesystem. There is no database.
 | `registry/metrics.jsonl` | Append-only investigation metrics; case phase changes, enrichment duration/coverage, verdict confidence, report completeness, investigation summaries |
 | `registry/mcp_usage.jsonl` | Append-only MCP tool invocation log; caller, tool, category, goal, params, duration_ms, session_id |
 | `registry/quick_enrichments/<enrichment_id>.json` | Saved caseless enrichment results from `quick_enrich`; import via `enrichment_id` on `create_case` or `import_enrichment` |
+| `registry/ngsiem_connectors/<client>.json` | Per-client NGSIEM connector inventory captured from CrowdStrike NG-SIEM discovery query (`DISCOVERY_QUERIES[0]` in `tools/cql_playbooks.py`). One record per `@dataConnectionID` with `#Vendor`, `#event.dataset`, `#event.module`, `observer.vendor`, `observer.product`. Used to build accurate CQL queries scoped to data sources actually present in the client's repo. Gitignored. |
 
 ## Per-Case Files
 
