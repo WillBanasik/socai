@@ -337,6 +337,40 @@ def load_playbook_for_platform(
     }
 
 
+# Host-scoping convention. A stage may carry an OPTIONAL host filter keyed on
+# ``{{device_name}}``; its shared default is the ``__NONE__`` sweep-all sentinel
+# (see the ``device_name`` parameter in config/playbooks/*.yaml). KQL stages
+# guard this inline — ``let device = "{{device_name}}"; … | where device ==
+# "__NONE__" or DeviceName has device`` — so the literal ``__NONE__`` is
+# harmless there. CQL/LogScale stages instead apply a bare
+# ``| ComputerName = /{{device_name}}/i`` regex with no guard, and
+# ``/__NONE__/i`` (or the unsubstituted token when the param is omitted) is an
+# unanchored match that hits ZERO real hosts — so an all-host sweep silently
+# returns an empty result that reads as "nothing found" rather than "no host
+# queried". For CQL we therefore DROP the optional host-filter line in the
+# sweep-all case rather than emit a match-nothing regex.
+_HOST_SCOPE_PARAM = "device_name"
+_SWEEP_ALL_SENTINEL = "__NONE__"
+
+
+def _strip_sweep_all_host_filter(query: str) -> str:
+    """Drop CQL pipeline-filter lines scoped on ``{{device_name}}``.
+
+    Called only for CQL stages when ``device_name`` is the ``__NONE__``
+    sweep-all sentinel or was not supplied. Only lines that BOTH start a
+    pipeline stage (``|``) AND reference the ``{{device_name}}`` token are
+    removed; every other line is preserved verbatim (KQL ``let device = …``
+    assignments never start with ``|``, so the KQL path is unaffected — though
+    this helper is only invoked for CQL anyway).
+    """
+    token = f"{{{{{_HOST_SCOPE_PARAM}}}}}"
+    kept = [
+        line for line in query.splitlines()
+        if not (line.lstrip().startswith("|") and token in line)
+    ]
+    return "\n".join(kept)
+
+
 def render_stage_for_platform(
     playbook_id: str,
     stage_id: int | str,
@@ -356,6 +390,11 @@ def render_stage_for_platform(
     from tools.kql_playbooks import _sanitise_kql_value
     safe = {k: _sanitise_kql_value(v) for k, v in params.items()}
 
+    query_language = (pb.get("platform") or {}).get("query_language", "")
+    sweep_all_hosts = (
+        params.get(_HOST_SCOPE_PARAM) in (None, _SWEEP_ALL_SENTINEL)
+    )
+
     for stage in pb.get("stages", []):
         if str(stage.get("stage")) != str(stage_id):
             continue
@@ -370,6 +409,8 @@ def render_stage_for_platform(
                 "code": "stage_not_implemented_for_platform",
             }
         query = stage.get("query", "")
+        if query_language == "cql" and sweep_all_hosts:
+            query = _strip_sweep_all_host_filter(query)
         for key, value in safe.items():
             query = query.replace(f"{{{{{key}}}}}", value)
         return query.strip()

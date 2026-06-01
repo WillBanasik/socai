@@ -155,11 +155,14 @@ Use the branch that matches the platform:
 ### 8. Machine-readable handoff
 End the ticket with a SINGLE fenced ```json block (and nothing after it) capturing the \
 ticket in structured form for the downstream pipeline. Use exactly these keys; use null \
-(or [] ) for unknowns, and make every value consistent with the prose above:
+(or [] ) for unknowns, and make every value consistent with the prose above. \
+"fired_correctly" is a strict function of "determination": it MUST be false when \
+determination is "false_positive" (fired incorrectly) and true when determination is \
+"benign_positive" (fired correctly but benign):
 ```json
 {
   "determination": "false_positive | benign_positive",
-  "fired_correctly": false,
+  "fired_correctly": "true | false",
   "platform": "sentinel | defender_xdr | crowdstrike | other",
   "control_type": "siem_rule_edit | edr_soar_suppression",
   "source_ids": {"<FieldName>": "<value>"},
@@ -271,10 +274,17 @@ def _infer_platform(alert_data: str, platform_override: str | None) -> str:
     text = (alert_data or "").lower()
     if any(s in text for s in ("crowdstrike", "falcon", "composite_id", "detection_id")):
         return "crowdstrike"
-    if any(s in text for s in ("defender", "mdatp", "\"incidentid\"", "microsoft 365 defender")):
-        return "defender_xdr"
+    # Sentinel structural signals (workspace/incident-table identifiers and the
+    # analytic-rule marker) must win over a bare "defender" product-name match:
+    # Sentinel routinely ingests the Microsoft Defender connector, so a genuine
+    # Sentinel analytic-rule alert often carries "Defender" in ProviderName/
+    # AlertName while still being a directly-tunable SIEM rule. Genuine Defender
+    # XDR exports carry camel-case IncidentId/AlertId, never WorkspaceId or
+    # IncidentNumber — so these signals cleanly disambiguate the connector case.
     if any(s in text for s in ("sentinel", "workspaceid", "incidentnumber", "analyticrule")):
         return "sentinel"
+    if any(s in text for s in ("defender", "mdatp", "\"incidentid\"", "microsoft 365 defender")):
+        return "defender_xdr"
     return "other"
 
 
@@ -313,7 +323,8 @@ def _control_model_context(case_id: str, platform: str) -> str:
         try:
             from tools.common import get_client_config
             cfg = get_client_config(client) or {}
-        except Exception:
+        except Exception as exc:
+            log_error(case_id, "fp_tuning_ticket.control_model", str(exc), severity="info")
             cfg = {}
         platforms = (cfg.get("platforms") or {}) if isinstance(cfg, dict) else {}
         configured = [p for p in ("sentinel", "defender_xdr", "crowdstrike") if p in platforms]
@@ -531,10 +542,21 @@ def _build_recurrence_context(case_id: str, alert_data: str) -> str:
         if prior_cases:
             parts.append(f"**{len(prior_cases)} prior case(s) with overlapping IOCs:**")
             for pc in prior_cases[:10]:
+                # recall() emits per-case IOCs differently per branch:
+                #  - same-client entries carry pc['iocs'] = {type: [values]}
+                #  - cross-client entries carry pc['matched_iocs'] = [{ioc, verdict}]
+                overlap_iocs: list[str] = []
+                for vals in (pc.get("iocs") or {}).values():
+                    overlap_iocs.extend(vals)
+                overlap_iocs.extend(
+                    m.get("ioc", "") for m in (pc.get("matched_iocs") or [])
+                )
+                overlap_iocs = [i for i in overlap_iocs if i]
+                overlap_text = ", ".join(overlap_iocs[:5]) if overlap_iocs else "n/a"
                 parts.append(
                     f"- {pc.get('case_id', '?')} — {pc.get('title', 'N/A')} "
                     f"(disposition: {pc.get('disposition', 'N/A')}, "
-                    f"overlap: {', '.join(pc.get('overlapping_iocs', [])[:5])})"
+                    f"overlap: {overlap_text})"
                 )
             parts.append("")
 
@@ -542,7 +564,7 @@ def _build_recurrence_context(case_id: str, alert_data: str) -> str:
             parts.append(f"**{len(known_iocs)} IOC(s) seen in prior investigations:**")
             for ki in known_iocs[:10]:
                 parts.append(
-                    f"- `{ki.get('ioc', '?')}` — seen in {ki.get('case_count', '?')} case(s), "
+                    f"- `{ki.get('ioc', '?')}` — seen in {len(ki.get('cases', []))} case(s), "
                     f"last: {ki.get('last_seen', 'N/A')}"
                 )
             parts.append("")
