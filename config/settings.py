@@ -22,6 +22,7 @@ MCP_SERVER_LOG   = BASE_DIR / "registry" / "mcp_server.jsonl"
 MCP_SERVER_PID   = BASE_DIR / "registry" / "mcp_server.pid"
 METRICS_LOG      = BASE_DIR / "registry" / "metrics.jsonl"
 QUICK_ENRICH_DIR = BASE_DIR / "registry" / "quick_enrichments"
+VULN_HUNT_DIR    = BASE_DIR / "registry" / "vuln_hunts"
 
 # MCP server logging
 MCP_LOG_LEVEL    = os.getenv("SOCAI_MCP_LOG_LEVEL", "INFO")

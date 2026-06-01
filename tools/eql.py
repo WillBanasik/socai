@@ -28,6 +28,15 @@ Public API:
     run_eql(internal_client_id, eql, timeout=30) -> dict
     entity_context(case_id, user=None, host=None, ip=None, depth="auto") -> dict
     posture_context(case_id, depth="auto") -> dict
+    vuln_hunt(client_name, depth="auto") -> dict        # caseless, proactive
+    import_vuln_hunt(hunt_id, case_id) -> dict           # promote a hunt into a case
+
+**Caseless vuln hunt.** ``vuln_hunt`` is the one path that runs WITHOUT a case:
+it resolves a client *by name* (exact match, never fuzzy) through the same
+``_resolve_encore_id`` scope gate, runs the client-wide vulnerability/exposure
+templates, and persists the full payload to ``registry/vuln_hunts/VH_<ts>.json``
+(mirrors the ``quick_enrich`` caseless store). Promote a hunt into a case with
+``import_vuln_hunt`` or ``create_case(..., vuln_hunt_id=...)``.
 """
 from __future__ import annotations
 
@@ -212,6 +221,52 @@ POSTURE_TEMPLATES: list[dict[str, Any]] = [
 
 
 # ---------------------------------------------------------------------------
+# Curated client-wide VULNERABILITY HUNT templates — proactive exposure sweep.
+# Encore has already done the prioritisation (EPSS, KEV / in-the-wild
+# correlation, ransomware-exploit flags, a computed PrioritizationIndex), so we
+# pull RANKED (ORDER BY PrioritizationIndex DESCENDING — highest risk first) and
+# filter the boolean exploit flags client-side (EQL rejects boolean WHERE:
+# "Boolean is not compatible with true (Text)"). Same schema as POSTURE_TEMPLATES.
+# Columns verified via `list columns` against the live gateway.
+# ---------------------------------------------------------------------------
+
+VULN_HUNT_TEMPLATES: list[dict[str, Any]] = [
+    {"domain": "Exposed hosts (ranked by exploitability)",
+     "table": "VulnerabilityPrioritization-Hosts", "order_by": "PrioritizationIndex",
+     "select": ["ComputerName", "Domain", "IpAddress", "OperatingSystem", "OsType",
+                "LastCommsDate", "CriticalVulnerabilities", "HighVulnerabilities",
+                "PrioritizationIndex", "MaxCVSS", "MaxEpss", "MaxEpssPercentile",
+                "HasActiveExploit", "HasCommunityExploit", "IsRansomwareExploit",
+                "HasHighExploitProbability", "HasImminentThreats", "HasEmergingThreats",
+                "ExposureScore", "IsScanned", "ProductDetections"]},
+    # The full table is ~41k rows and PrioritizationIndex saturates (top rows are
+    # "Low"/not-exploited), so bound server-side to the actively-exploited subset
+    # (a Text column — filterable) and rank by EPSS. This is the core hunt list.
+    {"domain": "Actively-exploited vulnerabilities (CVE level)",
+     "table": "VulnerabilityPrioritization-Vulnerabilities", "order_by": "Epss",
+     "where": 'Classification = "Actively Exploited"',
+     "select": ["CVE", "Description", "NistSeverity", "BaseScore", "Epss", "EpssPercentile",
+                "ExploitabilityScore", "ImpactScore", "HasBeenExploited", "ExploitedSince",
+                "HasBeenInWild", "InTheWildDate", "AgeInDays", "DevicesImpacted",
+                "PrioritizationIndex", "PrioritizationRating", "Classification",
+                "Recommendation", "ProductDetections"]},
+    {"domain": "Newly-weaponised KEVs (last 48h)",
+     "table": "VulnerabilityPrioritization-NewKevsIn48Hrs", "order_by": "PrioritizationIndex",
+     "select": ["CVE", "Severity", "Status", "AddedToActiveExploitDatabaseOn", "PublishedOn",
+                "DaysSinceFirstExploit", "InKev", "InPublicSources", "IsRansomwareExploit",
+                "DevicesImpacted", "PrioritizationIndex", "Solution", "Description"]},
+    {"domain": "EDR compensating-control tasks (mitigate when patch is blocked)",
+     "table": "VulnerabilityPrioritization-VulnerabilityEdrControlTaskList", "order_by": None,
+     "select": ["Classification", "Detail", "ImpactedDevices", "Action"]},
+    {"domain": "Environment exposure summary",
+     "table": "VulnerabilityPrioritization-VulnerabilitySummary", "order_by": None,
+     "select": ["Period", "ExposureScore", "PeerAverage", "ExposureScoreDeviation",
+                "TotalThreats", "ImminentThreats", "ImminentInternetExposedThreats",
+                "ImminentBusinessCriticalThreats", "EmergingThreats", "LowPriorityThreats"]},
+]
+
+
+# ---------------------------------------------------------------------------
 # Scope gate + token
 # ---------------------------------------------------------------------------
 
@@ -391,6 +446,23 @@ def _build_posture_query(tpl: dict[str, Any]) -> str:
     if tpl.get("order_by"):
         q += f' ORDER BY {tpl["order_by"]} DESCENDING'
     return q
+
+
+def _build_vuln_query(tpl: dict[str, Any]) -> str:
+    """Build a client-wide vuln-hunt query with an optional text WHERE.
+
+    Booleans cannot be filtered (EQL rejects ``= "true"``), but Text columns can —
+    used to bound large catalogues server-side (e.g. the 41k-row Vulnerabilities
+    table filtered to Classification = "Actively Exploited"). ``where`` is a raw
+    EQL predicate; ``order_by`` ranks DESCENDING.
+    """
+    parts = [tpl["table"]]
+    if tpl.get("where"):
+        parts.append(f'WHERE {tpl["where"]}')
+    parts.append("SELECT " + ", ".join(tpl["select"]))
+    if tpl.get("order_by"):
+        parts.append(f'ORDER BY {tpl["order_by"]} DESCENDING')
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +653,171 @@ def _append_posture_evidence(case_id: str, output: dict[str, Any]) -> None:
     except Exception as exc:  # evidence note is best-effort, never fatal
         log_error(case_id, "eql.append_posture_evidence", str(exc), severity="warning")
         eprint(f"[eql] posture evidence note failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Caseless vulnerability hunt — proactive, client-scoped, no case required
+# ---------------------------------------------------------------------------
+
+def resolve_client_by_name(client_name: str) -> tuple[str, str]:
+    """client name → (canonical_client_name, internal_client_id), CASELESS.
+
+    Applies the SAME scope gate as the case-bound path via ``_resolve_encore_id``:
+    the client must exist, have ``platforms.encore.internal_client_id`` and read
+    access, else ``EqlNotConfigured`` is raised before any HTTP. Matches the
+    client name EXACTLY (``get_client_config`` is exact/alias, never fuzzy) — a
+    wrong or partial name must fail, not silently resolve to a neighbouring
+    client (cross-client leak risk; cf. the Sentinel workspace fallback).
+    """
+    name = (client_name or "").strip()
+    if not name:
+        raise EqlNotConfigured("client_name is required")
+    internal_client_id = _resolve_encore_id(name)          # exact + scope gate
+    cfg = get_client_config(name) or {}
+    canonical = cfg.get("name") or name
+    return canonical, internal_client_id
+
+
+def _truthy(v: Any) -> bool:
+    return v in (True, "true", "True", 1, "1", "Yes", "yes")
+
+
+def _vuln_hunt_summary(domains: list[dict[str, Any]]) -> dict[str, Any]:
+    """Headline triage counts across the hunt domains (computed on FULL rows)."""
+    by_table = {d["table"]: d.get("rows", []) for d in domains}
+    hosts = by_table.get("VulnerabilityPrioritization-Hosts", [])
+    vulns = by_table.get("VulnerabilityPrioritization-Vulnerabilities", [])
+    kevs = by_table.get("VulnerabilityPrioritization-NewKevsIn48Hrs", [])
+    return {
+        "hosts_assessed": len(hosts),
+        "hosts_with_active_exploit": sum(1 for h in hosts if _truthy(h.get("HasActiveExploit"))),
+        "hosts_with_ransomware_exploit": sum(1 for h in hosts if _truthy(h.get("IsRansomwareExploit"))),
+        "hosts_with_imminent_threats": sum(1 for h in hosts if _truthy(h.get("HasImminentThreats"))),
+        "actively_exploited_cves": len(vulns),
+        "new_kevs_48h": len(kevs),
+    }
+
+
+def vuln_hunt(client_name: str, depth: str = "auto") -> dict[str, Any]:
+    """Proactive, CASELESS vulnerability hunt for a client.
+
+    Runs the client-wide ``VULN_HUNT_TEMPLATES`` (exposed hosts + prioritised
+    CVEs + newly-weaponised KEVs + EDR compensating-control tasks + environment
+    exposure), each ranked by Encore's PrioritizationIndex. Persists the FULL
+    payload to ``registry/vuln_hunts/VH_<ts>.json`` (mirrors quick_enrich) and
+    returns it with inline rows capped to the top ``_MAX_ROWS_INLINE`` (rank
+    preserved — NOT date-sorted; the full set is on disk). No case required;
+    promote with ``import_vuln_hunt`` / ``create_case(vuln_hunt_id=...)``.
+    """
+    from config.settings import VULN_HUNT_DIR
+
+    canonical, internal_client_id = resolve_client_by_name(client_name)
+
+    started = time.time()
+    domains: list[dict[str, Any]] = []
+    for tpl in VULN_HUNT_TEMPLATES:
+        q = _build_vuln_query(tpl)
+        entry: dict[str, Any] = {"domain": tpl["domain"], "table": tpl["table"], "query": q}
+        try:
+            res = run_eql(internal_client_id, q, timeout=90)
+            rows = res["rows"]
+            entry["row_count"] = res["row_count"]
+            entry["rows"] = rows
+            entry["errors"] = res["errors"]
+            entry["freshness"] = _freshness(rows)
+            entry["coverage"] = "ok" if rows else "no_data_for_client"
+        except EqlError as exc:
+            # One bad table must not sink the whole hunt.
+            entry["row_count"] = 0
+            entry["rows"] = []
+            entry["coverage"] = "query_error"
+            entry["error"] = str(exc)
+            log_error("", "eql.vuln_hunt", str(exc), severity="warning",
+                      context={"table": tpl["table"], "client": canonical})
+        domains.append(entry)
+
+    hunt_id = f"VH_{utcnow().replace('-', '').replace(':', '').replace('T', '_').split('.')[0]}"
+    output: dict[str, Any] = {
+        "hunt_id": hunt_id,
+        "client": canonical,
+        "internal_client_id": internal_client_id,
+        "ts": utcnow(),
+        "depth": depth,
+        "duration_ms": int((time.time() - started) * 1000),
+        "summary": _vuln_hunt_summary(domains),   # computed on FULL rows
+        "domains": domains,
+        "_window_note": (
+            "Vulnerability/exposure tables are ~daily snapshots ranked by Encore's "
+            "PrioritizationIndex (highest first). Filter the exploit flags "
+            "(HasActiveExploit / IsRansomwareExploit / HasImminentThreats / InKev) "
+            "client-side — EQL rejects boolean WHERE. 'no_data_for_client' means the "
+            "product is not ingested for this client — NOT evidence of zero exposure. "
+            "For active-exploitation hunting, pivot the top CVEs/hosts into the live "
+            "log layer (run_kql / run_defender_kql / run_falcon_cql) via the "
+            "'vulnerability-hunting' playbook."
+        ),
+    }
+
+    # Persist the FULL raw payload (nothing dropped on disk).
+    save_json(VULN_HUNT_DIR / f"{hunt_id}.json", output)
+
+    # Cap inline rows AFTER persisting — HEAD slice to preserve the
+    # PrioritizationIndex ranking from the query (do NOT use _cap, which
+    # re-sorts by date and would bury the highest-risk rows).
+    for entry in domains:
+        full = entry.get("rows", [])
+        entry["rows"] = full[:_MAX_ROWS_INLINE]
+        entry["rows_returned"] = len(entry["rows"])
+        entry["truncated"] = len(full) > _MAX_ROWS_INLINE
+
+    return output
+
+
+def import_vuln_hunt(hunt_id: str, case_id: str) -> dict[str, Any]:
+    """Promote a caseless vuln hunt into a case: copy the full hunt payload into
+    the case's eql_context artefacts and append an evidence note. Mirrors
+    ``import_enrichment``."""
+    from config.settings import VULN_HUNT_DIR
+
+    vh_path = VULN_HUNT_DIR / f"{hunt_id}.json"
+    if not vh_path.exists():
+        return {"error": f"Vuln hunt '{hunt_id}' not found."}
+    hunt = load_json(vh_path)
+    dest = CASES_DIR / case_id / "artefacts" / "eql_context" / f"vuln_hunt_{hunt_id}.json"
+    save_json(dest, hunt)
+    _append_vuln_hunt_evidence(case_id, hunt)
+    return {
+        "status": "imported",
+        "hunt_id": hunt_id,
+        "case_id": case_id,
+        "client": hunt.get("client"),
+        "artefact": str(dest),
+        "summary": hunt.get("summary"),
+    }
+
+
+def _append_vuln_hunt_evidence(case_id: str, hunt: dict[str, Any]) -> None:
+    """Summarise an imported vuln hunt into the case evidence chain."""
+    from api.actions import add_evidence  # lazy: avoids import cycle
+
+    s = hunt.get("summary") or {}
+    lines = [
+        f"**Encore EQL vulnerability hunt** ({hunt.get('client')}, "
+        f"client {hunt.get('internal_client_id')}, hunt {hunt.get('hunt_id')})",
+        "",
+        f"- Hosts assessed: {s.get('hosts_assessed', 0)} "
+        f"(active-exploit: {s.get('hosts_with_active_exploit', 0)}, "
+        f"ransomware: {s.get('hosts_with_ransomware_exploit', 0)}, "
+        f"imminent-threat: {s.get('hosts_with_imminent_threats', 0)})",
+        f"- Actively-exploited CVEs affecting estate: {s.get('actively_exploited_cves', 0)}",
+        f"- New KEVs (48h): {s.get('new_kevs_48h', 0)}",
+        "",
+        "_" + (hunt.get("_window_note") or "") + "_",
+    ]
+    try:
+        add_evidence(case_id, "\n".join(lines))
+    except Exception as exc:  # best-effort, never fatal
+        log_error(case_id, "eql.append_vuln_hunt_evidence", str(exc), severity="warning")
 
 
 def _resolve_case_client(case_id: str) -> tuple[str, str]:

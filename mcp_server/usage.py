@@ -150,6 +150,8 @@ TOOL_TAXONOMY: dict[str, dict[str, str]] = {
     "eql_entity_context":       {"category": "query",       "goal": "investigate"},
     "eql_query":                {"category": "query",       "goal": "investigate"},
     "eql_posture_context":      {"category": "query",       "goal": "investigate"},
+    "eql_vuln_hunt":            {"category": "query",       "goal": "investigate"},
+    "import_vuln_hunt":         {"category": "admin",       "goal": "investigate"},
     "generate_queries":         {"category": "query",       "goal": "investigate"},
     "generate_sentinel":        {"category": "query",       "goal": "investigate"},
     "parse_logs":               {"category": "query",       "goal": "investigate"},

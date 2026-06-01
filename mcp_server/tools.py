@@ -95,6 +95,7 @@ TOOLSETS: dict[str, set[str]] = {
         "run_kql", "run_kql_batch", "run_defender_kql", "run_falcon_cql",
         "query_falcon_detections", "query_falcon_hosts", "query_falcon_incidents",
         "eql_entity_context", "eql_query", "eql_posture_context",
+        "eql_vuln_hunt", "import_vuln_hunt",
         "load_kql_playbook", "load_cql_playbook", "generate_sentinel_query",
         "generate_queries", "load_ngsiem_reference", "parse_logs",
         "detect_anomalies",
@@ -1046,12 +1047,14 @@ def _register_tier1(mcp: FastMCP) -> None:
         classification: str = "",
         plan: str = "",
         enrichment_id: str = "",
+        vuln_hunt_id: str = "",
     ) -> str:
         """Create a new case (triage status, auto-assigned ID). Deliverable tools auto-create
         cases — use this when you need a case before the deliverable step.
 
         Typical flow: ``quick_enrich`` → IOCs malicious → create case with ``enrichment_id``
-        (auto-imports results). ``client_name`` is required.
+        (auto-imports results). ``vuln_hunt_id`` similarly imports a caseless ``eql_vuln_hunt``
+        result. ``client_name`` is required.
         """
         _require_scope("investigations:submit")
 
@@ -1100,6 +1103,19 @@ def _register_tier1(mcp: FastMCP) -> None:
                 result["imported_enrichment"] = {
                     "error": f"Auto-import failed: {exc}",
                     "enrichment_id": enrichment_id,
+                }
+
+        # Auto-import a caseless vuln hunt if vuln_hunt_id provided
+        if vuln_hunt_id:
+            try:
+                from tools.eql import import_vuln_hunt as _import_vuln_hunt
+                result["imported_vuln_hunt"] = await asyncio.to_thread(
+                    lambda: _import_vuln_hunt(vuln_hunt_id, case_id)
+                )
+            except Exception as exc:
+                result["imported_vuln_hunt"] = {
+                    "error": f"Auto-import failed: {exc}",
+                    "vuln_hunt_id": vuln_hunt_id,
                 }
 
         return _json(result)
@@ -3775,6 +3791,58 @@ def _register_tier3(mcp: FastMCP) -> None:
             })
         except EqlError as exc:
             return _json({"error": "Encore EQL posture lookup failed.", "detail": str(exc)})
+        return _json(result)
+
+    @mcp.tool(title="Encore EQL Vulnerability Hunt", annotations={"readOnlyHint": True})
+    async def eql_vuln_hunt(client: str, depth: str = "auto") -> str:
+        """Proactive, CASELESS vulnerability hunt for a client via Encore EQL.
+
+        Pulls the client's ranked exposure — hosts ranked by exploitability (active
+        exploit / ransomware / imminent-threat flags + critical counts), the
+        actively-exploited CVEs affecting the estate (EPSS-ranked), newly-weaponised
+        KEVs (last 48h), EDR compensating-control tasks, and the environment exposure
+        summary. NO case required: results persist to a caseless store and return a
+        ``hunt_id``. Promote into a case with ``import_vuln_hunt(hunt_id, case_id)``
+        or ``create_case(..., vuln_hunt_id=hunt_id)``, then pivot the top CVEs/hosts
+        into the live log layer (run_kql / run_defender_kql / run_falcon_cql) via the
+        ``vulnerability-hunting`` playbook to hunt for actual exploitation.
+
+        ``client`` is resolved EXACTLY (no fuzzy match — use ``lookup_client`` for the
+        registered name). Encore must be enabled for the client
+        (``platforms.encore.internal_client_id`` + read access). An empty domain means
+        "not ingested for this client", NOT "no exposure".
+        """
+        _require_scope("investigations:read")
+        from tools.eql import EqlError, EqlNotConfigured, vuln_hunt as _vuln_hunt
+
+        if not client.strip():
+            return _json({"error": "client is required."})
+        try:
+            result = await asyncio.to_thread(lambda: _vuln_hunt(client.strip(), depth=depth))
+        except EqlNotConfigured as exc:
+            return _json({
+                "error": "Encore EQL not enabled for this client.",
+                "detail": str(exc),
+                "hint": "Set platforms.encore.internal_client_id (+ access) in "
+                        "client_entities.json. Use lookup_client for the registered name.",
+            })
+        except EqlError as exc:
+            return _json({"error": "Encore EQL vulnerability hunt failed.", "detail": str(exc)})
+        return _json(result)
+
+    @mcp.tool(title="Import Vulnerability Hunt into Case")
+    async def import_vuln_hunt(hunt_id: str, case_id: str) -> str:
+        """Promote a caseless vulnerability hunt (from ``eql_vuln_hunt``) into a case —
+        copies the full hunt payload into the case's EQL artefacts and appends an
+        evidence note. Use when a hunt surfaces something worth investigating."""
+        _require_scope("investigations:submit")
+        from tools.eql import import_vuln_hunt as _import_vuln_hunt
+
+        if not hunt_id.strip() or not case_id.strip():
+            return _json({"error": "hunt_id and case_id are required."})
+        result = await asyncio.to_thread(
+            lambda: _import_vuln_hunt(hunt_id.strip(), case_id.strip())
+        )
         return _json(result)
 
     @mcp.tool(title="Query CrowdStrike Falcon Detections")
