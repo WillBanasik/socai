@@ -613,7 +613,12 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "### 4. Contextualisation",
             "- Identify the affected user(s) and asset(s)",
-            "- If the alert names a user/host/IP, call `eql_entity_context(case_id, user=/host=/ip=)` "
+            "- If the alert names one or more users/hosts, call `eql_identity_assessment(case_id, "
+            "users=, hosts=)` FIRST — the lean scoping step that classifies each user internal vs "
+            "external (Member/Guest/not-in-directory) from Encore directory data and pulls their "
+            "managed-device context into session. Soft-capped at 5 per list (raise `cap` if needed); "
+            "use it to decide which entities are worth the deeper pull.",
+            "- Then, for the entities that matter, call `eql_entity_context(case_id, user=/host=/ip=)` "
             "to pull recent identity, device posture, detection and exposure context from Encore EQL "
             "(rolling ~7-day window; an empty result means 'not ingested for this client', NOT 'clean')",
             "- Determine the business impact and data sensitivity",
@@ -983,6 +988,8 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "Case-bound (the workhorse tools for this phase):",
             "- `enrich_iocs` — extract and enrich all IOCs (writes to case)",
+            "- `eql_identity_assessment` — lean scoping step: classify users internal/external + "
+            "pull managed-device context for several entities at once (soft-capped at 5; writes to case)",
             "- `eql_entity_context` — recent identity/device/detection/exposure context for "
             "a named user/host/IP from Encore EQL (writes to case; absence != clean)",
             "- `add_evidence` — attach raw alert data (writes to case)",

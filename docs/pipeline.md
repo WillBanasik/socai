@@ -30,19 +30,31 @@ Investigations are human-in-the-loop (HITL). The analyst drives each step via MC
 11. enrich_iocs           → extract and enrich IOCs (writes to case); depth="auto"/"fast"/"full";
                              auto-runs triage + client baseline to skip routine IOCs
 12. import_enrichment     → import saved quick_enrich results (if not auto-imported via create_case)
+12a. eql_identity_assessment → (Encore-enabled clients) lean scoping step: classify the named
+                             users internal/external + pull device context; classify hosts as
+                             assets + local admins. Soft-capped at 5/list. Run BEFORE
+                             eql_entity_context to decide which entities warrant the deep pull.
+12b. eql_entity_context   → deep per-entity Encore EQL context for the entities that matter
 13. add_evidence          → attach raw alert data to case
 14. capture_urls          → capture web evidence + auto-run phishing detection (detect_phishing=True)
 15. analyse_email         → email header/content analysis (if email)
-16. analyse_file          → tiered static analysis (PE/Office/PDF/LNK/OneNote/MSI/Mach-O) + auto-run YARA on signal (run_yara="auto")
+16. analyse_file          → tiered static analysis (PE/Office/PDF/LNK/OneNote/MSI/Mach-O) + auto-run YARA on signal (run_yara="auto");
+                             precedes any start_sandbox_session detonation
+17. load_kql_playbook → run_kql → attack-specific structured Sentinel queries (one playbook per attack type)
+18. xposed_breach_check   → dark-web breach exposure (account-compromise / credential-access cases)
 
-── Deliverable phase (analyst-initiated — NOT auto-generated) ──
-17. Conclude with a disposition. A full report is produced only for TRUE POSITIVE
-    cases, and only on analyst request. For any other disposition, close via
-    close_case (no deliverable). All deliverable tools stay available on demand:
-    prepare_mdr_report         → MDR report (TP, analyst-requested; auto-closes on save)
-    prepare_pup_report         → PUP report (on request only; auto-closes pup_pua on save)
-    prepare_closure_comment    → 2-sentence closure comment (BP / FP / Undetermined; auto-closes with classification's disposition)
-    prepare_fp_tuning_ticket   → SIEM tuning ticket (on request only)
+── Analysis ──
+19. correlate             → cross-reference IOCs across all case artefacts
+20. campaign_cluster      → cross-case IOC overlap (MANDATORY when recall_cases surfaced overlapping IOCs)
+21. add_finding           → record analyst conclusions tied to evidence IDs (MANDATORY before any report)
+
+── Deliverable phase (verdict-branched; analyst-initiated — NOT auto-generated) ──
+22. Conclude with a disposition. The deliverable follows the verdict — do NOT default to an MDR report:
+    True Positive    → prepare_mdr_report  (+ response_actions, generate_queries; auto-closes on save)
+    Benign Positive  → prepare_closure_comment(bp_suspicious_but_expected | bp_suspicious_not_malicious)
+    False Positive   → prepare_closure_comment(fp_incorrect_logic | fp_inaccurate_data)  (+ prepare_fp_tuning_ticket if the rule needs tuning)
+    Undetermined     → prepare_closure_comment(undetermined)
+    PUP/PUA          → close_case(disposition="pup_pua")  (short-circuits after enrich; PUP report on request only)
 ```
 
 **Typical analyst flow:** `quick_enrich` (caseless IOC lookup) → if malicious, `create_case(enrichment_id=...)` → case-bound analysis → deliverable. The enrichment results carry over without re-running provider calls.

@@ -179,6 +179,193 @@ class TestEntityContext:
 
 
 # ---------------------------------------------------------------------------
+# Identity assessment — lean batch scoping (internal/external + devices)
+# ---------------------------------------------------------------------------
+
+def _identity_router(*responses_by_table):
+    """Build a requests.post side_effect that returns rows by the table named in
+    the EQL body. ``responses_by_table`` is a dict table-substr → rows-fn(value)."""
+    routes = responses_by_table[0]
+
+    def _side(*args, **kwargs):
+        body = (kwargs.get("data") or b"").decode()
+        for table_substr, rows in routes.items():
+            if table_substr in body:
+                out = rows(body) if callable(rows) else rows
+                return _FakeResponse(200, _eql_payload(out))
+        return _FakeResponse(200, _eql_payload([]))
+
+    return _side
+
+
+class TestIdentityAssessment:
+    def test_classifies_internal_guest_and_missing(self, monkeypatch, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+
+        def _users(body):
+            if "alice@corp.com" in body:
+                return [{"UserPrincipalName": "alice@corp.com", "UserType": "Member",
+                         "OnPremisesSamAccountName": "alice", "AccountEnabled": True}]
+            if "guest_ext.com#EXT#@corp.com" in body or "carol@partner.com" in body:
+                return [{"UserType": "Guest"}]
+            return []  # ghost@corp.com → not in directory
+
+        post = MagicMock(side_effect=_identity_router({
+            "AzureActiveDirectory-Users": _users,
+            "Intune-ManagedDevices": [{"ManagedDeviceName": "LAPTOP-A1",
+                                       "DeviceComplianceStatus": "Compliant",
+                                       "IsEncrypted": True, "LastCommsDate": "2026-06-01T08:00:00Z"}],
+        }))
+        with patch.object(eql.requests, "post", post):
+            out = eql.identity_assessment(
+                TEST_CASE,
+                users=["alice@corp.com", "carol@partner.com", "ghost@corp.com"],
+            )
+
+        by_upn = {u["upn"]: u for u in out["users"]}
+        assert by_upn["alice@corp.com"]["classification"] == "internal"
+        assert by_upn["alice@corp.com"]["sync"] == "hybrid_on_prem"
+        assert by_upn["alice@corp.com"]["device_count"] == 1
+        assert by_upn["carol@partner.com"]["classification"] == "external_guest"
+        assert by_upn["ghost@corp.com"]["classification"] == "not_in_directory"
+        # device query fired ONLY for the internal user (1 user query each = 3,
+        # plus 1 device query for alice = 4 total)
+        assert out["summary"]["eql_queries_run"] == 4
+        assert by_upn["carol@partner.com"].get("devices_skipped") == "external_guest"
+        assert by_upn["ghost@corp.com"].get("devices_skipped") == "not_in_directory"
+        # summary counts
+        s = out["summary"]
+        assert (s["users_internal"], s["users_external_guest"],
+                s["users_not_in_directory"]) == (1, 1, 1)
+        # artefact + evidence note written
+        art = CASES_DIR / TEST_CASE / "artefacts" / "eql_context"
+        assert art.exists() and any(art.glob("identity_assessment_*.json"))
+        assert (CASES_DIR / TEST_CASE / "notes" / "analyst_input.md").exists()
+
+    def test_soft_cap_lists_the_remainder(self, monkeypatch, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        users = [f"u{i}@corp.com" for i in range(8)]
+        post = MagicMock(return_value=_FakeResponse(200, _eql_payload([])))
+        with patch.object(eql.requests, "post", post):
+            out = eql.identity_assessment(TEST_CASE, users=users, cap=5)
+        assert out["summary"]["users_assessed"] == 5
+        assert out["summary"]["users_not_assessed_cap"] == 3
+        assert out["not_assessed"]["users"] == users[5:]
+        # all 5 are not-in-directory here, so NO device queries fire → exactly 5 calls
+        assert post.call_count == 5
+
+    def test_cap_is_raisable(self, monkeypatch, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        users = [f"u{i}@corp.com" for i in range(8)]
+        post = MagicMock(return_value=_FakeResponse(200, _eql_payload([])))
+        with patch.object(eql.requests, "post", post):
+            out = eql.identity_assessment(TEST_CASE, users=users, cap=10)
+        assert out["summary"]["users_assessed"] == 8
+        assert out["not_assessed"]["users"] == []
+
+    def test_server_with_no_user_classified_and_admins_pulled(self, monkeypatch, _case):
+        # A server / shared host that isn't assigned to one user: classify the ASSET
+        # and surface who can operate it (local admins) — no `users` argument at all.
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        post = MagicMock(side_effect=_identity_router({
+            "Baseline-Core": [{"HostName": "SRV-DB-02", "OperatingSystem": "Windows Server",
+                               "ManagedInActiveDirectory": True,
+                               "ManagedInDefenderForEndpoint": True,
+                               "ManagedInMicrosoftIntune": False,
+                               "LastSeen": "2026-05-31T00:00:00Z"}],
+            "LateralMovement-LocalAdmins": [
+                {"ComputerName": "SRV-DB-02", "AccountName": "CORP\\dbadmin", "AccountType": "User"},
+                {"ComputerName": "SRV-DB-02", "AccountName": "CORP\\Domain Admins", "AccountType": "Group"},
+            ],
+        }))
+        with patch.object(eql.requests, "post", post):
+            out = eql.identity_assessment(TEST_CASE, hosts=["SRV-DB-02"])
+        h = out["hosts"][0]
+        assert h["classification"] == "managed_asset"
+        assert h["is_managed"] is True
+        assert h["managed_in"] == ["ad", "defender"]
+        assert h["local_admin_count"] == 2
+        assert {a["AccountName"] for a in h["local_admins"]} == {"CORP\\dbadmin", "CORP\\Domain Admins"}
+        assert out["summary"]["hosts_managed"] == 1
+        # 2 queries: Baseline-Core + LocalAdmins (no user queries at all)
+        assert out["summary"]["eql_queries_run"] == 2
+
+    def test_unknown_host_skips_admin_query(self, monkeypatch, _case):
+        # No Baseline-Core record → not_in_directory → don't waste the admins query.
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        post = MagicMock(return_value=_FakeResponse(200, _eql_payload([])))
+        with patch.object(eql.requests, "post", post):
+            out = eql.identity_assessment(TEST_CASE, hosts=["MYSTERY-PC"])
+        h = out["hosts"][0]
+        assert h["classification"] == "not_in_directory"
+        assert h.get("admins_skipped") == "not_in_directory"
+        assert h["local_admin_count"] == 0
+        assert out["summary"]["hosts_not_in_directory"] == 1
+        assert post.call_count == 1   # only the Baseline-Core lookup, admins skipped
+
+    def test_known_unmanaged_host(self, monkeypatch, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        post = MagicMock(side_effect=_identity_router({
+            "Baseline-Core": [{"HostName": "OLD-NAS", "OperatingSystem": "Linux"}],  # no ManagedIn*
+            "LateralMovement-LocalAdmins": [],
+        }))
+        with patch.object(eql.requests, "post", post):
+            out = eql.identity_assessment(TEST_CASE, hosts=["OLD-NAS"])
+        h = out["hosts"][0]
+        assert h["classification"] == "known_unmanaged"
+        assert h["is_managed"] is False
+        assert out["summary"]["hosts_known_unmanaged"] == 1
+        assert out["summary"]["eql_queries_run"] == 2  # still pulls admins for a known host
+
+    def test_domain_overlay_flags_mismatch(self, monkeypatch, _case):
+        def _cfg(name):
+            return {"name": "performanta", "platforms": {
+                "encore": {"internal_client_id": "uuid-perf-123", "access": "read"}},
+                "identity": {"internal_domains": ["corp.com"]}}
+        monkeypatch.setattr(eql, "get_client_config", _cfg)
+
+        def _users(body):
+            # both Members, but bob is on an unexpected domain
+            if "alice@corp.com" in body:
+                return [{"UserPrincipalName": "alice@corp.com", "UserType": "Member"}]
+            return [{"UserPrincipalName": "bob@other.com", "UserType": "Member"}]
+
+        post = MagicMock(side_effect=_identity_router({
+            "AzureActiveDirectory-Users": _users, "Intune-ManagedDevices": [],
+        }))
+        with patch.object(eql.requests, "post", post):
+            out = eql.identity_assessment(TEST_CASE, users=["alice@corp.com", "bob@other.com"])
+        by_upn = {u["upn"]: u for u in out["users"]}
+        assert by_upn["alice@corp.com"]["domain_in_config"] is True
+        assert by_upn["alice@corp.com"].get("domain_mismatch") is None
+        assert by_upn["bob@other.com"]["domain_in_config"] is False
+        assert by_upn["bob@other.com"]["domain_mismatch"] is True
+        assert out["summary"]["users_domain_mismatch"] == 1
+        assert out["internal_domains_configured"] == ["corp.com"]
+
+    def test_pinned_to_client_id_and_refused_when_unmapped(self, monkeypatch, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        post = MagicMock(return_value=_FakeResponse(200, _eql_payload([])))
+        with patch.object(eql.requests, "post", post):
+            eql.identity_assessment(TEST_CASE, users=["x@corp.com"])
+        for call in post.call_args_list:
+            url = call.args[0] if call.args else call.kwargs.get("url", "")
+            assert "client=uuid-perf-123" in url
+        # unmapped client → refused before any HTTP
+        (_case / "case_meta.json").write_text(json.dumps({"client": "unmapped"}))
+        post2 = MagicMock()
+        with patch.object(eql.requests, "post", post2):
+            with pytest.raises(eql.EqlNotConfigured):
+                eql.identity_assessment(TEST_CASE, users=["x@corp.com"])
+        post2.assert_not_called()
+
+    def test_requires_an_entity(self, monkeypatch, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        with pytest.raises(eql.EqlError):
+            eql.identity_assessment(TEST_CASE)
+
+
+# ---------------------------------------------------------------------------
 # Raw query escape hatch
 # ---------------------------------------------------------------------------
 

@@ -94,8 +94,8 @@ TOOLSETS: dict[str, set[str]] = {
         # log hunting
         "run_kql", "run_kql_batch", "run_defender_kql", "run_falcon_cql",
         "query_falcon_detections", "query_falcon_hosts", "query_falcon_incidents",
-        "eql_entity_context", "eql_query", "eql_posture_context",
-        "eql_vuln_hunt", "import_vuln_hunt",
+        "eql_entity_context", "eql_identity_assessment", "eql_query",
+        "eql_posture_context", "eql_vuln_hunt", "import_vuln_hunt",
         "load_kql_playbook", "load_cql_playbook", "generate_sentinel_query",
         "generate_queries", "load_ngsiem_reference", "parse_logs",
         "detect_anomalies",
@@ -1950,8 +1950,11 @@ def _register_tier1(mcp: FastMCP) -> None:
         """Use at the START of an interactive investigation. Classifies the
         attack type (see ``classify_attack``) and returns a numbered,
         phased investigation plan: client identification, intake, recall,
-        enrichment, attack-specific evidence, reporting. Advisory only —
-        execute steps by calling each tool.
+        enrichment, contextualisation (client baseline + Encore EQL identity/
+        entity context when the client is mapped), attack-specific evidence,
+        analysis, and a verdict-branched deliverable (TP → MDR report;
+        BP/FP/undetermined → closure comment; PUP → close_case). Advisory
+        only — execute steps by calling each tool.
         """
         _require_scope("investigations:read")
 
@@ -1998,6 +2001,15 @@ def _register_tier1(mcp: FastMCP) -> None:
         plan_steps.append({
             "step": step_num,
             "phase": "Intake & Classification",
+            "action": "Open the case with `create_case` (pass `enrichment_id` to carry over any caseless "
+                      "quick_enrich results), or confirm one already exists.",
+            "tool": "create_case",
+            "reason": "add_evidence / enrich_iocs need a case_id — this opens the investigation record.",
+        })
+        step_num += 1
+        plan_steps.append({
+            "step": step_num,
+            "phase": "Intake & Classification",
             "action": "Call `add_evidence` with the raw alert/incident data to register it in the case.",
             "tool": "add_evidence",
             "reason": "Extracts IOCs and saves raw evidence to the case.",
@@ -2021,127 +2033,263 @@ def _register_tier1(mcp: FastMCP) -> None:
             "reason": "Queries VirusTotal, AbuseIPDB, URLhaus, ThreatFox, and other providers.",
         })
 
-        # Phase 3 — Evidence collection (attack-type specific)
+        # Per-profile skip set — defined before the branch so the skipped-steps
+        # summary at the end is populated for every attack type (incl. pup_pua).
         skip = profile.get("skip", set())
 
-        if urls and "domain_investigate" not in skip:
-            step_num += 1
-            plan_steps.append({
-                "step": step_num,
-                "phase": "Evidence Collection",
-                "action": "Call `capture_urls` to screenshot and capture page source.",
-                "tool": "capture_urls",
-                "reason": "Collects web evidence for analysis.",
-            })
-
-        if urls and "detect_phishing_page" not in skip:
-            step_num += 1
-            plan_steps.append({
-                "step": step_num,
-                "phase": "Evidence Collection",
-                "action": "Call `detect_phishing` on captured pages.",
-                "tool": "detect_phishing",
-                "depends_on": "capture_urls",
-                "reason": "Checks for brand impersonation and credential harvesting.",
-            })
-
-        if eml_provided:
-            step_num += 1
-            plan_steps.append({
-                "step": step_num,
-                "phase": "Evidence Collection",
-                "action": "Call `analyse_email` to parse .eml headers and content.",
-                "tool": "analyse_email",
-                "reason": "Analyses SPF/DKIM/DMARC, sender reputation, embedded URLs.",
-            })
-
-        if "sandbox_analyse" not in skip and (file_names or (urls and attack_type == "malware")):
-            step_num += 1
-            plan_steps.append({
-                "step": step_num,
-                "phase": "Evidence Collection",
-                "action": "Consider `start_sandbox_session` for dynamic file analysis.",
-                "tool": "start_sandbox_session",
-                "reason": "Detonates suspicious files in an isolated container.",
-                "optional": True,
-            })
-
-        # KQL playbook
-        kql_playbooks = {
-            "phishing": "phishing",
-            "malware": "malware-execution",
-            "account_compromise": "account-compromise",
-            "privilege_escalation": "privilege-escalation",
-            "data_exfiltration": "data-exfiltration",
-            "lateral_movement": "lateral-movement",
-            "command_and_control": "command-and-control",
-            "reconnaissance": "reconnaissance",
-        }
-        if attack_type in kql_playbooks:
-            step_num += 1
-            pb_id = kql_playbooks[attack_type]
-            plan_steps.append({
-                "step": step_num,
-                "phase": "Evidence Collection",
-                "action": f"Load `{pb_id}` KQL playbook via `load_kql_playbook`, then execute stages with `run_kql`.",
-                "tool": "run_kql",
-                "condition": "Only if client has Sentinel access (check lookup_client result).",
-                "reason": f"Structured {attack_type.replace('_', ' ')} investigation queries.",
-            })
-
-        # Phase 4 — Analysis
-        step_num += 1
-        plan_steps.append({
-            "step": step_num,
-            "phase": "Analysis",
-            "action": "Call `correlate` to cross-reference IOCs across all case artefacts.",
-            "tool": "correlate",
-            "reason": "Identifies connections between evidence sources.",
-        })
-
-        # Phase 5 — Output
-        step_num += 1
-        plan_steps.append({
-            "step": step_num,
-            "phase": "Output",
-            "action": "Call `generate_report` to produce the investigation narrative.",
-            "tool": "generate_report",
-            "reason": "Creates the detailed investigation report.",
-        })
-
+        # PUP/PUA short-circuits per CLAUDE.md: enrich → close. Everything below
+        # (contextualisation, evidence sweep, correlation, verdict branch) is for a
+        # real investigation only and must NOT run for unwanted-software detections.
         if attack_type == "pup_pua":
             step_num += 1
             plan_steps.append({
                 "step": step_num,
                 "phase": "Output",
-                "action": "Call `prepare_pup_report` for the PUP/PUA deliverable.",
-                "tool": "prepare_pup_report",
-                "reason": "Lightweight report for unwanted software detections.",
+                "action": "Call `close_case(disposition=\"pup_pua\")` with a brief note. Produce a PUP "
+                          "report (`prepare_pup_report`) only if the analyst asks for one.",
+                "tool": "close_case",
+                "reason": "PUP/PUA closes directly after enrichment; the PUP report is on-request only.",
             })
         else:
+            # Phase 2.5 — Contextualisation (behavioural baseline + entity/identity context)
+            step_num += 1
+            plan_steps.append({
+                "step": step_num,
+                "phase": "Contextualisation",
+                "action": "Call `get_client_baseline` to load the client's behavioural profile.",
+                "tool": "get_client_baseline",
+                "reason": "MANDATORY before behavioural conclusions — guards against VPN/geo false positives "
+                          "and misclassifying authorised activity.",
+            })
+            # Encore EQL contextualisation — only relevant when the client is mapped.
+            from tools.eql import is_eql_configured
+            eql_ready = bool(client_name) and is_eql_configured(client_name)
+            if eql_ready or not client_name:
+                cond = None if eql_ready else "Only if the client is Encore-enabled and the alert names a user/host."
+                step_num += 1
+                plan_steps.append({
+                    "step": step_num,
+                    "phase": "Contextualisation",
+                    "action": "If the alert names users/hosts, call `eql_identity_assessment(case_id, users=, hosts=)` "
+                              "to classify users internal/external and pull device/asset context (soft-capped at 5/list).",
+                    "tool": "eql_identity_assessment",
+                    "reason": "Lean scoping step — decides which entities are internal and worth the deep pull.",
+                    **({"condition": cond} if cond else {}),
+                })
+                step_num += 1
+                plan_steps.append({
+                    "step": step_num,
+                    "phase": "Contextualisation",
+                    "action": "For the entities that matter, call `eql_entity_context(case_id, user=/host=/ip=)` "
+                              "for recent identity, device posture, detection and exposure context.",
+                    "tool": "eql_entity_context",
+                    "depends_on": "eql_identity_assessment",
+                    "reason": "Deep per-entity Encore EQL context for the flagged entities.",
+                    **({"condition": cond} if cond else {}),
+                })
+
+            # Phase 3 — Evidence collection (attack-type specific)
+            if urls and "domain_investigate" not in skip:
+                step_num += 1
+                plan_steps.append({
+                    "step": step_num,
+                    "phase": "Evidence Collection",
+                    "action": "Call `capture_urls` to screenshot and capture page source.",
+                    "tool": "capture_urls",
+                    "reason": "Collects web evidence for analysis.",
+                })
+
+            if urls and "detect_phishing_page" not in skip:
+                step_num += 1
+                plan_steps.append({
+                    "step": step_num,
+                    "phase": "Evidence Collection",
+                    "action": "Call `detect_phishing` on captured pages.",
+                    "tool": "detect_phishing",
+                    "depends_on": "capture_urls",
+                    "reason": "Checks for brand impersonation and credential harvesting.",
+                })
+
+            if eml_provided:
+                step_num += 1
+                plan_steps.append({
+                    "step": step_num,
+                    "phase": "Evidence Collection",
+                    "action": "Call `analyse_email` to parse .eml headers and content.",
+                    "tool": "analyse_email",
+                    "reason": "Analyses SPF/DKIM/DMARC, sender reputation, embedded URLs.",
+                })
+
+            # Static file analysis is the FIRST move on a file artefact — tiered
+            # (hash/reputation → format parse → YARA), before any sandbox detonation.
+            if file_names and "analyse_file" not in skip:
+                step_num += 1
+                plan_steps.append({
+                    "step": step_num,
+                    "phase": "Evidence Collection",
+                    "action": "Call `analyse_file` for tiered static analysis (hash, reputation, "
+                              "format-specific parse, YARA on signal).",
+                    "tool": "analyse_file",
+                    "reason": "Primary static-analysis entry point — cheaper than and precedes sandbox detonation.",
+                })
+
+            if "sandbox_analyse" not in skip and (file_names or (urls and attack_type == "malware")):
+                step_num += 1
+                plan_steps.append({
+                    "step": step_num,
+                    "phase": "Evidence Collection",
+                    "action": "Consider `start_sandbox_session` for dynamic analysis if static analysis is inconclusive.",
+                    "tool": "start_sandbox_session",
+                    "depends_on": "analyse_file",
+                    "reason": "Detonates suspicious files in an isolated container.",
+                    "optional": True,
+                })
+
+            # KQL playbook — one per attack type that ships a playbook on disk.
+            kql_playbooks = {
+                "phishing": "phishing",
+                "malware": "malware-execution",
+                "account_compromise": "account-compromise",
+                "privilege_escalation": "privilege-escalation",
+                "data_exfiltration": "data-exfiltration",
+                "lateral_movement": "lateral-movement",
+                "command_and_control": "command-and-control",
+                "reconnaissance": "reconnaissance",
+                "credential_access": "credential-access",
+                "defence_evasion": "defence-evasion",
+                "persistence": "persistence",
+                "ransomware": "ransomware",
+                "web_shell": "web-shell",
+                "oauth_consent": "oauth-consent",
+                "insider_threat": "insider-data-staging",
+            }
+            if attack_type in kql_playbooks:
+                step_num += 1
+                pb_id = kql_playbooks[attack_type]
+                plan_steps.append({
+                    "step": step_num,
+                    "phase": "Evidence Collection",
+                    "action": f"Load `{pb_id}` KQL playbook via `load_kql_playbook`, then execute stages with `run_kql`.",
+                    "tool": "run_kql",
+                    "condition": "Only if client has Sentinel access (check lookup_client result).",
+                    "reason": f"Structured {attack_type.replace('_', ' ')} investigation queries.",
+                })
+
+            # Dark-web exposure — identity/credential attacks only (HITL Phase 4.5).
+            if attack_type in {"account_compromise", "credential_access"}:
+                step_num += 1
+                plan_steps.append({
+                    "step": step_num,
+                    "phase": "Evidence Collection",
+                    "action": "Call `xposed_breach_check` for the affected user's email.",
+                    "tool": "xposed_breach_check",
+                    "reason": "Historical breach data — a positive hit strengthens a credential-compromise TP.",
+                })
+
+            # Phase 4 — Analysis
+            step_num += 1
+            plan_steps.append({
+                "step": step_num,
+                "phase": "Analysis",
+                "action": "Call `correlate` to cross-reference IOCs across all case artefacts.",
+                "tool": "correlate",
+                "reason": "Identifies connections between evidence sources.",
+            })
+            step_num += 1
+            plan_steps.append({
+                "step": step_num,
+                "phase": "Analysis",
+                "action": "Call `campaign_cluster` to compare this case's IOCs against recent cases.",
+                "tool": "campaign_cluster",
+                "condition": "MANDATORY when `recall_cases` surfaced a prior case with overlapping IOCs, "
+                             "or the alert pattern matches recent traffic.",
+                "reason": "Detects shared infrastructure across the one-alert-one-case boundary. "
+                          "Record the result even when there is no overlap.",
+            })
+            step_num += 1
+            plan_steps.append({
+                "step": step_num,
+                "phase": "Analysis",
+                "action": "Call `add_finding` to record each analyst conclusion, tied to its evidence IDs.",
+                "tool": "add_finding",
+                "depends_on": "add_evidence",
+                "reason": "MANDATORY before any report — findings must be backed by logged evidence "
+                          "(Analytical Standards rule 8). A report on a case with no findings is unprovable.",
+            })
+
+            # Phase 5 — Verdict & Output. Do NOT default to an MDR report — that is the
+            # TRUE POSITIVE path only; most outcomes are a 2-sentence closure comment.
+            step_num += 1
+            plan_steps.append({
+                "step": step_num,
+                "phase": "Verdict",
+                "action": "Determine the Sentinel classification using the decision guide: did the "
+                          "detection fire correctly? NO → False Positive. YES → was the activity "
+                          "malicious? YES → True Positive, NO → Benign Positive.",
+                "reason": "The disposition selects the deliverable below — most non-TP outcomes are a "
+                          "2-sentence closure comment, NOT an MDR report.",
+            })
             step_num += 1
             plan_steps.append({
                 "step": step_num,
                 "phase": "Output",
-                "action": "Call `prepare_mdr_report` for the client-facing MDR deliverable.",
+                "action": "Call `generate_report` to produce the detailed investigation narrative.",
+                "tool": "generate_report",
+                "condition": "For True Positive / substantive incidents; a BP/FP closure needs only the comment.",
+                "reason": "Internal investigation record underpinning the deliverable.",
+            })
+            step_num += 1
+            plan_steps.append({
+                "step": step_num,
+                "phase": "Output",
+                "action": "TRUE POSITIVE → `prepare_mdr_report` → `write_mdr_report` prompt → "
+                          "`save_report(report_type=\"mdr_report\", disposition=\"true_positive\")`.",
                 "tool": "prepare_mdr_report",
-                "reason": "Structured report for the client.",
+                "condition": "Disposition is True Positive only.",
+                "reason": "The MDR report is the TP deliverable; it auto-closes the case on save.",
             })
             step_num += 1
             plan_steps.append({
                 "step": step_num,
                 "phase": "Output",
-                "action": "Call `response_actions` for containment and remediation guidance.",
+                "action": "BENIGN POSITIVE → `prepare_closure_comment(classification="
+                          "\"bp_suspicious_but_expected\" | \"bp_suspicious_not_malicious\")` → "
+                          "`save_report(report_type=\"closure_comment\", disposition=\"benign_positive\")`.",
+                "tool": "prepare_closure_comment",
+                "condition": "Disposition is Benign Positive — correctly fired on authorised/expected activity.",
+                "reason": "A 2-sentence closure comment, not a report.",
+            })
+            step_num += 1
+            plan_steps.append({
+                "step": step_num,
+                "phase": "Output",
+                "action": "FALSE POSITIVE → `prepare_closure_comment(classification="
+                          "\"fp_incorrect_logic\" | \"fp_inaccurate_data\")` → "
+                          "`save_report(report_type=\"closure_comment\", disposition=\"false_positive\")`. "
+                          "Add `prepare_fp_tuning_ticket` when the rule also needs tuning.",
+                "tool": "prepare_closure_comment",
+                "condition": "Disposition is False Positive — the detection misfired.",
+                "reason": "Closure comment; optional tuning ticket for the rule fix (SIEM tune vs EDR SOAR suppression).",
+            })
+            step_num += 1
+            plan_steps.append({
+                "step": step_num,
+                "phase": "Output",
+                "action": "UNDETERMINED → `prepare_closure_comment(classification=\"undetermined\")` → "
+                          "`save_report(report_type=\"closure_comment\", disposition=\"inconclusive\")`.",
+                "tool": "prepare_closure_comment",
+                "condition": "Evidence is inconclusive.",
+                "reason": "Records why no determination was possible.",
+            })
+            step_num += 1
+            plan_steps.append({
+                "step": step_num,
+                "phase": "Output",
+                "action": "TRUE POSITIVE follow-ups → `response_actions` (containment/remediation guidance) "
+                          "and `generate_queries` (SIEM hunt queries).",
                 "tool": "response_actions",
-                "reason": "Advisory response plan based on case findings and client platforms.",
-            })
-            step_num += 1
-            plan_steps.append({
-                "step": step_num,
-                "phase": "Output",
-                "action": "Call `generate_queries` for SIEM hunt queries.",
-                "tool": "generate_queries",
-                "reason": "Ready-to-run threat hunting queries for the client.",
+                "condition": "True Positive only — not needed for BP/FP closures.",
+                "reason": "Incident follow-ups for a confirmed true positive.",
             })
 
         # Build skipped steps explanation
@@ -3732,6 +3880,60 @@ def _register_tier3(mcp: FastMCP) -> None:
             })
         except EqlError as exc:
             return _json({"error": "Encore EQL entity-context lookup failed.", "detail": str(exc)})
+        return _json(result)
+
+    @mcp.tool(title="Encore EQL Identity Assessment", annotations={"readOnlyHint": True})
+    async def eql_identity_assessment(
+        case_id: str,
+        users: str = "",
+        hosts: str = "",
+        cap: int = 5,
+    ) -> str:
+        """Classify users internal vs external and pull their managed-device context from Encore EQL.
+
+        The cheap SCOPING step to run early — before the heavier ``eql_entity_context`` pull —
+        to decide which entities matter and bring identity + device context into session.
+        Each user is classified from authoritative directory data (UserType=Member → internal,
+        Guest / #EXT# UPN → external, no record → not-in-directory) and, only when they resolve
+        to a real non-guest record, their Intune managed devices (name/OS/compliance/encryption)
+        are pulled. A host need NOT map to a single user — a server/shared device is classified
+        as an asset (managed_asset / known_unmanaged / not_in_directory) and its local admins are
+        pulled ("who operates this device"), skipping the admin query for an unknown host.
+
+        ``users`` / ``hosts`` are comma-, semicolon-, or newline-separated lists. Soft cap
+        (``cap``, default 5 per list): entries beyond the cap are returned under ``not_assessed``
+        rather than queried — raise ``cap`` to assess more, nothing is silently dropped. Guests
+        and not-in-directory principals cost a single query each (no wasted device lookup).
+
+        Case-scoped: pinned to this case's Encore client (``platforms.encore.internal_client_id``).
+        Results are written as a case artefact and summarised into the evidence chain. An empty /
+        not-in-directory result means "not in the ingested directory", NOT "external" or "clean".
+        """
+        _require_scope("investigations:read")
+        import re
+        from tools.eql import EqlError, EqlNotConfigured, identity_assessment as _identity_assessment
+
+        if not case_id.strip():
+            return _json({"error": "case_id is required."})
+
+        def _split(raw: str) -> list[str]:
+            return [p.strip() for p in re.split(r"[,;\n]+", raw or "") if p.strip()]
+
+        user_list, host_list = _split(users), _split(hosts)
+        if not user_list and not host_list:
+            return _json({"error": "Provide at least one user or host (comma/newline separated)."})
+        try:
+            result = await asyncio.to_thread(
+                lambda: _identity_assessment(case_id, users=user_list, hosts=host_list, cap=cap)
+            )
+        except EqlNotConfigured as exc:
+            return _json({
+                "error": "Encore EQL not enabled for this case's client.",
+                "detail": str(exc),
+                "hint": "Set platforms.encore.internal_client_id (+ access) in client_entities.json.",
+            })
+        except EqlError as exc:
+            return _json({"error": "Encore EQL identity assessment failed.", "detail": str(exc)})
         return _json(result)
 
     @mcp.tool(title="Encore EQL Query", annotations={"readOnlyHint": True})

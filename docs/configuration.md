@@ -141,6 +141,7 @@ Config: `config/client_entities.json` (git-ignored) — unified `clients` list. 
 | `platforms` | No | Nested object mapping platform → config (see below) |
 | `aliases` | No | List of alternative names for fuzzy matching (e.g. `["hbm", "heidelberg cement"]`). `lookup_client` checks these when the exact name doesn't match. |
 | `notes` | No | Free-text description for fuzzy matching and context (industry, key domains, subsidiaries) |
+| `identity` | No | `{ "internal_domains": ["corp.com", ...] }` — optional list of the client's own UPN/email domains. A **zero-request overlay** for `eql_identity_assessment`: when present, a Member account whose UPN domain is *not* in the list is flagged `domain_mismatch`. Classification itself is data-driven from the directory (`UserType`) and works without this; the list only adds the unexpected-domain flag. |
 | `workspace_id` | No | Legacy; migrated to `platforms.sentinel.workspace_id` |
 
 **Platform scope** (`platforms` object):
@@ -158,7 +159,7 @@ Config: `config/client_entities.json` (git-ignored) — unified `clients` list. 
 
 The `platforms` object determines which security platforms are available for investigation of that client's incidents. Used by `lookup_client` (MCP tool), `socai://clients` (resource), workspace resolution in `run_kql`, the `hitl_investigation` prompt (Phase 0 client gate), and per-platform query routers (`tools/defender_hunting.py`, `tools/crowdstrike.py`, `tools/eql.py`).
 
-**`platforms.encore`** — `internal_client_id` is the Encore gateway client UUID (from `list_clients` / `eql_direct.py clients`); it is the **token-scope gate** for the socai-native EQL tools (`eql_entity_context`, `eql_posture_context`, `eql_query`). Those tools resolve a case → its client → this UUID and pin every query to it; a client with no `internal_client_id` (or `access` not in {`read`, `true`}) is refused before any HTTP call, so the all-client `ENCORE_EQL_TOKEN` can never reach a client the case isn't mapped to. The standalone `eql-hosted` MCP server is unaffected (it takes a `clientId` directly). Gateway is the source of truth for these UUIDs — human-verify the mapping.
+**`platforms.encore`** — `internal_client_id` is the Encore gateway client UUID (from `list_clients` / `eql_direct.py clients`); it is the **token-scope gate** for the socai-native EQL tools (`eql_identity_assessment`, `eql_entity_context`, `eql_posture_context`, `eql_query`). Those tools resolve a case → its client → this UUID and pin every query to it; a client with no `internal_client_id` (or `access` not in {`read`, `true`}) is refused before any HTTP call, so the all-client `ENCORE_EQL_TOKEN` can never reach a client the case isn't mapped to. The standalone `eql-hosted` MCP server is unaffected (it takes a `clientId` directly). Gateway is the source of truth for these UUIDs — human-verify the mapping.
 
 **Per-platform credentials** (env vars, see `tools/secrets.py`):
 

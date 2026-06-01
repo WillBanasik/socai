@@ -27,6 +27,7 @@ Public API:
     is_eql_configured(client) -> bool
     run_eql(internal_client_id, eql, timeout=30) -> dict
     entity_context(case_id, user=None, host=None, ip=None, depth="auto") -> dict
+    identity_assessment(case_id, users=None, hosts=None, cap=5) -> dict
     posture_context(case_id, depth="auto") -> dict
     vuln_hunt(client_name, depth="auto") -> dict        # caseless, proactive
     import_vuln_hunt(hunt_id, case_id) -> dict           # promote a hunt into a case
@@ -282,6 +283,56 @@ VULN_HUNT_TEMPLATES: list[dict[str, Any]] = [
                 "TotalThreats", "ImminentThreats", "ImminentInternetExposedThreats",
                 "ImminentBusinessCriticalThreats", "EmergingThreats", "LowPriorityThreats"]},
 ]
+
+
+# ---------------------------------------------------------------------------
+# Lean IDENTITY-ASSESSMENT templates — the cheap scoping step that runs BEFORE
+# the heavy per-entity ``entity_context`` pull. One identity row per user
+# classifies internal/external from authoritative directory data; managed-device
+# context is pulled only for users that resolve to a real non-guest record.
+# ---------------------------------------------------------------------------
+
+# Single Users record per UPN — the columns the internal/external call needs.
+IDENTITY_USER_TEMPLATE: dict[str, Any] = {
+    "table": "AzureActiveDirectory-Users", "key": "UserPrincipalName", "op": "=",
+    "select": ["UserPrincipalName", "DisplayName", "UserType", "AccountEnabled",
+               "OnPremisesSamAccountName", "Department", "IsMfaRegistered",
+               "RiskLevel", "RiskState", "UsageLocation", "Country", "EntryDate"],
+}
+# Lean managed-device context for an internal user — "is this a known managed
+# client device + its compliance/encryption posture". Heavier detection/sign-in
+# pulls stay in ``entity_context``.
+IDENTITY_USER_DEVICES_TEMPLATE: dict[str, Any] = {
+    "table": "Intune-ManagedDevices", "key": "UserPrincipalName", "op": "=",
+    "select": ["ManagedDeviceName", "ComputerName", "OperatingSystem", "OsVersion",
+               "DeviceComplianceStatus", "IsEncrypted", "Manufacturer", "Model",
+               "LastCommsDate", "JailBroken", "PartnerReportedThreatState"],
+}
+# One Baseline-Core identity row per host — which platforms manage it + last-seen.
+IDENTITY_HOST_TEMPLATE: dict[str, Any] = {
+    "table": "Baseline-Core", "key": "HostName", "op": "LIKE",
+    "select": ["HostName", "Domain", "IpAddress", "OperatingSystem", "OsType",
+               "LastSeen", "DaysSinceLastSeen", "ManagedInActiveDirectory",
+               "ManagedInAzureActiveDirectory", "ManagedInCrowdStrike",
+               "ManagedInDefenderForEndpoint", "ManagedInMicrosoftIntune"],
+}
+# Who can operate / administer a host — the "who is this device assigned to"
+# answer for a server or shared device that maps to no single primary user.
+IDENTITY_HOST_ADMINS_TEMPLATE: dict[str, Any] = {
+    "table": "LateralMovement-LocalAdmins", "key": "ComputerName", "op": "LIKE",
+    "select": ["ComputerName", "AccountName", "AccountType", "EntryDate"],
+}
+# Baseline-Core "ManagedInX" boolean columns → short platform label for the
+# ``managed_in`` convenience list.
+_MANAGED_IN_COLS: dict[str, str] = {
+    "ManagedInActiveDirectory": "ad",
+    "ManagedInAzureActiveDirectory": "entra",
+    "ManagedInCrowdStrike": "crowdstrike",
+    "ManagedInDefenderForEndpoint": "defender",
+    "ManagedInMicrosoftIntune": "intune",
+}
+
+IDENTITY_DEFAULT_CAP = 5
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +625,344 @@ def entity_context(
     # Append a concise provenance note to the evidence chain (raw observation).
     _append_evidence(case_id, output)
     return output
+
+
+# ---------------------------------------------------------------------------
+# Identity assessment — lean batch scoping step (internal/external + devices)
+# ---------------------------------------------------------------------------
+
+def _dedupe(values: list[str]) -> list[str]:
+    """Sanitise, drop blanks, de-duplicate (case-insensitive), preserve order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in values:
+        s = _sanitise(v or "")
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+    return out
+
+
+def _classify_user(upn: str, rows: list[dict], internal_domains: set[str]) -> dict[str, Any]:
+    """Classify a user internal/external from their directory record.
+
+    Authoritative signals (from the user's own AzureActiveDirectory-Users row):
+    ``UserType`` (Member/Guest), ``OnPremisesSamAccountName`` (hybrid sync), and a
+    ``#EXT#`` UPN (B2B guest). ``internal_domains`` is an OPTIONAL zero-cost local
+    overlay (client config ``identity.internal_domains``) — when present it flags a
+    Member account sitting on an unexpected UPN domain; it never drives the
+    classification on its own and triggers no extra query.
+    """
+    upn_l = upn.lower()
+    upn_domain = upn_l.rsplit("@", 1)[-1] if "@" in upn_l else ""
+    out: dict[str, Any] = {"upn_domain": upn_domain}
+    if internal_domains:
+        out["domain_in_config"] = upn_domain in internal_domains
+
+    if not rows:
+        out["classification"] = "not_in_directory"
+        out["sync"] = None
+        return out
+
+    rec = rows[0]
+    user_type = (rec.get("UserType") or "").strip().lower()
+    on_prem = (rec.get("OnPremisesSamAccountName") or "").strip()
+    out["account_enabled"] = rec.get("AccountEnabled")
+    out["on_premises_sam"] = on_prem or None
+    out["sync"] = "hybrid_on_prem" if on_prem else "cloud_only"
+    out["display_name"] = rec.get("DisplayName")
+    out["department"] = rec.get("Department")
+    out["risk_level"] = rec.get("RiskLevel")
+
+    if user_type == "guest" or "#ext#" in upn_l:
+        out["classification"] = "external_guest"
+    elif user_type == "member":
+        out["classification"] = "internal"
+    elif user_type:
+        out["classification"] = f"other_{user_type}"
+    else:
+        out["classification"] = "unknown"  # record present but no UserType
+
+    # Member account on a domain that isn't in the configured owned set — a
+    # signal worth surfacing (rogue tenant domain, partner account, typo).
+    if (internal_domains and out["classification"] == "internal"
+            and not out.get("domain_in_config")):
+        out["domain_mismatch"] = True
+    return out
+
+
+def identity_assessment(
+    case_id: str,
+    users: list[str] | None = None,
+    hosts: list[str] | None = None,
+    cap: int = IDENTITY_DEFAULT_CAP,
+    depth: str = "auto",
+) -> dict[str, Any]:
+    """Lean batch triage: classify users internal/external and pull device context.
+
+    The cheap scoping step that runs BEFORE the heavy per-entity ``entity_context``
+    pull — it decides which entities are worth the deeper look and brings the exact
+    identity + managed-device context into session.
+
+    Per user: one ``AzureActiveDirectory-Users`` query classifies them from
+    authoritative directory data (``UserType`` / on-prem sync / ``#EXT#`` UPN), with
+    an optional zero-request overlay against the client's configured
+    ``identity.internal_domains``. Managed-device context (``Intune-ManagedDevices``)
+    is pulled ONLY for users that resolve to a real non-guest record — guests and
+    not-in-directory principals therefore cost a single query each. Per host: one
+    ``Baseline-Core`` row reporting which platforms manage it.
+
+    Soft cap (``cap``, default 5 per list): users/hosts beyond the cap are returned
+    under ``not_assessed`` rather than queried. There is no hard ceiling — raise
+    ``cap`` to assess more. Same scope gate as ``entity_context`` (pinned to the
+    case's Encore client). Persists the full payload as a case artefact and appends
+    a classification summary to the evidence chain.
+    """
+    client_name, internal_client_id = _resolve_case_client(case_id)
+    cfg = get_client_config(client_name) or {}
+    internal_domains = {
+        d.strip().lower()
+        for d in ((cfg.get("identity") or {}).get("internal_domains") or [])
+        if isinstance(d, str) and d.strip()
+    }
+
+    cap = max(1, int(cap)) if cap else IDENTITY_DEFAULT_CAP
+    all_users = _dedupe(users or [])
+    all_hosts = _dedupe(hosts or [])
+    if not all_users and not all_hosts:
+        raise EqlError("provide at least one user or host")
+
+    assess_users, dropped_users = all_users[:cap], all_users[cap:]
+    assess_hosts, dropped_hosts = all_hosts[:cap], all_hosts[cap:]
+
+    started = time.time()
+    queries_run = 0
+    user_results: list[dict[str, Any]] = []
+    host_results: list[dict[str, Any]] = []
+
+    def _run(tpl: dict[str, Any], value: str) -> dict[str, Any]:
+        nonlocal queries_run
+        q = _build_query(tpl, value)
+        queries_run += 1
+        try:
+            res = run_eql(internal_client_id, q)
+            return {"query": q, "rows": res["rows"], "row_count": res["row_count"],
+                    "errors": res["errors"],
+                    "coverage": "ok" if res["rows"] else "no_data_for_client"}
+        except EqlError as exc:
+            log_error(case_id, "eql.identity_assessment", str(exc),
+                      severity="warning", context={"table": tpl["table"], "value": value})
+            return {"query": q, "rows": [], "row_count": 0, "coverage": "query_error",
+                    "error": str(exc)}
+
+    for upn in assess_users:
+        idres = _run(IDENTITY_USER_TEMPLATE, upn)
+        cls = _classify_user(upn, idres["rows"], internal_domains)
+        entry: dict[str, Any] = {
+            "entity_type": "user",
+            "upn": upn,
+            **cls,
+            "identity_query": idres["query"],
+            "identity_rows": idres["rows"],
+            "identity_coverage": idres["coverage"],
+        }
+        if idres.get("error"):
+            entry["identity_error"] = idres["error"]
+        # Only spend a device query on a principal that resolves to a real,
+        # non-guest directory record (guests/not-in-directory have no managed
+        # devices) — this is the "don't make unneeded requests" guard.
+        if cls["classification"] in ("external_guest", "not_in_directory"):
+            entry["devices_skipped"] = cls["classification"]
+            entry["devices"] = []
+            entry["device_count"] = 0
+        else:
+            dres = _run(IDENTITY_USER_DEVICES_TEMPLATE, upn)
+            entry["devices_query"] = dres["query"]
+            entry["devices"] = dres["rows"]
+            entry["device_count"] = dres["row_count"]
+            entry["devices_coverage"] = dres["coverage"]
+            entry["freshness"] = _freshness(dres["rows"])
+            if dres.get("error"):
+                entry["devices_error"] = dres["error"]
+        user_results.append(entry)
+
+    for host in assess_hosts:
+        hres = _run(IDENTITY_HOST_TEMPLATE, host)
+        rows = hres["rows"]
+        managed_in = sorted({
+            label for r in rows for col, label in _MANAGED_IN_COLS.items()
+            if _truthy(r.get(col))
+        })
+        # Device-side analogue of the user internal/external call. A server has no
+        # single user, so we classify the ASSET: known + managed by a control plane
+        # → managed_asset; known but no management → known_unmanaged; no directory
+        # record at all → not_in_directory (unknown / off-estate / typo).
+        if not rows:
+            host_class = "not_in_directory"
+        elif managed_in:
+            host_class = "managed_asset"
+        else:
+            host_class = "known_unmanaged"
+
+        entry: dict[str, Any] = {
+            "entity_type": "host",
+            "host": host,
+            "classification": host_class,
+            "managed_in": managed_in,
+            "is_managed": bool(managed_in),
+            "query": hres["query"],
+            "rows": rows,
+            "row_count": hres["row_count"],
+            "coverage": hres["coverage"],
+            "freshness": _freshness(rows),
+            **({"error": hres["error"]} if hres.get("error") else {}),
+        }
+        # "Who operates this device" — local admins. The right context for a server /
+        # shared host that isn't tied to one user. Skip for an unknown device (no
+        # directory record → no admin data, no point spending the query).
+        if host_class == "not_in_directory":
+            entry["admins_skipped"] = "not_in_directory"
+            entry["local_admins"] = []
+            entry["local_admin_count"] = 0
+        else:
+            ares = _run(IDENTITY_HOST_ADMINS_TEMPLATE, host)
+            entry["local_admins_query"] = ares["query"]
+            entry["local_admins"] = ares["rows"]
+            entry["local_admin_count"] = ares["row_count"]
+            entry["local_admins_coverage"] = ares["coverage"]
+            if ares.get("error"):
+                entry["local_admins_error"] = ares["error"]
+        host_results.append(entry)
+
+    summary = {
+        "users_assessed": len(user_results),
+        "users_internal": sum(1 for u in user_results if u["classification"] == "internal"),
+        "users_external_guest": sum(1 for u in user_results
+                                    if u["classification"] == "external_guest"),
+        "users_not_in_directory": sum(1 for u in user_results
+                                      if u["classification"] == "not_in_directory"),
+        "users_other": sum(1 for u in user_results
+                           if u["classification"] not in
+                           ("internal", "external_guest", "not_in_directory")),
+        "users_domain_mismatch": sum(1 for u in user_results if u.get("domain_mismatch")),
+        "users_not_assessed_cap": len(dropped_users),
+        "hosts_assessed": len(host_results),
+        "hosts_managed": sum(1 for h in host_results if h["is_managed"]),
+        "hosts_known_unmanaged": sum(1 for h in host_results
+                                     if h["classification"] == "known_unmanaged"),
+        "hosts_not_in_directory": sum(1 for h in host_results
+                                      if h["classification"] == "not_in_directory"),
+        "hosts_not_assessed_cap": len(dropped_hosts),
+        "eql_queries_run": queries_run,
+    }
+
+    output: dict[str, Any] = {
+        "case_id": case_id,
+        "client": client_name,
+        "internal_client_id": internal_client_id,
+        "ts": utcnow(),
+        "depth": depth,
+        "cap": cap,
+        "duration_ms": int((time.time() - started) * 1000),
+        "internal_domains_configured": sorted(internal_domains) or None,
+        "summary": summary,
+        "users": user_results,
+        "hosts": host_results,
+        "not_assessed": {"users": dropped_users, "hosts": dropped_hosts},
+        "_window_note": (
+            "Users are classified from authoritative directory data (UserType / on-prem "
+            "sync / #EXT# UPN); the configured internal_domains overlay only flags "
+            "unexpected Member domains. Device context is pulled only for non-guest "
+            "principals. Hosts (which need NOT map to a single user — servers/shared "
+            "devices) are classified as an ASSET: managed_asset (in a control plane) / "
+            "known_unmanaged / not_in_directory; their local admins answer 'who operates "
+            "this device'. 'no_data_for_client' / 'not_in_directory' means the entity "
+            "isn't in the ingested directory — NOT proof it's external or benign. "
+            "Raise `cap` (default 5) to assess more entities; entries beyond the cap "
+            "are listed under not_assessed, never silently dropped. This is a scoping "
+            "step — follow with eql_entity_context for the entities that matter."
+        ),
+    }
+
+    stamp = utcnow().replace(":", "").replace("-", "").replace("T", "_").split(".")[0]
+    save_json(CASES_DIR / case_id / "artefacts" / "eql_context"
+              / f"identity_assessment_{stamp}.json", output)
+
+    # Cap inline rows after persisting the full payload (lean tables, but a heavy
+    # device user or a multi-row host can still exceed the inline budget).
+    for u in user_results:
+        capped, truncated = _cap(u.get("devices", []), _MAX_ROWS_INLINE)
+        u["devices"] = capped
+        u["devices_truncated"] = truncated
+    for h in host_results:
+        capped, truncated = _cap(h.get("rows", []), _MAX_ROWS_INLINE)
+        h["rows"] = capped
+        h["truncated"] = truncated
+        admins_capped, admins_truncated = _cap(h.get("local_admins", []), _MAX_ROWS_INLINE)
+        h["local_admins"] = admins_capped
+        h["local_admins_truncated"] = admins_truncated
+
+    _append_identity_evidence(case_id, output)
+    return output
+
+
+def _append_identity_evidence(case_id: str, output: dict[str, Any]) -> None:
+    """Summarise the identity assessment into the case evidence chain."""
+    from api.actions import add_evidence  # lazy: avoids import cycle
+
+    s = output["summary"]
+    lines = [
+        f"**Encore EQL identity assessment** ({output['client']}, "
+        f"client {output['internal_client_id']})",
+        f"Users: {s['users_assessed']} assessed — internal {s['users_internal']}, "
+        f"guest {s['users_external_guest']}, not-in-directory {s['users_not_in_directory']}"
+        + (f", domain-mismatch {s['users_domain_mismatch']}" if s['users_domain_mismatch'] else "")
+        + (f", capped {s['users_not_assessed_cap']}" if s['users_not_assessed_cap'] else ""),
+        "",
+    ]
+    for u in output["users"]:
+        bits = [f"- {u['upn']} → **{u['classification']}**"]
+        if u.get("sync"):
+            bits.append(f"({u['sync']})")
+        if u.get("account_enabled") is False:
+            bits.append("[disabled]")
+        if u.get("domain_mismatch"):
+            bits.append("[domain-mismatch]")
+        if u["classification"] not in ("external_guest", "not_in_directory"):
+            bits.append(f"— {u.get('device_count', 0)} managed device(s)")
+        lines.append(" ".join(bits))
+    if output["hosts"]:
+        lines.append("")
+        lines.append(f"Hosts: {s['hosts_assessed']} assessed — managed_asset {s['hosts_managed']}, "
+                     f"known_unmanaged {s['hosts_known_unmanaged']}, "
+                     f"not-in-directory {s['hosts_not_in_directory']}"
+                     + (f", capped {s['hosts_not_assessed_cap']}"
+                        if s['hosts_not_assessed_cap'] else ""))
+        for h in output["hosts"]:
+            mgd = ", ".join(h["managed_in"]) if h["managed_in"] else "no control plane"
+            bits = [f"- {h['host']} → **{h['classification']}** ({mgd})"]
+            if h["classification"] != "not_in_directory":
+                bits.append(f"— {h.get('local_admin_count', 0)} local admin(s)")
+            lines.append(" ".join(bits))
+    if output["not_assessed"]["users"] or output["not_assessed"]["hosts"]:
+        lines.append("")
+        na = output["not_assessed"]
+        lines.append("_Not assessed (cap reached — raise `cap` to include):_")
+        if na["users"]:
+            lines.append(f"- users: {', '.join(na['users'])}")
+        if na["hosts"]:
+            lines.append(f"- hosts: {', '.join(na['hosts'])}")
+    lines.append("")
+    lines.append("_" + output["_window_note"] + "_")
+    try:
+        add_evidence(case_id, "\n".join(lines))
+    except Exception as exc:  # evidence note is best-effort, never fatal
+        log_error(case_id, "eql.append_identity_evidence", str(exc), severity="warning")
+        eprint(f"[eql] identity evidence note failed: {exc}")
 
 
 def posture_context(case_id: str, depth: str = "auto") -> dict[str, Any]:

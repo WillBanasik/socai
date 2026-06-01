@@ -617,6 +617,19 @@ The upload tools above are the *escalation* path, not the default.
 - Analysis via prompt: use `write_cve_context` prompt for exploitability assessment, TTP relevance, patching priority
 - Output: `artefacts/cve/cve_context.json`
 
+## Case-scoped Entity Context (Encore EQL)
+
+Case-bound, single-client EQL pulls for an investigation. All are pinned to the case's mapped Encore client (`platforms.encore.internal_client_id`) via the `_resolve_encore_id` scope gate — the caller cannot target another client. Each persists the full raw payload under `artefacts/eql_context/` and appends a provenance note to the evidence chain. Full detail in `docs/encore-eql.md`.
+
+- **`eql_identity_assessment(case_id, users=, hosts=, cap=5)`** (`tools/eql.py`) — the **lean scoping step that runs first**, before the heavier `eql_entity_context` pull. Given several users and/or hosts:
+  - **Users** are classified internal vs external from authoritative directory data — `UserType=Member` → `internal` (with `hybrid_on_prem` / `cloud_only` sub-state from `OnPremisesSamAccountName`), `Guest` / `#EXT#` UPN → `external_guest`, no record → `not_in_directory`. Managed-device context (`Intune-ManagedDevices`: name/OS/compliance/encryption/last-seen) is pulled **only** for users that resolve to a real non-guest record — guests / not-in-directory cost a single query each.
+  - **Hosts** need not map to a single user — a server/shared device is classified as an **asset**: `managed_asset` (known + in a control plane), `known_unmanaged`, or `not_in_directory`, with `managed_in` listing the platforms. For any *known* host it also pulls **local admins** (`LateralMovement-LocalAdmins`) — the "who operates this device" answer — skipping that query for an unknown host.
+  - **Optional zero-request overlay**: a per-client `identity.internal_domains` list (in `client_entities.json`) flags a Member account on an unexpected UPN domain (`domain_mismatch`); it never drives classification and adds no query.
+  - **Soft cap** (`cap`, default 5 per list): entries beyond the cap are returned under `not_assessed` rather than queried — raise `cap` to assess more; nothing is silently dropped. Output: `artefacts/eql_context/identity_assessment_<ts>.json`.
+- **`eql_entity_context(case_id, user=/host=/ip=)`** — the deep per-entity pull (identity, sign-ins, risky activities, device posture across CrowdStrike/Defender/Intune, detections, vuln exposure, Cloudflare) for the entities `eql_identity_assessment` flagged as worth it. See `QUERY_TEMPLATES`.
+- **`eql_posture_context(case_id)`** — client-wide preventative-controls baseline (input to the security architecture review). See `POSTURE_TEMPLATES`.
+- **`eql_query(case_id, eql)`** — raw EQL escape hatch, same scope gate.
+
 ## Vulnerability Hunting (Encore EQL)
 
 Proactive vulnerability hunting on top of Encore's pre-computed exploit/KEV prioritisation. Two chained modes (full detail in `docs/encore-eql.md`):

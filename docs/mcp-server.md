@@ -185,7 +185,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `generate_queries` | `investigations:submit` | Generate SIEM hunt queries (KQL/Splunk/LogScale) incl. contextual CrowdStrike queries |
 | `load_ngsiem_reference` | `sentinel:query` | Load CQL/LogScale syntax reference (rules, columns, grammar, syntax sections) |
 | `classify_attack` | `investigations:read` | Deterministic attack-type classification |
-| `plan_investigation` | `investigations:read` | Full investigation plan with phases and dependencies |
+| `plan_investigation` | `investigations:read` | Full investigation plan: client ID → intake (create_case) → recall/enrich → contextualisation (baseline + EQL) → attack-specific evidence + playbook → analysis (correlate/campaign_cluster/add_finding) → verdict-branched deliverable. PUP short-circuits to enrich→close. |
 | `quick_enrich` | `investigations:read` | Caseless ad-hoc IOC enrichment (no case required) |
 | `import_enrichment` | `investigations:submit` | Import caseless enrichment results into a case (avoids re-enrichment) |
 | `query_opencti` | `investigations:read` | Direct OpenCTI queries (IOCs, CVEs, keyword search) |
@@ -291,6 +291,10 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `query_falcon_incidents` | `crowdstrike:query` | Falcon incidents (FQL filter) |
 | `security_arch_review` | `investigations:submit` | Security architecture review (collects context; use `write_security_arch_review` prompt) |
 | `contextualise_cves` | `investigations:read` | CVE contextualisation (NVD, EPSS, CISA KEV) |
+| `eql_identity_assessment` | `investigations:read` | Lean scoping step: classify several users internal/external (Member/Guest/not-in-directory) from Encore directory data + pull managed-device context; hosts classified as an asset (managed/unmanaged/unknown) + local admins. Soft-capped at 5 per list. Run before `eql_entity_context`. |
+| `eql_entity_context` | `investigations:read` | Case-scoped per-entity context (identity/sign-ins/risky-activity/device posture/detections/vuln exposure/Cloudflare) for a named user/host/IP via Encore EQL. |
+| `eql_posture_context` | `investigations:read` | Case-scoped client-wide preventative-controls baseline (Secure Score, MFA/identity, privileged access, compliance, Defender recs, vuln exposure, training) — input to the security architecture review. |
+| `eql_query` | `investigations:read` | Case-scoped raw EQL escape hatch, pinned to the case's Encore client. |
 | `eql_vuln_hunt` | `investigations:read` | Caseless proactive vulnerability hunt via Encore EQL — ranked exposed hosts + actively-exploited CVEs + new KEVs + EDR control tasks. Returns a `hunt_id`. |
 | `import_vuln_hunt` | `investigations:submit` | Promote a caseless vuln hunt into a case (artefact + evidence note) |
 | `ingest_velociraptor` | `investigations:submit` | Ingest Velociraptor offline collector data |

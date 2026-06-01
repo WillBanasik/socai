@@ -60,6 +60,7 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/cve/cve_context.json` | CVE contextualisation (NVD, EPSS, KEV, OpenCTI) |
 | `cases/<ID>/artefacts/eql_context/posture.json` | Encore EQL client-wide posture baseline (`eql_posture_context`) — Secure Score, MFA/identity, privileged access, compliance, Defender recs, vuln exposure, training |
 | `cases/<ID>/artefacts/eql_context/<entity>.json` | Encore EQL per-entity context (`eql_entity_context`) — identity/device/detection/exposure for a named user/host/IP |
+| `cases/<ID>/artefacts/eql_context/identity_assessment_<ts>.json` | Encore EQL identity assessment (`eql_identity_assessment`) — per-user internal/external classification + managed devices; per-host asset classification + local admins |
 | `cases/<ID>/artefacts/eql_context/adhoc_<ts>.json` | Encore EQL raw query result (`eql_query` escape hatch) |
 | `cases/<ID>/artefacts/executive_summary/executive_summary.md` | Plain-English executive summary |
 | `cases/<ID>/artefacts/executive_summary/executive_summary_manifest.json` | Executive summary metadata |

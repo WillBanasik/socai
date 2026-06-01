@@ -50,6 +50,8 @@ Add a `@mcp.tool()` handler in `mcp_server/tools.py` in the appropriate tier (`_
 
 **Workflow analytics registration:** Every new MCP tool must be added to `TOOL_TAXONOMY` in `mcp_server/usage.py` with a `category` (one of: `lookup`, `enrichment`, `triage`, `analysis`, `delivery`, `admin`, `query`, `intel`, `sandbox`, `infra`) and a `goal` (one of: `quick_answer`, `investigate`, `deliver`, `maintain`). Tools not in the taxonomy are logged as `unknown` — workflow analytics won't classify them correctly.
 
+> **Renaming a tool?** `TOOL_TAXONOMY` keys are plain strings — they are **not** auto-updated when you rename or consolidate a tool, and the stale key silently falls back to `unknown/unknown`. On any rename, grep `mcp_server/usage.py` (and `mcp_server/tools.py` `TOOLSETS`, plus `plan_investigation`'s `kql_playbooks` map and any prompt prose) for the old name. Quick wiring audit — a 4-way set diff of registered `@mcp.tool` names against the `TOOLSETS` union and `TOOL_TAXONOMY` keys catches both orphaned tools and stale entries.
+
 ## New Output Schema
 
 Add a Pydantic `BaseModel` subclass to `tools/schemas.py`. The schema is used as a reference by MCP prompts to guide the local Claude agent's output format.
