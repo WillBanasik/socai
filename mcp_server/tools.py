@@ -242,7 +242,6 @@ def _workspace_resolution_hint(case_id: str = "") -> dict:
     so the agent can reason about why the resolve failed instead of just
     blindly retrying with a different workspace string.
     """
-    import os as _os
     from config.settings import CLIENT_ENTITIES, CASES_DIR
     from tools.common import load_json
 
@@ -269,7 +268,6 @@ def _workspace_resolution_hint(case_id: str = "") -> dict:
         except Exception:
             pass
 
-    env_ws = _os.environ.get("SOCAI_SENTINEL_WORKSPACE", "").strip()
     hint_lines = []
     if case_client and case_client in unconfigured:
         hint_lines.append(
@@ -280,17 +278,15 @@ def _workspace_resolution_hint(case_id: str = "") -> dict:
         hint_lines.append(
             f"Case client {case_client!r} is not in the client registry."
         )
-    if not env_ws:
-        hint_lines.append("SOCAI_SENTINEL_WORKSPACE env var is unset.")
     hint_lines.append(
-        "Pass workspace=<name|GUID> explicitly, or use a client that has a "
-        "configured workspace."
+        "Pass workspace=<name|GUID> explicitly, or run from a case whose client "
+        "has a configured Sentinel workspace. There is no default workspace — "
+        "an unscoped query is refused so it cannot hit the wrong client's tenant."
     )
 
     return {
         "error": "Could not resolve Sentinel workspace.",
         "case_client": case_client or None,
-        "env_workspace_set": bool(env_ws),
         "clients_with_workspace": configured,
         "clients_without_workspace": unconfigured,
         "hint": " ".join(hint_lines),
@@ -3554,7 +3550,13 @@ def _register_tier3(mcp: FastMCP) -> None:
                     "available tables via socai://sentinel-queries."
                 )
             return _json(err)
-        result = {"rows": rows[:limit], "row_count": len(rows), "truncated": len(rows) > limit}
+        result = {
+            "workspace": ws_id,
+            "workspace_code": _resolve_workspace_code_from_id(ws_id) or None,
+            "rows": rows[:limit],
+            "row_count": len(rows),
+            "truncated": len(rows) > limit,
+        }
         if len(rows) > 500:
             result["_hint"] = (
                 f"{len(rows)} rows returned — at this volume the context cost is "
@@ -4025,6 +4027,7 @@ def _register_tier3(mcp: FastMCP) -> None:
         total_rows = sum(r["row_count"] for r in results if r)
         return _json({
             "workspace": ws_id,
+            "workspace_code": _resolve_workspace_code_from_id(ws_id) or None,
             "query_count": len(queries),
             "total_rows": total_rows,
             "results": results,

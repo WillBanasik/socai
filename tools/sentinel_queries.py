@@ -17,7 +17,6 @@ Usage:
 """
 from __future__ import annotations
 
-import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -195,13 +194,20 @@ _GUID_RE = re.compile(
 
 
 def resolve_kql_workspace(workspace: str, case_id: str | None = None) -> str | None:
-    """Resolve workspace name/GUID from explicit value, case client, or env var.
+    """Resolve workspace name/GUID from an explicit value or the case client.
 
     Resolution order:
       1. Explicit workspace param (name or GUID)
       2. Case client → client_entities.json workspace_id
-      3. SOCAI_SENTINEL_WORKSPACE env var
     Returns a workspace GUID, or None if unresolvable.
+
+    There is NO env-var / default fallback. A query that resolves to no
+    explicit workspace and no case client MUST fail loudly rather than
+    silently run against some default tenant — silently defaulting (e.g. to
+    the MSSP's own SOCAI_SENTINEL_WORKSPACE) reads one client's live data into
+    another client's investigation. Callers turn a None into a resolution hint
+    that tells the analyst to pass workspace= explicitly. The CLI
+    (scripts/run_kql.py) keeps its own env default for interactive human use.
     """
     import json as _json
     from scripts.run_kql import _resolve_workspace
@@ -243,14 +249,6 @@ def resolve_kql_workspace(workspace: str, case_id: str | None = None) -> str | N
         except (FileNotFoundError, Exception):
             pass
 
-    # 3. Env var fallback
-    env_ws = os.environ.get("SOCAI_SENTINEL_WORKSPACE", "").strip()
-    if env_ws:
-        if _GUID_RE.match(env_ws):
-            return env_ws
-        try:
-            return _resolve_workspace(None, env_ws)
-        except SystemExit:
-            pass
-
+    # No fallback: unresolved → caller must surface a resolution hint, never
+    # silently default to an MSSP/other-tenant workspace.
     return None
