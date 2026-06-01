@@ -4222,7 +4222,8 @@ def _register_tier3(mcp: FastMCP) -> None:
     ) -> str:
         """Persist a locally-generated **markdown** report with defanging, audit, and auto-close.
         Call after the matching ``write_*`` prompt. ``report_type``: ``mdr_report`` | ``pup_report`` |
-        ``closure_comment`` | ``fp_tuning_ticket`` | ``executive_summary`` | ``security_arch_review``.
+        ``closure_comment`` | ``fp_tuning_ticket`` | ``executive_summary`` | ``security_arch_review`` |
+        ``vuln_hunt_report``.
         For ``closure_comment`` (BP/FP/Undetermined) pass ``disposition`` explicitly
         (``benign_positive`` / ``false_positive`` / ``inconclusive``). ``report_text`` must be
         markdown. On success, render ``report_md`` as a markdown artifact so Claude Desktop opens
