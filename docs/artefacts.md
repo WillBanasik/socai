@@ -39,7 +39,7 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/darkweb/ahmia_results.json` | Ahmia.fi dark web search results |
 | `cases/<ID>/artefacts/darkweb/intelx_results.json` | Intelligence X search results (credentials REDACTED) |
 | `cases/<ID>/artefacts/darkweb/stealer_logs/parsed.json` | Parsed infostealer log output (credentials REDACTED) |
-| `cases/<ID>/artefacts/campaign/campaign_links.json` | Per-case campaign membership and shared IOCs |
+| `cases/<ID>/artefacts/campaign/campaign_links.json` | *Legacy — no longer written.* `campaign_cluster` now returns results to the caller; reports load this file only if a pre-existing copy is present. Cross-case overlap lives in `registry/campaigns.json`. |
 | `cases/<ID>/artefacts/closure_comments/closure_comment.md` | 2-sentence Sentinel-aligned closure comment (BP / FP / Undetermined) |
 | `cases/<ID>/artefacts/closure_comments/closure_comment_manifest.json` | Closure comment metadata (classification, disposition, etc.) |
 | `cases/<ID>/artefacts/timeline/timeline.json` | Forensic timeline with sorted events + LLM analysis |

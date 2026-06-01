@@ -8,7 +8,7 @@ SOC-AI provides a complete investigation toolkit for MDR/XDR analysts:
 
 - **Alert triage and classification** -- deterministic attack-type routing with investigation plans
 - **IOC enrichment** -- 15+ threat intelligence providers (VirusTotal, AbuseIPDB, Shodan, etc.) with smart tiering and client-baseline auto-skip
-- **SIEM integration** -- KQL queries against Azure Sentinel, LogScale/CQL for CrowdStrike NGSIEM, parameterised playbooks
+- **SIEM integration** -- KQL queries against Azure Sentinel, LogScale/CQL for CrowdStrike NGSIEM, EQL against the Encore Gateway warehouse, parameterised playbooks
 - **Email and phishing analysis** -- .eml parsing, headless browser capture, brand impersonation detection, credential harvest detection
 - **Dynamic analysis** -- sandbox detonation, disposable browser sessions with network capture
 - **Forensic ingestion** -- Velociraptor collections, MDE investigation packages, PE analysis, YARA scanning
@@ -29,7 +29,7 @@ Shared API (api/)        -- auth, actions, timeline, input parsing
 - **No direct LLM API calls** -- all reasoning is handled by the analyst's local Claude Desktop agent via MCP prompts
 - **Human-in-the-loop** -- analyst drives each investigation step; tools gather data, agent reasons
 - **Filesystem state** -- no database; cases in `cases/`, registry in `registry/`, articles in `articles/`
-- **120 MCP tools**, 46 resources, 23 prompts across 3 permission tiers
+- **115 MCP tools**, 47 resources, 23 prompts across 3 permission tiers
 
 ## Quick Start
 
@@ -100,6 +100,7 @@ python3 scripts/workflow_report.py --friction  # friction signal analysis
 | `docs/sandbox.md` | Sandbox detonation: setup, network modes, safety |
 | `docs/defender-hunting.md` | Defender XDR Advanced Hunting API: multi-tenant app reg, per-client tenant_id, `run_defender_kql` |
 | `docs/crowdstrike.md` | CrowdStrike Falcon + NG-SIEM/LogScale: per-client API client, regions, `run_falcon_cql` + classic FQL tools |
+| `docs/encore-eql.md` | Encore Gateway EQL: refresh-token auth, `scripts/eql_direct.py`, `eql-hosted` MCP server (Claude Code + Desktop), EQL syntax |
 
 ## Tests
 

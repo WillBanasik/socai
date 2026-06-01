@@ -33,7 +33,7 @@ Investigations are human-in-the-loop (HITL). The analyst drives each step via MC
 13. add_evidence          → attach raw alert data to case
 14. capture_urls          → capture web evidence + auto-run phishing detection (detect_phishing=True)
 15. analyse_email         → email header/content analysis (if email)
-16. analyse_pe            → PE static analysis + auto-run YARA scan (run_yara=True)
+16. analyse_file          → tiered static analysis (PE/Office/PDF/LNK/OneNote/MSI/Mach-O) + auto-run YARA on signal (run_yara="auto")
 
 ── Deliverable phase (analyst-initiated — NOT auto-generated) ──
 17. Conclude with a disposition. A full report is produced only for TRUE POSITIVE

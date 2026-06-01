@@ -165,6 +165,7 @@ The `platforms` object determines which security platforms are available for inv
 | Sentinel | `az` CLI session (`az login`) | Uses user-delegated token, no app reg today |
 | Defender XDR | `SOCAI_DEFENDER_APP_CLIENT_ID`, `SOCAI_DEFENDER_APP_CLIENT_SECRET` | One multi-tenant Performanta app reg; admin-consented per client tenant. See `docs/defender-hunting.md`. |
 | CrowdStrike | `SOCAI_CROWDSTRIKE_<CLIENT>_CLIENT_ID`, `SOCAI_CROWDSTRIKE_<CLIENT>_CLIENT_SECRET` | Per-client API client created in each client's Falcon console; `<CLIENT>` is the client name uppercased with non-alphanumerics → underscore (e.g. `HEIDELBERG_MATERIALS`, `SE_FIRST`). See `docs/crowdstrike.md`. |
+| Encore EQL | `ENCORE_EQL_TOKEN` | Single personal **refresh token** spanning all Encore clients (not per-client). Used by `scripts/eql_direct.py` and the `eql-hosted` MCP server. Kept in `~/.bashrc`, never committed. See `docs/encore-eql.md`. |
 
 ## Sentinel Workspace IDs
 

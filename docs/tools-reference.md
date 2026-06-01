@@ -511,7 +511,7 @@ For most malicious-file work the file does not need to land on the server at all
 1. Compute SHA-256 + file type + size in the sandbox.
 2. `quick_enrich` the hash — small payload, verdict back.
 3. Extract text/IOCs locally (PDF text, email headers, scripts, strings from binaries) and `quick_enrich` the consolidated IOC list.
-4. Only escalate to upload + `analyse_pe`/`yara_scan` when verdicts genuinely require deeper inspection.
+4. Only escalate to upload + `analyse_file`/`yara_scan` when verdicts genuinely require deeper inspection.
 
 The upload tools above are the *escalation* path, not the default.
 
@@ -523,11 +523,11 @@ The upload tools above are the *escalation* path, not the default.
 - Analysis via prompt: use `write_pe_verdict` prompt for malicious likelihood, likely category, recommended next steps
 - Output: `artefacts/analysis/pe_analysis.json`
 
-**Auto-YARA scanning:** The MCP `analyse_pe` tool has `run_yara=True` by default. YARA scanning runs automatically after PE analysis — both results returned in a single tool call. Set `run_yara=False` to skip. Set `generate_yara_rules=True` to create custom rules from PE findings.
+**Auto-YARA scanning:** `analyse_file` runs YARA as Tier 3 with `run_yara="auto"` (escalates on signal); force it with `run_yara="true"` or skip with `run_yara="false"`. For custom rule generation from findings, call the `yara_scan` tool with `generate_rules=True`.
 
 ## Office Document Analysis
 
-`tools/office_analyse.py` (MCP tool `analyse_office`) extracts macros and active content from Microsoft Office documents — both modern OOXML (`.docx .docm .xlsx .xlsm .xlsb .pptm`) and legacy OLE2 (`.doc .xls .ppt`):
+`tools/office_analyse.py` (the Office specialist invoked by `analyse_file` Tier 2) extracts macros and active content from Microsoft Office documents — both modern OOXML (`.docx .docm .xlsx .xlsm .xlsb .pptm`) and legacy OLE2 (`.doc .xls .ppt`):
 
 - Dependency: `oletools` (hard requirement)
 - Per-file: VBA + XLM macros (deobfuscated), autoexec triggers, suspicious keyword hits, IOC strings inside macros, external `.rels` template targets (template injection), DDE/DDEAUTO field codes, OLE stream listing
@@ -544,7 +544,7 @@ The upload tools above are the *escalation* path, not the default.
 
 ## Shell Link (`.lnk`) Analysis
 
-`tools/lnk_analyse.py` (MCP tool `analyse_lnk`) parses Windows shortcut files:
+`tools/lnk_analyse.py` (the LNK specialist invoked by `analyse_file` Tier 2) parses Windows shortcut files:
 
 - Dependency: `LnkParse3` (hard requirement)
 - Per-file: target path, command-line arguments, working directory, icon location, distributed-link tracker (machine ID, MAC), volume metadata (serial, drive type), header timestamps
@@ -553,7 +553,7 @@ The upload tools above are the *escalation* path, not the default.
 
 ## OneNote (`.one`) Analysis
 
-`tools/onenote_analyse.py` (MCP tool `analyse_onenote`) walks the OneNote binary for `FileDataStoreObject` markers and lifts each embedded payload:
+`tools/onenote_analyse.py` (the OneNote specialist invoked by `analyse_file` Tier 2) walks the OneNote binary for `FileDataStoreObject` markers and lifts each embedded payload:
 
 - No external dependency — pure binary parsing
 - Per embed: SHA-256, MD5, size, head-bytes hex, guessed extension, on-disk path under `artefacts/onenote/<file>__embed_<idx>.<ext>`
@@ -562,7 +562,7 @@ The upload tools above are the *escalation* path, not the default.
 
 ## Mach-O (macOS) Analysis
 
-`tools/macho_analyse.py` (MCP tool `analyse_macho`) parses Mach-O binaries (FAT / universal supported):
+`tools/macho_analyse.py` (the Mach-O specialist invoked by `analyse_file` Tier 2) parses Mach-O binaries (FAT / universal supported):
 
 - Dependency: `macholib` (hard requirement)
 - Per-slice: CPU type, file type, load commands, linked dylibs (LC_LOAD_DYLIB / weak / re-export / lazy), code-signature presence (LC_CODE_SIGNATURE), encrypted segments (LC_ENCRYPTION_INFO), rpaths, segments, UUID
@@ -571,7 +571,7 @@ The upload tools above are the *escalation* path, not the default.
 
 ## Disk Image Analysis (ISO / IMG / VHD / VHDX)
 
-`tools/disk_image_analyse.py` (MCP tool `analyse_disk_image`) inspects disk-image carriers commonly used for ISO smuggling:
+`tools/disk_image_analyse.py` (the disk-image specialist invoked by `analyse_file` Tier 2) inspects disk-image carriers commonly used for ISO smuggling:
 
 - Dependencies: `pycdlib` for ISO 9660 / Joliet / Rock Ridge / UDF; raw byte parsing for VHD/VHDX
 - ISO/IMG: walks every file via pycdlib, computes sha256 + md5, auto-extracts small files and any risky extension (`.exe .dll .lnk .js .vbs .ps1 .bat .hta .cpl .msi …`) under `artefacts/disk_images/<image>/`
@@ -580,7 +580,7 @@ The upload tools above are the *escalation* path, not the default.
 
 ## MSI Installer Analysis
 
-`tools/msi_analyse.py` (MCP tool `analyse_msi`) inspects Windows Installer packages (OLE2 compound documents):
+`tools/msi_analyse.py` (the MSI specialist invoked by `analyse_file` Tier 2) inspects Windows Installer packages (OLE2 compound documents):
 
 - Dependency: `olefile` (hard requirement)
 - Surfaces: OLE2 stream listing with MSI-tag decoded names (`!CustomAction`, `!Binary`, `!Property` etc.), SummaryInformation property set (creator, template, etc.)
@@ -596,9 +596,9 @@ The upload tools above are the *escalation* path, not the default.
 `tools/yara_scan.py` scans case files against YARA rules:
 - Dependency: `yara-python` (optional)
 - Built-in rules: SuspiciousPE, PowerShellObfuscation, C2Patterns, Base64PEHeader, CommonRATStrings
-- External rules: `config/yara_rules/*.yar` and `*.yara`
+- External rules (optional): drop `*.yar` / `*.yara` into `config/yara_rules/` — the directory is not present by default; create it to add custom rules
 - Output: `artefacts/yara/yara_results.json`
-- Also runs automatically via `analyse_pe(run_yara=True)` — separate `yara_scan` call only needed if skipped during PE analysis
+- Also runs automatically via `analyse_file(run_yara="auto")` (Tier 3) — a separate `yara_scan` call is only needed if YARA was skipped during file analysis
 
 ## EVTX Attack Chain Correlation
 
@@ -956,7 +956,7 @@ The guidance is contextual to the active alert — includes the specific process
 
 - **String extraction**: ASCII + UTF-16LE patterns (min length 6)
 - **PE header detection**: scans for MZ headers with valid PE signatures
-- **Suspicious pattern matching**: 28 signatures covering injection APIs (`VirtualAllocEx`, `WriteProcessMemory`), credential theft (`sekurlsa`, `mimikatz`), shellcode indicators, AMSI/ETW bypass, PowerShell patterns
+- **Suspicious pattern matching**: 30 signatures covering injection APIs (`VirtualAllocEx`, `WriteProcessMemory`), credential theft (`sekurlsa`, `mimikatz`), shellcode indicators, AMSI/ETW bypass, PowerShell patterns
 - **DLL reference scanning**: flags suspicious DLLs (`clrjit.dll`, `amsi.dll`, `dbghelp.dll`, `samlib.dll`, etc.)
 - **Risk scoring**: returns level (low/medium/high/critical) with numeric score and reasons
 

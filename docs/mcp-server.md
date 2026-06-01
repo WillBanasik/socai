@@ -48,7 +48,7 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  120 tools, 46 resources│
+│  115 tools, 47 resources│
 │  23 prompts, JSONL logs │
 │  Background scheduler   │
 └─────────────────────────┘
@@ -123,7 +123,7 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 | Permission | Grants |
 |---|---|
 | `investigations:read` | list_cases, case_summary, read_report, read_case_file, recall_cases, recall_semantic, classify_attack, plan_investigation, get_client_baseline, analyse_file, resources |
-| `investigations:submit` | capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, analyse_pe, yara_scan, analyse_memory_dump, analyse_memory_volatility, memory_dump_guide, all write tools, rebuild_client_baseline |
+| `investigations:submit` | capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, yara_scan, analyse_memory_dump, analyse_memory_volatility, memory_dump_guide, all write tools, rebuild_client_baseline |
 | `enrichment:run` | geoip_lookup |
 | `campaigns:read` | campaign_cluster, assess_landscape, search_threat_articles |
 | `sentinel:query` | run_kql, load_kql_playbook, generate_sentinel_query, run_kql_batch |
@@ -157,9 +157,9 @@ python3 -c "from api.auth import create_token_for_role; print(create_token_for_r
 
 When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg-soc-analyst`, `sg-soc-senior`) to these role names in the auth config.
 
-## Tools (120)
+## Tools (115)
 
-### Tier 1 -- Core Investigation (29)
+### Tier 1 -- Core Investigation (32)
 
 | Tool | Permission | Description |
 |---|---|---|
@@ -191,6 +191,10 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `query_opencti` | `investigations:read` | Direct OpenCTI queries (IOCs, CVEs, keyword search) |
 | `extract_iocs_from_text` | — | Extract IOCs from raw text (caseless) |
 | `search_confluence` | `investigations:read` | Search/browse published ET/EV threat articles on Confluence wiki |
+| `list_clients` | `investigations:read` | List all registered clients with names, aliases, and configured platforms |
+| `list_toolsets` | `investigations:read` | List available tool groups and which are currently loaded |
+| `load_toolset` | `investigations:read` | Load a specialist tool group so its tools become callable this session |
+| `audit_user_activity` | `investigations:read` | Audit MCP tool activity from the server log — who called what, when |
 
 ### Tier 2 -- Extended Analysis (28)
 
@@ -271,7 +275,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `run_client_exposure_test` | `investigations:write` | External attack surface assessment (DNS, certs, email security, typosquats) |
 | `get_client_exposure_report` | `investigations:read` | Return latest exposure test results for a client |
 
-### Tier 3 -- Advanced / Restricted (31)
+### Tier 3 -- Advanced / Restricted (34)
 
 | Tool | Permission | Description |
 |---|---|---|
@@ -305,20 +309,13 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `read_browser_session_file` | `admin` | Read artefact from a caseless browser session |
 | `list_browser_session_files` | `admin` | List artefacts in a browser session directory |
 | `import_browser_session` | `admin` | Import caseless session artefacts into an existing case |
-| `analyse_pe` | `investigations:submit` | Deep PE static analysis (entropy, imports, packing) |
-| `analyse_office` | `investigations:read` | Office macro / DDE / template-injection analysis (DOC/XLS/DOCX/XLSX/PPTM/RTF) |
-| `analyse_pdf` | `investigations:read` | Deep PDF — JS bodies, action triggers, embedded files, URI annotations |
-| `analyse_lnk` | `investigations:read` | Windows shell link parse — target, args, tracker block, volume info |
-| `analyse_onenote` | `investigations:read` | OneNote section embedded-file extraction (FileDataStoreObject) |
-| `analyse_macho` | `investigations:read` | Mach-O (macOS) static analysis — slices, dylibs, code-signature |
-| `analyse_disk_image` | `investigations:read` | ISO / IMG / VHD / VHDX container analysis with auto-extraction |
-| `analyse_msi` | `investigations:read` | MSI installer — OLE2 streams, CustomAction, embedded payload extraction |
+> Format-specific static analysis (PE, Office, PDF, LNK, OneNote, Mach-O, disk image, MSI) is **not** exposed as separate tools — it runs as Tier 2 of `analyse_file` (Tier 1), which auto-escalates to the right specialist by file type.
 | `yara_scan` | `investigations:submit` | YARA rule scanning (built-in + external + LLM-generated) |
 | `memory_dump_guide` | `investigations:submit` | MDE Live Response dump collection guidance |
 | `analyse_memory_dump` | `investigations:submit` | Process memory dump analysis (strings, IOCs, risk scoring) |
 | `analyse_memory_volatility` | `investigations:submit` | Volatility3 deep analysis — pslist/netscan/malfind/cmdline; auto OS-detect |
 
-## Resources (46)
+## Resources (47)
 
 | URI | Description |
 |---|---|
@@ -447,8 +444,8 @@ mcp_server/
                        #   unhandled exception hook, SSE connection lifecycle middleware
     auth.py            # SocaiTokenVerifier, _require_scope
     config.py          # Env var configuration
-    tools.py           # 120 MCP tool wrappers
-    resources.py       # 46 MCP resource implementations
+    tools.py           # 115 MCP tool wrappers
+    resources.py       # 47 MCP resource implementations
     prompts.py         # 23 MCP prompt implementations
     health.py          # /healthz liveness probe (scheduler, filesystem, uptime)
     watchdog.py        # systemd watchdog integration (sd_notify, WATCHDOG=1 loop)
@@ -538,7 +535,7 @@ Analyst's Claude Desktop (VPN / corporate network)
     ▼
 ┌──────────────────────────┐
 │  mcp_server (port 8001)  │  ← SOCAI_MCP_HOST=127.0.0.1
-│  120 tools, 46 resources │
+│  115 tools, 47 resources │
 │  JWT RBAC, role system   │
 │  Background scheduler    │
 └──────────────────────────┘

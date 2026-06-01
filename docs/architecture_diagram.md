@@ -60,7 +60,7 @@ graph TB
     Analysis --> Intel
     Intel --> Output
 
-    subgraph ExtAPIs["External APIs (15 Providers)"]
+    subgraph ExtAPIs["External APIs (15+ Providers)"]
         direction LR
         VT["VirusTotal"]
         SH["Shodan"]
