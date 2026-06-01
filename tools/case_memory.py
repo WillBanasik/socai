@@ -35,8 +35,17 @@ from config.settings import CASE_MEMORY_INDEX_FILE, CASES_DIR, REGISTRY_FILE
 from tools.common import load_json, log_error, utcnow, write_artefact
 
 # Protects the BM25 index file from concurrent read/write (scheduler
-# rebuild vs analyst search_case_memory).
+# rebuild vs analyst search_case_memory vs incremental upsert).
 _index_lock = threading.Lock()
+
+# In-process parse cache for search: the index file is re-read on every query,
+# so cache the parsed dict keyed on (mtime_ns, size) and only re-parse when the
+# file actually changes (rebuild/upsert). (size guards against two writes within
+# the filesystem's mtime granularity — a content change that alters the byte
+# count still invalidates.) write_artefact() writes atomically (tmp + rename),
+# so a reader sees either the old or new file whole — never torn.
+_parse_cache_lock = threading.Lock()
+_parse_cache: dict | None = None  # {"key": (mtime_ns, size), "raw": dict}
 
 
 # ---------------------------------------------------------------------------
@@ -180,19 +189,7 @@ def build_case_memory_index(include_open: bool = True) -> dict:
         if not include_open and meta.get("status") not in ("closed",):
             continue
 
-        text = _extract_case_text(case_id)
-        tokens = _tokenise(text)
-        entries.append({
-            "case_id": case_id,
-            "title": meta.get("title", ""),
-            "client": meta.get("client", ""),
-            "severity": meta.get("severity", ""),
-            "status": meta.get("status", ""),
-            "disposition": meta.get("disposition", ""),
-            "created_at": meta.get("created_at", ""),
-            "tags": meta.get("tags", []),
-            "tokens": tokens,
-        })
+        entries.append(_build_entry(case_id, meta))
 
     index = {
         "indexed_at": utcnow(),
@@ -220,9 +217,82 @@ def build_case_memory_index(include_open: bool = True) -> dict:
     }
 
 
+def _build_entry(case_id: str, meta: dict) -> dict:
+    """Build a single index entry (shared by full build and incremental upsert)."""
+    return {
+        "case_id": case_id,
+        "title": meta.get("title", ""),
+        "client": meta.get("client", ""),
+        "severity": meta.get("severity", ""),
+        "status": meta.get("status", ""),
+        "disposition": meta.get("disposition", ""),
+        "created_at": meta.get("created_at", ""),
+        "tags": meta.get("tags", []),
+        "tokens": _tokenise(_extract_case_text(case_id)),
+    }
+
+
+def upsert_case_memory(case_id: str) -> dict:
+    """Add or replace a single case in the BM25 index, in place.
+
+    Called on case create/close (via ``index_case``) so semantic recall sees
+    recent cases immediately instead of waiting up to 6h for the scheduled
+    full rebuild. Falls back to a full build if the index doesn't exist yet.
+    Best-effort: never raises — a failure just leaves the case to the next
+    scheduled rebuild.
+    """
+    # IV_CASE_000 is the test-suite case id; real cases are IV_CASE_001+.
+    if not case_id or case_id.startswith("TEST_") or case_id == "IV_CASE_000":
+        return {"status": "skipped", "reason": "test case"}
+    if not CASE_MEMORY_INDEX_FILE.exists():
+        return build_case_memory_index()
+    try:
+        registry_data = load_json(REGISTRY_FILE) if REGISTRY_FILE.exists() else {}
+        case_registry = registry_data.get("cases", registry_data)
+        meta = case_registry.get(case_id)
+        if not meta:
+            return {"status": "skipped", "reason": "case not in registry"}
+        new_entry = _build_entry(case_id, meta)
+        with _index_lock:
+            raw = json.loads(CASE_MEMORY_INDEX_FILE.read_text(encoding="utf-8"))
+            entries = [e for e in raw.get("entries", []) if e.get("case_id") != case_id]
+            entries.append(new_entry)
+            index = {
+                "indexed_at": utcnow(),
+                "case_count": len(entries),
+                "entries": entries,
+            }
+            write_artefact(CASE_MEMORY_INDEX_FILE, json.dumps(index, default=str))
+        return {"status": "ok", "case_id": case_id, "indexed": len(entries)}
+    except Exception as exc:
+        log_error(case_id, "case_memory.upsert", str(exc), severity="warning", context={})
+        return {"status": "error", "reason": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
+
+def _load_index_cached() -> dict | None:
+    """Return the parsed index dict, reusing a cached parse when the file is
+    unchanged (by mtime). Returns None if the file is unreadable."""
+    global _parse_cache
+    try:
+        st = CASE_MEMORY_INDEX_FILE.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+    with _parse_cache_lock:
+        if _parse_cache and _parse_cache["key"] == key:
+            return _parse_cache["raw"]
+    try:
+        raw = json.loads(CASE_MEMORY_INDEX_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log_error("", "case_memory.load_index", str(exc), severity="error", context={})
+        return None
+    with _parse_cache_lock:
+        _parse_cache = {"key": key, "raw": raw}
+    return raw
 
 def search_case_memory(
     query: str,
@@ -264,12 +334,9 @@ def search_case_memory(
         if built.get("status") != "ok":
             return built
 
-    try:
-        with _index_lock:
-            raw = json.loads(CASE_MEMORY_INDEX_FILE.read_text(encoding="utf-8"))
-    except Exception as exc:
-        log_error("", "case_memory.search", str(exc), severity="error", context={})
-        return {"status": "error", "reason": str(exc)}
+    raw = _load_index_cached()
+    if raw is None:
+        return {"status": "error", "reason": "case memory index unreadable"}
 
     entries = raw.get("entries", [])
     if not entries:

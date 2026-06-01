@@ -110,7 +110,7 @@ Probes each onboarded client for all standard Advanced Hunting tables and writes
 - **No `union withsource=*`** — Advanced Hunting KQL is a subset of full KQL. Cross-table joins are fine; cross-workspace queries are not (single tenant per call).
 - **30-second timeout, 10K row cap** — for pattern analysis use `summarize`, not raw rows.
 - **No `Usage | distinct DataType`** equivalent — Advanced Hunting tables are a fixed Microsoft-defined set. Discovery probes the known list.
-- **401 = consent revoked or secret rotated** — the in-process token cache is cleared automatically on 401; if the failure persists, restart the MCP server (token cache is process-local) and re-grant admin consent.
+- **401 = consent revoked or secret rotated** — the in-process token cache is cleared automatically on 401; if the failure persists, restart the MCP server (token cache is process-local) and re-grant admin consent. The per-tenant token refresh runs under the cache lock so concurrent cold-cache callers for a tenant coalesce onto one `client_credentials` grant; all HTTP goes through the pooled `get_session()`.
 - **Cross-tenant audit trail** — query appears in the client's M365 audit log under the app reg's display name, not the analyst's UPN. Analyst attribution lives in socai's own audit log + case linkage.
 
 ## Artefacts

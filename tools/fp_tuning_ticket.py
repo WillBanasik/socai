@@ -7,8 +7,8 @@ The tuning ticket is now written by the local Claude Desktop agent using the
 ``write_fp_tuning`` MCP prompt, then persisted via
 ``save_report(type=fp_tuning_ticket)``.
 
-This module retains ``_SYSTEM_PROMPT``, ``_SYSTEM_CACHED``, and
-``_build_context()`` which the MCP prompt imports.  It also keeps
+This module retains ``_SYSTEM_PROMPT`` and ``_build_context()`` which the
+MCP prompt imports.  It also keeps
 ``_resolve_workspace_id()`` and ``_build_recurrence_context()`` for
 live-query resolution and prior-case recall.
 

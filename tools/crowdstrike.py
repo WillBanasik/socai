@@ -35,7 +35,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.common import get_client_config, log_error
+from tools.common import get_client_config, get_session, log_error
 from tools.secrets import get_secret
 
 # Regional Falcon API hosts.
@@ -121,35 +121,38 @@ def _acquire_token(client: str) -> tuple[str, str]:
     """Return ``(host, token)`` for `client`, refreshing if necessary."""
     cfg = _resolve_falcon_config(client)
     host = cfg["host"]
-    now = time.time()
     cache_key = f"{client}@{host}"
 
+    # The lock is held across the OAuth refresh (not just the read/write) so
+    # concurrent cold-cache callers for this client coalesce onto one token
+    # request — Falcon's /oauth2/token rate-limits and can revoke the prior
+    # token, so a refresh storm is self-defeating.
     with _token_lock:
+        now = time.time()
         cached = _token_cache.get(cache_key)
         if cached and cached[1] - _TOKEN_SAFETY_S > now:
             return host, cached[0]
 
-    cid, sec = _client_credentials(client)
-    token_url = f"https://{host}/oauth2/token"
-    try:
-        resp = requests.post(
-            token_url,
-            data={"client_id": cid, "client_secret": sec},
-            timeout=15,
-        )
-    except requests.RequestException as exc:
-        raise FalconError(f"token request failed: {exc}") from exc
+        cid, sec = _client_credentials(client)
+        token_url = f"https://{host}/oauth2/token"
+        try:
+            resp = get_session().post(
+                token_url,
+                data={"client_id": cid, "client_secret": sec},
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            raise FalconError(f"token request failed: {exc}") from exc
 
-    if resp.status_code != 200:
-        raise FalconError(
-            f"token request returned {resp.status_code}: {resp.text[:300]}"
-        )
-    payload = resp.json()
-    token = payload["access_token"]
-    expires_in = int(payload.get("expires_in", 1800))
-    with _token_lock:
+        if resp.status_code != 200:
+            raise FalconError(
+                f"token request returned {resp.status_code}: {resp.text[:300]}"
+            )
+        payload = resp.json()
+        token = payload["access_token"]
+        expires_in = int(payload.get("expires_in", 1800))
         _token_cache[cache_key] = (token, now + expires_in)
-    return host, token
+        return host, token
 
 
 def _auth_headers(token: str) -> dict[str, str]:
@@ -213,7 +216,7 @@ def run_falcon_cql(
     body = {"queryString": cql, "repository": repo_id}
     started = time.time()
     try:
-        resp = requests.post(
+        resp = get_session().post(
             url,
             json=body,
             headers={**_auth_headers(token), "Content-Type": "application/json"},
@@ -252,7 +255,7 @@ def _query_paged(
 
     started = time.time()
     try:
-        ids_resp = requests.get(
+        ids_resp = get_session().get(
             f"https://{host}{queries_path}",
             params=params,
             headers=_auth_headers(token),
@@ -272,7 +275,7 @@ def _query_paged(
     # Fetch entity summaries.
     started2 = time.time()
     try:
-        sum_resp = requests.post(
+        sum_resp = get_session().post(
             f"https://{host}{summaries_path}",
             json={"ids": resources},
             headers={**_auth_headers(token), "Content-Type": "application/json"},

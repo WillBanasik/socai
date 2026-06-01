@@ -56,6 +56,7 @@ from config.settings import CASES_DIR
 from tools.common import (
     eprint,
     get_client_config,
+    get_session,
     load_json,
     log_error,
     save_json,
@@ -373,36 +374,48 @@ def is_eql_configured(client: str) -> bool:
         return False
 
 
-def _get_access_token() -> str:
-    """Exchange the refresh token for a ~30-min access token (cached)."""
-    now = time.time()
+def _invalidate_token() -> None:
+    """Evict the cached access token (call on a 401 — it may have been
+    rotated/revoked server-side before its assumed expiry)."""
     with _token_lock:
+        _token_cache.pop("access", None)
+
+
+def _get_access_token() -> str:
+    """Exchange the refresh token for a ~30-min access token (cached).
+
+    The lock is held across the refresh network call (not just the read and
+    the write) so concurrent cold-cache callers coalesce onto a single
+    refresh instead of each firing their own — the global ``"access"`` key
+    means every client's EQL activity shares this slot.
+    """
+    with _token_lock:
+        now = time.time()
         cached = _token_cache.get("access")
         if cached and cached[1] - _TOKEN_SAFETY_S > now:
             return cached[0]
 
-    refresh = get_secret("ENCORE_EQL_TOKEN", required=True)
-    try:
-        resp = requests.post(
-            f"{_BASE}/auth/refresh",
-            json={"refreshToken": refresh},
-            headers={"User-Agent": _UA, "Accept": "application/json"},
-            timeout=15,
-        )
-    except requests.RequestException as exc:
-        raise EqlError(f"token refresh request failed: {exc}") from exc
+        refresh = get_secret("ENCORE_EQL_TOKEN", required=True)
+        try:
+            resp = get_session().post(
+                f"{_BASE}/auth/refresh",
+                json={"refreshToken": refresh},
+                headers={"User-Agent": _UA, "Accept": "application/json"},
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            raise EqlError(f"token refresh request failed: {exc}") from exc
 
-    if resp.status_code != 200:
-        raise EqlError(f"token refresh returned {resp.status_code}: {resp.text[:300]}")
-    try:
-        token = resp.json()["accessToken"]
-    except (ValueError, KeyError) as exc:
-        raise EqlError(f"token refresh returned unexpected body: {resp.text[:300]}") from exc
+        if resp.status_code != 200:
+            raise EqlError(f"token refresh returned {resp.status_code}: {resp.text[:300]}")
+        try:
+            token = resp.json()["accessToken"]
+        except (ValueError, KeyError) as exc:
+            raise EqlError(f"token refresh returned unexpected body: {resp.text[:300]}") from exc
 
-    # Access tokens are ~30 min; we don't get expiry back, so assume 1800s.
-    with _token_lock:
+        # Access tokens are ~30 min; we don't get expiry back, so assume 1800s.
         _token_cache["access"] = (token, now + 1800)
-    return token
+        return token
 
 
 # ---------------------------------------------------------------------------
@@ -418,11 +431,11 @@ def run_eql(internal_client_id: str, eql: str, timeout: int = 30) -> dict[str, A
     """
     if not eql or not eql.strip():
         raise EqlError("query is empty")
-    token = _get_access_token()
     # The internalClientId is itself a valid client alias on the gateway.
     path = f"/client/request?client={urllib.parse.quote(internal_client_id)}"
-    try:
-        resp = requests.post(
+
+    def _post(token: str):
+        return get_session().post(
             _BASE + path,
             data=eql.encode(),
             headers={
@@ -433,6 +446,14 @@ def run_eql(internal_client_id: str, eql: str, timeout: int = 30) -> dict[str, A
             },
             timeout=timeout,
         )
+
+    try:
+        resp = _post(_get_access_token())
+        # A cached token can be rejected if it was rotated/revoked server-side
+        # before its assumed expiry — evict and retry once with a fresh token.
+        if resp.status_code == 401:
+            _invalidate_token()
+            resp = _post(_get_access_token())
     except requests.RequestException as exc:
         log_error("", "eql.run", str(exc), severity="error",
                   context={"client_id": internal_client_id})

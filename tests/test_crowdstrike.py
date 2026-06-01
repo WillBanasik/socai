@@ -35,6 +35,14 @@ def _clear_token_cache():
     cs._token_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _http_via_requests(monkeypatch):
+    # Production issues HTTP through tools.common.get_session() (pooled); these
+    # tests mock at the requests layer (patch.object(cs.requests, "post"/"get")).
+    # Route get_session() back to the requests module so those patches intercept.
+    monkeypatch.setattr(cs, "get_session", lambda: cs.requests)
+
+
 @pytest.fixture
 def _fake_creds(monkeypatch):
     monkeypatch.setenv("SOCAI_CROWDSTRIKE_HEIDELBERG_MATERIALS_CLIENT_ID", "fake-cid")

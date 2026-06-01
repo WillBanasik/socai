@@ -5,8 +5,8 @@ Data-gathering module for executive summaries.
 
 The summary itself is now written by the local Claude Desktop agent using
 the ``write_executive_summary`` MCP prompt, then persisted via
-``save_report``.  This module retains ``_SYSTEM_PROMPT``,
-``_SYSTEM_CACHED``, and ``_build_context()`` which the MCP prompt imports.
+``save_report``.  This module retains ``_SYSTEM_PROMPT`` and
+``_build_context()`` which the MCP prompt imports.
 
 Usage (standalone — returns stub directing caller to the MCP prompt):
   python3 tools/executive_summary.py --case IV_CASE_001
@@ -46,11 +46,6 @@ Constraints:
 
 Produce a structured executive summary with all required fields.\
 """
-
-_SYSTEM_CACHED = [
-    {"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-]
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -392,6 +392,14 @@ def _install_excepthook() -> None:
         tb_str = "".join(tb_mod.format_exception(exc_type, exc_value, exc_tb))
         mcp_log("server_crash", error=str(exc_value), traceback=tb_str[:4000],
                 pid=os.getpid())
+        # Salvage in-flight workflow-analytics sessions before exit — the normal
+        # flush runs only on clean shutdown, so a crash would otherwise lose the
+        # aggregated workflow_summary for any open session.
+        try:
+            from mcp_server.usage import flush_all_sessions
+            flush_all_sessions()
+        except Exception:
+            pass
         _remove_pid()
         _original_hook(exc_type, exc_value, exc_tb)
 

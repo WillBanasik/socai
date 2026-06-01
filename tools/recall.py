@@ -218,7 +218,9 @@ def recall(
         for cache_key, cached in enrich_cache.items():
             if not cache_key.endswith(f"|{ioc}"):
                 continue
-            if cached.get("status") != "ok":
+            # Cache entries are {"result": {...,"status":...}, "cached_at": ...};
+            # the provider status lives under "result", not at the top level.
+            if cached.get("result", {}).get("status") != "ok":
                 continue
             if cache_ttl:
                 try:

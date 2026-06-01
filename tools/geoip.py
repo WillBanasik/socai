@@ -30,6 +30,7 @@ import io
 import json
 import sys
 import tarfile
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -43,6 +44,48 @@ _DOWNLOAD_URL = (
     "https://download.maxmind.com/geoip/databases/GeoLite2-City/download"
     "?suffix=tar.gz"
 )
+
+# A MaxMind Reader mmaps the DB; opening it per lookup (and once per IP in
+# bulk_lookup) re-parses the file needlessly. Cache one reader and reuse it —
+# Reader.city() is safe for concurrent reads. refresh_geoip_db() calls
+# _close_reader() after swapping the file so the next lookup reopens the fresh DB.
+_reader = None
+_reader_lock = threading.Lock()
+
+
+def _get_reader():
+    """Return a cached MaxMind ``Reader`` (opened once, reused). Returns None if
+    geoip2 is not installed or the database cannot be opened."""
+    global _reader
+    with _reader_lock:
+        if _reader is not None:
+            return _reader
+        try:
+            import geoip2.database  # type: ignore
+        except ImportError as exc:
+            log_error("", "geoip.reader.import", str(exc),
+                      severity="info", context={})
+            return None
+        try:
+            _reader = geoip2.database.Reader(str(GEOIP_DB_PATH))
+        except Exception as exc:
+            log_error("", "geoip.reader.open", str(exc),
+                      severity="warning", context={"path": str(GEOIP_DB_PATH)})
+            return None
+        return _reader
+
+
+def _close_reader() -> None:
+    """Drop the cached reader so the next lookup reopens the database. Call
+    after refresh_geoip_db() swaps the .mmdb file."""
+    global _reader
+    with _reader_lock:
+        if _reader is not None:
+            try:
+                _reader.close()
+            except Exception:
+                pass
+            _reader = None
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +178,9 @@ def refresh_geoip_db(force: bool = False) -> dict:
                         GEOIP_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
                         GEOIP_DB_PATH.write_bytes(f.read())
                         _save_meta({"updated_at": utcnow(), "source": "maxmind-geolite2"})
+                        # Drop the cached reader so the next lookup reopens the
+                        # freshly-downloaded database instead of the old handle.
+                        _close_reader()
                         return {
                             "status": "ok",
                             "path": str(GEOIP_DB_PATH),
@@ -187,12 +233,8 @@ def lookup_ip(ip: str) -> dict:
             "note": "GeoIP database not present. Call refresh_geoip_db() to download it.",
         }
 
-    try:
-        import geoip2.database  # type: ignore
-        import geoip2.errors    # type: ignore
-    except ImportError as exc:
-        log_error("", "geoip.lookup_ip.import", str(exc),
-                  severity="info", traceback=True, context={"ip": ip})
+    reader = _get_reader()
+    if reader is None:
         return {
             "available": False,
             "ip": ip,
@@ -200,18 +242,17 @@ def lookup_ip(ip: str) -> dict:
         }
 
     try:
-        with geoip2.database.Reader(str(GEOIP_DB_PATH)) as reader:
-            r = reader.city(ip)
-            return {
-                "available": True,
-                "ip": ip,
-                "country": r.country.name or "",
-                "country_code": r.country.iso_code or "",
-                "city": r.city.name or "",
-                "latitude": r.location.latitude,
-                "longitude": r.location.longitude,
-                "timezone": r.location.time_zone or "",
-            }
+        r = reader.city(ip)
+        return {
+            "available": True,
+            "ip": ip,
+            "country": r.country.name or "",
+            "country_code": r.country.iso_code or "",
+            "city": r.city.name or "",
+            "latitude": r.location.latitude,
+            "longitude": r.location.longitude,
+            "timezone": r.location.time_zone or "",
+        }
     except Exception as exc:
         # AddressNotFoundError is normal for private IPs — not an error
         return {"available": True, "ip": ip, "not_found": str(exc)}

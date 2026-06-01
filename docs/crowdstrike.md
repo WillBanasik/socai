@@ -145,7 +145,7 @@ Some endpoint playbook stages reference Falcon events not yet seen across onboar
 ## Limits & gotchas
 
 - **No `union`-style cross-repo queries** — CQL is per-repo. Each client = one repo.
-- **30-min token TTL** — refresh handled automatically by the in-process cache.
+- **30-min token TTL** — refresh handled automatically by the in-process cache (keyed `client@host`, refreshed 120 s before the server-provided `expires_in`, evicted on 401). The refresh runs under the cache lock so concurrent cold-cache callers for a client coalesce onto one `/oauth2/token` request rather than a refresh storm. All HTTP goes through the pooled `get_session()`.
 - **Rate limits** vary by Falcon tier. 429 responses surface `X-Ratelimit-Retryafter` in the error message.
 - **403 = scope missing** — the API client in Falcon console needs the relevant read scope; can't be fixed from Performanta side.
 - **`run_falcon_cql` is synchronous-only in v1** — large result sets that need the async `start/status/result` pattern aren't supported yet. Practical limit: queries that complete within 30s and return ≤10K rows.

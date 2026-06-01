@@ -51,6 +51,15 @@ def _seed_token():
     eql._token_cache["access"] = ("fake-access-token", time.time() + 1800)
 
 
+@pytest.fixture(autouse=True)
+def _eql_http_via_requests(monkeypatch):
+    # Production issues EQL HTTP through tools.common.get_session() (pooled).
+    # These tests mock at the requests layer (patch.object(eql.requests,
+    # "post", ...)), so route get_session() back to the requests module — its
+    # module-level .post/.get are exactly what those patches replace.
+    monkeypatch.setattr(eql, "get_session", lambda: eql.requests)
+
+
 @pytest.fixture
 def _case(tmp_path):
     """Create a minimal case with a client set, clean up after."""
@@ -551,3 +560,31 @@ class TestVulnHunt:
         assert "VH_CTX" in ctx          # hunt id surfaced
         assert "WEB01" in ctx           # host row surfaced
         assert "Actively-exploited CVEs: 9" in ctx   # summary line rendered
+
+
+# ---------------------------------------------------------------------------
+# Token cache — 401 eviction + retry
+# ---------------------------------------------------------------------------
+
+class TestTokenInvalidation:
+    def test_run_eql_evicts_and_retries_on_401(self):
+        """A cached token rejected with 401 (rotated/revoked server-side) is
+        evicted and the query retried once with a freshly-minted token."""
+        # _seed_token seeds 'fake-access-token'. Call 1: query -> 401.
+        # Call 2: /auth/refresh -> new token. Call 3: query retry -> 200.
+        q401 = _FakeResponse(401, text="token expired")
+        refresh_ok = _FakeResponse(200, {"accessToken": "fresh-token"})
+        q200 = _FakeResponse(200, _eql_payload([{"ComputerName": "WEB01"}]))
+        post = MagicMock(side_effect=[q401, refresh_ok, q200])
+        with patch.object(eql.requests, "post", post):
+            out = eql.run_eql("uuid-perf-123", "FROM Devices")
+        assert out["row_count"] == 1
+        assert post.call_count == 3                       # 401, refresh, retry
+        assert eql._token_cache["access"][0] == "fresh-token"  # re-minted
+
+    def test_run_eql_no_retry_on_success(self):
+        """Happy path makes exactly one query call and does not touch the token."""
+        post = MagicMock(return_value=_FakeResponse(200, _eql_payload([])))
+        with patch.object(eql.requests, "post", post):
+            eql.run_eql("uuid-perf-123", "FROM Devices")
+        assert post.call_count == 1

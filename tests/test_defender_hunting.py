@@ -35,6 +35,14 @@ def _clear_token_cache():
     dh._token_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _http_via_requests(monkeypatch):
+    # Production issues HTTP through tools.common.get_session() (pooled); these
+    # tests mock at the requests layer (patch.object(dh.requests, "post")).
+    # Route get_session() back to the requests module so those patches intercept.
+    monkeypatch.setattr(dh, "get_session", lambda: dh.requests)
+
+
 @pytest.fixture
 def _fake_creds(monkeypatch):
     monkeypatch.setenv("SOCAI_DEFENDER_APP_CLIENT_ID", "fake-client-id")

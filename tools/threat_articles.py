@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from html import unescape
@@ -34,6 +35,11 @@ from tools.common import (
 _SOURCES_FILE = BASE_DIR / "config" / "article_sources.json"
 _REQUEST_TIMEOUT = 15
 _MAX_BODY_CHARS = 3000  # truncate fetched article body to save tokens
+# Dedup lookups (Confluence/OpenCTI) are cached to avoid repeated API calls,
+# but with a short TTL so a long-running server eventually sees pages/reports
+# published *externally* (not just ones socai itself writes). Dedup tolerates
+# minutes of lag — worst case is a redundant draft, never a wrong finding.
+_DEDUP_CACHE_TTL_S = 1800  # 30 minutes
 
 
 # ---------------------------------------------------------------------------
@@ -188,18 +194,21 @@ def _is_covered(fingerprint: str, index: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 _confluence_cache: list[dict] | None = None
+_confluence_cache_ts: float = 0.0
 
 
 def _fetch_confluence_pages(limit: int = 15) -> list[dict]:
     """Fetch recent page titles and IDs from Confluence for dedup.
 
-    Cached for the lifetime of the process to avoid repeated API calls.
+    Cached with a short TTL (``_DEDUP_CACHE_TTL_S``) so externally-published
+    pages are eventually picked up without a server restart.
     Returns list of ``{"title": <lowercased>, "id": <page_id>}`` dicts.
     """
-    global _confluence_cache
-    if _confluence_cache is not None:
+    global _confluence_cache, _confluence_cache_ts
+    if _confluence_cache is not None and (time.monotonic() - _confluence_cache_ts) < _DEDUP_CACHE_TTL_S:
         return _confluence_cache
 
+    _confluence_cache_ts = time.monotonic()  # stamp the (re)fetch — covers every branch below
     try:
         from tools.confluence_read import _is_configured, list_pages
         if not _is_configured():
@@ -265,24 +274,26 @@ def _is_covered_confluence(title: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _opencti_report_cache: list[str] | None = None
+_opencti_report_cache_ts: float = 0.0
 
 
 def _fetch_opencti_report_titles(limit: int = 30) -> list[str]:
     """Fetch recent report titles from OpenCTI for dedup.
 
-    Cached for the lifetime of the process to avoid repeated API calls.
+    Cached with a short TTL (``_DEDUP_CACHE_TTL_S``) so reports published to
+    OpenCTI by other pipelines are eventually picked up without a restart.
     Returns lowercased titles for fuzzy matching.
     """
-    global _opencti_report_cache
-    if _opencti_report_cache is not None:
+    global _opencti_report_cache, _opencti_report_cache_ts
+    if _opencti_report_cache is not None and (time.monotonic() - _opencti_report_cache_ts) < _DEDUP_CACHE_TTL_S:
         return _opencti_report_cache
 
+    _opencti_report_cache_ts = time.monotonic()  # stamp the (re)fetch — covers every branch below
     if not OPENCTI_KEY:
         _opencti_report_cache = []
         return _opencti_report_cache
 
     try:
-        import requests as _requests
         gql = """{
           reports(first: %d, orderBy: created_at, orderMode: desc) {
             edges { node { name } }
@@ -290,7 +301,7 @@ def _fetch_opencti_report_titles(limit: int = 30) -> list[str]:
         }""" % limit
         headers = {"Authorization": f"Bearer {OPENCTI_KEY}",
                     "Content-Type": "application/json"}
-        resp = _requests.post(
+        resp = get_session().post(
             f"{OPENCTI_URL}/graphql", headers=headers,
             json={"query": gql}, timeout=10,
         )

@@ -30,7 +30,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.common import get_client_config, log_error
+from tools.common import get_client_config, get_session, log_error
 from tools.secrets import get_secret
 
 DEFENDER_API_BASE = "https://api.security.microsoft.com"
@@ -58,37 +58,41 @@ def _app_credentials() -> tuple[str, str]:
 
 
 def _acquire_token(tenant_id: str) -> str:
-    """Return a cached or freshly-minted app-only token for `tenant_id`."""
-    now = time.time()
+    """Return a cached or freshly-minted app-only token for `tenant_id`.
+
+    The lock is held across the OAuth refresh (not just the read/write) so
+    concurrent cold-cache callers for this tenant coalesce onto one token
+    request instead of each firing a redundant client_credentials grant.
+    """
     with _token_lock:
+        now = time.time()
         cached = _token_cache.get(tenant_id)
         if cached and cached[1] - _TOKEN_SAFETY_S > now:
             return cached[0]
 
-    client_id, client_secret = _app_credentials()
-    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-    body = {
-        "grant_type": "client_credentials",
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "scope": DEFENDER_SCOPE,
-    }
-    try:
-        resp = requests.post(token_url, data=body, timeout=15)
-    except requests.RequestException as exc:
-        raise DefenderHuntingError(f"token request failed: {exc}") from exc
+        client_id, client_secret = _app_credentials()
+        token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+        body = {
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "scope": DEFENDER_SCOPE,
+        }
+        try:
+            resp = get_session().post(token_url, data=body, timeout=15)
+        except requests.RequestException as exc:
+            raise DefenderHuntingError(f"token request failed: {exc}") from exc
 
-    if resp.status_code != 200:
-        raise DefenderHuntingError(
-            f"token request returned {resp.status_code}: {resp.text[:300]}"
-        )
+        if resp.status_code != 200:
+            raise DefenderHuntingError(
+                f"token request returned {resp.status_code}: {resp.text[:300]}"
+            )
 
-    payload = resp.json()
-    token = payload["access_token"]
-    expires_in = int(payload.get("expires_in", 3600))
-    with _token_lock:
+        payload = resp.json()
+        token = payload["access_token"]
+        expires_in = int(payload.get("expires_in", 3600))
         _token_cache[tenant_id] = (token, now + expires_in)
-    return token
+        return token
 
 
 def _resolve_tenant(client: str) -> str:
@@ -144,7 +148,7 @@ def run_defender_kql(client: str, query: str, timeout: int = 30) -> dict[str, An
     started = time.time()
 
     try:
-        resp = requests.post(
+        resp = get_session().post(
             DEFENDER_HUNTING_ENDPOINT,
             headers={
                 "Authorization": f"Bearer {token}",

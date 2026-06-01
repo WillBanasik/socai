@@ -148,6 +148,20 @@ def index_case(
             "ioc_totals":  meta.get("ioc_totals", {}),
         }
         save_json(REGISTRY_FILE, registry)
+
+    # Keep the semantic-recall (BM25) index fresh on case lifecycle transitions
+    # (create -> active, -> closed) so recall_semantic sees new / just-closed
+    # cases without waiting up to 6h for the scheduled full rebuild. Best-effort:
+    # never block case indexing on it.
+    if status and status != prev_status:
+        try:
+            from tools.case_memory import upsert_case_memory
+            upsert_case_memory(case_id)
+        except Exception as exc:
+            from tools.common import log_error
+            log_error(case_id, "index_case.case_memory_upsert", str(exc),
+                      severity="warning", context={})
+
     print(f"[index_case] Case {case_id} indexed (status={meta['status']})")
     return meta
 

@@ -37,6 +37,8 @@ All paths read the same `ENCORE_EQL_TOKEN`. **Put it in the repo-root `.env`** (
 
 For the **MCP path the exchange is server-side** — the gateway accepts the refresh token directly as the Bearer header and mints the access token internally. Confirmed: an MCP `initialize` against the endpoint with the refresh token as Bearer returns `200 text/event-stream`, serverInfo `EQL Gateway`.
 
+**Access-token cache (case-scoped tools, `tools/eql.py`).** The minted access token is cached in-process under a single `"access"` key (one token covers all clients) and reused until 120 s before its assumed ~30-min expiry. The refresh is performed under the cache lock so concurrent cold-cache callers coalesce onto one `/auth/refresh` instead of each firing their own. Because the warehouse can rotate/revoke a token before that assumed expiry, a query that comes back **401 evicts the cached token and retries once** with a freshly-minted one; a second 401 surfaces as an `EqlError`. All EQL HTTP goes through the pooled `get_session()` for connection reuse.
+
 ### Cloudflare User-Agent quirk
 
 `za.encore.io/gateway` is behind Cloudflare. The default `curl` / Python `urllib` User-Agent is **403-blocked** (Cloudflare HTML block page — looks like an IP block but is not). Sending a **browser UA** (`Mozilla/5.0 … Chrome/…`) passes. `scripts/eql_direct.py` sets a browser UA on every request; `mcp-remote` and Claude Code's HTTP MCP client are accepted as-is.

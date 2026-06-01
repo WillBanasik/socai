@@ -8,11 +8,13 @@
 
 - `build_case_memory_index(include_open=True)` — walks all cases in the registry, extracts text (title, tags, IOCs, attack type, report excerpt, analyst notes), tokenises, and writes a BM25-ready index to `registry/case_memory.json`. Returns `{"status": "ok", "indexed": N}`.
 
-- `search_case_memory(query, *, top_k=5, client_filter="")` — runs BM25 ranking over the index and returns the top-K most similar cases. Auto-builds the index if it doesn't exist. Results include `relevance_score` (BM25 score), title, client, severity, status, disposition, and tags.
+- `search_case_memory(query, *, top_k=5, client_filter="")` — runs BM25 ranking over the index and returns the top-K most similar cases. Auto-builds the index if it doesn't exist. Results include `relevance_score` (BM25 score), title, client, severity, status, disposition, and tags. The parsed index is cached in-process keyed on the file's `(mtime, size)`, so repeated queries don't re-read/re-parse `case_memory.json` until it actually changes.
+
+- `upsert_case_memory(case_id)` — incrementally adds or replaces a single case's entry in the index (read-modify-write under the index lock). Falls back to a full build if the index doesn't exist. Skips the test case id.
 
 **When to use:** After `recall_cases` (exact match), use `recall_semantic` to surface similar *context* — e.g. "DocuSign phishing" finds past DocuSign campaigns even if no single IOC overlaps.
 
-**Index freshness:** Rebuilt every 6 hours by the background scheduler (`tools/scheduler.py`). Can be force-rebuilt via the `rebuild_case_memory` MCP tool.
+**Index freshness:** Updated two ways: (1) `index_case()` calls `upsert_case_memory()` on each case lifecycle transition (create → active, → closed), so new and just-closed cases are searchable immediately — not after a delay; (2) a full rebuild every 6 hours by the background scheduler (`tools/scheduler.py`) reconciles any content changes (added IOCs, report edits) the incremental upsert doesn't capture. Can also be force-rebuilt via the `rebuild_case_memory` MCP tool. (The CLI path doesn't run the scheduler, so a pure-CLI deployment relies on the upsert-on-transition path plus manual rebuilds.)
 
 **Implementation:** BM25 is implemented inline in `case_memory.py` — no external dependencies.
 
@@ -63,9 +65,11 @@
 
 - `lookup_ip(ip)` — returns `{"available": True, "country": ..., "country_code": ..., "city": ..., "latitude": ..., "longitude": ..., "timezone": ...}`. Returns `{"available": False, "note": "..."}` gracefully when the database is absent or `geoip2` is not installed.
 
-- `bulk_lookup(ips)` — returns `{ip: lookup_result}` for multiple IPs.
+- `bulk_lookup(ips)` — returns `{ip: lookup_result}` for multiple IPs (reuses the single cached reader across the batch).
 
-- `refresh_geoip_db(force=False)` — downloads the GeoLite2-City database (~70 MB compressed) from MaxMind. Skips if updated within the past 7 days unless `force=True`. Database stored at `registry/geoip/GeoLite2-City.mmdb`.
+- `refresh_geoip_db(force=False)` — downloads the GeoLite2-City database (~70 MB compressed) from MaxMind. Skips if updated within the past 7 days unless `force=True`. Database stored at `registry/geoip/GeoLite2-City.mmdb`. After a successful download it drops the cached reader so the next lookup reopens the fresh database.
+
+**Reader caching:** the MaxMind `Reader` (an mmap over the `.mmdb`) is opened once and reused across all lookups — `Reader.city()` is safe for concurrent reads — instead of being re-opened per IP. `refresh_geoip_db()` invalidates it on update, so freshness is preserved.
 
 **Requirements:**
 - `MAXMIND_LICENSE_KEY` in `.env` (free at maxmind.com/en/geolite2/signup)

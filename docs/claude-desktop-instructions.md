@@ -206,7 +206,7 @@ IPv4 enrichment uses a tiered model:
 
 The platform exposes three intelligence systems:
 
-- **Case memory (BM25)** — `recall_cases` (exact IOC/keyword match) and `recall_semantic` (contextual similarity). Use both before enriching to check for prior investigations. The index rebuilds automatically every 6h.
+- **Case memory (BM25)** — `recall_cases` (exact IOC/keyword match) and `recall_semantic` (contextual similarity). Use both before enriching to check for prior investigations. The index updates incrementally as cases are created/closed (so recent cases are searchable immediately) and is fully rebuilt every 6h.
 - **Client baselines** — `get_client_baseline` returns a client's behavioural profile (common IOC recurrence, typical attack patterns, historical severity distribution, known infrastructure). Call early to understand what is normal vs abnormal for this client.
 - **GeoIP** — offline MaxMind lookup, no API call, instant. Supports bulk IPs. Database auto-refreshes every 7 days.
 

@@ -6,7 +6,7 @@ Security architecture review for a completed investigation.
 The review is now written by the local Claude Desktop agent using the
 ``write_security_arch_review`` MCP prompt, then persisted via ``save_report``.
 
-This module retains ``_SYSTEM_PROMPT`` / ``_SYSTEM_CACHED`` and
+This module retains ``_SYSTEM_PROMPT`` and
 ``_build_context()`` which the MCP prompt imports for context assembly.
 
 Data-gathering helpers (``_build_context``, ``_safe_load``) remain available
@@ -161,11 +161,6 @@ invent details not present in the evidence.
 ---
 
 """ + _ANALYTICAL_GUIDELINES
-
-# Cached system prompt block — sent once and reused across calls
-_SYSTEM_CACHED = [
-    {"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-]
 
 # ---------------------------------------------------------------------------
 # Context builder
