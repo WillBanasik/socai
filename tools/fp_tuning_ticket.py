@@ -13,12 +13,16 @@ This module retains ``_SYSTEM_PROMPT``, ``_SYSTEM_CACHED``, and
 live-query resolution and prior-case recall.
 
 Unlike ``closure_comment`` (the 2-sentence Sentinel-aligned closure note),
-the tuning ticket is a full engineering handoff document with root cause
-analysis, before/after query modifications, impact assessment, and recurrence
-data. Auto-closes the case with disposition ``false_positive`` on save.
+the tuning ticket is a full engineering handoff document: it states whether the
+detection fired correctly, branches remediation by control model (SIEM rule edit
+vs EDR SOAR suppression), carries the source product incident IDs, and ends with
+a machine-readable JSON block so a downstream (AI) engineering pipeline can act on
+it. Auto-closes the case on save — disposition defaults to ``false_positive``
+(detection fired incorrectly) but the caller may override to ``benign_positive``
+(fired correctly on authorised activity → suppress).
 
 Output (via save_report):
-  cases/<case_id>/artefacts/fp_comms/fp_tuning_ticket.html
+  cases/<case_id>/artefacts/fp_comms/fp_tuning_ticket.md
   cases/<case_id>/artefacts/fp_comms/fp_tuning_ticket_manifest.json
 """
 from __future__ import annotations
@@ -36,57 +40,44 @@ from tools.common import load_json, log_error, utcnow
 # Workspace resolution helpers
 # ---------------------------------------------------------------------------
 
-_CLIENT_ENTITIES_PATH = Path(__file__).resolve().parent.parent / "config" / "client_entities.json"
-
 
 def _resolve_workspace_id(alert_data: dict | None, case_id: str) -> str | None:
-    """
-    Resolve the Log Analytics workspace ID from alert data or client entities.
+    """Resolve the Sentinel Log Analytics workspace GUID for this case.
 
-    Resolution order:
-      1. alert_data["WorkspaceId"] (direct Sentinel workspace GUID)
-      2. alert_data["TenantId"]    matched against client_entities.json workspace_id
-      3. alert_data["DataSources"] matched against client_entities.json (workspace name contains client name)
+    Resolution order (EXACT only — never fuzzy):
+      1. ``alert_data["WorkspaceId"]`` — the workspace the alert actually came from.
+      2. The case client's configured Sentinel ``workspace_id`` (exact client-name
+         match via ``get_client_config``).
+
+    Returns ``None`` rather than guessing. The previous implementation fuzzy-matched
+    ``alert_data["DataSources"]`` as a substring against client names, which could
+    bind a ticket to the WRONG client's workspace_id — a cross-client leak. It also
+    compared ``TenantId`` against ``workspace_id`` (semantically different GUIDs).
+    Do not reintroduce either fallback.
     """
-    if not alert_data or not isinstance(alert_data, dict):
+    if isinstance(alert_data, dict):
+        wid = alert_data.get("WorkspaceId")
+        if wid:
+            return str(wid)
+
+    meta = _safe_load(CASES_DIR / case_id / "case_meta.json", case_id) or {}
+    client = (meta.get("client") or "").strip()
+    if not client:
         return None
-
-    wid = alert_data.get("WorkspaceId")
-    if wid:
-        return wid
 
     try:
-        with open(_CLIENT_ENTITIES_PATH) as f:
-            import json as _json
-            entities = _json.load(f).get("clients", [])
-    except (FileNotFoundError, Exception) as exc:
+        from tools.common import get_client_config
+        cfg = get_client_config(client)
+    except Exception as exc:
         log_error(case_id, "fp_tuning_ticket.resolve_workspace", str(exc), severity="info")
         return None
+    if not isinstance(cfg, dict):
+        return None
 
-    def _get_ws(ent: dict) -> str:
-        platforms = ent.get("platforms", {})
-        if isinstance(platforms, dict):
-            sentinel = platforms.get("sentinel", {})
-            if isinstance(sentinel, dict) and sentinel.get("workspace_id"):
-                return sentinel["workspace_id"]
-        return ent.get("workspace_id", "")
-
-    tenant_id = alert_data.get("TenantId", "")
-    if tenant_id:
-        for ent in entities:
-            ws = _get_ws(ent)
-            if ws and ws.lower() == tenant_id.lower():
-                return ws
-
-    data_sources = alert_data.get("DataSources", [])
-    if data_sources:
-        ds_str = " ".join(data_sources).lower()
-        for ent in entities:
-            ws = _get_ws(ent)
-            if ent.get("name", "").lower() in ds_str and ws:
-                return ws
-
-    return None
+    sentinel = (cfg.get("platforms") or {}).get("sentinel") or {}
+    if isinstance(sentinel, dict) and sentinel.get("workspace_id"):
+        return sentinel["workspace_id"]
+    return cfg.get("workspace_id") or None
 
 
 # ---------------------------------------------------------------------------
@@ -94,135 +85,282 @@ def _resolve_workspace_id(alert_data: dict | None, case_id: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-You are a SOC analyst writing a SIEM engineering tuning ticket. This document will be \
-handed to a detection engineering team to modify or suppress a detection rule that is \
-producing false positives.
+You are a SOC analyst writing a detection TUNING TICKET. This ticket is an engineering \
+handoff: a detection-engineering pipeline (increasingly AI-driven) must be able to pick it \
+up and act on it WITHOUT having seen the original alert. Be specific and machine-actionable.
 
-Write a structured tuning ticket with the following sections. Use markdown formatting.
+Write the ticket as markdown with the sections below, in order. All sections are required; \
+where data is genuinely absent, write "Unknown — <what is missing>" rather than guessing.
 
-## SECTIONS (all required)
+### 1. Determination — did the detection fire correctly?
+State ONE of exactly two outcomes up front, in bold:
+- **Fired incorrectly (False Positive)** — the detection logic itself is wrong (it matched \
+  activity it should never have matched). This is a logic defect.
+- **Fired correctly but benign (Benign Positive)** — the logic worked; the matched activity \
+  is real but authorised/expected, so it is noise to be suppressed, not a logic fix.
+Do NOT conflate the two — the remediation differs (FP → fix the logic, SIEM only; BP → suppress).
 
-### 1. Detection Rule Identification
-- Rule name / ID / analytic ID
-- Detection platform (Sentinel, CrowdStrike, Defender, Entra ID, Splunk, etc.)
-- Data source table(s)
-- MITRE ATT&CK technique (if mapped)
+### 2. Why — rationale & factors considered
+- The case evidence that proves the determination (entities, enrichment verdicts, client \
+  baseline / known-good context, prior-case recurrence). Never assert without case data.
+- The factors weighed: entity scope, time window / threshold, allowlist gaps, legitimate \
+  admin or automation patterns, environment-specific known-good, data-quality issues.
+- If FP: precisely which part of the logic is over-broad or wrong, and why it misfired.
+- If BP: why the activity is authorised and why suppression (not a logic change) is correct.
 
-### 2. Original Detection Query
-- The current rule logic (KQL, SPL, or pseudocode if not available)
-- If the exact query is not provided, describe the detection logic as precisely as possible
+### 3. Source & provenance (machine-consumable)
+Reproduce EVERY source identifier available so the engineering pipeline can locate the \
+originating detection: source product, incident number/ID, alert ID(s), analytic/rule ID, \
+rule name, workspace ID, tenant ID, EDR detection/composite IDs, and any alert link. These \
+are listed in the "Source Identifiers" block of the context — copy them verbatim.
 
-### 3. False Positive Evidence
-- Specific evidence from the case data that proves this is a false positive
-- Entity details: user(s), host(s), IP(s), process(es) involved
-- Why the detected activity is benign (reference enrichment verdicts, known-good patterns)
+### 4. Detection identification & control model
+- Detection platform and product.
+- The control model (see the Detection-Control Model block in context): SIEM detections \
+  (Microsoft Sentinel) are Performanta-controlled — the analytic rule logic is directly \
+  editable. EDR detections (Defender XDR, CrowdStrike Falcon) are vendor-controlled — \
+  Performanta CANNOT edit the detector; the only lever is SUPPRESSION via SOAR.
+- Data source table(s) and MITRE ATT&CK technique if mapped.
 
-### 4. Root Cause Analysis
-- WHY the rule triggered incorrectly (e.g. overly broad entity match, missing allowlist, \
-  threshold too low, legitimate admin activity pattern)
-- Whether this is a design flaw (rule too broad) or an environment-specific gap (known \
-  software/user/IP not excluded)
+### 5. Remediation — follow the control model
+Use the branch that matches the platform:
 
-### 5. Proposed Tuning
-Provide SPECIFIC, implementable modifications:
-- **Before:** the current query/logic that causes the FP
-- **After:** the modified query/logic with the fix applied
-- Explain each change
+**(A) SIEM (Sentinel) — tune the rule:**
+- **Before:** the current rule logic (KQL). If the exact query is not provided, describe the \
+  logic as precisely as possible / as commented pseudocode.
+- **After:** the modified logic with the fix applied — tighter WHERE clause, entity \
+  allowlist, threshold or time-window change, correlation enrichment, or severity downgrade \
+  (choose what fits the root cause).
+- Explain each change and why it removes the FP without blinding the rule to real threats.
 
-Tuning strategies to consider (pick the most appropriate):
-- Entity allowlisting (user, host, IP, process)
-- Query condition refinement (tighter WHERE clauses)
-- Threshold adjustment (count/time window changes)
-- Correlation enrichment (join with additional context tables)
-- Severity downgrade (if the activity is real but low-risk)
+**(B) EDR (Defender XDR / CrowdStrike Falcon) — suppress via SOAR:**
+- You CANNOT rewrite the detector. Do NOT propose detector-logic edits.
+- Specify the exact SUPPRESSION CRITERIA: the precise entity/condition set to suppress \
+  (e.g. this hash on these hosts, this command line for this service account), scoped as \
+  tightly as the evidence allows.
+- **SOAR Suppression Plan:** leave this as a structured placeholder — the SOAR suppression \
+  mechanism is not yet defined (context to follow). Give the criteria the SOAR action will \
+  consume, and mark the execution steps "TBD — pending SOAR suppression procedure".
 
-### 6. Impact Assessment
-- Will the proposed tuning suppress detection of real threats? Evaluate honestly.
-- What monitoring gap (if any) does the tuning create?
-- Recommend compensating controls if a gap is introduced
+### 6. Impact assessment
+- Does the change risk suppressing real threats? Evaluate honestly.
+- What monitoring gap (if any) does it create, and what compensating control covers it?
+- Scope of the change (how many entities, how broad).
 
 ### 7. Recurrence
-- Has this false positive pattern been seen before? (Use the prior case data provided)
-- How many times? Over what period?
-- Is this a recurring operational pattern that needs permanent exclusion?
+- Has this pattern been seen before? Use the prior-case recurrence data in context — how \
+  many times, over what period, with what dispositions. Is permanent exclusion/suppression \
+  warranted?
+
+### 8. Machine-readable handoff
+End the ticket with a SINGLE fenced ```json block (and nothing after it) capturing the \
+ticket in structured form for the downstream pipeline. Use exactly these keys; use null \
+(or [] ) for unknowns, and make every value consistent with the prose above:
+```json
+{
+  "determination": "false_positive | benign_positive",
+  "fired_correctly": false,
+  "platform": "sentinel | defender_xdr | crowdstrike | other",
+  "control_type": "siem_rule_edit | edr_soar_suppression",
+  "source_ids": {"<FieldName>": "<value>"},
+  "rule": {"id": null, "name": null, "analytic_rule_ids": []},
+  "workspace_id": null,
+  "tenant_id": null,
+  "mitre_techniques": [],
+  "recommended_action": "<one line: tune rule | suppress via SOAR>",
+  "suppression_criteria": null,
+  "entities": {"users": [], "hosts": [], "ips": [], "processes": [], "hashes": []},
+  "soar_suppression": {"status": "tbd_pending_procedure", "criteria": null},
+  "recurrence": {"prior_case_count": 0, "permanent_exclusion_recommended": false}
+}
+```
 
 RULES:
-1. Be SPECIFIC — generic recommendations like "add an allowlist" are useless without \
-   the actual entities to allow.
-2. Always provide before/after query modifications when possible.
-3. Reference specific evidence from the case data — never speculate.
-4. Tone: technical, direct, structured. This is an engineering document, not a narrative.
-5. The proposed tuning MUST be implementable by a SIEM engineer who has not seen the \
-   original alert. Include all necessary context.
-6. If the exact detection query is not available, propose tuning as pseudocode with \
-   clear comments explaining the logic.
-
-WORKSPACE QUERY TOOL
---------------------
-If the `query_workspace` tool is available, you may run up to 2 focused KQL queries to:
-- Retrieve the current detection rule logic
-- Check the historical frequency of the FP pattern
-- Verify that proposed exclusions do not suppress real detections
-
-OUTPUT:
-Return the complete markdown tuning ticket. Nothing else — no preamble, no sign-off.
+1. Be SPECIFIC — "add an allowlist" is useless without the actual entities to allow/suppress.
+2. SIEM gets before/after logic; EDR gets suppression criteria + the SOAR placeholder — \
+   never propose editing an EDR detector's logic.
+3. Cite case evidence for every claim; never speculate (analytical standards apply).
+4. Tone: technical, direct, structured — an engineering document, not a narrative.
+5. The source_ids in the JSON block MUST match the Source Identifiers given in context.
+6. Output the markdown ticket only — no preamble, no sign-off; the json block is the last thing.
 """
 
-_SYSTEM_CACHED = [
-    {"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-]
+# ---------------------------------------------------------------------------
+# Source-identifier extraction + control model (engineering handoff)
+# ---------------------------------------------------------------------------
 
-# Tool: read-only KQL query against the alert workspace
-_QUERY_WORKSPACE_TOOL = {
-    "name": "query_workspace",
-    "description": (
-        "Execute a READ-ONLY KQL query against the Sentinel Log Analytics workspace "
-        "associated with this alert. Use this to retrieve the current detection rule, "
-        "check historical FP frequency, or validate that proposed exclusions would not "
-        "suppress real threats. "
-        "The query runs via `az monitor log-analytics query` and returns up to 50 rows as JSON. "
-        "Keep queries focused and time-bounded (use ago(7d) or narrower). "
-        "Do NOT use this for destructive operations — this is strictly read-only."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "kql": {
-                "type": "string",
-                "description": "The KQL query to execute. Must be a valid read-only query.",
-            },
-            "purpose": {
-                "type": "string",
-                "description": "Brief explanation of why this query is needed for the ticket.",
-            },
-        },
-        "required": ["kql", "purpose"],
-    },
+# Identifier fields that locate the originating detection, per product. Used to
+# give the downstream (AI) engineering pipeline machine-consumable provenance.
+_SOURCE_ID_FIELDS = {
+    "sentinel": [
+        "IncidentNumber", "IncidentName", "SystemAlertId", "AlertIds",
+        "AlertName", "RelatedAnalyticRuleIds", "ProviderName",
+        "WorkspaceId", "TenantId", "AlertLink",
+    ],
+    "defender_xdr": [
+        "IncidentId", "incidentId", "AlertId", "alertId",
+        "DetectionSource", "DetectorId", "Title",
+    ],
+    "crowdstrike": [
+        "detection_id", "composite_id", "incident_id", "DetectId",
+        "pattern_id", "rule_name", "cid",
+    ],
 }
 
-# Maximum rows returned per query, maximum queries per ticket
-_QUERY_MAX_ROWS = 50
-_QUERY_MAX_CALLS = 2
+_KNOWN_ID_FIELDS = {f.lower() for fields in _SOURCE_ID_FIELDS.values() for f in fields}
 
-# Tool: request clarification when critical info is missing
-_CLARIFICATION_TOOL = {
-    "name": "request_clarification",
-    "description": (
-        "Call this tool when essential information is missing — e.g. the detection "
-        "platform cannot be determined, or the alert data is too ambiguous to produce "
-        "a useful tuning ticket. Ask the analyst a specific question."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "question": {
-                "type": "string",
-                "description": "Specific question to ask the analyst",
-            }
-        },
-        "required": ["question"],
-    },
-}
+_SIEM_PLATFORMS = {"sentinel"}
+_EDR_PLATFORMS = {"defender_xdr", "crowdstrike"}
+
+
+def _extract_source_ids(alert_data: str) -> dict:
+    """Best-effort pull of source incident/alert identifiers from raw alert JSON.
+
+    Recursively walks the parsed alert and collects any known identifier field
+    (see ``_SOURCE_ID_FIELDS``). Non-JSON alert text returns ``{}`` — the raw
+    block in the prompt still carries whatever IDs it contains.
+    """
+    if not alert_data:
+        return {}
+    try:
+        data = json.loads(alert_data)
+    except (ValueError, TypeError):
+        return {}
+
+    found: dict[str, str] = {}
+
+    def _walk(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k.lower() in _KNOWN_ID_FIELDS and v not in (None, "", []):
+                    # Scalar id field, or a list of scalar ids (e.g. AlertIds,
+                    # RelatedAnalyticRuleIds) — capture and don't recurse into it.
+                    if isinstance(v, list) and all(
+                        not isinstance(x, (dict, list)) for x in v
+                    ):
+                        found.setdefault(k, ", ".join(str(x) for x in v))
+                        continue
+                    if not isinstance(v, (dict, list)):
+                        found.setdefault(k, str(v))
+                        continue
+                if isinstance(v, (dict, list)):
+                    _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    _walk(data)
+    return found
+
+
+def _infer_platform(alert_data: str, platform_override: str | None) -> str:
+    """Infer the detection product from an override or alert-data signals.
+
+    Heuristic only — a hint for the ticket author, who confirms against the
+    control-model context. Returns sentinel|defender_xdr|crowdstrike|other.
+    """
+    if platform_override:
+        p = platform_override.strip().lower()
+        if p in ("defender", "defender_xdr", "mde", "mdatp", "xdr"):
+            return "defender_xdr"
+        if p in ("crowdstrike", "falcon", "ngsiem"):
+            return "crowdstrike"
+        if p == "sentinel":
+            return "sentinel"
+        return p
+    text = (alert_data or "").lower()
+    if any(s in text for s in ("crowdstrike", "falcon", "composite_id", "detection_id")):
+        return "crowdstrike"
+    if any(s in text for s in ("defender", "mdatp", "\"incidentid\"", "microsoft 365 defender")):
+        return "defender_xdr"
+    if any(s in text for s in ("sentinel", "workspaceid", "incidentnumber", "analyticrule")):
+        return "sentinel"
+    return "other"
+
+
+def _control_model_context(case_id: str, platform: str) -> str:
+    """Markdown describing the SIEM-vs-EDR control model for this case/client."""
+    meta = _safe_load(CASES_DIR / case_id / "case_meta.json", case_id) or {}
+    client = (meta.get("client") or "").strip()
+    lines = [
+        "## Detection-Control Model (where Performanta can act)",
+        "",
+        "- **SIEM — Microsoft Sentinel:** Performanta-controlled. The analytic rule "
+        "logic is directly editable (KQL, thresholds, entity mapping, allowlists, "
+        "scheduling). False positives are fixed by tuning the rule.",
+        "- **EDR — Defender XDR / CrowdStrike Falcon:** vendor-controlled detection "
+        "logic. Performanta **cannot edit the detector**. The only lever is "
+        "**suppression via SOAR**. The exact SOAR suppression procedure is **not yet "
+        "defined (context to follow)** — produce the suppression criteria and leave the "
+        "SOAR execution steps as a TBD placeholder for the engineering pipeline.",
+        "",
+    ]
+    if platform in _EDR_PLATFORMS:
+        lines.append(
+            f"> This alert is **EDR ({platform})** — remediation is SOAR suppression, "
+            "not a detector-logic edit."
+        )
+    elif platform in _SIEM_PLATFORMS:
+        lines.append(
+            "> This alert is **SIEM (Sentinel)** — remediation is a rule-logic tune."
+        )
+    else:
+        lines.append(
+            "> Platform not conclusively identified — confirm SIEM vs EDR before "
+            "choosing the remediation branch."
+        )
+    if client:
+        try:
+            from tools.common import get_client_config
+            cfg = get_client_config(client) or {}
+        except Exception:
+            cfg = {}
+        platforms = (cfg.get("platforms") or {}) if isinstance(cfg, dict) else {}
+        configured = [p for p in ("sentinel", "defender_xdr", "crowdstrike") if p in platforms]
+        if configured:
+            lines.append("")
+            lines.append(f"**{client} configured detection platforms:** {', '.join(configured)}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def fp_handoff_context(case_id: str, alert_data: str = "",
+                       platform_override: str | None = None) -> str:
+    """Assemble the engineering-handoff context injected into the write_fp_tuning
+    prompt: control model, source identifiers, inferred platform, and prior-case
+    recurrence. Keeps the prompt body thin and the logic unit-testable.
+    """
+    platform = _infer_platform(alert_data, platform_override)
+
+    source_ids = _extract_source_ids(alert_data)
+    # Backfill the workspace from the case client when the alert omits it.
+    if "WorkspaceId" not in source_ids:
+        try:
+            alert_obj = json.loads(alert_data) if alert_data else None
+        except (ValueError, TypeError):
+            alert_obj = None
+        ws = _resolve_workspace_id(alert_obj if isinstance(alert_obj, dict) else None, case_id)
+        if ws:
+            source_ids["WorkspaceId"] = ws
+
+    parts = [_control_model_context(case_id, platform), ""]
+
+    parts.append("## Source Identifiers (copy verbatim into the ticket + JSON block)")
+    if source_ids:
+        for k, v in source_ids.items():
+            parts.append(f"- **{k}:** {v}")
+    else:
+        parts.append("- None parsed from alert data — extract any IDs from the raw "
+                     "Alert Data block below; use null where genuinely absent.")
+    parts.append(f"\n**Inferred platform:** {platform} "
+                 "(confirm against the control model above).")
+    parts.append("")
+
+    recurrence = _build_recurrence_context(case_id, alert_data)
+    if recurrence:
+        parts.append(recurrence)
+
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

@@ -1630,31 +1630,39 @@ def register_prompts(mcp: FastMCP) -> None:
             Original detection query (KQL/SPL/CQL).
         """
         from tools.fp_tuning_ticket import _SYSTEM_PROMPT as prompt
-        from tools.fp_tuning_ticket import _build_context
+        from tools.fp_tuning_ticket import _build_context, fp_handoff_context
         context = _build_context(case_id)
+        handoff = fp_handoff_context(case_id, alert_data, platform or None)
 
         parts = [
-            f"# SIEM Tuning Ticket — Instructions\n\n",
+            f"# Detection Tuning Ticket — Instructions\n\n",
             f"{prompt}\n\n",
             f"---\n\n",
             f"# Case Context\n\n{context}\n\n",
+            f"---\n\n",
+            f"{handoff}\n\n",
         ]
-        if platform:
-            parts.append(f"**Platform override:** {platform}\n\n")
         if alert_data:
-            parts.append(f"## Alert Data\n\n```\n{alert_data}\n```\n\n")
+            parts.append(f"## Alert Data (raw)\n\n```\n{alert_data}\n```\n\n")
         if query_text:
             parts.append(f"## Original Detection Query\n\n```kql\n{query_text}\n```\n\n")
         parts.append(
             f"---\n\n"
             f"# Task\n\n"
-            f"Write a structured SIEM tuning ticket for case **{case_id}** as "
-            f"markdown. Use `##`/`###` for sections, bullet lists for "
-            f"recommendations, fenced code blocks for KQL/SPL/CQL snippets.\n\n"
+            f"Write a structured detection tuning ticket for case **{case_id}** as "
+            f"markdown. Lead with the **Determination** (did the detection fire "
+            f"correctly?), pick the remediation branch that matches the control model "
+            f"(SIEM rule edit vs EDR SOAR suppression), copy the Source Identifiers "
+            f"verbatim, and end with the single machine-readable ```json handoff block. "
+            f"Use `##`/`###` for sections, bullet lists, and fenced code blocks for "
+            f"KQL/SPL/CQL snippets.\n\n"
             f"When done, call `save_report` with:\n"
             f"- `case_id`: \"{case_id}\"\n"
             f"- `report_type`: \"fp_tuning_ticket\"\n"
             f"- `report_text`: the full markdown ticket\n"
+            f"- `disposition`: \"false_positive\" if the detection fired **incorrectly** "
+            f"(logic defect), or \"benign_positive\" if it fired **correctly** on "
+            f"authorised activity (suppress as noise). Defaults to false_positive.\n"
         )
         return "".join(parts)
 
