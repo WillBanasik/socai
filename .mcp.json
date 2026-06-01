@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "eql-hosted": {
+      "type": "http",
+      "url": "https://za.encore.io/gateway/api/mcp-eql/",
+      "headers": {
+        "Authorization": "Bearer ${ENCORE_EQL_TOKEN}"
+      }
+    }
+  }
+}

@@ -1,0 +1,60 @@
+# Keep the build context small and keep confidential/mutable data out of image
+# layers. Persistent state and secrets are mounted at runtime (Azure Files +
+# Key Vault), not baked in.
+
+# Secrets
+.env
+deploy/.env.vpn
+
+# Mutable runtime state (mount these from a persistent volume instead)
+cases/
+registry/
+reports/
+articles/
+sessions/
+browser_sessions/
+sandbox_sessions/
+
+# Confidential per-client config + auth store (provision at deploy time)
+config/client_entities.json
+config/workspace_tables.json
+config/sentinel_tables.json
+config/users.json
+config/preferences/
+config/clients/*/knowledge.md
+config/clients/*/playbook.json
+config/clients/*/sentinel.md
+
+# Local dev / VCS / tooling
+.git/
+.gitignore
+.venv/
+.playwright/
+.claude/
+.vscode/
+.idea/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Editor / OS cruft
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+*:sec.endpointdlp
+
+# Stray artefacts seen in repo root
+default
+=*
+*.pptx
+*.zip
+
+# Docs/tests aren't needed at runtime (optional — drop these two lines if you
+# want them in the image)
+tests/
+docs/
