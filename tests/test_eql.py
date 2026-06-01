@@ -256,3 +256,111 @@ class TestPostureContext:
             out = eql.posture_context(TEST_CASE)
         assert out["domains"]
         assert all(d["coverage"] == "query_error" for d in out["domains"])
+
+
+# ---------------------------------------------------------------------------
+# Caseless vulnerability hunt
+# ---------------------------------------------------------------------------
+
+class TestVulnHunt:
+    def test_resolve_client_by_name_exact_and_gated(self, monkeypatch):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        assert eql.resolve_client_by_name("performanta") == ("performanta", "uuid-perf-123")
+        # unmapped / no-access / unknown all refuse before any HTTP
+        for bad in ("unmapped", "noaccess", "does-not-exist"):
+            with pytest.raises(eql.EqlNotConfigured):
+                eql.resolve_client_by_name(bad)
+        with pytest.raises(eql.EqlNotConfigured):
+            eql.resolve_client_by_name("")
+
+    def test_build_vuln_query_where_and_order(self):
+        tpl = {"table": "VulnerabilityPrioritization-Vulnerabilities", "order_by": "Epss",
+               "where": 'Classification = "Actively Exploited"', "select": ["CVE", "Epss"]}
+        q = eql._build_vuln_query(tpl)
+        assert q == ('VulnerabilityPrioritization-Vulnerabilities WHERE '
+                     'Classification = "Actively Exploited" SELECT CVE, Epss '
+                     'ORDER BY Epss DESCENDING')
+        # no-where, no-order template
+        q2 = eql._build_vuln_query({"table": "T", "order_by": None, "select": ["A", "B"]})
+        assert q2 == "T SELECT A, B"
+
+    def test_vuln_hunt_runs_ranked_and_persists(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        monkeypatch.setattr("config.settings.VULN_HUNT_DIR", tmp_path)
+        hosts = [{"ComputerName": f"H{i}", "PrioritizationIndex": 3.4 - i * 0.01,
+                  "HasActiveExploit": (i % 2 == 0), "IsRansomwareExploit": (i == 0),
+                  "HasImminentThreats": True} for i in range(60)]
+        post = MagicMock(return_value=_FakeResponse(200, _eql_payload(hosts)))
+        with patch.object(eql.requests, "post", post):
+            out = eql.vuln_hunt("performanta")
+
+        assert out["hunt_id"].startswith("VH_")
+        assert out["client"] == "performanta" and out["internal_client_id"] == "uuid-perf-123"
+        assert len(out["domains"]) == len(eql.VULN_HUNT_TEMPLATES)
+        # pinned to the mapped client id on every call
+        for call in post.call_args_list:
+            url = call.args[0] if call.args else call.kwargs.get("url", "")
+            assert "client=uuid-perf-123" in url
+        # summary computed on the (full) Hosts rows
+        s = out["summary"]
+        assert s["hosts_assessed"] == 60
+        assert s["hosts_with_active_exploit"] == 30
+        assert s["hosts_with_ransomware_exploit"] == 1
+        # inline rows HEAD-capped (rank preserved — first row is the highest index)
+        hosts_dom = next(d for d in out["domains"] if d["table"].endswith("-Hosts"))
+        assert hosts_dom["rows_returned"] == eql._MAX_ROWS_INLINE
+        assert hosts_dom["truncated"] is True
+        assert hosts_dom["rows"][0]["ComputerName"] == "H0"   # not date-sorted
+        # full payload persisted to the caseless store
+        persisted = list(tmp_path.glob("VH_*.json"))
+        assert len(persisted) == 1
+        full = json.loads(persisted[0].read_text())
+        assert len(full["domains"][0]["rows"]) == 60          # nothing dropped on disk
+
+    def test_vuln_hunt_refused_when_unmapped_no_http(self, monkeypatch):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        post = MagicMock()
+        with patch.object(eql.requests, "post", post):
+            with pytest.raises(eql.EqlNotConfigured):
+                eql.vuln_hunt("unmapped")
+        post.assert_not_called()
+
+    def test_import_vuln_hunt_round_trip(self, monkeypatch, tmp_path, _case):
+        monkeypatch.setattr("config.settings.VULN_HUNT_DIR", tmp_path)
+        hunt = {"hunt_id": "VH_TEST", "client": "performanta",
+                "internal_client_id": "uuid-perf-123", "ts": "2026-06-01T00:00:00Z",
+                "summary": {"hosts_assessed": 5, "hosts_with_active_exploit": 2,
+                            "hosts_with_ransomware_exploit": 0, "actively_exploited_cves": 3,
+                            "new_kevs_48h": 0},
+                "domains": [], "_window_note": "n"}
+        (tmp_path / "VH_TEST.json").write_text(json.dumps(hunt))
+
+        res = eql.import_vuln_hunt("VH_TEST", TEST_CASE)
+        assert res["status"] == "imported" and res["hunt_id"] == "VH_TEST"
+        # artefact copied into the case + evidence note appended
+        assert (CASES_DIR / TEST_CASE / "artefacts" / "eql_context" / "vuln_hunt_VH_TEST.json").exists()
+        notes = (CASES_DIR / TEST_CASE / "notes" / "analyst_input.md").read_text()
+        assert "vulnerability hunt" in notes.lower() and "VH_TEST" in notes
+        # missing hunt → error, no raise
+        assert "error" in eql.import_vuln_hunt("VH_NOPE", TEST_CASE)
+
+    def test_vuln_hunt_report_context_reads_import(self, monkeypatch, tmp_path, _case):
+        monkeypatch.setattr("config.settings.VULN_HUNT_DIR", tmp_path)
+        hunt = {"hunt_id": "VH_CTX", "client": "performanta",
+                "internal_client_id": "uuid-perf-123", "ts": "2026-06-01T00:00:00Z",
+                "summary": {"hosts_assessed": 7, "hosts_with_active_exploit": 3,
+                            "hosts_with_ransomware_exploit": 1, "hosts_with_imminent_threats": 4,
+                            "actively_exploited_cves": 9, "new_kevs_48h": 2},
+                "domains": [{"domain": "Exposed hosts", "table": "VulnerabilityPrioritization-Hosts",
+                             "row_count": 1, "coverage": "ok",
+                             "rows": [{"ComputerName": "WEB01", "MaxCVSS": 10,
+                                       "HasActiveExploit": True}]}],
+                "_window_note": "n"}
+        (tmp_path / "VH_CTX.json").write_text(json.dumps(hunt))
+        eql.import_vuln_hunt("VH_CTX", TEST_CASE)
+
+        from tools.vuln_hunt_report import _build_context
+        ctx = _build_context(TEST_CASE)
+        assert "VH_CTX" in ctx          # hunt id surfaced
+        assert "WEB01" in ctx           # host row surfaced
+        assert "Actively-exploited CVEs: 9" in ctx   # summary line rendered

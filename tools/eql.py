@@ -153,6 +153,10 @@ QUERY_TEMPLATES: dict[str, list[dict[str, Any]]] = {
                     "HighVulnerabilities", "MaxCVSS", "MaxEpss", "HasActiveExploit",
                     "HasCommunityExploit", "IsRansomwareExploit", "ExposureScore",
                     "PrioritizationIndex", "HasImminentThreats", "HasEmergingThreats", "LastCommsDate"]},
+        # Local-admin assignments on this host — blast-radius / lateral-movement reach
+        # if the host is compromised. Keyed on the hostname (empty-safe when sparse).
+        {"table": "LateralMovement-LocalAdmins", "key": "ComputerName", "op": "LIKE",
+         "select": ["ComputerName", "AccountName", "AccountType", "EntryDate"]},
     ],
     "ip": [
         {"table": "AzureActiveDirectory-SignInAudits", "key": "IpAddress", "op": "=",
@@ -217,6 +221,20 @@ POSTURE_TEMPLATES: list[dict[str, Any]] = [
      "table": "AzureActiveDirectory-TrainingStatistics", "order_by": "EntryDate",
      "select": ["EntryDate", "TotalAssignedCount", "TotalCompletedCount",
                 "TotalInProgressCount", "TotalOverdueCount", "TotalUnknownCount"]},
+    # Enterprise-app / OAuth attack surface (consent-phishing & app-credential abuse).
+    # Most-privileged apps first (Scopes DESC); AppCredentials (secret/cert expiry) is
+    # already covered above. The raw OauthScopes catalogue (~2k rows, no useful inline
+    # ranking) is intentionally left to eql_query for deep-dives.
+    {"domain": "Enterprise apps & service principals (privilege/credential inventory)",
+     "table": "AzureActiveDirectory-AllServicePrincipals", "order_by": "Scopes",
+     "select": ["AppName", "ServicePrincipalAppId", "PublisherDomain", "SignInAudience",
+                "AccountEnabled", "CredentialStatus", "Roles", "Scopes", "CreatedOn", "DeletedOn"]},
+    # Recent privileged / directory changes (admin-change context). InitiatedBy is a
+    # display name, not a UPN — client-wide here, NOT entity-keyed.
+    {"domain": "Recent directory / privileged changes",
+     "table": "AzureActiveDirectory-DirectoryAudits", "order_by": "ActivityDateTime",
+     "select": ["ActivityDateTime", "ActivityDisplayName", "Category", "InitiatedBy",
+                "OperationType", "Result", "ResultReason", "LoggedByService"]},
 ]
 
 
