@@ -450,13 +450,38 @@ def _register_tier1(mcp: FastMCP) -> None:
             if len(suggestions) == 1:
                 # Single match — auto-resolve
                 cfg = get_client_config(suggestions[0])
-            else:
-                msg = f"Client {client_name!r} not found."
-                if suggestions:
-                    msg += f" Did you mean: {', '.join(suggestions)}?"
+            elif len(suggestions) > 1:
+                # Ambiguous alias (e.g. "tsogo" maps to BOTH Southern Sun
+                # Hotels and Tsogo Sun Gaming). Do NOT auto-resolve — gate and
+                # surface each candidate's `disambiguation` facts so the caller
+                # can confirm which client is meant, then retry with the exact
+                # name. This is intentional: see the shared-alias notes in
+                # client_entities.json.
+                candidates = []
+                for name in suggestions:
+                    c = get_client_config(name) or {}
+                    candidates.append({
+                        "name": name,
+                        "disambiguation": c.get("disambiguation", ""),
+                    })
                 return _json({
-                    "error": msg,
-                    "suggestions": suggestions,
+                    "status": "ambiguous_client",
+                    "query": client_name,
+                    "candidates": candidates,
+                    "_hint": (
+                        f"{client_name!r} is ambiguous — it matches multiple "
+                        "clients. Do NOT pick one arbitrarily. Use the "
+                        "`disambiguation` facts on each candidate (and the "
+                        "originating Falcon CID / Encore client, which are "
+                        "authoritative) to confirm which client this is, then "
+                        "call lookup_client again with the exact name. If you "
+                        "cannot tell, ask the analyst."
+                    ),
+                })
+            else:
+                return _json({
+                    "error": f"Client {client_name!r} not found.",
+                    "suggestions": [],
                     "_hint": (
                         "Do NOT retry with guessed spellings — each failed call "
                         "adds context overhead. Read the socai://clients resource "
