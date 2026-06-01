@@ -24,7 +24,11 @@ EQL is **not** Elasticsearch EQL and **not** SQL. See [EQL syntax](#eql-syntax) 
 | **A. Direct API** — `scripts/eql_direct.py` | Shell / Claude Code Bash | Reads `ENCORE_EQL_TOKEN`, does the refresh exchange, sends a browser UA. No MCP needed. |
 | **B. MCP server** — `eql-hosted` | Claude Code (`.mcp.json`) and Claude Desktop (`mcp-remote` wrapper) | Exposes `mcp__eql-hosted__*` tools. The gateway does the refresh exchange server-side — pass the raw refresh token as Bearer. |
 
-Both paths read the same `ENCORE_EQL_TOKEN` env var (kept in `~/.bashrc`, never in a committed file).
+All paths read the same `ENCORE_EQL_TOKEN`. **Put it in the repo-root `.env`** (gitignored) as `ENCORE_EQL_TOKEN=<refresh-token>` — single source of truth, loaded via `load_dotenv` by `config/settings.py` (the MCP server) and by `scripts/eql_direct.py`.
+
+> **`.env` syntax, not bashrc syntax.** Use a bare `KEY=value` line. Do **not** paste the `~/.bashrc` form `export ENCORE_EQL_TOKEN="…"` — the `export ` prefix and unbalanced/stray quotes make python-dotenv fail to parse the line (`could not parse statement starting at line N`), so the token silently doesn't load. Append it cleanly from your shell instead: `printf 'ENCORE_EQL_TOKEN=%s\n' "$ENCORE_EQL_TOKEN" >> .env`.
+>
+> **Why `.env`, not `~/.bashrc`:** the socai MCP server is spawned by Claude Desktop (and could be by boot scripts) **without inheriting your shell**, so `~/.bashrc` exports are invisible to it — only `.env` is read. This is the single most common cause of `eql_entity_context` failing with `required secret 'ENCORE_EQL_TOKEN' is not set`. The token must be the **refresh** token (it is exchanged at `/auth/refresh`); an access token will 401.
 
 ### Auth flow (direct API)
 
@@ -134,8 +138,19 @@ Discovery queries: `list version`, `list clients`, `list tables`, `list tables l
 - **`list labels` is flaky** — does not always return. Retry; distinguish from auth/network errors.
 - If a gateway-bound call raises `GatewayUnavailableError`, tell the user and ask whether to retry against the local endpoint.
 
+## Path C — socai-native, case-scoped tools (`tools/eql.py`)
+
+For inline HITL use, two socai MCP tools wrap EQL so the analyst never hand-resolves clients, hand-writes EQL, or hand-logs evidence:
+
+- **`eql_entity_context(case_id, user=, host=, ip=)`** — runs a curated query set (identity, sign-ins, risky activities, device posture across CrowdStrike/Defender/Intune, detections, vuln exposure, Cloudflare) for the named entity, stamps freshness + coverage, writes the raw payload to `cases/<id>/artefacts/eql_context/` and a provenance note into the evidence chain. Call it during the baseline/contextualisation step.
+- **`eql_query(case_id, eql)`** — analyst escape hatch for a raw EQL string, same scope gate, same persistence.
+
+**Token-scope gate.** Both tools resolve `case_id` → the case's client → `platforms.encore.internal_client_id`, and pin every query to that UUID. The caller cannot supply a client/clientId, and a client without an `internal_client_id` mapping (or read `access`) is refused **before any HTTP call**. So although `ENCORE_EQL_TOKEN` spans all clients, the socai-native path is structurally single-client per case. (The `eql-hosted` MCP server, Path B, is the unrestricted multi-client surface — use it for ad-hoc/cross-client research.)
+
+**Freshness/coverage.** Posture snapshots refresh ~daily; event tables within ~1–2h; `SignInAudits` is a rolling ~7-day window. An empty result is reported as `no_data_for_client` — the product is not ingested for that client; it is **never** evidence of "clean".
+
 ## See also
 
-- `config/client_entities.json` — `platforms.encore.access` is a defined platform-scope flag (see `docs/configuration.md`), but EQL access is governed by the `ENCORE_EQL_TOKEN` (all clients), not per-client config; no client entry sets it today.
+- `config/client_entities.json` — set `platforms.encore.internal_client_id` (gateway UUID from `list_clients`) per client to enable the socai-native tools above; this is the token-scope gate (see `docs/configuration.md`). The standalone `eql-hosted` MCP / `ENCORE_EQL_TOKEN` path is unaffected by this field.
 - Memory: `encore-gateway-integration` (operational notes, token rotation, wrapper rationale)
 - `scripts/eql_direct.py` — the direct-API helper

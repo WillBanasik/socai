@@ -94,6 +94,7 @@ TOOLSETS: dict[str, set[str]] = {
         # log hunting
         "run_kql", "run_kql_batch", "run_defender_kql", "run_falcon_cql",
         "query_falcon_detections", "query_falcon_hosts", "query_falcon_incidents",
+        "eql_entity_context", "eql_query",
         "load_kql_playbook", "load_cql_playbook", "generate_sentinel_query",
         "generate_queries", "load_ngsiem_reference", "parse_logs",
         "detect_anomalies",
@@ -3675,6 +3676,72 @@ def _register_tier3(mcp: FastMCP) -> None:
                 "`groupBy()` aggregations or time-bucketed summaries."
             )
         return _json(out)
+
+    @mcp.tool(title="Encore EQL Entity Context", annotations={"readOnlyHint": True})
+    async def eql_entity_context(
+        case_id: str,
+        user: str = "",
+        host: str = "",
+        ip: str = "",
+        depth: str = "auto",
+    ) -> str:
+        """Pull recent identity / device / detection / exposure context for a user, host, or IP
+        from Encore EQL — call during the baseline step when an alert names an entity.
+
+        Case-scoped: the query is pinned to the Encore client mapped to this case's client
+        (``platforms.encore.internal_client_id``); a caller cannot target another client.
+        Results are written as a case artefact and summarised into the evidence chain.
+        Coverage varies per client and SignInAudits is a rolling ~7-day window —
+        an empty result means "not ingested for this client", NOT "clean".
+        """
+        _require_scope("investigations:read")
+        from tools.eql import EqlError, EqlNotConfigured, entity_context as _entity_context
+
+        if not case_id.strip():
+            return _json({"error": "case_id is required."})
+        if not (user.strip() or host.strip() or ip.strip()):
+            return _json({"error": "Provide at least one of user, host, ip."})
+        try:
+            result = await asyncio.to_thread(
+                lambda: _entity_context(case_id, user=user or None, host=host or None,
+                                        ip=ip or None, depth=depth)
+            )
+        except EqlNotConfigured as exc:
+            return _json({
+                "error": "Encore EQL not enabled for this case's client.",
+                "detail": str(exc),
+                "hint": "Set platforms.encore.internal_client_id (+ access) in client_entities.json.",
+            })
+        except EqlError as exc:
+            return _json({"error": "Encore EQL entity-context lookup failed.", "detail": str(exc)})
+        return _json(result)
+
+    @mcp.tool(title="Encore EQL Query", annotations={"readOnlyHint": True})
+    async def eql_query(case_id: str, eql: str) -> str:
+        """Run a raw read-only EQL query, pinned to this case's Encore client (escape hatch).
+
+        EQL is NOT SQL/Elasticsearch: ``<Table> WHERE <col> = "v" SELECT <c1>, <c2>`` —
+        no pipes, FROM, LIMIT, or single quotes. Prefer ``eql_entity_context`` for the
+        common identity/host lookups. Same scope gate: the query cannot leave the case's client.
+        """
+        _require_scope("investigations:read")
+        from tools.eql import EqlError, EqlNotConfigured, run_eql_for_case as _run_eql_for_case
+
+        if not case_id.strip():
+            return _json({"error": "case_id is required."})
+        if not eql.strip():
+            return _json({"error": "eql query is required."})
+        try:
+            result = await asyncio.to_thread(lambda: _run_eql_for_case(case_id, eql.strip()))
+        except EqlNotConfigured as exc:
+            return _json({
+                "error": "Encore EQL not enabled for this case's client.",
+                "detail": str(exc),
+                "hint": "Set platforms.encore.internal_client_id (+ access) in client_entities.json.",
+            })
+        except EqlError as exc:
+            return _json({"error": "Encore EQL query failed.", "detail": str(exc)})
+        return _json(result)
 
     @mcp.tool(title="Query CrowdStrike Falcon Detections")
     async def query_falcon_detections(client: str, filter_fql: str = "", limit: int = 50) -> str:

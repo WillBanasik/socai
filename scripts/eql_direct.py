@@ -14,12 +14,24 @@ Usage:
     python3 scripts/eql_direct.py query "list tables label:<label>"
 
 The refresh token is never printed. Guard it — it has access to all Encore clients.
+
+$ENCORE_EQL_TOKEN is read from the repo `.env` (preferred, single source of
+truth) or the shell environment.
 """
 import json
 import os
 import sys
 import urllib.request
 import urllib.error
+from pathlib import Path
+
+# Load the repo .env so creds live in one place (matches config/settings.py).
+# Best-effort: fall back to the shell environment if python-dotenv is absent.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
 
 BASE = "https://za.encore.io/gateway/api"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

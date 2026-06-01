@@ -151,12 +151,14 @@ Config: `config/client_entities.json` (git-ignored) — unified `clients` list. 
     "sentinel":     { "workspace_id": "<GUID>" },
     "defender_xdr": { "api_enabled": true, "tenant_id": "<GUID>" },
     "crowdstrike":  { "api_enabled": true, "falcon_region": "eu-1", "ngsiem_repo": "<repo>" },
-    "encore":       { "access": true }
+    "encore":       { "internal_client_id": "<gateway-uuid>", "access": "read" }
   }
 }
 ```
 
-The `platforms` object determines which security platforms are available for investigation of that client's incidents. Used by `lookup_client` (MCP tool), `socai://clients` (resource), workspace resolution in `run_kql`, the `hitl_investigation` prompt (Phase 0 client gate), and per-platform query routers (`tools/defender_hunting.py`, `tools/crowdstrike.py`).
+The `platforms` object determines which security platforms are available for investigation of that client's incidents. Used by `lookup_client` (MCP tool), `socai://clients` (resource), workspace resolution in `run_kql`, the `hitl_investigation` prompt (Phase 0 client gate), and per-platform query routers (`tools/defender_hunting.py`, `tools/crowdstrike.py`, `tools/eql.py`).
+
+**`platforms.encore`** — `internal_client_id` is the Encore gateway client UUID (from `list_clients` / `eql_direct.py clients`); it is the **token-scope gate** for the socai-native EQL tools (`eql_entity_context`, `eql_query`). Those tools resolve a case → its client → this UUID and pin every query to it; a client with no `internal_client_id` (or `access` not in {`read`, `true`}) is refused before any HTTP call, so the all-client `ENCORE_EQL_TOKEN` can never reach a client the case isn't mapped to. The standalone `eql-hosted` MCP server is unaffected (it takes a `clientId` directly). Gateway is the source of truth for these UUIDs — human-verify the mapping.
 
 **Per-platform credentials** (env vars, see `tools/secrets.py`):
 

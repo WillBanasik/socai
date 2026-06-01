@@ -613,6 +613,9 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "### 4. Contextualisation",
             "- Identify the affected user(s) and asset(s)",
+            "- If the alert names a user/host/IP, call `eql_entity_context(case_id, user=/host=/ip=)` "
+            "to pull recent identity, device posture, detection and exposure context from Encore EQL "
+            "(rolling ~7-day window; an empty result means 'not ingested for this client', NOT 'clean')",
             "- Determine the business impact and data sensitivity",
             "- Check for related alerts in the same timeframe",
             "",
@@ -980,6 +983,8 @@ def register_prompts(mcp: FastMCP) -> None:
             "",
             "Case-bound (the workhorse tools for this phase):",
             "- `enrich_iocs` — extract and enrich all IOCs (writes to case)",
+            "- `eql_entity_context` — recent identity/device/detection/exposure context for "
+            "a named user/host/IP from Encore EQL (writes to case; absence != clean)",
             "- `add_evidence` — attach raw alert data (writes to case)",
             "- `capture_urls` → `detect_phishing` — for URL/phishing cases",
             "- `analyse_email` — for email-based alerts",
