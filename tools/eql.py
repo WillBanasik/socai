@@ -27,6 +27,7 @@ Public API:
     is_eql_configured(client) -> bool
     run_eql(internal_client_id, eql, timeout=30) -> dict
     entity_context(case_id, user=None, host=None, ip=None, depth="auto") -> dict
+    posture_context(case_id, depth="auto") -> dict
 """
 from __future__ import annotations
 
@@ -158,6 +159,56 @@ QUERY_TEMPLATES: dict[str, list[dict[str, Any]]] = {
                     "EdgeResponseStatus", "RuleId", "UserAgent"]},
     ],
 }
+
+
+# ---------------------------------------------------------------------------
+# Curated client-wide POSTURE templates — preventative-control / best-practice
+# configuration baseline for a security architecture review. These are NOT
+# entity-scoped (no WHERE): they pull the tenant's current configuration state.
+# Tables/columns verified via `list columns` against the live gateway.
+# Time-series snapshot tables carry an ``order_by`` so the most-recent snapshot
+# surfaces first (the full history is persisted to the case artefact).
+# ---------------------------------------------------------------------------
+
+POSTURE_TEMPLATES: list[dict[str, Any]] = [
+    {"domain": "Secure Score (best-practice baseline)",
+     "table": "Intune-SecureScore", "order_by": "CreatedDateTime",
+     "select": ["CreatedDateTime", "CurrentScore", "MaxScore", "Percentage",
+                "ActiveUserCount", "LicensedUserCount"]},
+    {"domain": "Identity hygiene & MFA coverage",
+     "table": "AzureActiveDirectory-UserSummary", "order_by": "EntryDate",
+     "select": ["EntryDate", "TotalUsers", "NotMfaRegistered", "AccountsNoAuthMethod",
+                "OldPasswords", "LowRisk", "MediumRisk", "HighRisk", "ElevatedAccounts",
+                "AdminAccounts", "AdminAccountsNoMfa", "GlobalAdministrators",
+                "GuestAccounts", "AverageUserCompliance", "AverageAdminUserCompliance"]},
+    {"domain": "Privileged role assignments",
+     "table": "AzureActiveDirectory-RoleAssignments", "order_by": None,
+     "select": ["PrincipalName", "PrincipalType", "Role", "Enabled",
+                "RegistrationStatus", "SignInAudience", "AssignedToOn"]},
+    {"domain": "App credential hygiene (secret/cert expiry)",
+     "table": "AzureActiveDirectory-AppCredentials", "order_by": None,
+     "select": ["DisplayName", "ParentType", "Type", "Usage", "Status", "EndDateTime"]},
+    {"domain": "Device & encryption compliance",
+     "table": "Intune-Summary", "order_by": "EntryDate",
+     "select": ["EntryDate", "TotalDevices", "TotalCompliant", "TotalNonCompliant",
+                "TotalEncryptedDevices", "TotalNonEncryptedDevices", "TotalNoMFAUsers",
+                "TotalLaps", "TotalUsers", "TotalGuestUsers"]},
+    {"domain": "Defender configuration recommendations (best-practice gaps)",
+     "table": "WindowsDefenderAtp-MachineRecommendations", "order_by": "SeverityScore",
+     "select": ["RecommendationName", "RecommendationCategory", "SubCategory",
+                "SeverityScore", "PublicExploit", "ActiveAlert", "Status",
+                "ConfigScoreImpact", "ExposureImpact", "ExposedMachinesCount",
+                "TotalMachineCount", "RemediationType", "PolicyName"]},
+    {"domain": "Vulnerability exposure (environment)",
+     "table": "VulnerabilityPrioritization-VulnerabilitySummary", "order_by": None,
+     "select": ["Period", "ExposureScore", "PeerAverage", "ExposureScoreDeviation",
+                "TotalThreats", "ImminentThreats", "ImminentInternetExposedThreats",
+                "ImminentBusinessCriticalThreats", "EmergingThreats", "LowPriorityThreats"]},
+    {"domain": "Security awareness training",
+     "table": "AzureActiveDirectory-TrainingStatistics", "order_by": "EntryDate",
+     "select": ["EntryDate", "TotalAssignedCount", "TotalCompletedCount",
+                "TotalInProgressCount", "TotalOverdueCount", "TotalUnknownCount"]},
+]
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +385,14 @@ def _build_query(tpl: dict[str, Any], value: str) -> str:
     )
 
 
+def _build_posture_query(tpl: dict[str, Any]) -> str:
+    """Build a client-wide (no-WHERE) posture query, newest snapshot first."""
+    q = f'{tpl["table"]} SELECT {", ".join(tpl["select"])}'
+    if tpl.get("order_by"):
+        q += f' ORDER BY {tpl["order_by"]} DESCENDING'
+    return q
+
+
 # ---------------------------------------------------------------------------
 # Entity context — the HITL workhorse
 # ---------------------------------------------------------------------------
@@ -425,6 +484,103 @@ def entity_context(
     # Append a concise provenance note to the evidence chain (raw observation).
     _append_evidence(case_id, output)
     return output
+
+
+def posture_context(case_id: str, depth: str = "auto") -> dict[str, Any]:
+    """Pull the client's preventative-control / best-practice configuration baseline.
+
+    Unlike ``entity_context`` (reactive, entity-keyed), this runs the curated
+    client-wide POSTURE query set — Secure Score, identity/MFA coverage,
+    privileged access, app-credential hygiene, device/encryption compliance,
+    Defender config recommendations, vulnerability exposure, and security
+    training — for use by the security architecture review. Same scope gate as
+    ``entity_context``: pinned to the case's mapped Encore client. Persists the
+    full raw payload as a case artefact and appends a provenance note.
+    """
+    client_name, internal_client_id = _resolve_case_client(case_id)
+
+    started = time.time()
+    domains: list[dict[str, Any]] = []
+    for tpl in POSTURE_TEMPLATES:
+        q = _build_posture_query(tpl)
+        entry: dict[str, Any] = {
+            "domain": tpl["domain"], "table": tpl["table"], "query": q,
+        }
+        try:
+            res = run_eql(internal_client_id, q)
+            rows = res["rows"]
+            entry["row_count"] = res["row_count"]
+            entry["rows"] = rows
+            entry["errors"] = res["errors"]
+            entry["freshness"] = _freshness(rows)
+            entry["coverage"] = "ok" if rows else "no_data_for_client"
+        except EqlError as exc:
+            # One bad table must not sink the whole posture pull.
+            entry["row_count"] = 0
+            entry["rows"] = []
+            entry["coverage"] = "query_error"
+            entry["error"] = str(exc)
+            log_error(case_id, "eql.posture_context", str(exc),
+                      severity="warning", context={"table": tpl["table"]})
+        domains.append(entry)
+
+    output = {
+        "case_id": case_id,
+        "client": client_name,
+        "internal_client_id": internal_client_id,
+        "ts": utcnow(),
+        "depth": depth,
+        "duration_ms": int((time.time() - started) * 1000),
+        "domains": domains,
+        "_window_note": (
+            "Posture/summary tables are ~daily snapshots ordered newest-first; "
+            "the most-recent row is current state. 'no_data_for_client' means "
+            "the product is not ingested for this client — it is NOT evidence of "
+            "a clean or compliant state."
+        ),
+    }
+
+    # Persist the FULL raw payload (nothing dropped on disk).
+    save_json(CASES_DIR / case_id / "artefacts" / "eql_context" / "posture.json", output)
+
+    # Cap what we surface inline (snapshot histories can be hundreds of rows);
+    # row_count keeps the true total, full history lives in the artefact above.
+    for entry in domains:
+        capped, truncated = _cap(entry.get("rows", []), _MAX_ROWS_INLINE)
+        entry["rows"] = capped
+        entry["rows_returned"] = len(capped)
+        entry["truncated"] = truncated
+
+    _append_posture_evidence(case_id, output)
+    return output
+
+
+def _append_posture_evidence(case_id: str, output: dict[str, Any]) -> None:
+    """Summarise the posture pull into the case evidence chain."""
+    from api.actions import add_evidence  # lazy: avoids import cycle
+
+    lines = [
+        f"**Encore EQL posture baseline** ({output['client']}, "
+        f"client {output['internal_client_id']})",
+        "",
+    ]
+    for d in output["domains"]:
+        bits = [f"- {d['domain']} — `{d['table']}`: {d['row_count']} row(s)"]
+        if d.get("coverage") and d["coverage"] != "ok":
+            bits.append(f"[{d['coverage']}]")
+        fr = d.get("freshness") or {}
+        if fr.get("latest_record"):
+            bits.append(f"latest={fr['latest_record']}")
+        if d.get("error"):
+            bits.append(f"err={d['error'][:80]}")
+        lines.append(" ".join(bits))
+    lines.append("")
+    lines.append("_" + output["_window_note"] + "_")
+    try:
+        add_evidence(case_id, "\n".join(lines))
+    except Exception as exc:  # evidence note is best-effort, never fatal
+        log_error(case_id, "eql.append_posture_evidence", str(exc), severity="warning")
+        eprint(f"[eql] posture evidence note failed: {exc}")
 
 
 def _resolve_case_client(case_id: str) -> tuple[str, str]:

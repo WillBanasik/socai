@@ -58,6 +58,9 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/yara/generated_rules.yar` | LLM-generated case-specific YARA rules |
 | `cases/<ID>/artefacts/evtx/evtx_correlation.json` | Windows Event Log attack chain detection |
 | `cases/<ID>/artefacts/cve/cve_context.json` | CVE contextualisation (NVD, EPSS, KEV, OpenCTI) |
+| `cases/<ID>/artefacts/eql_context/posture.json` | Encore EQL client-wide posture baseline (`eql_posture_context`) — Secure Score, MFA/identity, privileged access, compliance, Defender recs, vuln exposure, training |
+| `cases/<ID>/artefacts/eql_context/<entity>.json` | Encore EQL per-entity context (`eql_entity_context`) — identity/device/detection/exposure for a named user/host/IP |
+| `cases/<ID>/artefacts/eql_context/adhoc_<ts>.json` | Encore EQL raw query result (`eql_query` escape hatch) |
 | `cases/<ID>/artefacts/executive_summary/executive_summary.md` | Plain-English executive summary |
 | `cases/<ID>/artefacts/executive_summary/executive_summary_manifest.json` | Executive summary metadata |
 | `cases/<ID>/artefacts/security_architecture/security_arch_review.md` | Security architecture review |

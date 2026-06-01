@@ -200,3 +200,59 @@ class TestRunEqlForCase:
             with pytest.raises(eql.EqlNotConfigured):
                 eql.run_eql_for_case(TEST_CASE, "X SELECT Y")
         post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Posture baseline (client-wide, for the security architecture review)
+# ---------------------------------------------------------------------------
+
+class TestPostureContext:
+    def test_posture_pulls_all_domains_pinned(self, monkeypatch, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        rows = [{"EntryDate": "2026-06-01T00:00:00", "CurrentScore": 1360}]
+        post = MagicMock(return_value=_FakeResponse(200, _eql_payload(rows)))
+        with patch.object(eql.requests, "post", post):
+            out = eql.posture_context(TEST_CASE)
+
+        assert out["client"] == "performanta"
+        assert out["internal_client_id"] == "uuid-perf-123"
+        # one domain entry per curated posture template
+        assert len(out["domains"]) == len(eql.POSTURE_TEMPLATES)
+        assert all(d["coverage"] == "ok" for d in out["domains"])
+        # every query is client-wide (no WHERE) and pinned to the mapped id
+        for d in out["domains"]:
+            assert " WHERE " not in d["query"]
+        for call in post.call_args_list:
+            url = call.args[0] if call.args else call.kwargs.get("url", "")
+            assert "client=uuid-perf-123" in url
+        # full payload persisted as posture.json
+        assert (CASES_DIR / TEST_CASE / "artefacts" / "eql_context" / "posture.json").exists()
+
+    def test_posture_refused_when_unmapped_no_http(self, monkeypatch, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        (_case / "case_meta.json").write_text(json.dumps({"client": "unmapped"}))
+        post = MagicMock()
+        with patch.object(eql.requests, "post", post):
+            with pytest.raises(eql.EqlNotConfigured):
+                eql.posture_context(TEST_CASE)
+        post.assert_not_called()  # gate fires before any HTTP
+
+    def test_posture_snapshot_rows_capped_total_kept(self, monkeypatch, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        many = [{"EntryDate": f"2026-06-{d:02d}T00:00:00"} for d in range(1, 29)] * 5  # 140 rows
+        with patch.object(eql.requests, "post", return_value=_FakeResponse(200, _eql_payload(many))):
+            out = eql.posture_context(TEST_CASE)
+        d0 = out["domains"][0]
+        assert d0["row_count"] == 140                     # true total preserved
+        assert d0["rows_returned"] == eql._MAX_ROWS_INLINE
+        assert d0["truncated"] is True
+        # full set persisted to the artefact
+        art = json.loads((CASES_DIR / TEST_CASE / "artefacts" / "eql_context" / "posture.json").read_text())
+        assert len(art["domains"][0]["rows"]) == 140
+
+    def test_posture_bad_table_does_not_sink_pull(self, monkeypatch, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        with patch.object(eql.requests, "post", return_value=_FakeResponse(500, text="boom")):
+            out = eql.posture_context(TEST_CASE)
+        assert out["domains"]
+        assert all(d["coverage"] == "query_error" for d in out["domains"])

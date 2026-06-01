@@ -627,13 +627,19 @@ The upload tools above are the *escalation* path, not the default.
 
 ## Security Architecture Review
 
-`tools/security_arch_review.py` collects case context for a security architecture review. Produces a six-section markdown report: Threat Profile (MITRE ATT&CK), Control Gap Analysis, Microsoft Stack Recommendations, CrowdStrike Falcon Recommendations, Prioritised Remediation Table, Detection Engineering Notes.
+`tools/security_arch_review.py` collects case context for a security architecture review. This is a **forward-looking, preventative-controls / best-practice configuration** deliverable — the triggering incident is the entry point, but the goal is to harden the client's controls so the class of incident cannot recur. Produces a seven-section markdown report: **Posture Baseline Summary** (read from the live Encore EQL configuration baseline), Threat Profile (MITRE ATT&CK), Control Gap Analysis, Preventative Control Recommendations — Microsoft Stack, Preventative Control Recommendations — CrowdStrike Falcon, Prioritised Remediation Roadmap, Detection Engineering Notes.
+
+**Live configuration baseline (Encore EQL).** When the case's client is Encore-enabled (`platforms.encore.internal_client_id`), the `write_security_arch_review` prompt instructs the local agent to gather the client's real posture *before* drafting recommendations:
+- **`eql_posture_context(case_id)`** — client-wide baseline: Secure Score, MFA/identity coverage, privileged-role assignments, app-credential hygiene, device/encryption compliance, Defender config recommendations, vulnerability exposure, training. Primary input. See `POSTURE_TEMPLATES` in `tools/eql.py` and `docs/encore-eql.md`.
+- **`eql_entity_context(case_id, user=/host=/ip=)`** — reactive context for the incident's named entities.
+
+`tools/security_arch_review.py` `_eql_guidance(case_id)` injects this guidance (config-only check, no HTTP server-side) and degrades to "mark posture Unknown" when the client is not Encore-enabled. **Scope boundary:** EQL exposes CA *enforcement outcomes* + MFA *enforcement policy* + Secure Score + Defender recommendations, not the full Conditional Access policy *definitions* — the prompt forbids inventing CAP rulesets.
 
 Use the `write_security_arch_review` prompt followed by `save_report` to generate and persist. The local Claude session has the full investigation context for better analysis.
 
 **Recommended flow:** Run sec arch review *before* the MDR report. The MDR report's `_build_context()` automatically loads the sec arch findings and the `write_mdr_report` prompt instructs Claude Desktop to distil the control gap analysis and platform-specific recommendations into the Client-Responsible Remediation subsection — producing specific, actionable hardening steps rather than generic advice.
 
-Outputs: `security_arch_review.md`, `security_arch_structured.json`, `security_arch_manifest.json`
+Outputs: `security_arch_review.md`, `security_arch_manifest.json`. EQL pulls are persisted separately under `artefacts/eql_context/` (`posture.json` + per-entity files).
 
 ## Response Actions
 

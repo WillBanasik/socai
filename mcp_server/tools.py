@@ -94,7 +94,7 @@ TOOLSETS: dict[str, set[str]] = {
         # log hunting
         "run_kql", "run_kql_batch", "run_defender_kql", "run_falcon_cql",
         "query_falcon_detections", "query_falcon_hosts", "query_falcon_incidents",
-        "eql_entity_context", "eql_query",
+        "eql_entity_context", "eql_query", "eql_posture_context",
         "load_kql_playbook", "load_cql_playbook", "generate_sentinel_query",
         "generate_queries", "load_ngsiem_reference", "parse_logs",
         "detect_anomalies",
@@ -3741,6 +3741,38 @@ def _register_tier3(mcp: FastMCP) -> None:
             })
         except EqlError as exc:
             return _json({"error": "Encore EQL query failed.", "detail": str(exc)})
+        return _json(result)
+
+    @mcp.tool(title="Encore EQL Posture Baseline", annotations={"readOnlyHint": True})
+    async def eql_posture_context(case_id: str, depth: str = "auto") -> str:
+        """Pull the client's preventative-control / best-practice configuration baseline from Encore EQL.
+
+        Client-wide (NOT entity-scoped) — the input for a security architecture review.
+        Runs a curated set covering Secure Score, identity/MFA coverage, privileged-role
+        assignments, app-credential hygiene, device/encryption compliance, Defender config
+        recommendations, vulnerability exposure, and security-awareness training. Pair with
+        ``eql_entity_context`` for the specific user/host/IP named in the incident.
+
+        Case-scoped: pinned to this case's Encore client (``platforms.encore.internal_client_id``);
+        results are written as a case artefact and summarised into the evidence chain. Snapshot
+        tables are ordered newest-first; an empty result means "not ingested for this client",
+        NOT "compliant".
+        """
+        _require_scope("investigations:read")
+        from tools.eql import EqlError, EqlNotConfigured, posture_context as _posture_context
+
+        if not case_id.strip():
+            return _json({"error": "case_id is required."})
+        try:
+            result = await asyncio.to_thread(lambda: _posture_context(case_id, depth=depth))
+        except EqlNotConfigured as exc:
+            return _json({
+                "error": "Encore EQL not enabled for this case's client.",
+                "detail": str(exc),
+                "hint": "Set platforms.encore.internal_client_id (+ access) in client_entities.json.",
+            })
+        except EqlError as exc:
+            return _json({"error": "Encore EQL posture lookup failed.", "detail": str(exc)})
         return _json(result)
 
     @mcp.tool(title="Query CrowdStrike Falcon Detections")

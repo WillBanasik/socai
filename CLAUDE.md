@@ -206,5 +206,5 @@ Read these only when working on the relevant area:
 | `docs/mcp-server.md` | MCP server: auth, RBAC, tools, resources, prompts, deployment |
 | `docs/defender-hunting.md` | Defender XDR Advanced Hunting API: multi-tenant app reg, per-client tenant_id, run_defender_kql |
 | `docs/crowdstrike.md` | CrowdStrike Falcon + NG-SIEM/LogScale: per-client API client, falcon_region, run_falcon_cql + classic FQL tools |
-| `docs/encore-eql.md` | Encore Gateway EQL: refresh-token auth, Cloudflare UA quirk, scripts/eql_direct.py, `eql-hosted` MCP server (Claude Code `.mcp.json` + Desktop `mcp-remote` wrapper), EQL syntax |
+| `docs/encore-eql.md` | Encore Gateway EQL: refresh-token auth, Cloudflare UA quirk, scripts/eql_direct.py, `eql-hosted` MCP server (Claude Code `.mcp.json` + Desktop `mcp-remote` wrapper), EQL syntax, case-scoped tools (`eql_entity_context`, `eql_posture_context`, `eql_query`) |
 | `docs/roadmap.md` | Planned features: tiered incident model, SOAR/Zoho integration |

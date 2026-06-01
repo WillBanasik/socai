@@ -149,6 +149,7 @@ TOOL_TAXONOMY: dict[str, dict[str, str]] = {
     "query_falcon_incidents":   {"category": "query",       "goal": "investigate"},
     "eql_entity_context":       {"category": "query",       "goal": "investigate"},
     "eql_query":                {"category": "query",       "goal": "investigate"},
+    "eql_posture_context":      {"category": "query",       "goal": "investigate"},
     "generate_queries":         {"category": "query",       "goal": "investigate"},
     "generate_sentinel":        {"category": "query",       "goal": "investigate"},
     "parse_logs":               {"category": "query",       "goal": "investigate"},

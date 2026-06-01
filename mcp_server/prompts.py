@@ -1706,8 +1706,9 @@ def register_prompts(mcp: FastMCP) -> None:
             Case to generate the review for.
         """
         from tools.security_arch_review import _SYSTEM_PROMPT as prompt
-        from tools.security_arch_review import _build_context
+        from tools.security_arch_review import _build_context, _eql_guidance
         context = _build_context(case_id)
+        eql_guidance = _eql_guidance(case_id)
 
         return (
             f"# Security Architecture Review — Instructions\n\n"
@@ -1716,9 +1717,18 @@ def register_prompts(mcp: FastMCP) -> None:
             f"# Case Data\n\n"
             f"{context}\n\n"
             f"---\n\n"
+            f"{eql_guidance}\n\n"
+            f"---\n\n"
             f"# Task\n\n"
             f"Produce a security architecture review for case **{case_id}** "
             f"following the instructions above exactly.\n\n"
+            f"**First**, if the Live Configuration Baseline section above says "
+            f"Encore EQL is enabled, gather that data — call `eql_posture_context` "
+            f"for the client-wide baseline and `eql_entity_context` for the "
+            f"incident's entities — and ground the Posture Baseline Summary, "
+            f"Control Gap Analysis, and recommendations in it. If it says EQL is "
+            f"not enabled, proceed from the case artefacts only and mark posture "
+            f"metrics Unknown where no data exists.\n\n"
             f"Produce the output as **markdown** — `##`/`###` headings, bullet "
             f"lists for recommendations, fenced code blocks for any policy "
             f"snippets. No HTML, no inline styling.\n\n"

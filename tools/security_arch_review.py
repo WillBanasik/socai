@@ -46,6 +46,24 @@ Microsoft security stack and CrowdStrike Falcon platform. You advise enterprise 
 SOC and security engineering teams on how to detect, prevent, and respond to \
 threats using their existing tooling.
 
+A security architecture review is a FORWARD-LOOKING, PREVENTATIVE deliverable. \
+A specific incident is the entry point — the trigger that prompted the review — \
+but the deliverable's purpose is to harden the client's PREVENTATIVE CONTROLS \
+and CONFIGURATION BASELINE so this class of incident cannot recur. You are not \
+re-investigating the incident; you are using it as a lens to assess whether the \
+client's environment is configured to best practice, and to give specific, \
+targeted recommendations that close the gaps. Always reason about what control \
+SHOULD have prevented or detected the activity, and whether it was present, \
+absent, or misconfigured in the actual environment.
+
+You will be given two inputs: (1) the completed investigation for the triggering \
+incident, and (2) where available, the client's LIVE configuration baseline \
+pulled from Encore EQL (Secure Score, MFA/identity coverage, privileged access, \
+app-credential hygiene, device/encryption compliance, Defender configuration \
+recommendations, vulnerability exposure, security-awareness training). Ground \
+every recommendation in that live baseline wherever it exists — do not give \
+generic advice when real configuration state is in front of you.
+
 Your Microsoft expertise covers:
 - Microsoft Entra ID: Conditional Access (policy design, named locations, \
   exclusion governance), Identity Protection (risk policies, sign-in/user risk), \
@@ -76,39 +94,69 @@ Your CrowdStrike Falcon expertise covers:
 - Falcon Fusion: workflow automation, SOAR playbooks
 - Falcon Overwatch: managed threat hunting integration
 
-When given a case investigation summary, you will produce a structured \
-Security Architecture Review with the following sections:
+You will produce a structured Security Architecture Review with the following \
+sections:
 
-1. **Threat Profile** — Map observed TTPs to MITRE ATT&CK. Be specific about \
-   technique IDs (e.g. T1078.004 — Cloud Accounts). Include confidence in each \
-   mapping based on evidence quality.
+1. **Posture Baseline Summary** — The client's current standing against \
+   best practice, read directly from the live Encore EQL baseline. Cover, where \
+   data exists: Microsoft Secure Score (current vs max, % and trend), MFA / \
+   strong-auth coverage (users not MFA-registered, admins without MFA, accounts \
+   with no auth method), privileged-access exposure (Global Admin count, \
+   standing role assignments), app-credential hygiene (expired/expiring secrets \
+   and certs), device & encryption compliance (compliant vs non-compliant, \
+   encrypted vs not, LAPS coverage), patch / vulnerability exposure (exposure \
+   score vs peer average, imminent/emerging threats), and security-awareness \
+   training completion. State each metric as **Confirmed** (EQL data present), \
+   **Assessed** (inference), or **Unknown** (no data / not ingested). Never \
+   present an absent EQL table as a passing control.
 
-2. **Control Gap Analysis** — For each identified TTP, state whether a \
-   preventive or detective control was present, absent, or misconfigured in \
-   the environment. Reference specific policy names, rule names, or settings \
-   where visible in the case data.
+2. **Threat Profile** — Map the triggering incident's observed TTPs to MITRE \
+   ATT&CK. Be specific about technique IDs (e.g. T1078.004 — Cloud Accounts). \
+   Include confidence in each mapping based on evidence quality.
 
-3. **Microsoft Stack Recommendations** — Prioritised, actionable recommendations \
-   per product area. Be specific: name the exact Conditional Access policy change, \
-   the Sentinel analytics rule to deploy (reference the OOTB rule name or \
-   provide the KQL), the MDE ASR rule to enable, etc. Do not give generic advice.
+3. **Control Gap Analysis** — The core of the review. For each observed TTP AND \
+   each weak signal in the posture baseline, state whether a preventative or \
+   detective control was present, absent, or misconfigured — grounded in the \
+   EQL baseline and case data, not assumption. Reference specific policy names, \
+   rule names, Defender recommendations, or settings where visible. Tie each gap \
+   to the best-practice target it falls short of.
 
-4. **CrowdStrike Falcon Recommendations** — Prioritised, actionable \
-   recommendations per Falcon module. Be specific: custom IOA rule logic, \
-   LogScale query to create as a scheduled search, prevention policy toggle, etc.
+4. **Preventative Control Recommendations — Microsoft Stack** — Prioritised, \
+   specific, actionable hardening per product area: the exact Conditional Access \
+   policy to create/tighten (e.g. block legacy auth, require phishing-resistant \
+   MFA, sign-in risk policy), Identity Protection risk policies, PIM for standing \
+   privileged roles, the MDE ASR rule or Defender MachineRecommendation to \
+   action, Intune compliance/baseline policy, Purview DLP. Anchor each to the \
+   specific posture gap from sections 1 and 3. Do not give generic advice.
 
-5. **Prioritised Remediation Table** — A markdown table with columns: \
-   Priority (Critical/High/Medium/Low), Action, Platform, Effort (Hours estimate), \
-   Risk Reduced. Sorted by priority descending.
+5. **Preventative Control Recommendations — CrowdStrike Falcon** — Prioritised, \
+   specific hardening per Falcon module: prevention-policy toggles, custom IOA \
+   rule logic, Spotlight vulnerability prioritisation, Falcon Identity Protection \
+   enforcement, NGSIEM scheduled searches.
 
-6. **Detection Engineering Notes** — Any new detection logic, sigma rules, \
-   or query patterns that should be written as a result of this investigation.
+6. **Prioritised Remediation Roadmap** — A markdown table with columns: \
+   Priority (Critical/High/Medium/Low), Control / Action, Platform, \
+   Best-practice target, Effort (hours estimate), Risk reduced. Sorted by \
+   priority descending. This is the client's hardening backlog.
+
+7. **Detection Engineering Notes** — Any new detection logic, sigma rules, or \
+   query patterns that should be written as a result of this investigation.
+
+**Scope boundary — do not invent configuration you cannot see.** Encore EQL \
+exposes Conditional Access *enforcement outcomes* (per-sign-in CA status), \
+per-user MFA *enforcement policy*, Secure Score, and Defender's own config \
+recommendations — but it does NOT enumerate the full Conditional Access policy \
+*definitions* (conditions / grant controls). You may prove "CA is/was not being \
+applied to these sign-ins" or "MFA coverage is X%"; you may NOT list a CAP's \
+exact ruleset as if you had read it. Frame CA/policy recommendations from \
+observed outcomes and posture, and flag where the client should confirm the \
+underlying policy definition.
 
 Tone: Direct, technical, practitioner-level. No marketing language. \
 Assume the reader is a senior SOC analyst or security engineer. \
-Cite specific policy names, rule IDs, or configuration settings observed \
-in the case data whenever possible — do not invent details not present in \
-the evidence.
+Cite specific policy names, rule IDs, Secure Score figures, or configuration \
+settings observed in the EQL baseline / case data whenever possible — do not \
+invent details not present in the evidence.
 
 ---
 
@@ -240,6 +288,104 @@ def _safe_load(path: Path) -> dict | None:
         log_error("", "security_arch_review.safe_load", str(exc),
                   severity="warning", context={"path": str(path)})
         return None
+
+
+# ---------------------------------------------------------------------------
+# Encore EQL guidance — live posture baseline for the review
+# ---------------------------------------------------------------------------
+
+def _eql_entity_candidates(case_id: str) -> dict[str, list[str]]:
+    """Map a case's IOCs to EQL entity types for the reactive entity pull.
+
+    Only the deterministic mappings are surfaced: ``email`` IOCs → ``user``
+    (UPN) and ``ipv4`` IOCs → ``ip``. Hostnames are not a distinct IOC type
+    from extraction, so they are left for the agent to pull from the narrative.
+    Returns ``{}`` on any error.
+    """
+    iocs_data = _safe_load(CASES_DIR / case_id / "iocs" / "iocs.json")
+    if not iocs_data:
+        return {}
+    ioc_dict = iocs_data.get("iocs", {}) or {}
+    out: dict[str, list[str]] = {}
+    if ioc_dict.get("email"):
+        out["user"] = list(ioc_dict["email"])[:10]
+    if ioc_dict.get("ipv4"):
+        out["ip"] = list(ioc_dict["ipv4"])[:10]
+    return out
+
+
+def _eql_guidance(case_id: str) -> str:
+    """Build the Encore EQL guidance block for the security-arch-review prompt.
+
+    Runs server-side, config-only (no HTTP): resolves the case's client and
+    checks whether Encore EQL is mapped for it. If enabled, returns a markdown
+    block telling the local agent to pull the client-wide posture baseline
+    (``eql_posture_context``) plus reactive context for the incident's entities
+    (``eql_entity_context``), and bakes in the coverage/freshness discipline.
+    Best-effort — never raises.
+    """
+    try:
+        meta = _safe_load(CASES_DIR / case_id / "case_meta.json") or {}
+        client = meta.get("client", "")
+        from tools.eql import is_eql_configured
+        configured = bool(client) and is_eql_configured(client)
+    except Exception as exc:
+        log_error(case_id, "security_arch_review.eql_guidance", str(exc),
+                  severity="warning")
+        return ""
+
+    if not configured:
+        return (
+            "## Live Configuration Baseline (Encore EQL)\n"
+            f"Encore EQL is **not enabled** for this case's client "
+            f"(`{client or 'unknown'}`). No live posture data is available — base "
+            "the Posture Baseline Summary on the case artefacts only and mark its "
+            "metrics **Unknown** where no data exists. Do not attempt EQL calls."
+        )
+
+    lines = [
+        "## Live Configuration Baseline (Encore EQL) — gather BEFORE writing",
+        f"Encore EQL **is enabled** for this client (`{client}`). This is the "
+        "primary input for the Posture Baseline Summary and Control Gap Analysis. "
+        "Pull it before drafting any recommendation so the review reflects the "
+        "client's real configuration, not assumptions.",
+        "",
+        "**1. Client-wide posture baseline (always call first):**",
+        f'  - `eql_posture_context("{case_id}")` — Secure Score, MFA / identity '
+        "coverage, privileged-role assignments, app-credential hygiene, device & "
+        "encryption compliance, Defender configuration recommendations, "
+        "vulnerability exposure, and security-awareness training. This powers "
+        "sections 1, 3 and 4.",
+        "",
+        "**2. Reactive entity context (for the incident's entities):**",
+        f'  - `eql_entity_context("{case_id}", user=…, host=…, ip=…)` — identity '
+        "risk, sign-in / conditional-access outcomes, device posture, detections, "
+        "and vulnerability exposure for a named entity.",
+    ]
+    cands = _eql_entity_candidates(case_id)
+    if cands:
+        lines.append("")
+        lines.append("  Candidate entities from this case's IOCs — seed your calls:")
+        for etype, vals in cands.items():
+            for v in vals:
+                lines.append(f'    - `eql_entity_context("{case_id}", {etype}="{v}")`')
+    lines.extend([
+        "",
+        "  Also identify any **hostnames** named in the analyst notes / "
+        "investigation report above and pull them with `host=…`.",
+        "",
+        "For anything the curated sets miss (e.g. OAuth consent grants, app "
+        "permissions, directory audits), use the `eql_query` escape hatch.",
+        "",
+        "**Coverage discipline (mandatory):** an empty result / "
+        "`no_data_for_client` means the product is **not ingested** for this "
+        "client — it is NOT evidence of a clean, compliant, or healthy state. "
+        "Snapshot tables are ordered newest-first (the top row is current state); "
+        "`SignInAudits` is a rolling ~7-day window. Label every EQL-derived claim "
+        "per the analytical standards: data present = *Confirmed*, inference = "
+        "*Assessed*, no data = *Unknown*.",
+    ])
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
