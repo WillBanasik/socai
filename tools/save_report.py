@@ -77,6 +77,13 @@ _REPORT_TYPES = {
         "disposition": None,
         "defang": True,
     },
+    "vuln_hunt_report": {
+        "path": "artefacts/vuln_hunt/vuln_hunt_report.md",
+        "title_prefix": "Vulnerability Hunt Worklist",
+        "auto_close": False,        # proactive deliverable, not an incident closure
+        "disposition": None,
+        "defang": False,
+    },
 }
 
 

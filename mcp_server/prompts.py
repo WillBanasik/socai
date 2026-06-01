@@ -1752,6 +1752,43 @@ def register_prompts(mcp: FastMCP) -> None:
     # ------------------------------------------------------------------
 
     @mcp.prompt()
+    def write_vuln_hunt_report(case_id: str) -> str:
+        """Generate a vulnerability hunt worklist locally in Claude Desktop.
+
+        Loads the worklist system prompt and the imported vuln-hunt context (run
+        ``eql_vuln_hunt`` and import it first). When done, call ``save_report`` with
+        report_type="vuln_hunt_report".
+
+        Parameters
+        ----------
+        case_id : str
+            Case the vuln hunt was imported into.
+        """
+        from tools.vuln_hunt_report import _SYSTEM_PROMPT as prompt
+        from tools.vuln_hunt_report import _build_context
+        context = _build_context(case_id)
+
+        return (
+            f"# Vulnerability Hunt Worklist — Instructions\n\n"
+            f"{prompt}\n\n"
+            f"---\n\n"
+            f"# Hunt Context\n\n{context}\n\n"
+            f"---\n\n"
+            f"# Task\n\n"
+            f"Produce a vulnerability hunt worklist for case **{case_id}** following the "
+            f"instructions above. Rank by real exploitability (active-exploit / ransomware "
+            f"/ KEV / EPSS), choose the control per item (patch vs edr_soar_mitigation), and "
+            f"end with the single machine-readable ```json handoff block. Ground every item "
+            f"in the hunt data — never invent a host, CVE, or control.\n\n"
+            f"Produce the output as **markdown** — `##`/`###` headings, a ranked table for "
+            f"the worklist, fenced code blocks only for the json handoff. No HTML.\n\n"
+            f"When complete, call `save_report` with:\n"
+            f"- `case_id`: \"{case_id}\"\n"
+            f"- `report_type`: \"vuln_hunt_report\"\n"
+            f"- `report_text`: the full markdown worklist\n"
+        )
+
+    @mcp.prompt()
     def write_timeline(case_id: str) -> str:
         """Reconstruct a forensic timeline locally in Claude Desktop.
 

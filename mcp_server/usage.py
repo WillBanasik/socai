@@ -185,6 +185,7 @@ TOOL_TAXONOMY: dict[str, dict[str, str]] = {
     "save_report":              {"category": "delivery",    "goal": "deliver"},
     "prepare_closure_comment":  {"category": "delivery",    "goal": "deliver"},
     "prepare_fp_tuning_ticket": {"category": "delivery",    "goal": "deliver"},
+    "prepare_vuln_hunt_report": {"category": "delivery",    "goal": "deliver"},
     "response_actions":         {"category": "delivery",    "goal": "deliver"},
     "review_report_quality":    {"category": "delivery",    "goal": "deliver"},
     "security_arch_review":     {"category": "delivery",    "goal": "deliver"},

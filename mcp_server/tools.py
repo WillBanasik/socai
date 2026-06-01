@@ -105,7 +105,7 @@ TOOLSETS: dict[str, set[str]] = {
         "generate_report", "prepare_mdr_report", "prepare_pup_report",
         "prepare_executive_summary", "load_report_template", "save_report",
         "generate_weekly", "response_actions", "prepare_closure_comment",
-        "prepare_fp_tuning_ticket",
+        "prepare_fp_tuning_ticket", "prepare_vuln_hunt_report",
     },
     "phishing": {
         "detect_phishing", "analyse_email", "start_browser_session",
@@ -4119,6 +4119,34 @@ def _register_tier3(mcp: FastMCP) -> None:
                 f"Use the write_security_arch_review prompt to generate the "
                 f"review for {case_id}, then call save_report with "
                 f'report_type="security_arch_review" to persist it.'
+            ),
+        })
+
+    @mcp.tool(title="Prepare Vulnerability Hunt Worklist")
+    async def prepare_vuln_hunt_report(case_id: str = "") -> str:
+        """Prepare a vulnerability hunt worklist deliverable from an imported Encore
+        vuln hunt. Use the ``write_vuln_hunt_report`` prompt to write it, then call
+        ``save_report(report_type="vuln_hunt_report")`` to persist it.
+
+        ``case_id`` optional — auto-created if empty. Run ``eql_vuln_hunt`` first and
+        import it (``import_vuln_hunt`` / ``create_case(vuln_hunt_id=)``); pivot the
+        top CVEs/hosts into the live log layer via the ``vulnerability-hunting``
+        playbook before writing, so confirmed exploitation can be reported.
+        """
+        _require_scope("investigations:submit")
+        case_id = _ensure_case(case_id)
+        _check_client_boundary(case_id)
+
+        return _json({
+            "status": "use_prompt",
+            "case_id": case_id,
+            "prompt": "write_vuln_hunt_report",
+            "save_tool": "save_report",
+            "save_args": {"report_type": "vuln_hunt_report"},
+            "message": (
+                f"Use the write_vuln_hunt_report prompt to generate the worklist for "
+                f'{case_id}, then call save_report with report_type="vuln_hunt_report" '
+                f"to persist it."
             ),
         })
 
