@@ -74,9 +74,10 @@ Note: The server-side tool names (`prepare_mdr_report`, `prepare_pup_report`, `p
 | `write_mdr_report` | Yes | Preserves existing | `save_report(report_type="mdr_report")` |
 | `write_pup_report` | Yes | `pup_pua` | `save_report(report_type="pup_report")` |
 | `write_closure_comment` | Yes | From `classification` (BP/FP/Undetermined) | `save_report(report_type="closure_comment", disposition=...)` |
-| `write_fp_tuning` | Yes | `false_positive` | `save_report(report_type="fp_tuning_ticket")` |
+| `write_fp_tuning` | Yes | `false_positive` (or `benign_positive`) | `save_report(report_type="fp_tuning_ticket")` |
 | `write_executive_summary` | No | — | `save_report` |
 | `write_security_arch_review` | No | — | `save_report` |
+| `write_vuln_hunt_report` | No | — | `save_report(report_type="vuln_hunt_report")` |
 | `write_threat_article` | N/A | — | `save_threat_article` |
 | `write_response_plan` | No | — | `save_report` |
 
@@ -163,9 +164,10 @@ Deliverable tools (`prepare_mdr_report`, `prepare_pup_report`, `prepare_closure_
 | MDR report | `write_mdr_report` → `save_report` | Yes | Preserves existing |
 | PUP report | `write_pup_report` → `save_report` | Yes | `pup_pua` |
 | Closure comment (BP / FP / Undetermined) | `prepare_closure_comment(classification=...)` → `write_closure_comment` → `save_report(report_type="closure_comment", disposition=...)` | Yes | From classification (`benign_positive` / `false_positive` / `inconclusive`) |
-| FP tuning ticket | `write_fp_tuning` → `save_report(report_type="fp_tuning_ticket")` | Yes | `false_positive` |
+| Detection tuning ticket | `prepare_fp_tuning_ticket` → `write_fp_tuning` → `save_report(report_type="fp_tuning_ticket")` | Yes | `false_positive` (or `benign_positive`) |
 | Executive summary | `write_executive_summary` → `save_report` | No | — |
 | Security arch review | `write_security_arch_review` → `save_report` | No | — |
+| Vulnerability hunt worklist | `eql_vuln_hunt` → `import_vuln_hunt` → `prepare_vuln_hunt_report` → `write_vuln_hunt_report` → `save_report(report_type="vuln_hunt_report")` | No | — |
 
 Each auto-close path calls `index_case(case_id, status="closed", ...)` on successful save. If the tool fails, the case remains open. On close, `index_case` emits an `investigation_summary` metric with computed durations (total, triage, investigation minutes) from `phase_timestamps`.
 

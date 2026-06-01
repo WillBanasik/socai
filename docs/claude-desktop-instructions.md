@@ -103,7 +103,9 @@ All LLM reasoning (report writing, disposition analysis, quality review) happens
 
 Some prompts auto-close the case on save; some do not. Each prompt's description (in the picker) states its auto-close behaviour and the disposition it applies. Read the description before invoking — do not assume from this document.
 
-General pattern: **deliverables** (MDR report, PUP report, closure comment, FP tuning) auto-close. **Supplementary outputs** (executive summary, security arch review, threat articles, response plans) do not.
+General pattern: **deliverables** (MDR report, PUP report, closure comment, FP tuning) auto-close. **Supplementary outputs** (executive summary, security arch review, vulnerability hunt worklist, threat articles, response plans) do not.
+
+**Proactive vulnerability hunting** (not disposition-driven): `eql_vuln_hunt(client)` runs caseless — ranked exposed hosts + actively-exploited CVEs + new KEVs + EDR mitigations. Promote with `import_vuln_hunt` / `create_case(vuln_hunt_id=)`, hunt actual exploitation via the `vulnerability-hunting` playbook, then `prepare_vuln_hunt_report` → `write_vuln_hunt_report` → `save_report(report_type="vuln_hunt_report")`.
 
 Per disposition:
 

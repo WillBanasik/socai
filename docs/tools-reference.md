@@ -617,6 +617,17 @@ The upload tools above are the *escalation* path, not the default.
 - Analysis via prompt: use `write_cve_context` prompt for exploitability assessment, TTP relevance, patching priority
 - Output: `artefacts/cve/cve_context.json`
 
+## Vulnerability Hunting (Encore EQL)
+
+Proactive vulnerability hunting on top of Encore's pre-computed exploit/KEV prioritisation. Two chained modes (full detail in `docs/encore-eql.md`):
+
+- **`eql_vuln_hunt(client)`** (`tools/eql.py`) — the only **caseless** EQL tool. Resolves the client by name (exact, via the `_resolve_encore_id` scope gate — never fuzzy) and runs `VULN_HUNT_TEMPLATES`: exposed hosts ranked by exploitability (active-exploit / ransomware / imminent-threat flags + critical counts), actively-exploited CVEs (EPSS-ranked, bounded to `Classification = "Actively Exploited"`), new 48h KEVs, EDR compensating-control tasks, and the environment exposure summary. Persists the full payload to `registry/vuln_hunts/VH_<ts>.json`; returns a `hunt_id` + triage summary.
+- **Promote**: `import_vuln_hunt(hunt_id, case_id)` or `create_case(..., vuln_hunt_id=)` — copies the hunt into the case's `artefacts/eql_context/` and appends an evidence note.
+- **Active-exploitation hunt**: the `vulnerability-hunting` playbook (`config/playbooks/vulnerability-hunting/`, KQL + CQL) pivots the top CVEs/hosts into the live log layer (`run_kql` / `run_defender_kql` / `run_falcon_cql`) to check for actual exploitation.
+- **Deliverable**: `prepare_vuln_hunt_report` → `write_vuln_hunt_report` prompt → `save_report(report_type="vuln_hunt_report")` (`tools/vuln_hunt_report.py`). A prioritised remediation worklist ending in a machine-readable JSON handoff (`control_type`: `patch` | `edr_soar_mitigation`). Non-closing. Output: `artefacts/vuln_hunt/vuln_hunt_report.md`.
+
+EQL filter quirk: boolean `WHERE` is rejected (filter exploit flags client-side on ranked results) and there is no `LIMIT` (bound large tables via a Text `WHERE`). The CVE table's `PrioritizationIndex` saturates — rank CVEs by `Epss`.
+
 ## Executive Summary
 
 `tools/executive_summary.py` collects case context for a plain-English executive summary for non-technical leadership:

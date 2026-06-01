@@ -157,7 +157,7 @@ python3 -c "from api.auth import create_token_for_role; print(create_token_for_r
 
 When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg-soc-analyst`, `sg-soc-senior`) to these role names in the auth config.
 
-## Tools (115)
+## Tools (121)
 
 ### Tier 1 -- Core Investigation (32)
 
@@ -291,6 +291,8 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `query_falcon_incidents` | `crowdstrike:query` | Falcon incidents (FQL filter) |
 | `security_arch_review` | `investigations:submit` | Security architecture review (collects context; use `write_security_arch_review` prompt) |
 | `contextualise_cves` | `investigations:read` | CVE contextualisation (NVD, EPSS, CISA KEV) |
+| `eql_vuln_hunt` | `investigations:read` | Caseless proactive vulnerability hunt via Encore EQL — ranked exposed hosts + actively-exploited CVEs + new KEVs + EDR control tasks. Returns a `hunt_id`. |
+| `import_vuln_hunt` | `investigations:submit` | Promote a caseless vuln hunt into a case (artefact + evidence note) |
 | `ingest_velociraptor` | `investigations:submit` | Ingest Velociraptor offline collector data |
 | `ingest_mde_package` | `investigations:submit` | Ingest MDE investigation package |
 | `generate_weekly` | `investigations:read` | Weekly SOC report |
@@ -299,7 +301,8 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `merge_cases` | `admin` | Merge duplicate cases |
 | `response_actions` | `investigations:submit` | Recommend containment/response actions |
 | `prepare_closure_comment` | `investigations:submit` | Collect context for a Sentinel-aligned closure comment (BP / FP / Undetermined). Takes `classification`. Auto-closes on save with the classification's disposition. |
-| `prepare_fp_tuning_ticket` | `investigations:submit` | Collect context for SIEM tuning ticket (auto-closes with false_positive on save) |
+| `prepare_fp_tuning_ticket` | `investigations:submit` | Collect context for a detection tuning ticket (auto-closes on save; disposition `false_positive` default, or `benign_positive` when the detection fired correctly) |
+| `prepare_vuln_hunt_report` | `investigations:submit` | Collect context for a vulnerability hunt worklist deliverable (use `write_vuln_hunt_report` prompt; non-closing) |
 | `start_sandbox_session` | `admin` | Containerised malware detonation |
 | `stop_sandbox_session` | `admin` | Stop sandbox and collect artefacts |
 | `list_sandbox_sessions` | `admin` | List active/recent sandbox sessions |
@@ -367,7 +370,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://time-tracking` | SOC process: Kantata categories, overtime logging, on-call hours |
 | `socai://critical-incident-management` | SOC process: P1/P2 checklists, war rooms, P1 flow diagram, IR activation |
 
-## Prompts (23)
+## Prompts (24)
 
 ### Guided Workflows (7)
 
@@ -390,9 +393,10 @@ These prompts load system instructions and case data into the analyst's local Cl
 | `write_mdr_report` | MDR client report | Yes (preserves disposition) |
 | `write_pup_report` | PUP/PUA report | Yes (`pup_pua`) |
 | `write_closure_comment` | 2-sentence Sentinel-aligned closure comment (BP / FP / Undetermined) | Yes (disposition from `classification`) |
-| `write_fp_tuning` | SIEM tuning ticket | Yes (`false_positive`) |
+| `write_fp_tuning` | Detection tuning ticket (determination → SIEM rule edit vs EDR SOAR suppression → machine-readable handoff) | Yes (`false_positive`, or `benign_positive`) |
 | `write_executive_summary` | Non-technical leadership briefing | No |
 | `write_security_arch_review` | Security architecture review | No |
+| `write_vuln_hunt_report` | Vulnerability hunt worklist (prioritised remediation + machine-readable handoff) | No |
 | `write_threat_article` | Threat intelligence article | N/A |
 | `write_response_plan` | Client-specific response plan | No |
 
