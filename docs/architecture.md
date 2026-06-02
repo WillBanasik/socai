@@ -115,6 +115,8 @@ registry/audit.log        ← SHA-256 artefact audit trail
 registry/metrics.jsonl    ← investigation metrics (phase timing, enrichment, verdicts, reports)
 registry/mcp_usage.jsonl  ← per-tool invocation log (caller, tool, category, goal, duration, session_id)
 registry/quick_enrichments/ ← saved caseless enrichment results (quick_enrich → import into case)
+registry/vuln_hunts/      ← saved caseless Encore vuln hunts (eql_vuln_hunt → import via vuln_hunt_id)
+registry/eql_lookups/     ← saved caseless Encore entity lookups + identity scans (eql_entity_lookup / eql_identity_scan → import via eql_lookup_id)
 registry/batches/         ← batch API metadata + results
 registry/article_index.json ← threat article dedup index
 articles/YYYY-MM/         ← threat article summaries (ET/EV)

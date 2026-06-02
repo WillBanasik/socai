@@ -48,7 +48,7 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  115 tools, 47 resources│
+│  125 tools, 47 resources│
 │  23 prompts, JSONL logs │
 │  Background scheduler   │
 └─────────────────────────┘
@@ -296,7 +296,10 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `eql_posture_context` | `investigations:read` | Case-scoped client-wide preventative-controls baseline (Secure Score, MFA/identity, privileged access, compliance, Defender recs, vuln exposure, training) — input to the security architecture review. |
 | `eql_query` | `investigations:read` | Case-scoped raw EQL escape hatch, pinned to the case's Encore client. |
 | `eql_vuln_hunt` | `investigations:read` | Caseless proactive vulnerability hunt via Encore EQL — ranked exposed hosts + actively-exploited CVEs + new KEVs + EDR control tasks. Returns a `hunt_id`. |
-| `import_vuln_hunt` | `investigations:submit` | Promote a caseless vuln hunt into a case (artefact + evidence note) |
+| `import_vuln_hunt` | `investigations:submit` | Promote a caseless vuln hunt into a case (artefact + evidence note); refuses on client mismatch |
+| `eql_entity_lookup` | `investigations:read` | Caseless per-entity context (user/host/IP) via Encore EQL — caseless twin of `eql_entity_context`. Returns a `lookup_id`. |
+| `eql_identity_scan` | `investigations:read` | Caseless internal/external + device/asset classification — caseless twin of `eql_identity_assessment`. Returns a `lookup_id`. |
+| `import_eql_lookup` | `investigations:submit` | Promote a caseless EQL entity lookup / identity scan into a case (artefact + evidence note); refuses on client mismatch |
 | `ingest_velociraptor` | `investigations:submit` | Ingest Velociraptor offline collector data |
 | `ingest_mde_package` | `investigations:submit` | Ingest MDE investigation package |
 | `generate_weekly` | `investigations:read` | Weekly SOC report |
@@ -543,7 +546,7 @@ Analyst's Claude Desktop (VPN / corporate network)
     ▼
 ┌──────────────────────────┐
 │  mcp_server (port 8001)  │  ← SOCAI_MCP_HOST=127.0.0.1
-│  115 tools, 47 resources │
+│  125 tools, 47 resources │
 │  JWT RBAC, role system   │
 │  Background scheduler    │
 └──────────────────────────┘

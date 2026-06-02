@@ -96,6 +96,7 @@ TOOLSETS: dict[str, set[str]] = {
         "query_falcon_detections", "query_falcon_hosts", "query_falcon_incidents",
         "eql_entity_context", "eql_identity_assessment", "eql_query",
         "eql_posture_context", "eql_vuln_hunt", "import_vuln_hunt",
+        "eql_entity_lookup", "eql_identity_scan", "import_eql_lookup",
         "load_kql_playbook", "load_cql_playbook", "generate_sentinel_query",
         "generate_queries", "load_ngsiem_reference", "parse_logs",
         "detect_anomalies",
@@ -1048,13 +1049,16 @@ def _register_tier1(mcp: FastMCP) -> None:
         plan: str = "",
         enrichment_id: str = "",
         vuln_hunt_id: str = "",
+        eql_lookup_id: str = "",
     ) -> str:
         """Create a new case (triage status, auto-assigned ID). Deliverable tools auto-create
         cases — use this when you need a case before the deliverable step.
 
         Typical flow: ``quick_enrich`` → IOCs malicious → create case with ``enrichment_id``
         (auto-imports results). ``vuln_hunt_id`` similarly imports a caseless ``eql_vuln_hunt``
-        result. ``client_name`` is required.
+        result, and ``eql_lookup_id`` imports a caseless ``eql_entity_lookup`` /
+        ``eql_identity_scan`` (the import refuses if its client differs from this case's).
+        ``client_name`` is required.
         """
         _require_scope("investigations:submit")
 
@@ -1116,6 +1120,19 @@ def _register_tier1(mcp: FastMCP) -> None:
                 result["imported_vuln_hunt"] = {
                     "error": f"Auto-import failed: {exc}",
                     "vuln_hunt_id": vuln_hunt_id,
+                }
+
+        # Auto-import a caseless EQL entity lookup / identity scan if provided
+        if eql_lookup_id:
+            try:
+                from tools.eql import import_eql_lookup as _import_eql_lookup
+                result["imported_eql_lookup"] = await asyncio.to_thread(
+                    lambda: _import_eql_lookup(eql_lookup_id, case_id)
+                )
+            except Exception as exc:
+                result["imported_eql_lookup"] = {
+                    "error": f"Auto-import failed: {exc}",
+                    "eql_lookup_id": eql_lookup_id,
                 }
 
         return _json(result)
@@ -4044,6 +4061,120 @@ def _register_tier3(mcp: FastMCP) -> None:
             return _json({"error": "hunt_id and case_id are required."})
         result = await asyncio.to_thread(
             lambda: _import_vuln_hunt(hunt_id.strip(), case_id.strip())
+        )
+        return _json(result)
+
+    @mcp.tool(title="Encore EQL Caseless Entity Lookup", annotations={"readOnlyHint": True})
+    async def eql_entity_lookup(
+        client: str,
+        user: str = "",
+        host: str = "",
+        ip: str = "",
+        depth: str = "auto",
+    ) -> str:
+        """Pull Encore EQL context for a user, host, or IP WITHOUT a case (caseless).
+
+        The caseless equivalent of ``eql_entity_context`` — for ad-hoc "what is this
+        user / device / IP?" lookups before an investigation is opened. Resolves the
+        ``client`` EXACTLY (no fuzzy match — use ``lookup_client`` for the registered
+        name) through the same scope gate; cross-client access is structurally
+        impossible. Results persist to a caseless store and return a ``lookup_id``;
+        promote into a case with ``import_eql_lookup(lookup_id, case_id)`` or
+        ``create_case(..., eql_lookup_id=lookup_id)``. Coverage varies per client and
+        SignInAudits is a rolling ~7-day window — an empty result means "not ingested
+        for this client", NOT "clean".
+        """
+        _require_scope("investigations:read")
+        from tools.eql import EqlError, EqlNotConfigured, entity_lookup as _entity_lookup
+
+        if not client.strip():
+            return _json({"error": "client is required."})
+        if not (user.strip() or host.strip() or ip.strip()):
+            return _json({"error": "Provide at least one of user, host, ip."})
+        try:
+            result = await asyncio.to_thread(
+                lambda: _entity_lookup(client.strip(), user=user or None,
+                                       host=host or None, ip=ip or None, depth=depth)
+            )
+        except EqlNotConfigured as exc:
+            return _json({
+                "error": "Encore EQL not enabled for this client.",
+                "detail": str(exc),
+                "hint": "Set platforms.encore.internal_client_id (+ access) in "
+                        "client_entities.json. Use lookup_client for the registered name.",
+            })
+        except EqlError as exc:
+            return _json({"error": "Encore EQL caseless entity lookup failed.",
+                          "detail": str(exc)})
+        return _json(result)
+
+    @mcp.tool(title="Encore EQL Caseless Identity Scan", annotations={"readOnlyHint": True})
+    async def eql_identity_scan(
+        client: str,
+        users: str = "",
+        hosts: str = "",
+        cap: int = 5,
+    ) -> str:
+        """Classify users internal vs external and pull device/host context WITHOUT a case (caseless).
+
+        The caseless equivalent of ``eql_identity_assessment`` — the cheap scoping step
+        for ad-hoc identity triage before an investigation is opened. Each user is
+        classified from authoritative directory data (UserType=Member → internal,
+        Guest / #EXT# UPN → external, no record → not-in-directory) with managed-device
+        context for real non-guest records; hosts are classified as an asset
+        (managed_asset / known_unmanaged / not_in_directory) with their local admins.
+
+        ``users`` / ``hosts`` are comma-, semicolon-, or newline-separated lists.
+        Resolves the ``client`` EXACTLY (use ``lookup_client`` for the registered name).
+        Results persist to a caseless store and return a ``lookup_id``; promote with
+        ``import_eql_lookup(lookup_id, case_id)`` / ``create_case(..., eql_lookup_id=)``.
+        Soft cap (``cap``, default 5 per list): entries beyond it return under
+        ``not_assessed`` — raise ``cap`` to assess more. Empty / not-in-directory means
+        "not in the ingested directory", NOT "external" or "clean".
+        """
+        _require_scope("investigations:read")
+        import re
+        from tools.eql import EqlError, EqlNotConfigured, identity_scan as _identity_scan
+
+        if not client.strip():
+            return _json({"error": "client is required."})
+
+        def _split(raw: str) -> list[str]:
+            return [p.strip() for p in re.split(r"[,;\n]+", raw or "") if p.strip()]
+
+        user_list, host_list = _split(users), _split(hosts)
+        if not user_list and not host_list:
+            return _json({"error": "Provide at least one user or host (comma/newline separated)."})
+        try:
+            result = await asyncio.to_thread(
+                lambda: _identity_scan(client.strip(), users=user_list,
+                                       hosts=host_list, cap=cap)
+            )
+        except EqlNotConfigured as exc:
+            return _json({
+                "error": "Encore EQL not enabled for this client.",
+                "detail": str(exc),
+                "hint": "Set platforms.encore.internal_client_id (+ access) in "
+                        "client_entities.json. Use lookup_client for the registered name.",
+            })
+        except EqlError as exc:
+            return _json({"error": "Encore EQL caseless identity scan failed.",
+                          "detail": str(exc)})
+        return _json(result)
+
+    @mcp.tool(title="Import EQL Lookup into Case")
+    async def import_eql_lookup(lookup_id: str, case_id: str) -> str:
+        """Promote a caseless EQL lookup (from ``eql_entity_lookup`` or ``eql_identity_scan``)
+        into a case — copies the full payload into the case's EQL artefacts and appends an
+        evidence note. Refuses if the lookup's client differs from the case's client
+        (cross-client leak guard)."""
+        _require_scope("investigations:submit")
+        from tools.eql import import_eql_lookup as _import_eql_lookup
+
+        if not lookup_id.strip() or not case_id.strip():
+            return _json({"error": "lookup_id and case_id are required."})
+        result = await asyncio.to_thread(
+            lambda: _import_eql_lookup(lookup_id.strip(), case_id.strip())
         )
         return _json(result)
 

@@ -522,6 +522,7 @@ class TestVulnHunt:
         post.assert_not_called()
 
     def test_import_vuln_hunt_round_trip(self, monkeypatch, tmp_path, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)  # case-client match gate
         monkeypatch.setattr("config.settings.VULN_HUNT_DIR", tmp_path)
         hunt = {"hunt_id": "VH_TEST", "client": "performanta",
                 "internal_client_id": "uuid-perf-123", "ts": "2026-06-01T00:00:00Z",
@@ -541,6 +542,7 @@ class TestVulnHunt:
         assert "error" in eql.import_vuln_hunt("VH_NOPE", TEST_CASE)
 
     def test_vuln_hunt_report_context_reads_import(self, monkeypatch, tmp_path, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)  # case-client match gate
         monkeypatch.setattr("config.settings.VULN_HUNT_DIR", tmp_path)
         hunt = {"hunt_id": "VH_CTX", "client": "performanta",
                 "internal_client_id": "uuid-perf-123", "ts": "2026-06-01T00:00:00Z",
@@ -560,6 +562,161 @@ class TestVulnHunt:
         assert "VH_CTX" in ctx          # hunt id surfaced
         assert "WEB01" in ctx           # host row surfaced
         assert "Actively-exploited CVEs: 9" in ctx   # summary line rendered
+
+
+# ---------------------------------------------------------------------------
+# Caseless entity lookup + identity scan (and promotion into a case)
+# ---------------------------------------------------------------------------
+
+class TestCaselessEntityLookup:
+    def test_lookup_persists_and_pins_no_case(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        monkeypatch.setattr("config.settings.EQL_LOOKUP_DIR", tmp_path)
+        rows = [{"UserPrincipalName": "alice@corp.com",
+                 "CreatedDateTime": "2026-06-01T10:00:00Z"}]
+        post = MagicMock(return_value=_FakeResponse(200, _eql_payload(rows)))
+        with patch.object(eql.requests, "post", post):
+            out = eql.entity_lookup("performanta", user="alice@corp.com")
+
+        assert out["lookup_id"].startswith("EQL_")
+        assert out["kind"] == "entity_lookup"
+        assert out["client"] == "performanta" and out["internal_client_id"] == "uuid-perf-123"
+        assert len([q for q in out["queries"] if q["entity_type"] == "user"]) == 4
+        # every call pinned to the mapped client id (caseless can't target another)
+        for call in post.call_args_list:
+            url = call.args[0] if call.args else call.kwargs.get("url", "")
+            assert "client=uuid-perf-123" in url
+        # persisted to the caseless store, NOT to a case
+        persisted = list(tmp_path.glob("EQL_*.json"))
+        assert len(persisted) == 1
+        assert json.loads(persisted[0].read_text())["kind"] == "entity_lookup"
+
+    def test_lookup_refused_when_unmapped_no_http(self, monkeypatch):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        post = MagicMock()
+        with patch.object(eql.requests, "post", post):
+            with pytest.raises(eql.EqlNotConfigured):
+                eql.entity_lookup("unmapped", user="x@corp.com")
+        post.assert_not_called()
+
+    def test_lookup_requires_an_entity(self, monkeypatch):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        with pytest.raises(eql.EqlError):
+            eql.entity_lookup("performanta")
+
+
+class TestCaselessIdentityScan:
+    def test_scan_classifies_and_persists_no_case(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        monkeypatch.setattr("config.settings.EQL_LOOKUP_DIR", tmp_path)
+
+        def _users(body):
+            if "alice@corp.com" in body:
+                return [{"UserPrincipalName": "alice@corp.com", "UserType": "Member",
+                         "AccountEnabled": True}]
+            return []  # ghost@corp.com → not in directory
+
+        post = MagicMock(side_effect=_identity_router({
+            "AzureActiveDirectory-Users": _users,
+            "Intune-ManagedDevices": [{"ManagedDeviceName": "LAP1",
+                                       "DeviceComplianceStatus": "Compliant"}],
+        }))
+        with patch.object(eql.requests, "post", post):
+            out = eql.identity_scan("performanta",
+                                    users=["alice@corp.com", "ghost@corp.com"])
+
+        assert out["lookup_id"].startswith("EQLID_")
+        assert out["kind"] == "identity_scan"
+        by_upn = {u["upn"]: u for u in out["users"]}
+        assert by_upn["alice@corp.com"]["classification"] == "internal"
+        assert by_upn["ghost@corp.com"]["classification"] == "not_in_directory"
+        persisted = list(tmp_path.glob("EQLID_*.json"))
+        assert len(persisted) == 1
+
+    def test_scan_refused_when_unmapped_no_http(self, monkeypatch):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        post = MagicMock()
+        with patch.object(eql.requests, "post", post):
+            with pytest.raises(eql.EqlNotConfigured):
+                eql.identity_scan("unmapped", users=["x@corp.com"])
+        post.assert_not_called()
+
+
+class TestImportEqlLookup:
+    def test_entity_lookup_round_trip(self, monkeypatch, tmp_path, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        monkeypatch.setattr("config.settings.EQL_LOOKUP_DIR", tmp_path)
+        payload = {"lookup_id": "EQL_T", "kind": "entity_lookup", "client": "performanta",
+                   "internal_client_id": "uuid-perf-123", "ts": "2026-06-01T00:00:00Z",
+                   "entities": {"user": "alice@corp.com"},
+                   "queries": [{"table": "AzureActiveDirectory-Users", "entity_type": "user",
+                                "row_count": 1, "coverage": "ok",
+                                "freshness": {"latest_record": "2026-06-01T10:00:00Z"}}],
+                   "_window_note": "n"}
+        (tmp_path / "EQL_T.json").write_text(json.dumps(payload))
+
+        res = eql.import_eql_lookup("EQL_T", TEST_CASE)
+        assert res["status"] == "imported" and res["kind"] == "entity_lookup"
+        assert (CASES_DIR / TEST_CASE / "artefacts" / "eql_context"
+                / "entity_lookup_EQL_T.json").exists()
+        notes = (CASES_DIR / TEST_CASE / "notes" / "analyst_input.md").read_text()
+        assert "entity context" in notes.lower()
+
+    def test_identity_scan_round_trip(self, monkeypatch, tmp_path, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        monkeypatch.setattr("config.settings.EQL_LOOKUP_DIR", tmp_path)
+        payload = {"lookup_id": "EQLID_T", "kind": "identity_scan", "client": "performanta",
+                   "internal_client_id": "uuid-perf-123", "ts": "2026-06-01T00:00:00Z",
+                   "summary": {"users_assessed": 1, "users_internal": 1,
+                               "users_external_guest": 0, "users_not_in_directory": 0,
+                               "users_domain_mismatch": 0, "users_not_assessed_cap": 0,
+                               "hosts_assessed": 0, "hosts_managed": 0,
+                               "hosts_known_unmanaged": 0, "hosts_not_in_directory": 0,
+                               "hosts_not_assessed_cap": 0, "eql_queries_run": 2},
+                   "users": [{"upn": "alice@corp.com", "classification": "internal",
+                              "sync": "cloud_only", "device_count": 1}],
+                   "hosts": [], "not_assessed": {"users": [], "hosts": []},
+                   "_window_note": "n"}
+        (tmp_path / "EQLID_T.json").write_text(json.dumps(payload))
+
+        res = eql.import_eql_lookup("EQLID_T", TEST_CASE)
+        assert res["status"] == "imported" and res["kind"] == "identity_scan"
+        assert (CASES_DIR / TEST_CASE / "artefacts" / "eql_context"
+                / "identity_scan_EQLID_T.json").exists()
+        notes = (CASES_DIR / TEST_CASE / "notes" / "analyst_input.md").read_text()
+        assert "identity assessment" in notes.lower() and "alice@corp.com" in notes
+
+    def test_refuses_cross_client_import(self, monkeypatch, tmp_path, _case):
+        # case is performanta (uuid-perf-123); lookup scoped to a DIFFERENT client.
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        monkeypatch.setattr("config.settings.EQL_LOOKUP_DIR", tmp_path)
+        payload = {"lookup_id": "EQL_X", "kind": "entity_lookup", "client": "otherclient",
+                   "internal_client_id": "uuid-other-999", "entities": {}, "queries": [],
+                   "_window_note": "n"}
+        (tmp_path / "EQL_X.json").write_text(json.dumps(payload))
+
+        res = eql.import_eql_lookup("EQL_X", TEST_CASE)
+        assert "error" in res and "mismatch" in res["error"].lower()
+        # nothing copied into the case
+        assert not (CASES_DIR / TEST_CASE / "artefacts" / "eql_context"
+                    / "entity_lookup_EQL_X.json").exists()
+
+    def test_missing_lookup_returns_error(self, monkeypatch, tmp_path, _case):
+        monkeypatch.setattr("config.settings.EQL_LOOKUP_DIR", tmp_path)
+        assert "error" in eql.import_eql_lookup("EQL_NOPE", TEST_CASE)
+
+    def test_import_vuln_hunt_refuses_cross_client(self, monkeypatch, tmp_path, _case):
+        monkeypatch.setattr(eql, "get_client_config", _mapped_config)
+        monkeypatch.setattr("config.settings.VULN_HUNT_DIR", tmp_path)
+        hunt = {"hunt_id": "VH_X", "client": "otherclient",
+                "internal_client_id": "uuid-other-999", "summary": {}, "domains": [],
+                "_window_note": "n"}
+        (tmp_path / "VH_X.json").write_text(json.dumps(hunt))
+
+        res = eql.import_vuln_hunt("VH_X", TEST_CASE)
+        assert "error" in res and "mismatch" in res["error"].lower()
+        assert not (CASES_DIR / TEST_CASE / "artefacts" / "eql_context"
+                    / "vuln_hunt_VH_X.json").exists()
 
 
 # ---------------------------------------------------------------------------

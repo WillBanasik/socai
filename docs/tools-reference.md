@@ -638,8 +638,16 @@ Case-bound, single-client EQL pulls for an investigation. All are pinned to the 
 
 Proactive vulnerability hunting on top of Encore's pre-computed exploit/KEV prioritisation. Two chained modes (full detail in `docs/encore-eql.md`):
 
-- **`eql_vuln_hunt(client)`** (`tools/eql.py`) — the only **caseless** EQL tool. Resolves the client by name (exact, via the `_resolve_encore_id` scope gate — never fuzzy) and runs `VULN_HUNT_TEMPLATES`: exposed hosts ranked by exploitability (active-exploit / ransomware / imminent-threat flags + critical counts), actively-exploited CVEs (EPSS-ranked, bounded to `Classification = "Actively Exploited"`), new 48h KEVs, EDR compensating-control tasks, and the environment exposure summary. Persists the full payload to `registry/vuln_hunts/VH_<ts>.json`; returns a `hunt_id` + triage summary.
-- **Promote**: `import_vuln_hunt(hunt_id, case_id)` or `create_case(..., vuln_hunt_id=)` — copies the hunt into the case's `artefacts/eql_context/` and appends an evidence note.
+- **`eql_vuln_hunt(client)`** (`tools/eql.py`) — a **caseless** EQL tool. Resolves the client by name (exact, via the `_resolve_encore_id` scope gate — never fuzzy) and runs `VULN_HUNT_TEMPLATES`: exposed hosts ranked by exploitability (active-exploit / ransomware / imminent-threat flags + critical counts), actively-exploited CVEs (EPSS-ranked, bounded to `Classification = "Actively Exploited"`), new 48h KEVs, EDR compensating-control tasks, and the environment exposure summary. Persists the full payload to `registry/vuln_hunts/VH_<ts>.json`; returns a `hunt_id` + triage summary.
+- **Promote**: `import_vuln_hunt(hunt_id, case_id)` or `create_case(..., vuln_hunt_id=)` — copies the hunt into the case's `artefacts/eql_context/` and appends an evidence note. Refuses if the hunt's client ≠ the case's client.
+
+### Caseless entity lookup + identity scan
+
+Caseless twins of the case-scoped reactive tools — for ad-hoc "what is this user / device / IP?" questions before an investigation is opened. Both resolve the client **by name** (`resolve_client_by_name`, same exact-match scope gate) and persist to `registry/eql_lookups/` (full detail in `docs/encore-eql.md`):
+
+- **`eql_entity_lookup(client, user=/host=/ip=)`** (`tools/eql.py`) — caseless `eql_entity_context`; identical `QUERY_TEMPLATES` set. Persists to `registry/eql_lookups/EQL_<ts>.json`, returns a `lookup_id`. No evidence chain (no case yet).
+- **`eql_identity_scan(client, users=/hosts=/cap=5)`** — caseless `eql_identity_assessment`; same internal/external + asset classification engine. Persists to `registry/eql_lookups/EQLID_<ts>.json`.
+- **Promote**: `import_eql_lookup(lookup_id, case_id)` or `create_case(..., eql_lookup_id=)` — copies the full payload into the case's `artefacts/eql_context/` and appends the matching evidence note. **Refuses** if the lookup's Encore client ≠ the case's (cross-client leak guard).
 - **Active-exploitation hunt**: the `vulnerability-hunting` playbook (`config/playbooks/vulnerability-hunting/`, KQL + CQL) pivots the top CVEs/hosts into the live log layer (`run_kql` / `run_defender_kql` / `run_falcon_cql`) to check for actual exploitation.
 - **Deliverable**: `prepare_vuln_hunt_report` → `write_vuln_hunt_report` prompt → `save_report(report_type="vuln_hunt_report")` (`tools/vuln_hunt_report.py`). A prioritised remediation worklist ending in a machine-readable JSON handoff (`control_type`: `patch` | `edr_soar_mitigation`). Non-closing. Output: `artefacts/vuln_hunt/vuln_hunt_report.md`.
 

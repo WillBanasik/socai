@@ -15,6 +15,9 @@ All persistent state is on the filesystem. There is no database.
 | `registry/metrics.jsonl` | Append-only investigation metrics; case phase changes, enrichment duration/coverage, verdict confidence, report completeness, investigation summaries |
 | `registry/mcp_usage.jsonl` | Append-only MCP tool invocation log; caller, tool, category, goal, params, duration_ms, session_id |
 | `registry/quick_enrichments/<enrichment_id>.json` | Saved caseless enrichment results from `quick_enrich`; import via `enrichment_id` on `create_case` or `import_enrichment` |
+| `registry/vuln_hunts/VH_<ts>.json` | Saved caseless Encore vulnerability hunt from `eql_vuln_hunt`; import via `vuln_hunt_id` on `create_case` or `import_vuln_hunt` |
+| `registry/eql_lookups/EQL_<ts>.json` | Saved caseless Encore entity lookup from `eql_entity_lookup` (user/host/ip context); import via `eql_lookup_id` on `create_case` or `import_eql_lookup` |
+| `registry/eql_lookups/EQLID_<ts>.json` | Saved caseless Encore identity scan from `eql_identity_scan` (internal/external + device/asset classification); import via `eql_lookup_id` on `create_case` or `import_eql_lookup` |
 | `registry/ngsiem_connectors/<client>.json` | Per-client NGSIEM connector inventory captured from CrowdStrike NG-SIEM discovery query (`DISCOVERY_QUERIES[0]` in `tools/cql_playbooks.py`). One record per `@dataConnectionID` with `#Vendor`, `#event.dataset`, `#event.module`, `observer.vendor`, `observer.product`. Used to build accurate CQL queries scoped to data sources actually present in the client's repo. Gitignored. |
 
 ## Per-Case Files
@@ -62,6 +65,9 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/eql_context/<entity>.json` | Encore EQL per-entity context (`eql_entity_context`) — identity/device/detection/exposure for a named user/host/IP |
 | `cases/<ID>/artefacts/eql_context/identity_assessment_<ts>.json` | Encore EQL identity assessment (`eql_identity_assessment`) — per-user internal/external classification + managed devices; per-host asset classification + local admins |
 | `cases/<ID>/artefacts/eql_context/adhoc_<ts>.json` | Encore EQL raw query result (`eql_query` escape hatch) |
+| `cases/<ID>/artefacts/eql_context/entity_lookup_EQL_<ts>.json` | Promoted caseless entity lookup (`import_eql_lookup` / `create_case(eql_lookup_id=)`) — full payload from `eql_entity_lookup` |
+| `cases/<ID>/artefacts/eql_context/identity_scan_EQLID_<ts>.json` | Promoted caseless identity scan (`import_eql_lookup` / `create_case(eql_lookup_id=)`) — full payload from `eql_identity_scan` |
+| `cases/<ID>/artefacts/eql_context/vuln_hunt_VH_<ts>.json` | Promoted caseless vuln hunt (`import_vuln_hunt` / `create_case(vuln_hunt_id=)`) — full payload from `eql_vuln_hunt` |
 | `cases/<ID>/artefacts/executive_summary/executive_summary.md` | Plain-English executive summary |
 | `cases/<ID>/artefacts/executive_summary/executive_summary_manifest.json` | Executive summary metadata |
 | `cases/<ID>/artefacts/security_architecture/security_arch_review.md` | Security architecture review |

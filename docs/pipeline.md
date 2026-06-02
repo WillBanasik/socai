@@ -6,7 +6,7 @@ Investigations are human-in-the-loop (HITL). The analyst drives each step via MC
 
 ### Typical Tool Sequence
 
-**An incident or alert under investigation belongs in a case.** Open a case (`create_case`, or let the first deliverable tool auto-create one) as soon as the work is clearly an investigation. Caseless tools (`quick_enrich`, `extract_iocs`, `classify_attack`, `plan_investigation`, `lookup_client`, `recall_cases`, `start_browser_session` without `case_id`) exist for **non-incident** work — ad-hoc IOC lookups, exploratory questions, planning. Promote caseless work to a case (`create_case(enrichment_id=...)`) the moment it turns into an investigation. The deferred / auto-create path on deliverable tools is a safety net for the rare case where no case exists by report time, not the default flow.
+**An incident or alert under investigation belongs in a case.** Open a case (`create_case`, or let the first deliverable tool auto-create one) as soon as the work is clearly an investigation. Caseless tools (`quick_enrich`, `extract_iocs`, `classify_attack`, `plan_investigation`, `lookup_client`, `recall_cases`, `eql_entity_lookup`, `eql_identity_scan`, `eql_vuln_hunt`, `start_browser_session` without `case_id`) exist for **non-incident** work — ad-hoc IOC / user / device / IP lookups, exploratory questions, planning, proactive vuln hunting. Promote caseless work to a case (`create_case(enrichment_id=...)` / `create_case(eql_lookup_id=...)` / `create_case(vuln_hunt_id=...)`) the moment it turns into an investigation. The deferred / auto-create path on deliverable tools is a safety net for the rare case where no case exists by report time, not the default flow.
 
 ```
 ── Caseless tools (no case_id required) ──

@@ -29,15 +29,25 @@ Public API:
     entity_context(case_id, user=None, host=None, ip=None, depth="auto") -> dict
     identity_assessment(case_id, users=None, hosts=None, cap=5) -> dict
     posture_context(case_id, depth="auto") -> dict
+    entity_lookup(client_name, user=None, host=None, ip=None, depth="auto") -> dict   # caseless
+    identity_scan(client_name, users=None, hosts=None, cap=5) -> dict                 # caseless
     vuln_hunt(client_name, depth="auto") -> dict        # caseless, proactive
+    import_eql_lookup(lookup_id, case_id) -> dict        # promote a lookup/scan into a case
     import_vuln_hunt(hunt_id, case_id) -> dict           # promote a hunt into a case
 
-**Caseless vuln hunt.** ``vuln_hunt`` is the one path that runs WITHOUT a case:
-it resolves a client *by name* (exact match, never fuzzy) through the same
-``_resolve_encore_id`` scope gate, runs the client-wide vulnerability/exposure
-templates, and persists the full payload to ``registry/vuln_hunts/VH_<ts>.json``
-(mirrors the ``quick_enrich`` caseless store). Promote a hunt into a case with
-``import_vuln_hunt`` or ``create_case(..., vuln_hunt_id=...)``.
+**Caseless paths.** Three tools run WITHOUT a case — they resolve a client *by
+name* (exact match, never fuzzy) through the same ``_resolve_encore_id`` scope
+gate (via ``resolve_client_by_name``) and persist the full payload to
+``registry/eql_lookups/`` (entity ``EQL_<ts>`` / identity ``EQLID_<ts>``) or
+``registry/vuln_hunts/VH_<ts>.json``, mirroring the ``quick_enrich`` caseless
+store:
+  * ``entity_lookup`` — caseless ``entity_context`` (user / host / ip).
+  * ``identity_scan``  — caseless ``identity_assessment`` (internal/external + devices).
+  * ``vuln_hunt``      — proactive client-wide vulnerability/exposure sweep.
+Promote a lookup/scan into a case with ``import_eql_lookup`` (or
+``create_case(..., eql_lookup_id=...)``) and a hunt with ``import_vuln_hunt`` (or
+``create_case(..., vuln_hunt_id=...)``). Both imports refuse to cross client
+boundaries (the case's Encore id must match the payload's).
 """
 from __future__ import annotations
 
@@ -559,35 +569,24 @@ def _build_vuln_query(tpl: dict[str, Any]) -> str:
 # Entity context — the HITL workhorse
 # ---------------------------------------------------------------------------
 
-def entity_context(
-    case_id: str,
-    user: str | None = None,
-    host: str | None = None,
-    ip: str | None = None,
-    depth: str = "auto",
-) -> dict[str, Any]:
-    """Pull recent Encore EQL context for the entities named on a case.
+_ENTITY_WINDOW_NOTE = (
+    "SignInAudits is a rolling ~7-day window; posture/inventory tables "
+    "are ~daily snapshots. 'no_data_for_client' means the product is not "
+    "ingested for this client — it is NOT evidence of clean."
+)
 
-    Resolves the case's client → pinned Encore client (scope gate), runs the
-    curated query set for each supplied entity, stamps freshness + coverage,
-    persists the raw payload as a case artefact, and appends a provenance note
-    to the evidence chain. Returns the full payload (no slimming).
+
+def _run_entity_queries(
+    internal_client_id: str, entities: dict[str, str], log_case_id: str = ""
+) -> list[dict[str, Any]]:
+    """Run the curated ``QUERY_TEMPLATES`` set for each entity.
+
+    Shared by the case-scoped ``entity_context`` and the caseless ``entity_lookup``
+    — both run the identical query set; only the scope resolver and persistence
+    differ. Returns the FULL rows (uncapped); the caller persists, then caps
+    inline. One bad table never sinks the whole pull. ``log_case_id`` is "" on the
+    caseless path (errors are still logged, just not case-attributed).
     """
-    entities = {k: _sanitise(v) for k, v in
-                (("user", user), ("host", host), ("ip", ip)) if v and v.strip()}
-    if not entities:
-        raise EqlError("provide at least one of user, host, ip")
-
-    # Scope gate — case → client → pinned Encore id. Raises before any HTTP.
-    meta_path = CASES_DIR / case_id / "case_meta.json"
-    if not meta_path.exists():
-        raise EqlError(f"case {case_id!r} not found ({meta_path})")
-    client_name = (load_json(meta_path) or {}).get("client", "")
-    if not client_name:
-        raise EqlError(f"case {case_id!r} has no client set")
-    internal_client_id = _resolve_encore_id(client_name)
-
-    started = time.time()
     queries: list[dict[str, Any]] = []
     for etype, value in entities.items():
         for tpl in QUERY_TEMPLATES[etype]:
@@ -610,9 +609,48 @@ def entity_context(
                 entry["rows"] = []
                 entry["coverage"] = "query_error"
                 entry["error"] = str(exc)
-                log_error(case_id, "eql.entity_context", str(exc),
+                log_error(log_case_id, "eql.entity_queries", str(exc),
                           severity="warning", context={"table": tpl["table"]})
             queries.append(entry)
+    return queries
+
+
+def _cap_entity_rows_inline(queries: list[dict[str, Any]]) -> None:
+    """Cap inline rows per query (event tables can return thousands for one entity
+    over the window). ``row_count`` keeps the true total; the full set lives in the
+    persisted artefact. Mutates in place — call only AFTER persisting the payload.
+    """
+    for entry in queries:
+        capped, truncated = _cap(entry.get("rows", []), _MAX_ROWS_INLINE)
+        entry["rows"] = capped
+        entry["rows_returned"] = len(capped)
+        entry["truncated"] = truncated
+
+
+def entity_context(
+    case_id: str,
+    user: str | None = None,
+    host: str | None = None,
+    ip: str | None = None,
+    depth: str = "auto",
+) -> dict[str, Any]:
+    """Pull recent Encore EQL context for the entities named on a case.
+
+    Resolves the case's client → pinned Encore client (scope gate), runs the
+    curated query set for each supplied entity, stamps freshness + coverage,
+    persists the raw payload as a case artefact, and appends a provenance note
+    to the evidence chain. Returns the full payload (no slimming).
+    """
+    entities = {k: _sanitise(v) for k, v in
+                (("user", user), ("host", host), ("ip", ip)) if v and v.strip()}
+    if not entities:
+        raise EqlError("provide at least one of user, host, ip")
+
+    # Scope gate — case → client → pinned Encore id. Raises before any HTTP.
+    client_name, internal_client_id = _resolve_case_client(case_id)
+
+    started = time.time()
+    queries = _run_entity_queries(internal_client_id, entities, log_case_id=case_id)
 
     output = {
         "case_id": case_id,
@@ -623,28 +661,69 @@ def entity_context(
         "duration_ms": int((time.time() - started) * 1000),
         "entities": entities,
         "queries": queries,
-        "_window_note": (
-            "SignInAudits is a rolling ~7-day window; posture/inventory tables "
-            "are ~daily snapshots. 'no_data_for_client' means the product is not "
-            "ingested for this client — it is NOT evidence of clean."
-        ),
+        "_window_note": _ENTITY_WINDOW_NOTE,
     }
 
     # Persist the FULL raw payload as a case artefact (nothing dropped on disk).
     slug = "_".join(sorted(entities.values()))[:60].replace("/", "_") or "entity"
     save_json(CASES_DIR / case_id / "artefacts" / "eql_context" / f"{slug}.json", output)
 
-    # Cap what we surface inline (event tables can return thousands of rows for
-    # one entity over the window). row_count keeps the true total; the full set
-    # lives in the artefact above. Safe to mutate now — save_json already ran.
-    for entry in queries:
-        capped, truncated = _cap(entry.get("rows", []), _MAX_ROWS_INLINE)
-        entry["rows"] = capped
-        entry["rows_returned"] = len(capped)
-        entry["truncated"] = truncated
-
-    # Append a concise provenance note to the evidence chain (raw observation).
+    # Cap inline AFTER persisting the full set, then append the evidence note.
+    _cap_entity_rows_inline(queries)
     _append_evidence(case_id, output)
+    return output
+
+
+def entity_lookup(
+    client_name: str,
+    user: str | None = None,
+    host: str | None = None,
+    ip: str | None = None,
+    depth: str = "auto",
+) -> dict[str, Any]:
+    """Caseless equivalent of ``entity_context`` — pull Encore EQL context for a
+    user, host, or IP WITHOUT a case, scoped to a client *by name*.
+
+    Resolves the client through the same ``resolve_client_by_name`` scope gate
+    (exact match, read access required — cross-client access is structurally
+    impossible), runs the identical curated ``QUERY_TEMPLATES`` set, and persists
+    the FULL payload to ``registry/eql_lookups/EQL_<ts>.json`` (mirrors
+    ``quick_enrich`` / ``vuln_hunt``). No evidence chain is written — there is no
+    case yet. Promote into a case with ``import_eql_lookup`` /
+    ``create_case(eql_lookup_id=...)``.
+    """
+    from config.settings import EQL_LOOKUP_DIR
+
+    entities = {k: _sanitise(v) for k, v in
+                (("user", user), ("host", host), ("ip", ip)) if v and v.strip()}
+    if not entities:
+        raise EqlError("provide at least one of user, host, ip")
+
+    # Same scope gate as the case path, resolved by client name instead of a case.
+    canonical, internal_client_id = resolve_client_by_name(client_name)
+
+    started = time.time()
+    queries = _run_entity_queries(internal_client_id, entities)
+
+    lookup_id = (
+        "EQL_" + utcnow().replace("-", "").replace(":", "").replace("T", "_").split(".")[0]
+    )
+    output: dict[str, Any] = {
+        "lookup_id": lookup_id,
+        "kind": "entity_lookup",
+        "client": canonical,
+        "internal_client_id": internal_client_id,
+        "ts": utcnow(),
+        "depth": depth,
+        "duration_ms": int((time.time() - started) * 1000),
+        "entities": entities,
+        "queries": queries,
+        "_window_note": _ENTITY_WINDOW_NOTE,
+    }
+
+    # Persist the FULL raw payload to the caseless store (nothing dropped on disk).
+    save_json(EQL_LOOKUP_DIR / f"{lookup_id}.json", output)
+    _cap_entity_rows_inline(queries)
     return output
 
 
@@ -716,34 +795,37 @@ def _classify_user(upn: str, rows: list[dict], internal_domains: set[str]) -> di
     return out
 
 
-def identity_assessment(
-    case_id: str,
-    users: list[str] | None = None,
-    hosts: list[str] | None = None,
-    cap: int = IDENTITY_DEFAULT_CAP,
-    depth: str = "auto",
+_IDENTITY_WINDOW_NOTE = (
+    "Users are classified from authoritative directory data (UserType / on-prem "
+    "sync / #EXT# UPN); the configured internal_domains overlay only flags "
+    "unexpected Member domains. Device context is pulled only for non-guest "
+    "principals. Hosts (which need NOT map to a single user — servers/shared "
+    "devices) are classified as an ASSET: managed_asset (in a control plane) / "
+    "known_unmanaged / not_in_directory; their local admins answer 'who operates "
+    "this device'. 'no_data_for_client' / 'not_in_directory' means the entity "
+    "isn't in the ingested directory — NOT proof it's external or benign. "
+    "Raise `cap` (default 5) to assess more entities; entries beyond the cap "
+    "are listed under not_assessed, never silently dropped. This is a scoping "
+    "step — follow with eql_entity_context for the entities that matter."
+)
+
+
+def _assess_identities(
+    client_name: str,
+    internal_client_id: str,
+    users: list[str] | None,
+    hosts: list[str] | None,
+    cap: int,
+    depth: str,
+    log_case_id: str = "",
 ) -> dict[str, Any]:
-    """Lean batch triage: classify users internal/external and pull device context.
-
-    The cheap scoping step that runs BEFORE the heavy per-entity ``entity_context``
-    pull — it decides which entities are worth the deeper look and brings the exact
-    identity + managed-device context into session.
-
-    Per user: one ``AzureActiveDirectory-Users`` query classifies them from
-    authoritative directory data (``UserType`` / on-prem sync / ``#EXT#`` UPN), with
-    an optional zero-request overlay against the client's configured
-    ``identity.internal_domains``. Managed-device context (``Intune-ManagedDevices``)
-    is pulled ONLY for users that resolve to a real non-guest record — guests and
-    not-in-directory principals therefore cost a single query each. Per host: one
-    ``Baseline-Core`` row reporting which platforms manage it.
-
-    Soft cap (``cap``, default 5 per list): users/hosts beyond the cap are returned
-    under ``not_assessed`` rather than queried. There is no hard ceiling — raise
-    ``cap`` to assess more. Same scope gate as ``entity_context`` (pinned to the
-    case's Encore client). Persists the full payload as a case artefact and appends
-    a classification summary to the evidence chain.
+    """Engine shared by the case-scoped ``identity_assessment`` and the caseless
+    ``identity_scan``. Resolves nothing (caller supplies the already-gated client +
+    Encore id), runs the identity/device/host classification, and returns the FULL
+    assessment output WITHOUT an identifier key. The caller adds ``case_id`` /
+    ``lookup_id``, persists, caps inline, and (case path only) appends evidence.
+    ``internal_domains`` is read from the client config — works on either path.
     """
-    client_name, internal_client_id = _resolve_case_client(case_id)
     cfg = get_client_config(client_name) or {}
     internal_domains = {
         d.strip().lower()
@@ -882,7 +964,6 @@ def identity_assessment(
     }
 
     output: dict[str, Any] = {
-        "case_id": case_id,
         "client": client_name,
         "internal_client_id": internal_client_id,
         "ts": utcnow(),
@@ -894,32 +975,20 @@ def identity_assessment(
         "users": user_results,
         "hosts": host_results,
         "not_assessed": {"users": dropped_users, "hosts": dropped_hosts},
-        "_window_note": (
-            "Users are classified from authoritative directory data (UserType / on-prem "
-            "sync / #EXT# UPN); the configured internal_domains overlay only flags "
-            "unexpected Member domains. Device context is pulled only for non-guest "
-            "principals. Hosts (which need NOT map to a single user — servers/shared "
-            "devices) are classified as an ASSET: managed_asset (in a control plane) / "
-            "known_unmanaged / not_in_directory; their local admins answer 'who operates "
-            "this device'. 'no_data_for_client' / 'not_in_directory' means the entity "
-            "isn't in the ingested directory — NOT proof it's external or benign. "
-            "Raise `cap` (default 5) to assess more entities; entries beyond the cap "
-            "are listed under not_assessed, never silently dropped. This is a scoping "
-            "step — follow with eql_entity_context for the entities that matter."
-        ),
+        "_window_note": _IDENTITY_WINDOW_NOTE,
     }
+    return output
 
-    stamp = utcnow().replace(":", "").replace("-", "").replace("T", "_").split(".")[0]
-    save_json(CASES_DIR / case_id / "artefacts" / "eql_context"
-              / f"identity_assessment_{stamp}.json", output)
 
-    # Cap inline rows after persisting the full payload (lean tables, but a heavy
-    # device user or a multi-row host can still exceed the inline budget).
-    for u in user_results:
+def _cap_identity_inline(output: dict[str, Any]) -> None:
+    """Cap inline rows after persisting the full payload (lean tables, but a heavy
+    device user or a multi-row host can still exceed the inline budget). Mutates in
+    place — call only AFTER persisting."""
+    for u in output["users"]:
         capped, truncated = _cap(u.get("devices", []), _MAX_ROWS_INLINE)
         u["devices"] = capped
         u["devices_truncated"] = truncated
-    for h in host_results:
+    for h in output["hosts"]:
         capped, truncated = _cap(h.get("rows", []), _MAX_ROWS_INLINE)
         h["rows"] = capped
         h["truncated"] = truncated
@@ -927,7 +996,77 @@ def identity_assessment(
         h["local_admins"] = admins_capped
         h["local_admins_truncated"] = admins_truncated
 
+
+def identity_assessment(
+    case_id: str,
+    users: list[str] | None = None,
+    hosts: list[str] | None = None,
+    cap: int = IDENTITY_DEFAULT_CAP,
+    depth: str = "auto",
+) -> dict[str, Any]:
+    """Lean batch triage: classify users internal/external and pull device context.
+
+    The cheap scoping step that runs BEFORE the heavy per-entity ``entity_context``
+    pull — it decides which entities are worth the deeper look and brings the exact
+    identity + managed-device context into session.
+
+    Per user: one ``AzureActiveDirectory-Users`` query classifies them from
+    authoritative directory data (``UserType`` / on-prem sync / ``#EXT#`` UPN), with
+    an optional zero-request overlay against the client's configured
+    ``identity.internal_domains``. Managed-device context (``Intune-ManagedDevices``)
+    is pulled ONLY for users that resolve to a real non-guest record — guests and
+    not-in-directory principals therefore cost a single query each. Per host: one
+    ``Baseline-Core`` row reporting which platforms manage it.
+
+    Soft cap (``cap``, default 5 per list): users/hosts beyond the cap are returned
+    under ``not_assessed`` rather than queried. There is no hard ceiling — raise
+    ``cap`` to assess more. Same scope gate as ``entity_context`` (pinned to the
+    case's Encore client). Persists the full payload as a case artefact and appends
+    a classification summary to the evidence chain.
+    """
+    client_name, internal_client_id = _resolve_case_client(case_id)
+    output = {"case_id": case_id,
+              **_assess_identities(client_name, internal_client_id, users, hosts,
+                                   cap, depth, log_case_id=case_id)}
+
+    stamp = utcnow().replace(":", "").replace("-", "").replace("T", "_").split(".")[0]
+    save_json(CASES_DIR / case_id / "artefacts" / "eql_context"
+              / f"identity_assessment_{stamp}.json", output)
+    _cap_identity_inline(output)
     _append_identity_evidence(case_id, output)
+    return output
+
+
+def identity_scan(
+    client_name: str,
+    users: list[str] | None = None,
+    hosts: list[str] | None = None,
+    cap: int = IDENTITY_DEFAULT_CAP,
+    depth: str = "auto",
+) -> dict[str, Any]:
+    """Caseless equivalent of ``identity_assessment`` — classify users internal vs
+    external and pull device/host context WITHOUT a case, scoped to a client *by
+    name*.
+
+    Same scope gate as the case path (``resolve_client_by_name``: exact match, read
+    access required — cross-client access is structurally impossible) and the
+    identical classification engine. Persists the FULL payload to
+    ``registry/eql_lookups/EQLID_<ts>.json`` (mirrors ``entity_lookup`` /
+    ``vuln_hunt``). No evidence chain is written — there is no case yet. Promote into
+    a case with ``import_eql_lookup`` / ``create_case(eql_lookup_id=...)``.
+    """
+    from config.settings import EQL_LOOKUP_DIR
+
+    canonical, internal_client_id = resolve_client_by_name(client_name)
+    lookup_id = (
+        "EQLID_" + utcnow().replace("-", "").replace(":", "").replace("T", "_").split(".")[0]
+    )
+    output = {"lookup_id": lookup_id, "kind": "identity_scan",
+              **_assess_identities(canonical, internal_client_id, users, hosts,
+                                   cap, depth)}
+
+    save_json(EQL_LOOKUP_DIR / f"{lookup_id}.json", output)
+    _cap_identity_inline(output)
     return output
 
 
@@ -1211,6 +1350,12 @@ def import_vuln_hunt(hunt_id: str, case_id: str) -> dict[str, Any]:
     if not vh_path.exists():
         return {"error": f"Vuln hunt '{hunt_id}' not found."}
     hunt = load_json(vh_path)
+    # Refuse to import a hunt scoped to a DIFFERENT client than the case.
+    try:
+        _assert_case_client_matches(case_id, hunt.get("internal_client_id", ""),
+                                    hunt.get("client", ""))
+    except EqlError as exc:
+        return {"error": str(exc)}
     dest = CASES_DIR / case_id / "artefacts" / "eql_context" / f"vuln_hunt_{hunt_id}.json"
     save_json(dest, hunt)
     _append_vuln_hunt_evidence(case_id, hunt)
@@ -1257,6 +1402,69 @@ def _resolve_case_client(case_id: str) -> tuple[str, str]:
     if not client_name:
         raise EqlError(f"case {case_id!r} has no client set")
     return client_name, _resolve_encore_id(client_name)
+
+
+def _assert_case_client_matches(
+    case_id: str, payload_internal_client_id: Any, payload_client: Any
+) -> tuple[str, str]:
+    """Refuse to import caseless Encore data into a case scoped to a DIFFERENT
+    client (cross-client leak guard).
+
+    The Encore ``internal_client_id`` is the real scope boundary — two different
+    clients always resolve to different ids, and an alias resolves to the same id
+    as its canonical name. Returns the case's ``(client_name, internal_client_id)``
+    on a match; raises ``EqlError`` on mismatch (or when the case client cannot be
+    resolved / Encore-gated).
+    """
+    case_client, case_cid = _resolve_case_client(case_id)
+    if str(payload_internal_client_id) != str(case_cid):
+        raise EqlError(
+            "client mismatch — refusing cross-client import. Source is scoped to "
+            f"{payload_client!r} (Encore {payload_internal_client_id}); case "
+            f"{case_id} is client {case_client!r} (Encore {case_cid})."
+        )
+    return case_client, case_cid
+
+
+def import_eql_lookup(lookup_id: str, case_id: str) -> dict[str, Any]:
+    """Promote a caseless EQL lookup (``entity_lookup`` or ``identity_scan``) into a
+    case: copy the full payload into the case's eql_context artefacts and append the
+    matching evidence note. Refuses if the lookup's client != the case's client.
+    Mirrors ``import_vuln_hunt`` / ``import_enrichment``."""
+    from config.settings import EQL_LOOKUP_DIR
+
+    path = EQL_LOOKUP_DIR / f"{lookup_id}.json"
+    if not path.exists():
+        return {"error": f"EQL lookup '{lookup_id}' not found."}
+    payload = load_json(path)
+    # Refuse to import a lookup scoped to a DIFFERENT client than the case.
+    try:
+        _assert_case_client_matches(case_id, payload.get("internal_client_id", ""),
+                                    payload.get("client", ""))
+    except EqlError as exc:
+        return {"error": str(exc)}
+
+    kind = payload.get("kind", "entity_lookup")
+    dest = (CASES_DIR / case_id / "artefacts" / "eql_context"
+            / f"{kind}_{lookup_id}.json")
+    save_json(dest, payload)
+
+    # The evidence appenders read the case id off the payload — re-key for the case.
+    payload_for_case = {"case_id": case_id, **payload}
+    if kind == "identity_scan":
+        _append_identity_evidence(case_id, payload_for_case)
+    else:
+        _append_evidence(case_id, payload_for_case)
+
+    return {
+        "status": "imported",
+        "lookup_id": lookup_id,
+        "kind": kind,
+        "case_id": case_id,
+        "client": payload.get("client"),
+        "artefact": str(dest),
+        "summary": payload.get("summary"),
+    }
 
 
 def run_eql_for_case(case_id: str, eql: str, timeout: int = 30) -> dict[str, Any]:
