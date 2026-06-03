@@ -266,6 +266,9 @@ def _record_step(
     duration_ms: int,
     success: bool,
     error: str | None = None,
+    *,
+    result_bytes: int = 0,
+    est_tokens: int = 0,
 ) -> None:
     """Append a tool call to the session's ordered step sequence."""
     if not case_id:
@@ -282,6 +285,8 @@ def _record_step(
         "ts": utcnow(),
         "duration_ms": duration_ms,
         "success": success,
+        "result_bytes": result_bytes,
+        "est_tokens": est_tokens,
     }
     if error:
         step["error"] = error[:200]
@@ -367,6 +372,9 @@ def _record_caseless_step(
     duration_ms: int,
     success: bool,
     error: str | None = None,
+    *,
+    result_bytes: int = 0,
+    est_tokens: int = 0,
 ) -> None:
     """Append a tool call to the caseless session's step sequence."""
     if not caller:
@@ -383,6 +391,8 @@ def _record_caseless_step(
         "ts": utcnow(),
         "duration_ms": duration_ms,
         "success": success,
+        "result_bytes": result_bytes,
+        "est_tokens": est_tokens,
     }
     if error:
         step["error"] = error[:200]
@@ -516,6 +526,21 @@ def _flush_session(entry: dict[str, Any]) -> None:
     total_duration_ms = sum(s["duration_ms"] for s in steps)
     wall_clock_s = entry.get("last_seen", 0) - entry.get("started", 0)
 
+    # Payload accounting — bytes/tokens socai shipped back into the client's
+    # context this session. ``est_result_tokens`` is each result counted once
+    # (raw data volume). ``est_context_input_tokens`` is a naive upper bound on
+    # the *input* tokens those results drive: a result fed in at step i is
+    # re-sent on every later turn, so it counts (n_steps - i) times. Real cost
+    # sits below this because prompt caching bills re-sends at ~0.1x — the gap
+    # is exactly what scripts/token_cost_report.py measures against client
+    # telemetry. See _estimate_tokens.
+    total_result_bytes = sum(s.get("result_bytes", 0) for s in steps)
+    est_result_tokens = sum(s.get("est_tokens", 0) for s in steps)
+    n_steps = len(steps)
+    est_context_input_tokens = sum(
+        s.get("est_tokens", 0) * (n_steps - i) for i, s in enumerate(steps)
+    )
+
     # Category breakdown
     from collections import Counter
     cat_counts = Counter(s["category"] for s in steps)
@@ -549,6 +574,9 @@ def _flush_session(entry: dict[str, Any]) -> None:
         tool_time_ms=total_duration_ms,
         step_count=len(steps),
         error_count=len(errors),
+        total_result_bytes=total_result_bytes,
+        est_result_tokens=est_result_tokens,
+        est_context_input_tokens=est_context_input_tokens,
         goal_reached=goal_reached,
         category_breakdown=dict(cat_counts),
         goal_breakdown=dict(goal_counts),
@@ -595,12 +623,33 @@ def _sanitise_params(params: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
-def _truncate_result(result: Any, max_len: int = MCP_LOG_MAX_RESULT) -> str:
-    """Serialise and truncate a tool result for logging."""
+# Rough token estimate. The real Claude tokenizer is not available
+# server-side and socai never calls the model (see config/settings.py),
+# so we approximate at ~4 chars/token — the standard heuristic. This counts
+# only the raw result payload socai ships back into the client's context;
+# under the full-payload policy (CLAUDE.md: "no slimming") those bytes
+# dominate per-investigation *input* tokens on subsequent model turns. It
+# excludes the client's system prompt, tool schemas, model output, and the
+# per-turn context re-send — so treat it as a floor/proxy, not a bill.
+# scripts/token_cost_report.py calibrates it against real client telemetry.
+_CHARS_PER_TOKEN = 4
+
+
+def _serialise_result(result: Any) -> str:
+    """JSON-serialise a tool result (best-effort)."""
     try:
-        text = json.dumps(result, default=str)
+        return json.dumps(result, default=str)
     except (TypeError, ValueError):
-        text = str(result)
+        return str(result)
+
+
+def _estimate_tokens(n_chars: int) -> int:
+    """Approximate token count from a character length (~4 chars/token)."""
+    return (n_chars + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN
+
+
+def _truncate_text(text: str, max_len: int = MCP_LOG_MAX_RESULT) -> str:
+    """Truncate an already-serialised result string for logging."""
     if len(text) > max_len:
         return text[:max_len] + f"... [truncated, {len(text)} chars total]"
     return text
@@ -614,8 +663,14 @@ def log_mcp_call(
     success: bool,
     error: str | None,
     session_id: str = "",
+    result_bytes: int = 0,
+    est_tokens: int = 0,
 ) -> None:
-    """Append a single usage record to the JSONL log."""
+    """Append a single usage record to the JSONL log.
+
+    ``result_bytes`` / ``est_tokens`` describe the payload shipped back to
+    the client (0 on failure / when not measured) — see ``_estimate_tokens``.
+    """
     taxonomy = TOOL_TAXONOMY.get(tool, _DEFAULT_TAXONOMY)
     record: dict[str, Any] = {
         "ts": utcnow(),
@@ -627,6 +682,8 @@ def log_mcp_call(
         "duration_ms": duration_ms,
         "success": success,
         "error": error,
+        "result_bytes": result_bytes,
+        "est_tokens": est_tokens,
     }
     if session_id:
         record["session_id"] = session_id
@@ -684,15 +741,27 @@ def install_usage_watcher(server: FastMCP) -> None:
         try:
             result = await original(name, arguments, **kwargs)
             duration_ms = int((time.monotonic() - t0) * 1000)
+
+            # Serialise once: drives both payload-size accounting and the
+            # (optional) result preview, so large full payloads aren't
+            # JSON-encoded twice.
+            result_text = _serialise_result(result)
+            result_bytes = len(result_text)
+            est_tokens = _estimate_tokens(result_bytes)
+
             log_mcp_call(caller, name, arguments, duration_ms, True, None,
-                         session_id=session_id)
+                         session_id=session_id,
+                         result_bytes=result_bytes, est_tokens=est_tokens)
             _emit_live("OK  ", name, caller, duration_ms=duration_ms)
 
             # Record step in session sequence
             if case_id:
-                _record_step(case_id, name, duration_ms, True)
+                _record_step(case_id, name, duration_ms, True,
+                             result_bytes=result_bytes, est_tokens=est_tokens)
             else:
-                _record_caseless_step(caller, name, duration_ms, True)
+                _record_caseless_step(caller, name, duration_ms, True,
+                                      result_bytes=result_bytes,
+                                      est_tokens=est_tokens)
 
             # Structured log: tool result
             log_fields: dict[str, Any] = {
@@ -701,7 +770,7 @@ def install_usage_watcher(server: FastMCP) -> None:
                 "case_id": case_id or None,
             }
             if MCP_LOG_RESULTS:
-                log_fields["result_preview"] = _truncate_result(result)
+                log_fields["result_preview"] = _truncate_text(result_text)
             mcp_log("tool_result", **log_fields)
 
             return result

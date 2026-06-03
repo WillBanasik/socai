@@ -73,6 +73,55 @@ class TestLogMcpCall:
 
 
 # ---------------------------------------------------------------------------
+# Token / payload accounting
+# ---------------------------------------------------------------------------
+
+class TestTokenAccounting:
+    def test_estimate_tokens_ceils(self):
+        from mcp_server.usage import _estimate_tokens
+
+        assert _estimate_tokens(0) == 0
+        assert _estimate_tokens(1) == 1      # ceil(1/4)
+        assert _estimate_tokens(4) == 1
+        assert _estimate_tokens(5) == 2      # ceil(5/4)
+        assert _estimate_tokens(4000) == 1000
+
+    def test_log_mcp_call_defaults_zero(self):
+        from mcp_server.usage import log_mcp_call
+
+        log_mcp_call("local", "list_cases", {}, 10, True, None)
+        rec = json.loads(MCP_USAGE_LOG.read_text().strip())
+        assert rec["result_bytes"] == 0
+        assert rec["est_tokens"] == 0
+
+    def test_log_mcp_call_records_size(self):
+        from mcp_server.usage import log_mcp_call
+
+        log_mcp_call("local", "enrich_iocs", {}, 10, True, None,
+                     result_bytes=4000, est_tokens=1000)
+        rec = json.loads(MCP_USAGE_LOG.read_text().strip())
+        assert rec["result_bytes"] == 4000
+        assert rec["est_tokens"] == 1000
+
+    def test_wrapper_estimates_payload_tokens(self):
+        import asyncio
+        from mcp_server.usage import install_usage_watcher, _estimate_tokens, _serialise_result
+
+        payload = [{"type": "text", "text": "x" * 800}]
+        server = MagicMock()
+        server._tool_manager.call_tool = AsyncMock(return_value=payload)
+
+        install_usage_watcher(server)
+        asyncio.run(server._tool_manager.call_tool("enrich_iocs", {"case_id": "C001"}))
+
+        rec = json.loads(MCP_USAGE_LOG.read_text().strip())
+        expected_bytes = len(_serialise_result(payload))
+        assert rec["result_bytes"] == expected_bytes
+        assert rec["est_tokens"] == _estimate_tokens(expected_bytes)
+        assert rec["est_tokens"] > 0
+
+
+# ---------------------------------------------------------------------------
 # assess_mcp_usage
 # ---------------------------------------------------------------------------
 

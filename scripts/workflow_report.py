@@ -138,6 +138,15 @@ def report_summary(workflows: list[dict]) -> dict:
         for cat, count in w.get("category_breakdown", {}).items():
             cat_totals[cat] += count
 
+    # Payload token accounting (est.) — only on sessions recorded after the
+    # usage watcher started measuring; older summaries lack these fields.
+    # See mcp_server.usage._estimate_tokens for what this does/doesn't count.
+    est_result = [w["est_result_tokens"] for w in workflows
+                  if "est_result_tokens" in w]
+    est_context = [w["est_context_input_tokens"] for w in workflows
+                   if "est_context_input_tokens" in w]
+    result_bytes = [w.get("total_result_bytes", 0) for w in workflows]
+
     summary = {
         "total_sessions": total,
         "case_sessions": len(case_sessions),
@@ -155,6 +164,15 @@ def report_summary(workflows: list[dict]) -> dict:
             "mean_steps": round(statistics.mean(step_counts), 1) if step_counts else 0,
         },
         "category_breakdown": dict(cat_totals.most_common()),
+        "tokens": {
+            "sessions_with_data": len(est_result),
+            "total_est_result_tokens": sum(est_result),
+            "median_est_result_tokens": int(statistics.median(est_result)) if est_result else 0,
+            "mean_est_result_tokens": int(statistics.mean(est_result)) if est_result else 0,
+            "total_est_context_input_tokens": sum(est_context),
+            "median_est_context_input_tokens": int(statistics.median(est_context)) if est_context else 0,
+            "total_result_mb": round(sum(result_bytes) / 1_000_000, 1),
+        },
         "friction": {
             "sessions_with_friction": sessions_with_friction,
             "friction_rate_pct": round(sessions_with_friction / total * 100, 1) if total else 0,
@@ -198,6 +216,20 @@ def print_summary(workflows: list[dict]) -> None:
     for cat, count in s["category_breakdown"].items():
         pct = round(count / s["total_steps"] * 100, 1) if s["total_steps"] else 0
         print(f"    {cat:<16} {count:>5}  ({pct}%)")
+
+    tok = s.get("tokens", {})
+    if tok.get("sessions_with_data"):
+        print(f"\n  Payload tokens shipped to context (est., ~4 chars/tok):")
+        print(f"    Per investigation (median / mean):  "
+              f"{tok['median_est_result_tokens']:,} / {tok['mean_est_result_tokens']:,} tok")
+        print(f"    Re-send-weighted input (median):    "
+              f"{tok['median_est_context_input_tokens']:,} tok")
+        print(f"    Total ({tok['sessions_with_data']} sessions):"
+              f"{'':>15}{tok['total_est_result_tokens']:,} tok  "
+              f"({tok['total_result_mb']} MB raw)")
+        print(f"    Note: socai→client payload only — excludes system prompt,")
+        print(f"          tool schemas, model output, caching. Calibrate real")
+        print(f"          GBP cost with: scripts/token_cost_report.py")
 
     f = s["friction"]
     print(f"\n  Friction:")
@@ -317,13 +349,14 @@ def print_tool_stats(workflows: list[dict]) -> None:
     _print_header("PER-TOOL STATISTICS")
 
     tool_data: dict[str, dict] = defaultdict(
-        lambda: {"calls": 0, "errors": 0, "durations": []})
+        lambda: {"calls": 0, "errors": 0, "durations": [], "est_tokens": 0})
 
     for w in workflows:
         for s in w.get("steps", []):
             t = s["tool"]
             tool_data[t]["calls"] += 1
             tool_data[t]["durations"].append(s["duration_ms"])
+            tool_data[t]["est_tokens"] += s.get("est_tokens", 0)
             if not s.get("success", True):
                 tool_data[t]["errors"] += 1
 
@@ -335,8 +368,10 @@ def print_tool_stats(workflows: list[dict]) -> None:
     sorted_tools = sorted(tool_data.items(), key=lambda x: -x[1]["calls"])
 
     print(f"\n  {'Tool':<32} {'Calls':>6} {'Errors':>7} "
-          f"{'Err%':>5} {'Med':>8} {'Mean':>8} {'P95':>8}")
-    print(f"  {'-'*32} {'-'*6} {'-'*7} {'-'*5} {'-'*8} {'-'*8} {'-'*8}")
+          f"{'Err%':>5} {'Med':>8} {'Mean':>8} {'P95':>8} "
+          f"{'Tok/call':>9} {'Tok tot':>9}")
+    print(f"  {'-'*32} {'-'*6} {'-'*7} {'-'*5} {'-'*8} {'-'*8} {'-'*8} "
+          f"{'-'*9} {'-'*9}")
 
     for tool, data in sorted_tools[:30]:
         calls = data["calls"]
@@ -346,9 +381,12 @@ def print_tool_stats(workflows: list[dict]) -> None:
         med = statistics.median(durs) if durs else 0
         mean = statistics.mean(durs) if durs else 0
         p95 = durs[int(len(durs) * 0.95)] if durs else 0
+        tok_tot = data["est_tokens"]
+        tok_call = round(tok_tot / calls) if calls else 0
 
         print(f"  {tool:<32} {calls:>6} {errors:>7} "
-              f"{err_pct:>4}% {_fmt_ms(med):>8} {_fmt_ms(mean):>8} {_fmt_ms(p95):>8}")
+              f"{err_pct:>4}% {_fmt_ms(med):>8} {_fmt_ms(mean):>8} {_fmt_ms(p95):>8} "
+              f"{tok_call:>9,} {tok_tot:>9,}")
 
 
 # ---------------------------------------------------------------------------
