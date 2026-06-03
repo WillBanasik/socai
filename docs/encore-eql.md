@@ -77,7 +77,9 @@ The `eql-hosted` MCP server exposes these tools: `list_clients`, `resolve_client
 }
 ```
 
-Project `.mcp.json` servers are **pending approval until enabled**. Check `enabledMcpjsonServers` for the project in `~/.claude.json`; if `[]`, approve via `/mcp`. (Tools may still appear as session-pending even while the array is empty — that is not-persistently-approved, not disconnected.) Claude Code expands `${ENCORE_EQL_TOKEN}` and its HTTP client passes Cloudflare.
+Project `.mcp.json` servers are **pending approval until enabled**. Check `enabledMcpjsonServers` for the project in `~/.claude.json`; if `[]`, approve via `/mcp`. (Tools may still appear as session-pending even while the array is empty — that is not-persistently-approved, not disconnected.) Claude Code's HTTP client passes Cloudflare as-is.
+
+> **`${ENCORE_EQL_TOKEN}` only expands if the variable is in Claude Code's environment — Claude Code does *not* read the project `.env`.** A token that lives only in `.env` expands to empty and the gateway returns 401. Put it in the gitignored `.claude/settings.local.json` `env` block (the channel Claude Code uses for `${VAR}` expansion), then restart / `/mcp` reconnect. This is the same mechanism used for the socai server — see `docs/mcp-server.md` → "Claude Code (TUI) Configuration".
 
 ### Claude Desktop (`mcp-remote` wrapper)
 
