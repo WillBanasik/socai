@@ -63,7 +63,7 @@ The exact sequence depends on attack type. `classify_attack` returns the recomme
 
 ## Report & Analysis Generation
 
-All LLM reasoning — report writing, disposition analysis, quality review — is handled by the analyst's local Claude Desktop agent. The MCP server provides prompts that load system instructions and case data into the local session, and save tools that persist the output.
+All LLM reasoning — report writing, disposition analysis, quality review — is handled by the analyst's local Claude client (Claude Desktop or Claude Code in the terminal). The MCP server provides prompts that load system instructions and case data into the local session, and save tools that persist the output.
 
 **Workflow:** Select MCP prompt (e.g. `write_mdr_report`) -> local Claude generates the report as **markdown** following the template skeleton -> call `save_report` / `save_threat_article` to persist (handles defanging, auto-close, audit). Read `socai://templates/mdr-report` or `socai://templates/pup-report` for the markdown skeleton and analyst instructions.
 
@@ -103,7 +103,7 @@ Note: The server-side tool names (`prepare_mdr_report`, `prepare_pup_report`, `p
 
 ### Design Principle
 
-**Claude Desktop agent does all reasoning. MCP tools provide data and persistence.**
+**The local Claude client (Desktop or Code TUI) does all reasoning. MCP tools provide data and persistence.**
 
 Tools handle: API calls (enrichment, Sentinel, sandbox), file I/O (case management, artefact persistence), external integrations (OpenCTI, Cyberint, and Confluence for the published ET/EV threat-articles archive only), and deterministic logic (attack classification, response matrix resolution).
 

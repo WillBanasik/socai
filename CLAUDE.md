@@ -1,6 +1,15 @@
 # CLAUDE.md
 
-Guidance for Claude Code working with the socai codebase. **Details are in `docs/` — only read them when working on relevant areas.**
+Guidance for Claude Code working with the socai codebase. **Details are in `docs/` — only read them when working on relevant areas.** (The Claude **Desktop** seat has its own instructions in `docs/claude-desktop-instructions.md` — this file governs the TUI.)
+
+## Working mode (Claude Code / TUI)
+
+Operate in one of two modes; pick based on the task and switch as it changes:
+
+- **Engineering mode** — building, editing, refactoring, testing, or debugging socai itself (code, tests, config, docs). Use `Bash`/`Edit`/`Read`/`Grep` freely. This is the default whenever the work is about *changing the codebase*.
+- **Investigation mode** — triaging alerts, pulling Sentinel incidents, enriching IOCs, correlating cases, producing deliverables. **Drive this through the socai MCP tools/prompts** (`mcp__socai__*`: `create_case`, `run_kql`, `enrich_iocs`, `recall_cases`, `classify_attack`, `get_client_baseline`, `prepare_*` → `save_report`, …), exactly as the Desktop seat does — so evidence/findings/timeline accumulate in the case and the audit trail is intact. **Do not hand-roll `az` / `curl` / raw `bash` for investigation steps when an MCP tool exists.** Drop to raw shell only when no tool covers the step, and say so explicitly.
+
+The socai MCP server is wired into this repo's `.mcp.json` (`socai`, SSE on `127.0.0.1:8001`). If `mcp__socai__*` tools aren't present, the server isn't running — start it with `python3 -m mcp_server` before doing investigation work, rather than falling back to ad-hoc shell. When unsure which mode applies, ask.
 
 ## Commands
 
@@ -51,7 +60,7 @@ All scripts must be run from the repo root (`sys.path.insert` is anchored to par
 ## Architecture at a Glance
 
 - **CLI:** `socai.py` — entrypoint; `python3 socai.py --help` for full subcommand list
-- **Tools** (`tools/`) — stateless functions; accept `case_id`, write via `write_artefact()`/`save_json()`, return manifest dicts. No direct LLM/API calls — all LLM reasoning is handled by the local Claude Desktop agent via MCP prompts.
+- **Tools** (`tools/`) — stateless functions; accept `case_id`, write via `write_artefact()`/`save_json()`, return manifest dicts. No direct LLM/API calls — all LLM reasoning is handled by the local Claude client (Claude Desktop or Claude Code) via MCP prompts.
 - **MCP Server** (`mcp_server/`) — HTTPS SSE on port 8001, JWT RBAC; see `docs/mcp-server.md`
 - **Modular toolsets** (`TOOLSETS` in `mcp_server/tools.py`) — default profile is `all`: every toolset (core + `phishing`, `malware`, `forensics`, `intel`, `darkweb`, `analysis`, `admin`) is registered up front, because Claude Desktop's client-side tool-search indexes the session-start tool list and cannot see tools added later via `tools/list_changed`. The on-demand `load_toolset` machinery remains in place for narrower profiles or transports that honour the notification — set `SOCAI_MCP_TOOLSETS=core` (or `core,phishing,...`) to opt back in. `classify_attack` still returns `recommended_toolsets` for documentation. Any new tool MUST be added to a `TOOLSETS` group (unassigned tools fall back to core with a warning). See `socai://toolsets`.
 - **Shared API** (`api/`) — auth, actions, timeline, input parsing — used by MCP server
@@ -91,13 +100,13 @@ Never combine classifications ("True Positive Benign Positive" is invalid). Disp
 
 ## Case Isolation
 
-**One alert = one case.** Every new alert gets its own case, even when the same user/host/IOCs appear in prior cases. Never append new alert data to an existing case. Cross-case correlation is on-demand via `recall_cases` (historical IOC/keyword lookup) and `campaign_cluster` (IOC overlap comparison).
+**One alert = one case.** Every new alert gets its own case, even when the same user/host/IOCs appear in prior cases. Never append new alert data to an existing case. Cross-case correlation runs via `recall_cases` (historical IOC/keyword lookup), `recall_semantic` (BM25 contextual similarity), and `campaign_cluster` (IOC overlap comparison) — run proactively per **Cross-Case Correlation** below, not only on request.
 
 ## When to Open a Case (Case vs Caseless)
 
 **An incident or alert under investigation = a case.** Open a case (`create_case`, or let the first deliverable tool auto-create one) as soon as the work is clearly an investigation: an alert JSON is pasted, a SIEM/EDR incident is referenced, the analyst says "investigate this", a structured triage starts. Investigations belong in cases — that is where evidence, findings, enrichment, timeline, and the audit trail accumulate.
 
-**Caseless is only for non-incident work**: ad-hoc IOC lookups ("what is this hash/IP/domain?"), exploratory questions, threat-intel research, playbook lookups, planning discussions before any alert is in hand, and proactive vulnerability hunting. `quick_enrich`, `extract_iocs`, `classify_attack`, `plan_investigation`, `lookup_client`, `recall_cases`, `search_threat_articles`, `web_search`, `eql_vuln_hunt`, `eql_entity_lookup`, `eql_identity_scan`, and `start_browser_session` (without `case_id`) all run caseless.
+**Caseless is only for non-incident work**: ad-hoc IOC lookups ("what is this hash/IP/domain?"), exploratory questions, threat-intel research, playbook lookups, planning discussions before any alert is in hand, and proactive vulnerability hunting. `quick_enrich`, `extract_iocs`, `classify_attack`, `plan_investigation`, `lookup_client`, `recall_cases`, `recall_semantic`, `search_threat_articles`, `web_search`, `eql_vuln_hunt`, `eql_entity_lookup`, `eql_identity_scan`, and `start_browser_session` (without `case_id`) all run caseless.
 
 Promote a caseless session to a case the moment it turns into an investigation — call `create_case(..., enrichment_id=<id>)` to carry caseless `quick_enrich` results over without re-running providers, or `create_case(..., vuln_hunt_id=<id>)` for a vuln hunt, or `create_case(..., eql_lookup_id=<id>)` for a caseless Encore entity lookup / identity scan, or `import_enrichment` / `import_vuln_hunt` / `import_eql_lookup` / `import_browser_session` on an existing case. Do not chain long sequences of caseless tools through what is plainly an incident. Deliverable tools (`prepare_mdr_report`, `prepare_pup_report`, `prepare_closure_comment`, `prepare_fp_tuning_ticket`) will auto-create a case as a safety net if you somehow reach the end without one — treat that as a safety net, not the default flow.
 
@@ -112,7 +121,17 @@ All investigative output — conversational analysis, reports, case artefacts �
 5. **Actively seek disconfirming evidence.** When a hypothesis forms, identify what data would disprove it and check that data before proceeding.
 6. **Never produce final reports on incomplete evidence** without clearly marking what is confirmed, what is assessed (inference), and what is unknown.
 7. **Language discipline:** "Confirmed" = data proves it. "Assessed" / "Assessed with [high/medium/low] confidence" = inference supported by evidence. "Unknown" / "Not determined" = no data. Never use "confirmed" for an inference.
-8. **Evidence and findings MUST be logged via tools before any report is produced.** `save_report` (MDR, PUP, exec summary, sec arch) requires a prior chain of `add_evidence` (raw observations: query hits, file analysis, enrichment verdicts, audit log entries) and `add_finding` (analyst conclusions tied to specific evidence IDs). A report on a case with no recorded `evidence` or `findings` artefacts is by definition unprovable and violates rules 1–4. If the analyst asks for a report on such a case, **stop and backfill the evidence/findings record from the data already in context before generating the report.** Never paper over a missing chain by writing prose straight into the report.
+8. **Verify before asserting.** Never assume a fact when the data to confirm it is available. If a directory, identity table, log, or lookup can resolve an attribute (role, department, ownership, configuration), query it before stating it. The data source is authoritative — inferences drawn from context, naming conventions, or prior assumptions are not.
+9. **Evidence and findings MUST be logged via tools before any report is produced.** `save_report` (MDR, PUP, exec summary, sec arch) requires a prior chain of `add_evidence` (raw observations: query hits, file analysis, enrichment verdicts, audit log entries) and `add_finding` (analyst conclusions tied to specific evidence IDs). A report on a case with no recorded `evidence` or `findings` artefacts is by definition unprovable and violates rules 1–4. If the analyst asks for a report on such a case, **stop and backfill the evidence/findings record from the data already in context before generating the report.** Never paper over a missing chain by writing prose straight into the report.
+
+### Behavioural Assessment
+
+A suspicious IP or impossible-travel alert is a SIGNAL, not a verdict. Assess what the session **did**, not just where it came **from**:
+
+- **Attacker TTPs:** inbox rule creation, mail forwarding, keyword searching (invoice/payment/password), BEC composition, OAuth app consent, MFA registration, bulk mail download, SharePoint mass exfiltration, rapid lateral movement.
+- **Normal user behaviour:** reading routine emails, opening shared docs, calendar, standard app usage, slow organic browsing.
+
+If session activity is entirely consistent with normal behaviour and shows zero attacker TTPs — even from a datacenter IP — the most likely explanation is a personal VPN. Confirm with the user before recommending containment.
 
 ## Cross-Case Correlation (MANDATORY when recurrence is plausible)
 

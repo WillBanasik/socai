@@ -21,7 +21,7 @@ Do not memorise a fixed sequence. Follow this decision pattern:
 1. **Enrich first, case later** — use `quick_enrich` for immediate ad-hoc IOC lookups (no case needed). If IOCs are malicious, create a case with `enrichment_id` to auto-import results without re-enrichment.
 2. **Classify** — call `classify_attack` or `plan_investigation` for routing. `classify_attack` returns attack type, confidence, recommended tools, and the relevant KQL playbook in one call. `plan_investigation` returns a numbered, dependency-aware plan with skip conditions.
 3. **Identify the client** — call `lookup_client` to confirm client and platforms. No investigation proceeds without a confirmed client.
-4. **Load client context** — call `get_client_baseline` for behavioural history (optional but recommended).
+4. **Load client context (MANDATORY)** — call `get_client_baseline` on every case before drawing behavioural conclusions, and `lookup_client` for the knowledge base. Behavioural context is the primary defence against VPN/geo false positives, against misclassifying authorised activity as malicious, and against missing genuinely anomalous activity that looks routine in isolation. Skip only when the case closes at triage as a pure infrastructure FP (detection-logic bug, no user/host context). This supersedes any "optional but recommended" phrasing.
 5. **Recall before enriching** — call `recall_cases` (exact IOC/keyword match) and optionally `recall_semantic` (contextual similarity) to check for prior investigations. Avoid re-enrichment when a prior case has fresh data.
 5a. **Assess the entities (Encore-enabled clients)** — when the alert names users/hosts, call `eql_identity_assessment(case_id, users=, hosts=)` as a lean scoping step *before* the deep `eql_entity_context` pull. It classifies each user internal vs external (Member/Guest/not-in-directory) from authoritative Encore directory data and pulls their managed devices; a host need not map to a user — a server/shared device is classified as an asset (managed/unmanaged/unknown) with its local admins ("who operates it"). Soft-capped at 5 per list (raise `cap` if needed); guests / unknown entities cost a single query each. Use the result to decide which entities warrant the deep `eql_entity_context`. *(For pre-case ad-hoc triage — "who/what is this user/device/IP?" before an alert is in hand — the caseless twins `eql_entity_lookup` / `eql_identity_scan` do the same without a case; promote with `eql_lookup_id` on `create_case` or `import_eql_lookup`.)*
 6. **Follow the plan** — execute tools in the order the plan specifies. Trust skip conditions from the pipeline profile.
@@ -52,7 +52,9 @@ For a full picture of an existing case, use `case_summary` — returns metadata,
 
 ## 2. Case Isolation
 
-**One alert = one case.** Every new alert gets its own case, even when the same user/host/IOCs appear in prior cases. Never append new alert data to an existing case. Cross-case correlation is on-demand:
+**One alert = one case.** Every new alert gets its own case, even when the same user/host/IOCs appear in prior cases. Never append new alert data to an existing case.
+
+**Run cross-case correlation proactively, not reactively** — it is the only way to detect shared infrastructure across the one-alert-one-case boundary. Call `recall_cases` at the start of any investigation with a non-trivial IOC set (domains, hashes, sender addresses, infrastructure); escalate to `campaign_cluster` whenever `recall_cases` returns ≥1 prior case with overlapping IOCs or the alert pattern matches recent traffic. Record the result via `add_evidence` even when there is no overlap — "no cross-case overlap found" is itself a finding. Correlation tools:
 
 - `recall_cases` — exact IOC/keyword search across all prior cases
 - `recall_semantic` — BM25 contextual similarity search
@@ -173,6 +175,7 @@ These rules apply to ALL investigative output — conversation, reports, case ar
 6. **Never produce final reports on incomplete evidence** without clearly marking what is confirmed, assessed, and unknown.
 7. **Language discipline:** "Confirmed" = data proves it. "Assessed" / "Assessed with [high/medium/low] confidence" = inference supported by evidence. "Unknown" / "Not determined" = no data. Never use "confirmed" for an inference.
 8. **Verify before asserting.** Never assume a fact when the data to confirm it is available. If a directory, identity table, log, or lookup can resolve an attribute (role, department, ownership, configuration), query it before stating it. The data source is authoritative — inferences drawn from context, naming conventions, or prior assumptions are not.
+9. **Log evidence and findings via tools before any report.** `save_report` (MDR, PUP, exec summary, sec arch) requires a prior chain of `add_evidence` (raw observations — query hits, file analysis, enrichment verdicts, audit-log entries) and `add_finding` (analyst conclusions tied to specific evidence IDs). A report on a case with no recorded evidence or findings is by definition unprovable and violates rules 1–4. If asked for a report on such a case, stop and backfill the evidence/findings record from the data already in context before generating it — never write prose straight into the report to paper over a missing chain.
 
 ### Behavioural Assessment
 

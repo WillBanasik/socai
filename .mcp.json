@@ -6,6 +6,13 @@
       "headers": {
         "Authorization": "Bearer ${ENCORE_EQL_TOKEN}"
       }
+    },
+    "socai": {
+      "type": "sse",
+      "url": "http://127.0.0.1:8001/sse",
+      "headers": {
+        "Authorization": "Bearer ${SOCAI_MCP_TOKEN}"
+      }
     }
   }
 }

@@ -28,7 +28,7 @@ MCP Server (mcp_server/)
     ├── Structured logging   → JSONL (mcp_server.jsonl, mcp_usage.jsonl, metrics.jsonl), PID file, signal handlers
     ├── Investigation metrics → phase timing, enrichment duration/coverage, verdict confidence, report completeness
     ├── stdio fallback       → Claude Desktop backward compat (no auth)
-    ├── No LLM calls         → all reasoning handled by local Claude Desktop agent
+    ├── No LLM calls         → all reasoning handled by local Claude client (Desktop or Code TUI)
     ├── Speculative enrich   → classify_attack / add_evidence fire background quick_enrich (fast providers, ≤20 IOCs)
     └── Enrichment depth     → agent-controlled depth param (auto/fast/full); triage-first + client baseline auto-skip routine IOCs
 
@@ -124,11 +124,11 @@ articles/YYYY-MM/         ← threat article summaries (ET/EV)
 
 ## LLM Architecture
 
-The system makes **no direct Anthropic API calls**. All LLM reasoning is handled by the analyst's local Claude Desktop agent via MCP prompts.
+The system makes **no direct Anthropic API calls**. All LLM reasoning is handled by the analyst's local Claude client (Claude Desktop or Claude Code in the terminal) via MCP prompts.
 
 | Component | Role |
 |-----------|------|
-| **Claude Desktop agent** | All analytical reasoning, report writing, disposition analysis, quality review |
+| **Claude client (Desktop / Code TUI)** | All analytical reasoning, report writing, disposition analysis, quality review |
 | **MCP prompts (23)** | Load system instructions + case data into the local session |
 | **Save tools (2)** | `save_report`, `save_threat_article` — persist agent output (markdown reports) with defanging, auto-close, audit |
 | **MCP tools (115)** | Data gathering only: enrichment APIs, Sentinel / Defender XDR / CrowdStrike queries, file I/O, deterministic logic |

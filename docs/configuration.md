@@ -31,7 +31,7 @@ All settings in `config/settings.py`; secrets in `.env` (git-ignored, auto-loade
 
 ## LLM Reasoning
 
-All LLM reasoning (report generation, analytical judgement, disposition analysis, quality review) is handled by the local Claude Desktop agent via MCP prompts and save tools. No Anthropic API key is needed — the MCP server provides data-gathering tools and persistence, while the analyst's local Claude session does the thinking.
+All LLM reasoning (report generation, analytical judgement, disposition analysis, quality review) is handled by the analyst's local Claude client — Claude Desktop or Claude Code in the terminal — via MCP prompts and save tools. No Anthropic API key is needed — the MCP server provides data-gathering tools and persistence, while the analyst's local Claude session does the thinking. (Connecting Claude Code as a client: see `docs/mcp-server.md` → "Claude Code (TUI) Configuration".)
 
 ## API Keys
 
