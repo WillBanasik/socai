@@ -350,14 +350,45 @@ IDENTITY_DEFAULT_CAP = 5
 # Scope gate + token
 # ---------------------------------------------------------------------------
 
+def _resolve_client_config(client_name: str) -> dict | None:
+    """Resolve a client *name or declared alias* to its config dict, else None.
+
+    Exact name match first (case-insensitive, via ``get_client_config``). On a
+    miss, fall back to an EXACT, UNAMBIGUOUS alias match — mirroring
+    ``lookup_client``'s resolution (mcp_server/tools.py): a single alias hit
+    resolves, but an alias shared by several clients (e.g. ``"tsogo"``)
+    deliberately does NOT (returns None), so the caller fails closed rather than
+    silently picking a neighbouring client. Never fuzzy/substring — that path is
+    a cross-client leak risk (see ``resolve_client_by_name``).
+    """
+    cfg = get_client_config(client_name)
+    if cfg is not None:
+        return cfg
+    query = (client_name or "").strip().lower()
+    if not query:
+        return None
+    from config.settings import CLIENT_ENTITIES
+    try:
+        entities = load_json(CLIENT_ENTITIES).get("clients", [])
+    except Exception:
+        return None
+    matches = [
+        ent for ent in entities
+        if query in {a.strip().lower() for a in ent.get("aliases", []) if isinstance(a, str)}
+    ]
+    return matches[0] if len(matches) == 1 else None  # zero or ambiguous → fail closed
+
+
 def _resolve_encore_id(client_name: str) -> str:
-    """Resolve a socai client name to its pinned Encore ``internal_client_id``.
+    """Resolve a socai client name (or declared alias) to its pinned Encore
+    ``internal_client_id``.
 
     Raises EqlNotConfigured (the scope gate) if the client is unknown, has no
     ``platforms.encore`` block, no ``internal_client_id``, or read access is
-    not granted. No HTTP is attempted before this passes.
+    not granted. An ambiguous shared alias resolves to nothing and is therefore
+    treated as unknown (fail closed). No HTTP is attempted before this passes.
     """
-    cfg = get_client_config(client_name)
+    cfg = _resolve_client_config(client_name)
     if cfg is None:
         raise EqlNotConfigured(f"unknown client {client_name!r}")
     enc = (cfg.get("platforms") or {}).get("encore") or {}
@@ -857,7 +888,7 @@ def _assess_identities(
                     "errors": res["errors"],
                     "coverage": "ok" if res["rows"] else "no_data_for_client"}
         except EqlError as exc:
-            log_error(case_id, "eql.identity_assessment", str(exc),
+            log_error(log_case_id, "eql.identity_assessment", str(exc),
                       severity="warning", context={"table": tpl["table"], "value": value})
             return {"query": q, "rows": [], "row_count": 0, "coverage": "query_error",
                     "error": str(exc)}
@@ -1232,15 +1263,17 @@ def resolve_client_by_name(client_name: str) -> tuple[str, str]:
     Applies the SAME scope gate as the case-bound path via ``_resolve_encore_id``:
     the client must exist, have ``platforms.encore.internal_client_id`` and read
     access, else ``EqlNotConfigured`` is raised before any HTTP. Matches the
-    client name EXACTLY (``get_client_config`` is exact/alias, never fuzzy) — a
-    wrong or partial name must fail, not silently resolve to a neighbouring
-    client (cross-client leak risk; cf. the Sentinel workspace fallback).
+    client name OR a declared alias EXACTLY (never fuzzy/substring) — a wrong or
+    partial name, or an ambiguous shared alias, must fail rather than silently
+    resolve to a neighbouring client (cross-client leak risk; cf. the Sentinel
+    workspace fallback). ``canonical`` is taken from the resolved entity, so an
+    alias like ``"perf"`` reports back as ``"performanta"``.
     """
     name = (client_name or "").strip()
     if not name:
         raise EqlNotConfigured("client_name is required")
-    internal_client_id = _resolve_encore_id(name)          # exact + scope gate
-    cfg = get_client_config(name) or {}
+    internal_client_id = _resolve_encore_id(name)          # name/alias + scope gate
+    cfg = _resolve_client_config(name) or {}
     canonical = cfg.get("name") or name
     return canonical, internal_client_id
 
