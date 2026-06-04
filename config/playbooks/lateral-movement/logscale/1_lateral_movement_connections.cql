@@ -18,6 +18,7 @@
 | table([@timestamp, ComputerName, RemoteAddressIP4, RemotePort, Protocol,
          FileName, CommandLine, UserName])
 | sort(@timestamp, order=asc)
+| head(50)
 
 
 // --- Sub-query B: Lateral movement tool execution ---
@@ -29,6 +30,7 @@
 | table([@timestamp, ComputerName, FileName, CommandLine, UserName,
          ParentBaseFileName, SHA256HashData])
 | sort(@timestamp, order=desc)
+| head(50)
 
 
 // --- Sub-query C: Remote logons originating from the source host ---

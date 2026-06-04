@@ -30,6 +30,7 @@
 | table([@timestamp, host.hostname, user.name,
          windows.EventData.TargetDomainName])
 | sort(@timestamp, order=desc)
+| head(100)
 
 
 // --- Sub-query D: Kerberos pre-auth failures (4771) with status decode ---

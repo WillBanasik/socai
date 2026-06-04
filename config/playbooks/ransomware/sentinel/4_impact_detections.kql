@@ -20,3 +20,4 @@ union isfuzzy=true
         Detail = RenderedDescription
 )
 | sort by TimeGenerated asc
+| take 200

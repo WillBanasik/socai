@@ -17,6 +17,7 @@
 | table([@timestamp, ComputerName, RemoteAddressIP4, RemotePort, Protocol,
          FileName, CommandLine, UserName])
 | sort(@timestamp, order=asc)
+| head(50)
 
 
 // --- Sub-query B: Logons on second-hop hosts from first-hop hosts ---

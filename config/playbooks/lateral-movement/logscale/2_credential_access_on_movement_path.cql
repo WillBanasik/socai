@@ -7,6 +7,7 @@
 | table([@timestamp, ComputerName, FileName, CommandLine, UserName,
          ParentBaseFileName, SHA256HashData])
 | sort(@timestamp, order=desc)
+| head(50)
 
 
 // --- Sub-query B: LSASS access events (per host) ---
@@ -18,6 +19,7 @@
 | table([@timestamp, ComputerName, DetectName, DetectDescription,
          Severity, FileName, CommandLine, Tactic, Technique])
 | sort(@timestamp, order=desc)
+| head(50)
 
 
 // --- UNAVAILABLE: MDI Kerberos anomaly detection ---

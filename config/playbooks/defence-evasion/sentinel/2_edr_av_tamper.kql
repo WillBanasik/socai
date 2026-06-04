@@ -24,3 +24,4 @@ union isfuzzy=true
         ProcessCommandLine, InitiatingProcessFileName, AccountName
 )
 | sort by Timestamp asc
+| take 200

@@ -12,3 +12,4 @@ OfficeActivity
 | project TimeGenerated, Operation, UserId, ClientIP, ResultStatus,
     Parameters = tostring(Parameters)
 | sort by TimeGenerated asc
+| take 200

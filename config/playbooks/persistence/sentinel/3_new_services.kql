@@ -20,3 +20,4 @@ union isfuzzy=true
         ServiceName = ProcessCommandLine, Account = AccountName, Detail = InitiatingProcessFileName
 )
 | sort by Timestamp asc
+| take 200

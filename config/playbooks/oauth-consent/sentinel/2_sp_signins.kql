@@ -1,7 +1,13 @@
 // OAuth Consent Stage 2 — Service-principal sign-ins post-consent.
+// Scoped to the consented app (app_id from Stage 1). app_id=__NONE__ returns
+// nothing rather than the entire tenant's SP sign-in log — supply the AppId.
 let lookback = {{lookback}};
+let app_id = "{{app_id}}";
 AADServicePrincipalSignInLogs
 | where TimeGenerated > ago(lookback)
+| where app_id != "__NONE__"
+    and (AppId == app_id or ServicePrincipalId == app_id or ServicePrincipalName has app_id)
 | project TimeGenerated, ServicePrincipalName, ServicePrincipalId, AppId,
-    IPAddress, ResourceDisplayName, ResourceId, ResultType, ResultDescription
+    IPAddress, ResourceDisplayName, ResultType, ResultDescription
 | sort by TimeGenerated asc
+| take 200

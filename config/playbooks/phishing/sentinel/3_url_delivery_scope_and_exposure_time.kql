@@ -34,3 +34,4 @@ EmailUrlInfo
     DeliveryLocation,
     ZAPAction
 | sort by DeliveryTime asc
+| take 200

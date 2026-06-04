@@ -47,16 +47,9 @@ let DLPAlerts = SecurityAlert
     Entities = substring(tostring(Entities), 0, 500)
 | extend Section = "1_DLPAlerts";
 
-// --- SECTION 2: File download volume and patterns ---
-let FileDownloads = OfficeActivity
-| where TimeGenerated between (LookbackStart .. LookbackEnd)
-| where OfficeWorkload in ("SharePoint", "OneDrive")
-| where UserId in (AllUPNs)
-| where Operation in ("FileDownloaded", "FileAccessed", "FileSyncDownloadedFull",
-    "FileCopied", "FileModified")
-| project TimeGenerated, Operation, UserId, ClientIP,
-    OfficeObjectId, OfficeWorkload, ResultStatus
-| extend Section = "2_FileDownloads";
+// --- SECTION 2 removed: raw per-file download events were duplicated by the
+// 3_DownloadSummary volume rollup below. Pivot to raw FileDownloaded rows for a
+// specific user/hour from that summary when the per-file list is needed. ---
 
 // --- SECTION 3: File download summary (volume anomaly detection) ---
 let DownloadSummary = OfficeActivity
@@ -110,27 +103,26 @@ let OAuthGrants = OfficeActivity
     Parameters = tostring(Parameters)
 | extend Section = "6_OAuthGrants";
 
-// --- SECTION 7: Sign-in context ---
+// --- SECTION 7: Sign-in context, summarised per source IP / geo ---
 let SignIns = SigninLogs
 | where TimeGenerated between (LookbackStart .. LookbackEnd)
 | where UserPrincipalName in (AllUPNs)
 | extend City = tostring(LocationDetails.city),
-    Country = tostring(LocationDetails.countryOrRegion),
-    State = tostring(LocationDetails.state),
-    MfaMethod = tostring(MfaDetail.authMethod),
-    ErrorCode = tostring(Status.errorCode)
-| project TimeGenerated, UserPrincipalName, IPAddress, City, Country, State,
-    AppDisplayName, ResourceDisplayName, RiskLevelDuringSignIn, RiskState,
-    AuthenticationRequirement, ConditionalAccessStatus,
-    ErrorCode, MfaMethod
-| extend Section = "7_SignIns";
+    Country = tostring(LocationDetails.countryOrRegion)
+| summarize SignInCount = count(), Successes = countif(ResultType == 0), Failures = countif(ResultType != 0),
+    FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated),
+    Apps = make_set(AppDisplayName, 20), Risks = make_set(RiskLevelDuringSignIn, 10)
+    by IPAddress, City, Country, UserPrincipalName
+| project FirstSeen, LastSeen, UserPrincipalName, IPAddress, City, Country,
+    SignInCount, Successes, Failures, Apps, Risks
+| extend Section = "7_SignIns", TimeGenerated = FirstSeen;
 
 // --- SECTION 8: All other security alerts for context ---
 let OtherAlerts = SecurityAlert
 | where TimeGenerated between (LookbackStart .. LookbackEnd)
 | where Entities has TargetUPN
     or (isnotempty(ObjectId) and Entities has ObjectId)
-| where AlertName !has_any ("DLP", "exfiltration", "data loss")
+| where not(AlertName has_any ("DLP", "exfiltration", "data loss"))
 | project TimeGenerated, AlertName, AlertSeverity, Tactics, Status,
     Entities = substring(tostring(Entities), 0, 500)
 | extend Section = "8_OtherAlerts";
@@ -138,7 +130,6 @@ let OtherAlerts = SecurityAlert
 // --- UNION ALL ---
 union isfuzzy=true
     (DLPAlerts | extend SortTime = TimeGenerated),
-    (FileDownloads | extend SortTime = TimeGenerated),
     (DownloadSummary | extend SortTime = TimeGenerated),
     (ExternalSharing | extend SortTime = TimeGenerated),
     (EmailExfil | extend SortTime = TimeGenerated),

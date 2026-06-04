@@ -1,61 +1,38 @@
-union
-(
-    SigninLogs
-    | where TimeGenerated > ago({{lookback}})
-    | where UserPrincipalName =~ "{{actor_upn}}"
-    | extend SignInType = "Interactive"
-    | project
-        SourceTable = "SigninLogs",
-        TimeGenerated,
-        SignInType,
-        IPAddress,
-        Location,
-        AppDisplayName,
-        RiskLevelDuringSignIn,
-        RiskLevelAggregated,
-        RiskDetail,
-        DeviceDetail = tostring(DeviceDetail),
-        UserAgent,
-        Department = "",
-        JobTitle = ""
-),
-(
-    AADNonInteractiveUserSignInLogs
-    | where TimeGenerated > ago({{lookback}})
-    | where UserPrincipalName =~ "{{actor_upn}}"
-    | extend SignInType = "NonInteractive"
-    | project
-        SourceTable = "AADNonInteractive",
-        TimeGenerated,
-        SignInType,
-        IPAddress,
-        Location,
-        AppDisplayName,
-        RiskLevelDuringSignIn,
-        RiskLevelAggregated,
-        RiskDetail,
-        DeviceDetail = tostring(DeviceDetail),
-        UserAgent,
-        Department = "",
-        JobTitle = ""
-),
-(
+// Privilege-Escalation Stage 2 — Actor legitimacy check.
+// Sign-ins are summarised per source IP / location (one row per IP with
+// success/fail split, apps, risk, user-agents) rather than dumped raw — an
+// active actor over the lookback can produce thousands of sign-in rows. The
+// IdentityInfo row stays a single authoritative directory snapshot. Pivot to
+// raw sign-in rows for a specific suspect IP once one stands out.
+let actor = "{{actor_upn}}";
+let lookback = {{lookback}};
+let SignIns =
+    union
+    (
+        SigninLogs
+        | where TimeGenerated > ago(lookback)
+        | where UserPrincipalName =~ actor
+        | extend SignInType = "Interactive"
+    ),
+    (
+        AADNonInteractiveUserSignInLogs
+        | where TimeGenerated > ago(lookback)
+        | where UserPrincipalName =~ actor
+        | extend SignInType = "NonInteractive"
+    )
+    | summarize SignIns = count(),
+        Successes = countif(ResultType == 0), Failures = countif(ResultType != 0),
+        FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated),
+        Apps = make_set(AppDisplayName, 20), Risks = make_set(RiskLevelDuringSignIn, 10),
+        UserAgents = make_set(UserAgent, 10)
+        by IPAddress, Location, SignInType
+    | extend SourceTable = strcat(SignInType, "SignIns"), TimeGenerated = LastSeen;
+let Identity =
     IdentityInfo
-    | where AccountUPN =~ "{{actor_upn}}"
+    | where AccountUPN =~ actor
     | summarize arg_max(TimeGenerated, *) by AccountUPN
-    | project
-        SourceTable = "IdentityInfo",
-        TimeGenerated,
-        SignInType = "Identity",
-        IPAddress = "",
-        Location = "",
-        AppDisplayName = "",
-        RiskLevelDuringSignIn = "",
-        RiskLevelAggregated = "",
-        RiskDetail = "",
-        DeviceDetail = "",
-        UserAgent = "",
-        Department,
-        JobTitle
-)
-| sort by TimeGenerated desc
+    | project SourceTable = "IdentityInfo", TimeGenerated, AccountUPN,
+        AccountDisplayName, Department, JobTitle;
+union isfuzzy=true SignIns, Identity
+| sort by SourceTable asc, SignIns desc
+| take 200

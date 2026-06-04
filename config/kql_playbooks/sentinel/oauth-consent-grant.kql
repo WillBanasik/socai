@@ -61,21 +61,32 @@ let AADActivity = OfficeActivity
 | extend Section = "2_AADActivity";
 
 // --- SECTION 3: Service principal sign-ins (app activity post-consent) ---
+// Summarised per service principal — a raw per-event projection here returns the
+// ENTIRE tenant's SP sign-in log (no app filter). Pivot to raw events for the
+// suspect AppId once Section 1 identifies the consented app.
 let SPSignIns = AADServicePrincipalSignInLogs
 | where TimeGenerated between (LookbackStart .. LookbackEnd)
-| project TimeGenerated, ServicePrincipalName, ServicePrincipalId,
-    IPAddress, ResourceDisplayName,
-    ResultType, ResultDescription,
-    AppId, ResourceId
-| extend Section = "3_ServicePrincipalSignIns";
+| summarize SignInCount = count(), Failures = countif(ResultType != 0),
+    FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated),
+    Resources = make_set(ResourceDisplayName, 20), IPs = make_set(IPAddress, 20)
+    by AppId, ServicePrincipalName, ServicePrincipalId
+| project FirstSeen, LastSeen, AppId, ServicePrincipalName, ServicePrincipalId,
+    SignInCount, Failures, Resources, IPs
+| extend Section = "3_ServicePrincipalSignIns", TimeGenerated = FirstSeen;
 
 // --- SECTION 4: Microsoft Graph API activity (what the app accessed) ---
+// Summarised per calling app — a raw per-event projection here returns ALL
+// tenant Graph API traffic (no AppId filter). Pivot to raw RequestUri rows for
+// the suspect AppId once Section 1 identifies the consented app.
 let GraphActivity = MicrosoftGraphActivityLogs
 | where TimeGenerated between (LookbackStart .. LookbackEnd)
-| project TimeGenerated, RequestMethod, RequestUri,
-    ResponseStatusCode, UserAgent,
-    IPAddress, Roles, AppId
-| extend Section = "4_GraphActivity";
+| summarize Calls = count(),
+    FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated),
+    Methods = make_set(RequestMethod, 10), Statuses = make_set(ResponseStatusCode, 15),
+    IPs = make_set(IPAddress, 20), SampleUris = make_set(substring(RequestUri, 0, 80), 25)
+    by AppId
+| project FirstSeen, LastSeen, AppId, Calls, Methods, Statuses, IPs, SampleUris
+| extend Section = "4_GraphActivity", TimeGenerated = FirstSeen;
 
 // --- SECTION 5: Post-consent data access (Exchange, SharePoint) ---
 let PostConsentDataAccess = OfficeActivity

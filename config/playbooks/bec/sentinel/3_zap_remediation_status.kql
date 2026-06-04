@@ -39,3 +39,4 @@ Delivered
     SenderFromAddress,
     NetworkMessageId
 | sort by Remediated asc, ExposureMinutes desc
+| take 200

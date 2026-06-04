@@ -20,3 +20,4 @@ union isfuzzy=true
         FolderPath, InitiatingProcessFileName
 )
 | sort by Timestamp asc
+| take 200

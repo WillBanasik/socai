@@ -90,3 +90,4 @@ union
         Detail = tostring(Parameters)
 )
 | sort by TimeGenerated desc
+| take 200

@@ -12,3 +12,4 @@ DeviceRegistryEvents
 | project Timestamp, DeviceName, ActionType, RegistryKey, RegistryValueName,
     RegistryValueData, InitiatingProcessFileName, InitiatingProcessCommandLine
 | sort by Timestamp asc
+| take 200

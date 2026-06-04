@@ -12,3 +12,4 @@ OfficeActivity
 | project TimeGenerated, Operation, UserId, ClientIP, OfficeWorkload,
     OfficeObjectId, ResultStatus, ExternalAccess
 | sort by TimeGenerated asc
+| take 200

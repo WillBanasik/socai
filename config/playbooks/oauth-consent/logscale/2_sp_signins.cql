@@ -5,8 +5,11 @@
 //   is NOT confirmed in this repo — verify before relying on this:
 //     #event.module=entraid | groupBy(#event.dataset, function=count())
 //   then set the dataset filter on line 1 accordingly.
+// Scoped to the consented app (app_id from Stage 1). app_id=__NONE__ matches
+// nothing rather than returning every SP sign-in in the tenant.
 #event.module=entraid #event.dataset=/entraid\..*signin/i
 | Vendor.properties.servicePrincipalName = /.+/
+| Vendor.properties.appId = "{{app_id}}" OR Vendor.properties.servicePrincipalName = /{{app_id}}/i
 | table([@timestamp, Vendor.properties.servicePrincipalName, Vendor.properties.appId,
          source.ip, Vendor.properties.resourceDisplayName,
          Vendor.properties.status.errorCode], limit=200)

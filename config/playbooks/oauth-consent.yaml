@@ -30,6 +30,13 @@ parameters:
   type: string
   description: Entra object ID of the user (optional, for alert correlation). __NONE__ to skip.
   default: __NONE__
+- name: app_id
+  type: string
+  description: >
+    AppId / client-id (or ServicePrincipal name fragment) of the consented app,
+    read from the Stage 1 consent event Parameters. REQUIRED to scope Stage 2 —
+    __NONE__ returns nothing rather than the entire tenant's SP sign-in log.
+  default: __NONE__
 - name: lookback
   type: string
   description: Time range to investigate (default 14d).

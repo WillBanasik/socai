@@ -35,10 +35,10 @@ let NonInteractive = AADNonInteractiveUserSignInLogs
     | where UserPrincipalName =~ TargetUPN
     | where isempty(AttackerIP) or IPAddress == AttackerIP
     | extend
-        City = tostring(LocationDetails.city),
-        Country = tostring(LocationDetails.countryOrRegion),
-        ErrorCode = tostring(Status.errorCode),
-        FailureReason = tostring(Status.failureReason)
+        City = tostring(parse_json(tostring(LocationDetails)).city),
+        Country = tostring(parse_json(tostring(LocationDetails)).countryOrRegion),
+        ErrorCode = tostring(parse_json(tostring(Status)).errorCode),
+        FailureReason = tostring(parse_json(tostring(Status)).failureReason)
     | project
         TimeGenerated, UserPrincipalName, IPAddress,
         City, Country,
@@ -51,6 +51,17 @@ let NonInteractive = AADNonInteractiveUserSignInLogs
         IsManaged = "", IsCompliant = "", TrustType = "",
         SessionId = CorrelationId,
         SignInType = "NonInteractive";
+// Summarise per source IP / geo / type first — one row per location with
+// success/fail split, apps, risk and device posture. Pivot to raw sign-in rows
+// for a specific suspect IP once an anomalous location surfaces.
 union Interactive, NonInteractive
-| sort by TimeGenerated asc
-| take 500
+| summarize SignIns = count(),
+    Successes = countif(ResultType == 0), Failures = countif(ResultType != 0),
+    FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated),
+    Apps = make_set(AppDisplayName, 20), Resources = make_set(ResourceDisplayName, 20),
+    RiskLevels = make_set(RiskLevelDuringSignIn, 10), ResultCodes = make_set(ErrorCode, 15),
+    Devices = make_set(DeviceName, 15), Compliant = make_set(IsCompliant, 5),
+    CA = make_set(ConditionalAccessStatus, 5), MFA = make_set(MfaMethod, 10)
+    by IPAddress, City, Country, SignInType
+| sort by SignIns desc
+| take 200

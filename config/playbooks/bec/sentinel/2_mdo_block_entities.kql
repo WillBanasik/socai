@@ -26,3 +26,4 @@ union
     (SenderIPs | project Entity = SenderIPv4, BlockType, BlockAction)
 | distinct Entity, BlockType, BlockAction
 | sort by BlockType asc, Entity asc
+| take 200

@@ -72,3 +72,4 @@ union
         Detail = Description
 )
 | sort by TimeGenerated desc
+| take 200

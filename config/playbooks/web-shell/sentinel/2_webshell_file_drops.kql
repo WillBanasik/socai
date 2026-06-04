@@ -13,3 +13,4 @@ DeviceFileEvents
 | project Timestamp, DeviceName, ActionType, FileName, FolderPath, SHA256,
     InitiatingProcessFileName, InitiatingProcessCommandLine
 | sort by Timestamp asc
+| take 200

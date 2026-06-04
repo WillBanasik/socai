@@ -13,3 +13,4 @@ DeviceProcessEvents
 | project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine,
     InitiatingProcessFileName
 | sort by Timestamp asc
+| take 200

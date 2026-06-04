@@ -63,3 +63,4 @@ union isfuzzy=true
     (OAuthConsent | extend SortTime = Timestamp),
     (MFAChanges | extend SortTime = Timestamp)
 | sort by Section asc, SortTime asc
+| take 200

@@ -24,3 +24,4 @@ union isfuzzy=true
         InitiatingProcessAccountName = AccountName
 )
 | sort by Timestamp asc
+| take 200

@@ -24,3 +24,4 @@ union isfuzzy=true
         AdditionalFields = ""
 )
 | sort by Timestamp asc
+| take 200

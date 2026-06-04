@@ -85,22 +85,20 @@ let FileActivity = OfficeActivity
     OfficeObjectId, OfficeWorkload, ResultStatus
 | extend Section = "4_FileActivity";
 
-// --- SECTION 5: Sign-ins after email delivery (compromise indicators) ---
+// --- SECTION 5: Post-delivery sign-ins, summarised per source IP / geo ---
 let SignIns = SigninLogs
 | where TimeGenerated between (LookbackStart .. LookbackEnd)
 | where UserPrincipalName in (AllUPNs)
 | extend City = tostring(LocationDetails.city),
-    Country = tostring(LocationDetails.countryOrRegion),
-    State = tostring(LocationDetails.state),
-    MfaMethod = tostring(MfaDetail.authMethod),
-    MfaPhone = tostring(MfaDetail.authDetail),
-    ErrorCode = tostring(Status.errorCode),
-    FailureReason = tostring(Status.failureReason)
-| project TimeGenerated, UserPrincipalName, IPAddress, City, Country, State,
-    AppDisplayName, ResourceDisplayName, RiskLevelDuringSignIn, RiskState,
-    AuthenticationRequirement, ConditionalAccessStatus,
-    ErrorCode, FailureReason, MfaMethod, MfaPhone
-| extend Section = "5_SignIns";
+    Country = tostring(LocationDetails.countryOrRegion)
+| summarize SignInCount = count(), Successes = countif(ResultType == 0), Failures = countif(ResultType != 0),
+    FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated),
+    Apps = make_set(AppDisplayName, 20), Risks = make_set(RiskLevelDuringSignIn, 10),
+    CA = make_set(ConditionalAccessStatus, 5)
+    by IPAddress, City, Country, UserPrincipalName
+| project FirstSeen, LastSeen, UserPrincipalName, IPAddress, City, Country,
+    SignInCount, Successes, Failures, Apps, Risks, CA
+| extend Section = "5_SignIns", TimeGenerated = FirstSeen;
 
 // --- SECTION 6: Suspicious IP sign-ins across tenant (same attacker, other victims) ---
 let IPSpread = SigninLogs
@@ -123,7 +121,7 @@ let AllAlerts = SecurityAlert
 | where TimeGenerated between (LookbackStart .. LookbackEnd)
 | where Entities has TargetUPN
     or (isnotempty(ObjectId) and Entities has ObjectId)
-| where AlertName !has_any ("Email", "Phish", "Malware", "ZAP")
+| where not(AlertName has_any ("Email", "Phish", "Malware", "ZAP"))
 | project TimeGenerated, AlertName, AlertSeverity, Tactics, Status,
     Entities = substring(tostring(Entities), 0, 500)
 | extend Section = "7_OtherAlerts";

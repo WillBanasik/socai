@@ -35,25 +35,10 @@ let LookbackEnd = datetime({{lookback_end}});
 
 let AllUPNs = array_concat(pack_array(TargetUPN), AdditionalUPNs);
 
-// --- SECTION 1: Interactive sign-ins with full context ---
-let InteractiveSignIns = SigninLogs
-| where TimeGenerated between (LookbackStart .. LookbackEnd)
-| where UserPrincipalName in (AllUPNs)
-| extend City = tostring(LocationDetails.city),
-    Country = tostring(LocationDetails.countryOrRegion),
-    State = tostring(LocationDetails.state),
-    Latitude = tostring(LocationDetails.geoCoordinates.latitude),
-    Longitude = tostring(LocationDetails.geoCoordinates.longitude),
-    MfaMethod = tostring(MfaDetail.authMethod),
-    MfaPhone = tostring(MfaDetail.authDetail),
-    ErrorCode = tostring(Status.errorCode),
-    FailureReason = tostring(Status.failureReason)
-| project TimeGenerated, UserPrincipalName, IPAddress, City, Country, State,
-    AppDisplayName, ResourceDisplayName, RiskLevelDuringSignIn, RiskState,
-    RiskDetail, AuthenticationRequirement, ConditionalAccessStatus,
-    ErrorCode, FailureReason, MfaMethod, MfaPhone, UserAgent,
-    DeviceDetail, IsInteractive
-| extend Section = "1_InteractiveSignIns";
+// --- SECTION 1 removed: raw interactive sign-ins were fully duplicated by the
+// 2_SignInPatterns summary below. The summary collapses the same data to one row
+// per IP/location; pivot to raw SigninLogs for a specific IP only when per-event
+// detail is needed. ---
 
 // --- SECTION 2: Sign-in summary by IP and location (pattern detection) ---
 let SignInPatterns = SigninLogs
@@ -72,19 +57,20 @@ let SignInPatterns = SigninLogs
     SignInCount, LastSeen, Apps, RiskLevels, MfaMethods
 | extend Section = "2_SignInPatterns", TimeGenerated = FirstSeen;
 
-// --- SECTION 3: Failed sign-ins (brute force / password spray indicators) ---
+// --- SECTION 3: Failed sign-ins summarised per IP / error (spray indicators) ---
 let FailedSignIns = SigninLogs
 | where TimeGenerated between (LookbackStart .. LookbackEnd)
 | where UserPrincipalName in (AllUPNs)
 | where ResultType != "0" and ResultType != 0
 | extend ErrorCode = tostring(Status.errorCode),
-    FailureReason = tostring(Status.failureReason),
     City = tostring(LocationDetails.city),
     Country = tostring(LocationDetails.countryOrRegion)
-| project TimeGenerated, UserPrincipalName, IPAddress, City, Country,
-    AppDisplayName, ResultType, ErrorCode, FailureReason,
-    AuthenticationRequirement, ConditionalAccessStatus
-| extend Section = "3_FailedSignIns";
+| summarize Failures = count(), FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated),
+    Users = make_set(UserPrincipalName, 30), Apps = make_set(AppDisplayName, 20),
+    ErrorCodes = make_set(ErrorCode, 15)
+    by IPAddress, City, Country
+| project FirstSeen, LastSeen, IPAddress, City, Country, Failures, Users, Apps, ErrorCodes
+| extend Section = "3_FailedSignIns", TimeGenerated = FirstSeen;
 
 // --- SECTION 4: Activity from the suspicious IP across all users ---
 let IPFootprint = SigninLogs
@@ -155,7 +141,6 @@ let Alerts = SecurityAlert
 
 // --- UNION ALL ---
 union isfuzzy=true
-    (InteractiveSignIns | extend SortTime = TimeGenerated),
     (SignInPatterns | extend SortTime = TimeGenerated),
     (FailedSignIns | extend SortTime = TimeGenerated),
     (IPFootprint | extend SortTime = TimeGenerated),

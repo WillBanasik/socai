@@ -15,3 +15,4 @@ DeviceProcessEvents
 | project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine,
     InitiatingProcessFileName, InitiatingProcessCommandLine, SHA256
 | sort by Timestamp asc
+| take 200

@@ -23,3 +23,4 @@ union isfuzzy=true
         ProcessCommandLine = Activity, InitiatingProcessFileName = ""
 )
 | sort by Timestamp asc
+| take 200

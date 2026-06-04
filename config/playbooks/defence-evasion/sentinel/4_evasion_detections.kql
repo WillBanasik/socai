@@ -10,3 +10,4 @@ SecurityAlert
 | project TimeGenerated, AlertName, AlertSeverity, Tactics, Status,
     Entities = substring(tostring(Entities), 0, 500)
 | sort by TimeGenerated asc
+| take 200

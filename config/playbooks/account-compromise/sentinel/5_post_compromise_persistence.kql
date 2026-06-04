@@ -66,3 +66,4 @@ union
         CorrelationId = ""
 )
 | sort by TimeGenerated desc
+| take 200

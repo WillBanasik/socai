@@ -75,3 +75,4 @@
          Severity, FileName, CommandLine, SHA256HashData,
          Tactic, Technique])
 | sort(@timestamp, order=desc)
+| head(50)
