@@ -400,11 +400,12 @@ def _register_tier1(mcp: FastMCP) -> None:
         """
         _require_scope("investigations:read")
         from mcp_server.auth import _get_caller_email
-        from mcp_server.usage import _sessions, _session_lock
+        from mcp_server.usage import _sessions, _session_lock, _flush_session
         caller = _get_caller_email()
         with _session_lock:
             to_remove = [k for k, v in _sessions.items() if v["caller"] == caller]
             for k in to_remove:
+                _flush_session(_sessions[k])
                 del _sessions[k]
         return _json({
             "status": "ok",

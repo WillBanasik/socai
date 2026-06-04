@@ -467,7 +467,8 @@ mcp_server/
                        #   TOOL_TAXONOMY maps each tool to category + goal.
                        #   Auto-captures ordered tool sequences per session; emits
                        #   workflow_summary events to metrics.jsonl on session expiry
-                       #   (1h inactivity) or server shutdown (flush_all_sessions).
+                       #   (1h inactivity), new_investigation (session-clear), or
+                       #   server shutdown (flush_all_sessions).
     logging_config.py  # Structured JSONL logger (RotatingFileHandler, 10 MB × 3 backups)
                        #   setup_mcp_logger() + mcp_log(event, **fields)
                        #   Output: registry/mcp_server.jsonl + stderr

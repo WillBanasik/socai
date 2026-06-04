@@ -13,12 +13,13 @@ Usage::
 """
 from __future__ import annotations
 
+import atexit
 import json
 import sys
 import threading
 import time
 import uuid
-from typing import Any
+from typing import IO, Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -26,6 +27,35 @@ from config.settings import MCP_USAGE_LOG, MCP_LOG_RESULTS, MCP_LOG_MAX_RESULT
 from tools.common import utcnow
 
 _usage_lock = threading.Lock()
+_usage_fh: IO[str] | None = None
+
+
+def _get_usage_fh() -> IO[str]:
+    """Return (lazily opening) the append-mode line-buffered usage log handle.
+
+    Reopens if the file has been removed (log rotation, test teardown).
+    """
+    global _usage_fh
+    if _usage_fh is None or not MCP_USAGE_LOG.exists():
+        if _usage_fh is not None:
+            try:
+                _usage_fh.close()
+            except Exception:
+                pass
+        MCP_USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        _usage_fh = open(MCP_USAGE_LOG, "a", buffering=1)
+    return _usage_fh
+
+
+@atexit.register
+def _close_usage_fh() -> None:
+    global _usage_fh
+    if _usage_fh is not None:
+        try:
+            _usage_fh.close()
+        except Exception:
+            pass
+        _usage_fh = None
 
 # Fields to strip from logged params (secrets / large blobs)
 _SENSITIVE_KEYS = frozenset({"zip_pass", "password", "token", "secret", "api_key"})
@@ -687,10 +717,9 @@ def log_mcp_call(
     }
     if session_id:
         record["session_id"] = session_id
-    MCP_USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record) + "\n"
     with _usage_lock:
-        with open(MCP_USAGE_LOG, "a") as fh:
-            fh.write(json.dumps(record) + "\n")
+        _get_usage_fh().write(line)
 
 
 def _emit_live(
@@ -742,11 +771,16 @@ def install_usage_watcher(server: FastMCP) -> None:
             result = await original(name, arguments, **kwargs)
             duration_ms = int((time.monotonic() - t0) * 1000)
 
-            # Serialise once: drives both payload-size accounting and the
-            # (optional) result preview, so large full payloads aren't
-            # JSON-encoded twice.
-            result_text = _serialise_result(result)
-            result_bytes = len(result_text)
+            # Only full-serialise when the result preview is needed for the
+            # structured log.  For accounting alone a cheap str() proxy avoids
+            # a second json.dumps of the same payload the framework is about
+            # to serialise for the client.
+            if MCP_LOG_RESULTS:
+                result_text: str | None = _serialise_result(result)
+                result_bytes = len(result_text)
+            else:
+                result_text = None
+                result_bytes = len(str(result))
             est_tokens = _estimate_tokens(result_bytes)
 
             log_mcp_call(caller, name, arguments, duration_ms, True, None,
@@ -769,7 +803,7 @@ def install_usage_watcher(server: FastMCP) -> None:
                 "duration_ms": duration_ms, "success": True,
                 "case_id": case_id or None,
             }
-            if MCP_LOG_RESULTS:
+            if MCP_LOG_RESULTS and result_text is not None:
                 log_fields["result_preview"] = _truncate_text(result_text)
             mcp_log("tool_result", **log_fields)
 

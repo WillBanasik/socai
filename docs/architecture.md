@@ -145,6 +145,6 @@ Every tool wrapper:
 
 ## Workflow Analytics
 
-The MCP usage watcher (`mcp_server/usage.py`) auto-captures ordered tool sequences per session. Each tool call is recorded with timing, category, goal, and success/error. On session expiry (1h inactivity) or server shutdown, a `workflow_summary` event is flushed to `metrics.jsonl` containing the full step sequence, friction signals (unnecessary prerequisites, retries, long gaps, abandoned workflows), and timing breakdown. Query via `scripts/workflow_report.py`.
+The MCP usage watcher (`mcp_server/usage.py`) auto-captures ordered tool sequences per session. Each tool call is recorded with timing, category, goal, and success/error. On session expiry (1h inactivity), `new_investigation` (session-clear), or server shutdown, a `workflow_summary` event is flushed to `metrics.jsonl` containing the full step sequence, friction signals (unnecessary prerequisites, retries, long gaps, abandoned workflows), and timing breakdown. Query via `scripts/workflow_report.py`.
 
 See `docs/extending.md` for how to add new tools, providers, and brands.
