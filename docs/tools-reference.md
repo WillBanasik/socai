@@ -337,6 +337,7 @@ Ahmia.fi requires no API key or configuration.
 - **malicious** — >=1 provider says malicious AND malicious_count >= suspicious_count
 - **suspicious** — >=1 provider says suspicious AND malicious_count == 0
 - **clean** — all responsive providers say clean
+- **forced clean** — ubiquitous-benign infrastructure (Microsoft 365 / Google / CDN domains such as `sharepointonline.com`, via `_FORCE_CLEAN_DOMAINS`) is always scored clean regardless of provider votes, so a single mis-flagging provider cannot propagate a false `malicious` verdict into `ioc_index.json` (which would otherwise pollute recall + campaign clustering)
 - **Confidence**: HIGH (>=3 providers, >66% agree), MEDIUM (>=2 providers, strict majority >50%), LOW (otherwise)
 
 `update_ioc_index()` merges the verdict summary into `registry/ioc_index.json` and prints a warning when IOCs have been seen in prior cases. Each index entry now includes:

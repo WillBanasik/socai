@@ -63,7 +63,7 @@ All LLM reasoning (report generation, analytical judgement, disposition analysis
 
 ### Provider Notes
 
-- **OpenCTI:** StixCyberObservable lookups use `value` filter for IP/domain/URL/email, and `search` param for file hashes. CVE lookups use the `vulnerabilities` query and return `epss_score` and `cisa_kev`. A transport-level circuit breaker opens after 3 consecutive failures (5xx, timeouts, connection errors) and stays open for 300s — subsequent lookups return `status: "circuit_open"` instead of paying the per-IOC timeout cost during platform outages. Any successful response resets the breaker.
+- **OpenCTI:** StixCyberObservable lookups use `value` filter for IP/domain/URL/email, and `search` param for file hashes. CVE lookups use the `vulnerabilities` query and return `epss_score` and `cisa_kev`. A transport-level circuit breaker opens after 3 consecutive failures (5xx, timeouts, connection errors) and stays open for 300s — subsequent lookups return `status: "circuit_open"` instead of paying the per-IOC timeout cost during platform outages. Any successful response resets the breaker. When `OPENCTI_URL` is unset the provider returns `status: "not_configured"` and is skipped entirely (no request), rather than POSTing to a scheme-less `/graphql` and erroring on every IOC.
 - **Censys:** Uses Platform API v3 (`api.platform.censys.io/v3`), **not** old `search.censys.io/api/v2`. Auth is `Authorization: Bearer <token>`. Data nested under `result.resource`.
 - **Hybrid Analysis:** `/api/v2/search/hash` POST is broken upstream — use `/api/v2/overview/{sha256}` (GET). MD5/SHA1 not supported.
 - **Abuse.ch:** Account registration non-functional as of 2026-03; key cannot be obtained.

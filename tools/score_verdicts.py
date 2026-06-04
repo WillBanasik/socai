@@ -45,6 +45,27 @@ _ioc_index_lock = threading.Lock()
 # Provider statuses that carry a meaningful verdict
 _OK_STATUSES = {"ok"}
 
+# Ubiquitous benign infrastructure that must never carry a malicious/suspicious
+# verdict. A single provider mis-flagging e.g. sharepointonline.com (a legitimate
+# Microsoft SaaS domain) otherwise propagates to the cross-case IOC index and
+# pollutes recall + campaign clustering — observed: 1 malicious vs 3 clean votes
+# composited to "malicious". These are forced clean regardless of provider votes.
+_FORCE_CLEAN_DOMAINS: set[str] = {
+    "sharepointonline.com", "sharepoint.com", "microsoftonline.com",
+    "onmicrosoft.com", "microsoft.com", "office.com", "office365.com",
+    "windows.net", "live.com", "outlook.com", "msftauth.net", "office.net",
+    "azureedge.net", "google.com", "gstatic.com", "googleapis.com",
+    "cloudflare.com", "amazonaws.com",
+}
+
+
+def _is_force_clean(ioc: str, ioc_type: str) -> bool:
+    """True for ubiquitous-benign domains that should never score malicious."""
+    if ioc_type != "domain":
+        return False
+    v = (ioc or "").lower().strip()
+    return any(v == d or v.endswith("." + d) for d in _FORCE_CLEAN_DOMAINS)
+
 
 def _composite_verdict(providers: dict[str, str]) -> tuple[str, str]:
     """
@@ -134,6 +155,12 @@ def score_verdicts(case_id: str) -> dict:
             continue
 
         composite, confidence = _composite_verdict(providers)
+
+        # Ubiquitous-benign override: a malicious/suspicious verdict on core
+        # Microsoft/Google/CDN infrastructure is a provider false positive that
+        # would pollute the cross-case IOC index. Force clean.
+        if composite in ("malicious", "suspicious") and _is_force_clean(ioc, info["ioc_type"]):
+            composite, confidence = "clean", "HIGH"
 
         counts = {"malicious": 0, "suspicious": 0, "clean": 0, "unknown": 0}
         for v in providers.values():

@@ -656,6 +656,11 @@ def _opencti_lookup(ioc: str, ioc_type: str) -> dict:
     """OpenCTI — query internal threat intel platform for observable + related objects."""
     if not OPENCTI_KEY:
         return {"provider": "opencti", "status": "no_api_key", "ioc": ioc}
+    if not OPENCTI_URL:
+        # No base URL configured → f"{OPENCTI_URL}/graphql" becomes a scheme-less
+        # "/graphql" and every IOC lookup fails ("Invalid URL '/graphql': No
+        # scheme supplied"). Skip the provider cleanly instead of erroring.
+        return {"provider": "opencti", "status": "not_configured", "ioc": ioc}
 
     # Map IOC types to GraphQL filter keys and observable types
     _hash_types = {"md5", "sha1", "sha256"}
