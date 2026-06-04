@@ -46,15 +46,25 @@ def _isolate_registry_logs():
     _common.AUDIT_LOG = new_audit
     _common.ERROR_LOG = new_error
 
-    # Re-patch modules that imported these paths at load time.
+    # Re-patch modules that imported these paths at load time. ANY module that
+    # does `from config.settings import MCP_USAGE_LOG / METRICS_LOG` holds its
+    # own reference and MUST be listed here, or tests touch the real registry/
+    # files (a missing entry here once deleted production mcp_usage.jsonl).
     import importlib
-    for mod_name in ("mcp_server.usage", "tests.test_mcp_usage"):
+    repatch = {
+        "MCP_USAGE_LOG": new_mcp_usage,
+        "METRICS_LOG": new_metrics,
+    }
+    for mod_name in ("mcp_server.usage", "tests.test_mcp_usage",
+                     "scripts.token_cost_report", "tests.test_token_cost_report",
+                     "scripts.workflow_report"):
         try:
             mod = importlib.import_module(mod_name)
-            if hasattr(mod, "MCP_USAGE_LOG"):
-                mod.MCP_USAGE_LOG = new_mcp_usage
         except ImportError:
-            pass
+            continue
+        for attr, new_val in repatch.items():
+            if hasattr(mod, attr):
+                setattr(mod, attr, new_val)
 
     yield
 
