@@ -3696,7 +3696,7 @@ def _register_tier3(mcp: FastMCP) -> None:
         _require_scope("sentinel:query")
 
         from tools.sentinel_queries import resolve_kql_workspace as _resolve_kql_workspace
-        from scripts.run_kql import run_kql as _run_kql
+        from scripts.run_kql import run_kql as _run_kql, KqlQueryError
 
         query = query.strip()
         if not query:
@@ -3717,10 +3717,12 @@ def _register_tier3(mcp: FastMCP) -> None:
 
         schema_warnings = _validate_kql_schema(q, ws_id)
 
-        rows = await asyncio.to_thread(lambda: _run_kql(ws_id, q, timeout=60))
-        if rows is None:
+        try:
+            rows = await asyncio.to_thread(lambda: _run_kql(ws_id, q, timeout=60))
+        except KqlQueryError as exc:
             err: dict = {
-                "error": "Query execution failed.",
+                "error": str(exc),
+                "error_kind": exc.kind,
                 "workspace": ws_id,
             }
             if schema_warnings:

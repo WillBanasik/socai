@@ -26,6 +26,20 @@ _REPO_ROOT = _SCRIPT_DIR.parent
 _WORKSPACE_FILE = _REPO_ROOT / "config" / "workspace_tables.json"
 
 
+class KqlQueryError(RuntimeError):
+    """An ``az`` KQL query failed to execute.
+
+    Raised on a non-zero ``az`` exit (bad column/table/syntax, auth, throttling),
+    a timeout, or an unparseable response. Distinct from a query that succeeds
+    and legitimately returns zero rows — callers must never conflate the two
+    (a swallowed failure looks identical to "0 rows matched").
+    """
+
+    def __init__(self, message: str, *, kind: str = "error"):
+        super().__init__(message)
+        self.kind = kind  # "error" | "timeout" | "decode"
+
+
 def _resolve_workspace(workspace_id: str | None, code: str | None) -> str:
     """Return a workspace ID from explicit ID or workspace code."""
     if workspace_id:
@@ -73,16 +87,27 @@ def run_kql(workspace_id: str, query: str, timeout: int = 120, skip_validation: 
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout
         )
-        if result.returncode != 0:
-            print(f"Error: {result.stderr.strip()}", file=sys.stderr)
-            return []
-        return json.loads(result.stdout)
     except subprocess.TimeoutExpired:
-        print(f"Error: query timed out ({timeout}s)", file=sys.stderr)
-        return []
+        raise KqlQueryError(f"query timed out after {timeout}s", kind="timeout")
+
+    if result.returncode != 0:
+        # A failed query (bad column/table/syntax, auth, throttling) must NOT be
+        # silently flattened to an empty list — surface the az error so callers
+        # can tell "query failed" apart from "0 rows matched".
+        detail = (result.stderr.strip() or result.stdout.strip()
+                  or f"az exited with status {result.returncode}")
+        raise KqlQueryError(detail[:2000], kind="error")
+
+    try:
+        rows = json.loads(result.stdout)
     except json.JSONDecodeError:
-        print("Error: invalid JSON in az response", file=sys.stderr)
-        return []
+        raise KqlQueryError(
+            f"invalid JSON in az response: {result.stdout[:300]}", kind="decode"
+        )
+    # Some az versions return a 200 carrying an error object instead of rows.
+    if isinstance(rows, dict) and rows.get("error"):
+        raise KqlQueryError(str(rows["error"])[:2000], kind="error")
+    return rows
 
 
 def main():
@@ -104,7 +129,11 @@ def main():
         print("Error: empty query", file=sys.stderr)
         sys.exit(1)
 
-    rows = run_kql(workspace_id, query, timeout=args.timeout)
+    try:
+        rows = run_kql(workspace_id, query, timeout=args.timeout)
+    except KqlQueryError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     json.dump(rows, sys.stdout, indent=2)
     print()
 

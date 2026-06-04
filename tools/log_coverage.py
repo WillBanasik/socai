@@ -146,16 +146,22 @@ def collect_log_sources(client: str, *, full: bool = False) -> dict:
         return {"status": "error", "reason": f"No Sentinel workspace found for client '{client}'"}
 
     # Import here to avoid circular dependency at module level
-    from scripts.run_kql import run_kql
+    from scripts.run_kql import run_kql, KqlQueryError
 
-    rows = run_kql(workspace_id, _USAGE_QUERY, timeout=120, skip_validation=True)
+    try:
+        rows = run_kql(workspace_id, _USAGE_QUERY, timeout=120, skip_validation=True)
+    except KqlQueryError as exc:
+        return {"status": "error", "reason": f"Usage query failed: {exc}"}
     if not rows:
         return {"status": "error", "reason": "Usage query returned no data — check workspace connectivity and az login"}
 
     # Parse retention data if full mode
     retention_map: dict[str, int] = {}
     if full:
-        ret_rows = run_kql(workspace_id, _RETENTION_QUERY, timeout=300, skip_validation=True)
+        try:
+            ret_rows = run_kql(workspace_id, _RETENTION_QUERY, timeout=300, skip_validation=True)
+        except KqlQueryError:
+            ret_rows = []
         for row in ret_rows:
             table = row.get("DataType", "")
             days = row.get("RetentionDays")
