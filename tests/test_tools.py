@@ -347,7 +347,8 @@ def test_campaign_cluster_finds_components():
             },
         })
 
-        result = cluster_campaigns(case_id=TEST_CASE)
+        # No case_id -> global build returns every campaign found.
+        result = cluster_campaigns()
 
         assert result["status"] == "ok"
         assert result["total"] >= 1
@@ -389,6 +390,60 @@ def test_campaign_cluster_single_ioc_filtered():
 
         result = cluster_campaigns()
         assert result["total"] == 0
+    finally:
+        if original is not None:
+            IOC_INDEX_FILE.write_text(original)
+        elif IOC_INDEX_FILE.exists():
+            IOC_INDEX_FILE.unlink()
+        if CAMPAIGNS_FILE.exists():
+            CAMPAIGNS_FILE.unlink()
+
+
+def test_campaign_cluster_scoped_to_case_filters_unrelated():
+    """A case-scoped run returns ONLY campaigns containing that case.
+
+    Regression: cluster_campaigns(case_id=X) previously returned every global
+    campaign, so a case sharing no malicious/suspicious IOCs was mislabelled as
+    'linked' to unrelated campaigns.
+    """
+    from tools.case_create import case_create
+    from tools.campaign_cluster import cluster_campaigns, CAMPAIGNS_FILE
+    from tools.common import save_json
+    from config.settings import IOC_INDEX_FILE
+
+    case_create(TEST_CASE)
+
+    IOC_INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
+    original = IOC_INDEX_FILE.read_text() if IOC_INDEX_FILE.exists() else None
+
+    try:
+        save_json(IOC_INDEX_FILE, {
+            # Campaign A — does NOT involve TEST_CASE
+            "198.51.100.10": {"type": "ipv4", "verdict": "malicious",
+                              "confidence": "HIGH", "cases": ["C050", "C051"]},
+            "evil.example.com": {"type": "domain", "verdict": "malicious",
+                                "confidence": "HIGH", "cases": ["C050", "C051"]},
+            # Campaign B — involves TEST_CASE
+            "203.0.113.5": {"type": "ipv4", "verdict": "malicious",
+                            "confidence": "HIGH", "cases": [TEST_CASE, "C070"]},
+            "bad.example.net": {"type": "domain", "verdict": "malicious",
+                                "confidence": "HIGH", "cases": [TEST_CASE, "C070"]},
+        })
+
+        scoped = cluster_campaigns(case_id=TEST_CASE)
+        # Only the campaign containing TEST_CASE comes back...
+        assert scoped["total"] == 1
+        assert TEST_CASE in scoped["campaigns"][0]["cases"]
+        assert "C070" in scoped["campaigns"][0]["cases"]
+        # ...even though both campaigns exist in the global registry.
+        assert scoped["campaigns_global_total"] == 2
+        returned_cases = {c for camp in scoped["campaigns"] for c in camp["cases"]}
+        assert "C050" not in returned_cases
+        assert "C051" not in returned_cases
+
+        # Global build (no case_id) still returns both campaigns.
+        full = cluster_campaigns()
+        assert full["total"] == 2
     finally:
         if original is not None:
             IOC_INDEX_FILE.write_text(original)

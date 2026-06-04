@@ -212,7 +212,10 @@ def _compute_confidence(shared_iocs: list[dict]) -> str:
 def cluster_campaigns(case_id: str | None = None) -> dict:
     """
     Group cases sharing IOCs into campaigns.
-    If case_id is provided, also writes per-case campaign links.
+
+    If ``case_id`` is provided, the returned ``campaigns`` are filtered to those
+    that actually include that case (the global registry file still records the
+    full set); with no ``case_id`` every campaign is returned.
 
     Read-only against case state — safe to run on closed cases for retrospective
     campaign analysis. Only writes to the global ``CAMPAIGNS_FILE`` registry.
@@ -277,7 +280,8 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
         }
         campaigns.append(campaign)
 
-    # Save global campaigns registry
+    # Save global campaigns registry (always the full set — case_landscape and
+    # executive_summary read this file for the org-wide picture).
     campaigns_data = {
         "campaigns": campaigns,
         "total": len(campaigns),
@@ -285,16 +289,27 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
     }
     save_json(CAMPAIGNS_FILE, campaigns_data)
 
+    # When scoped to a case, return ONLY campaigns that actually contain it.
+    # Otherwise the caller mislabels unrelated global campaigns as "linked to
+    # this case" — a case whose IOCs share nothing malicious/suspicious with
+    # other cases is in no campaign and must come back empty.
+    if case_id:
+        linked = [c for c in campaigns if case_id in c.get("cases", [])]
+    else:
+        linked = campaigns
+
     # Progress summary — must go to stderr so MCP stdio JSON-RPC isn't corrupted
-    eprint(f"[campaign_cluster] Found {len(campaigns)} campaign(s)")
-    for c in campaigns:
+    eprint(f"[campaign_cluster] Built {len(campaigns)} campaign(s) globally; "
+           f"{len(linked)} linked to {case_id or 'ALL'}")
+    for c in linked:
         eprint(f"  {c['campaign_id']}: {len(c['cases'])} cases, "
                f"{c['shared_ioc_count']} shared IOCs, confidence={c['confidence']}")
 
     return {
         "status": "ok",
-        "campaigns": campaigns,
-        "total": len(campaigns),
+        "campaigns": linked,
+        "total": len(linked),
+        "campaigns_global_total": len(campaigns),
         "case_id": case_id,
         "ts": utcnow(),
     }
