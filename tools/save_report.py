@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
 from tools.common import (
-    defang_report, load_json, log_error, save_json, utcnow, write_artefact,
+    defang_report, eprint, load_json, log_error, save_json, utcnow, write_artefact,
 )
 
 
@@ -60,7 +60,12 @@ _REPORT_TYPES = {
         "path": "artefacts/fp_comms/fp_tuning_ticket.md",
         "title_prefix": "FP Tuning Ticket",
         "auto_close": True,
-        "disposition": "false_positive",
+        # Preserve the case's existing disposition. The tuning ticket is a
+        # follow-on to a closure_comment that already set the disposition;
+        # hard-coding false_positive here overrode Benign-Positive
+        # determinations on the documented BP+tuning path. Callers that want a
+        # specific disposition pass it explicitly via the disposition= arg.
+        "disposition": None,
         "defang": False,
     },
     "executive_summary": {
@@ -148,9 +153,11 @@ def save_report_to_case(
             if mal_iocs:
                 report_text = defang_report(report_text, mal_iocs)
         except FileNotFoundError:
-            log_error(case_id, "save_report.defang", "verdict_summary.json missing — skipping defang (no enrichment run)",
-                      severity="info",
-                      context={"path": str(verdict_path), "report_type": report_type})
+            # Expected when a report is saved on a case with no enrichment run.
+            # Handled gracefully (defang skipped) — keep it out of the error log
+            # so `socai.py errors` stays signal; surface as a stderr breadcrumb.
+            eprint(f"[save_report] {case_id}: verdict_summary.json missing — "
+                   f"skipping defang (no enrichment run).")
         except Exception as exc:
             log_error(case_id, "save_report.defang", str(exc),
                       severity="warning", traceback=tb.format_exc())

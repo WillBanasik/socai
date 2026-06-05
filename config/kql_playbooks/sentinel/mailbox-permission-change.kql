@@ -49,7 +49,7 @@ let PermissionChanges = OfficeActivity
 | where TimeGenerated between (LookbackStart .. LookbackEnd)
 | where OfficeWorkload == "Exchange"
 | where Operation has_any ("MailboxPermission", "RecipientPermission", "FolderPermission")
-| where UserId has TargetUPN
+| where UserId =~ TargetUPN
     or OfficeObjectId == MailboxId
     or (isnotempty(ObjectId) and tostring(parse_json(tostring(Parameters))[1].Value) == ObjectId)
 | extend GrantedTo = tostring(parse_json(tostring(Parameters))[1].Value),
@@ -155,8 +155,8 @@ let OAuthGrants = OfficeActivity
 // --- SECTION 9: Correlated security alerts ---
 let Alerts = SecurityAlert
 | where TimeGenerated between (LookbackStart .. LookbackEnd)
-| where Entities has TargetUPN
-    or (isnotempty(ObjectId) and Entities has ObjectId)
+| where Entities contains TargetUPN
+    or (isnotempty(ObjectId) and Entities contains ObjectId)
 | project TimeGenerated, AlertName, AlertSeverity, Tactics, Status,
     Entities = substring(tostring(Entities), 0, 500)
 | extend Section = "9_Alerts";

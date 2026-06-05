@@ -332,7 +332,8 @@ def _build_kql_domains(domains: list[str], tables: list[str] | None, collector: 
     active = _active_tables(_get_kql_domain_tables(tables), tables)
     parts = []
     for table, fields, project, desc in active:
-        # Fields containing URL-like data use "has" (substring), others use "in" (exact)
+        # URL-like fields use "has" (KQL term match — note: term-delimited, so it
+        # can miss dotted substrings); other fields use "in" (exact list match)
         url_like = {"RemoteUrl", "Url", "UrlFull", "RequestURL"}
         has_fields = [f for f in fields if f in url_like]
         in_fields = [f for f in fields if f not in url_like]

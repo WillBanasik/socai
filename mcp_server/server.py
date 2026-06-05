@@ -89,7 +89,7 @@ log hunting, recall, reporting, close-out). Everything else lives in a specialis
 group that you must pull in **before** calling its tools — otherwise the call fails
 with `Tool not found`, even though the tool is listed under "Tool Categories" below.
 
-**Before using a specialist tool, call `load_toolset('<group>')` first.** It becomes
+**Before using a specialist tool, call `load_toolset(name='<group>')` first.** It becomes
 callable immediately (the tool list refreshes mid-session). `classify_attack` also
 returns `recommended_toolsets` — load those when it does.
 

@@ -46,7 +46,7 @@ from config.settings import (
     PROXYCHECK_KEY, SHODAN_KEY,
     URLSCAN_KEY, VIRUSTOTAL_KEY, WHOISXML_KEY,
 )
-from tools.common import KNOWN_CLEAN_DOMAINS, eprint, get_session, load_json, log_error, save_json, utcnow, write_artefact
+from tools.common import KNOWN_CLEAN_DOMAINS, eprint, get_client_config, get_session, load_json, log_error, save_json, utcnow, write_artefact
 
 
 # ---------------------------------------------------------------------------
@@ -1631,8 +1631,15 @@ def _cache_set(cache: dict, ioc: str, provider: str, result: dict) -> None:
     cache[f"{provider}|{ioc}"] = {"result": result, "cached_at": utcnow()}
 
 
-def _is_known_clean(ioc: str, ioc_type: str) -> bool:
-    """Return True if the IOC belongs to known-clean infrastructure and should be skipped."""
+def _is_known_clean(ioc: str, ioc_type: str,
+                    extra_clean: frozenset[str] | None = None) -> bool:
+    """Return True if the IOC belongs to known-clean infrastructure and should be skipped.
+
+    ``extra_clean`` is an optional per-case set of additional clean domains —
+    e.g. the case client's own ``known_infrastructure`` (see
+    ``_client_infra_domains``). Matched with the same subdomain logic as the
+    global ``KNOWN_CLEAN_DOMAINS`` set. Only domain/url IOCs are considered.
+    """
     import urllib.parse
     hostname = ""
     if ioc_type == "domain":
@@ -1648,7 +1655,32 @@ def _is_known_clean(ioc: str, ioc_type: str) -> bool:
     for d in KNOWN_CLEAN_DOMAINS:
         if hostname == d or hostname.endswith("." + d):
             return True
+    if extra_clean:
+        for d in extra_clean:
+            if hostname == d or hostname.endswith("." + d):
+                return True
     return False
+
+
+def _client_infra_domains(case_meta: dict | None) -> frozenset[str]:
+    """Resolve the case client's own ``known_infrastructure`` as a set of clean
+    domains, so enrichment skips client-owned domains (known estate, not threat
+    indicators). CIDR / bare-IP entries are ignored — this set is only consulted
+    for domain/url IOCs via ``_is_known_clean``.
+    """
+    if not case_meta:
+        return frozenset()
+    client = case_meta.get("client")
+    if not client:
+        return frozenset()
+    cfg = get_client_config(client)
+    if not cfg:
+        return frozenset()
+    infra = cfg.get("known_infrastructure") or []
+    return frozenset(
+        d.lower() for d in infra
+        if isinstance(d, str) and "." in d and "/" not in d
+    )
 
 
 def _run_tasks_parallel(case_id: str, tasks: list[tuple], cache: dict) -> list[dict]:
@@ -1948,6 +1980,11 @@ def enrich(
         except Exception:
             pass
 
+    # Client-owned infrastructure (the case client's own domains) is known-clean,
+    # never a threat indicator — skip it from enrichment to save API quota and
+    # avoid flagging the client's own estate. Consulted for domain/url IOCs only.
+    _client_infra = _client_infra_domains(_case_meta)
+
     # --- Pre-fetch Intezer token once for all hash lookups ---
     intezer_token: str | None = _intezer_get_token() if INTEZER_KEY else None
 
@@ -2132,7 +2169,7 @@ def enrich(
         if not domain_list:
             return results, hits, calls, stats
 
-        filtered_domains = [d for d in domain_list if not _is_known_clean(d, "domain")]
+        filtered_domains = [d for d in domain_list if not _is_known_clean(d, "domain", _client_infra)]
         skipped_clean = len(domain_list) - len(filtered_domains)
         if skipped_clean:
             eprint(f"[enrich] Skipping {skipped_clean} known-clean domain IOC(s).")
@@ -2227,7 +2264,7 @@ def enrich(
         if not url_list:
             return results, hits, calls, stats
 
-        filtered_urls = [u for u in url_list if not _is_known_clean(u, "url")]
+        filtered_urls = [u for u in url_list if not _is_known_clean(u, "url", _client_infra)]
         skipped_clean = len(url_list) - len(filtered_urls)
         if skipped_clean:
             eprint(f"[enrich] Skipping {skipped_clean} known-clean URL IOC(s).")
@@ -2457,7 +2494,7 @@ def enrich(
         if not providers:
             continue
         # Filter known-clean
-        filtered_list = [i for i in ioc_list if not _is_known_clean(i, ioc_type)]
+        filtered_list = [i for i in ioc_list if not _is_known_clean(i, ioc_type, _client_infra)]
         skipped_clean = len(ioc_list) - len(filtered_list)
         if skipped_clean:
             eprint(f"[enrich] Skipping {skipped_clean} known-clean {ioc_type} IOC(s).")

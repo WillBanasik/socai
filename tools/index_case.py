@@ -138,9 +138,12 @@ def index_case(
 
         registry["cases"][case_id] = {
             "title":       meta.get("title", case_id),
+            "client":      meta.get("client", ""),
             "severity":    meta.get("severity", "medium"),
             "status":      meta.get("status", "open"),
             "disposition": meta.get("disposition"),
+            "attack_type": meta.get("attack_type"),
+            "tags":        meta.get("tags", []),
             "created_at":  meta.get("created_at", ""),
             "updated_at":  meta["updated_at"],
             "case_dir":    str(case_dir),
