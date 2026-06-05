@@ -83,10 +83,10 @@ Note: The server-side tool names (`prepare_mdr_report`, `prepare_pup_report`, `p
 
 | Prompt | Auto-closes | Disposition | Save tool |
 |---|---|---|---|
-| `write_mdr_report` | Yes | Preserves existing | `save_report(report_type="mdr_report")` |
+| `write_mdr_report` | Yes | `true_positive` (default; explicit wins) | `save_report(report_type="mdr_report")` |
 | `write_pup_report` | Yes | `pup_pua` | `save_report(report_type="pup_report")` |
-| `write_closure_comment` | Yes | From `classification` (BP/FP/Undetermined) | `save_report(report_type="closure_comment", disposition=...)` |
-| `write_fp_tuning` | Yes | `false_positive` (or `benign_positive`) | `save_report(report_type="fp_tuning_ticket")` |
+| `write_closure_comment` | Yes | **Required** — from `classification` (BP/FP/Undetermined) | `save_report(report_type="closure_comment", disposition=...)` |
+| `write_fp_tuning` | Yes | Preserves existing (explicit wins) | `save_report(report_type="fp_tuning_ticket")` |
 | `write_executive_summary` | No | — | `save_report` |
 | `write_security_arch_review` | No | — | `save_report` |
 | `write_vuln_hunt_report` | No | — | `save_report(report_type="vuln_hunt_report")` |
@@ -157,9 +157,9 @@ The classified `attack_type` and `attack_type_confidence` are stored in `case_me
 
 When classified as `pup_pua`, the workflow short-circuits after enrichment and the case is closed with disposition `pup_pua` via `close_case`. A PUP report is **not** auto-generated. If the analyst requests one, the `write_pup_report` prompt produces a lightweight markdown report (summary, path & file details, access vector, actions taken, recommendations) saved to `cases/<ID>/reports/pup_report.md` via `save_report`, which then auto-closes the case with `pup_pua`.
 
-## Auto-disposition
+## Disposition Invariant
 
-After enrichment, if verdict_summary has 0 malicious and 0 suspicious IOCs, the case is auto-closed with disposition `benign_auto_closed` — unless the report confidence score meets or exceeds `SOCAI_CONF_AUTO_CLOSE` (default 0.20), in which case the auto-close is reverted.
+This is a HITL platform — there is **no autonomous auto-disposition**. The analyst sets the disposition (via `close_case` / `save_report`), or it is derived from the closure-comment classification. As a safety net, `index_case` guarantees every closed case carries one of the six canonical dispositions (`true_positive`, `benign_positive`, `false_positive`, `benign`, `pup_pua`, `inconclusive`): a close with no resolvable disposition is floored to `inconclusive` and a `close_without_disposition` metric is emitted so leaking close-paths stay visible; non-canonical values are warned on. (`close_case` defaults to `inconclusive`. The legacy `benign_auto_closed` label survives only as a comparison alias in `determination.py` — it is never written to a case.)
 
 ## Direct Close from Triage
 
@@ -173,15 +173,15 @@ Deliverable tools (`prepare_mdr_report`, `prepare_pup_report`, `prepare_closure_
 
 | Deliverable | Client-Side Prompt + Save | Auto-closes | Disposition |
 |---|---|---|---|
-| MDR report | `write_mdr_report` → `save_report` | Yes | Preserves existing |
+| MDR report | `write_mdr_report` → `save_report` | Yes | `true_positive` (default; explicit wins) |
 | PUP report | `write_pup_report` → `save_report` | Yes | `pup_pua` |
-| Closure comment (BP / FP / Undetermined) | `prepare_closure_comment(classification=...)` → `write_closure_comment` → `save_report(report_type="closure_comment", disposition=...)` | Yes | From classification (`benign_positive` / `false_positive` / `inconclusive`) |
-| Detection tuning ticket | `prepare_fp_tuning_ticket` → `write_fp_tuning` → `save_report(report_type="fp_tuning_ticket")` | Yes | `false_positive` (or `benign_positive`) |
+| Closure comment (BP / FP / Undetermined) | `prepare_closure_comment(classification=...)` → `write_closure_comment` → `save_report(report_type="closure_comment", disposition=...)` | Yes | **Required** — from classification (`benign_positive` / `false_positive` / `inconclusive`) |
+| Detection tuning ticket | `prepare_fp_tuning_ticket` → `write_fp_tuning` → `save_report(report_type="fp_tuning_ticket")` | Yes | Preserves existing (set by the closure_comment; explicit wins) |
 | Executive summary | `write_executive_summary` → `save_report` | No | — |
 | Security arch review | `write_security_arch_review` → `save_report` | No | — |
 | Vulnerability hunt worklist | `eql_vuln_hunt` → `import_vuln_hunt` → `prepare_vuln_hunt_report` → `write_vuln_hunt_report` → `save_report(report_type="vuln_hunt_report")` | No | — |
 
-Each auto-close path calls `index_case(case_id, status="closed", ...)` on successful save. If the tool fails, the case remains open. On close, `index_case` emits an `investigation_summary` metric with computed durations (total, triage, investigation minutes) from `phase_timestamps`.
+Each auto-close path calls `index_case(case_id, status="closed", ...)` on successful save. If the tool fails, the case remains open. On close, `index_case` emits an `investigation_summary` metric with computed durations (total, triage, investigation minutes) from `phase_timestamps`, and enforces the disposition invariant above (a missing disposition is floored to canonical `inconclusive`).
 
 ## Client Playbook Resolution
 

@@ -46,6 +46,12 @@ Two shapes are acceptable; a third is not:
    all Graph activity / all permission changes" for a tenant must carry an entity
    filter (UPN, AppId/ServicePrincipalName, IP) before it runs — an unscoped
    tenant-wide pull is both a payload problem and a relevance/exposure problem.
+7. **Match identity fields exactly; reserve `has` for true terms.** KQL `has` is
+   whitespace/term-delimited, so `UserId has "adil.khan@x.com"` (or `has "adil"`)
+   silently misses dotted/email values — a false-negative on the exact pivot that
+   matters. Use `=~` (or `in (...)`) for UPN / email / host identity fields, and
+   `contains` for substring searches over free-text blobs (e.g. `Entities`). The
+   same trap applies in CQL — prefer an exact match on identity fields.
 
 ## This is *not* the "no slimming" rule in reverse
 

@@ -194,7 +194,7 @@ If session activity is entirely consistent with normal behaviour and shows zero 
 - **Web search is a last resort.** Only fall back to `web_search` when system tools return no results and the query is OSINT/context no structured API covers (threat actor background, CVE write-ups, vendor advisories).
 - **Never web-scrape IOC lookups.** Manual scraping of AbuseIPDB/VT pages is always inferior to the API-backed enrichment the platform already provides.
 - **Mandatory quick enrichment on intake.** When incident data is pasted, perform light IOC enrichment after the initial summary. For IPs: geolocation and type (VPN, residential, hosting). For domains: malicious reputation.
-- **Do not enrich client-owned domains.** They are known infrastructure and pollute enrichment results.
+- **Client-owned domains are auto-skipped from enrichment.** The platform reads the case client's `known_infrastructure` and drops those domains/URLs before any provider call — they are known estate, not IOCs. Don't manually force-enrich them.
 
 ### Enrichment Tiers (IPv4)
 
@@ -304,7 +304,7 @@ Discover the full URI list via `socai://capabilities`.
 3. **Do not query other clients' workspaces.** All queries must target the confirmed client's platforms only. Cross-client correlation is only via `recall_cases` / `recall_semantic`.
 4. **Do not run tools the plan says to skip.** Trust the pipeline profile.
 5. **Do not produce an MDR report on incomplete evidence.** If the evidence chain has gaps, run a determination analysis first to assess what is confirmed/assessed/unknown.
-6. **Do not enrich client-owned domains.** They are known infrastructure and pollute results.
+6. **Client-owned domains are auto-skipped from enrichment** — the platform drops the case client's `known_infrastructure` before any provider call. No manual action needed.
 7. **Do not ignore client playbooks.** If a client has a playbook, its escalation matrix and crown jewels must inform your recommendations.
 8. **Do not combine Sentinel classifications.** "True Positive Benign Positive" is invalid — pick exactly one.
 9. **Do not call `close_case` after saving a deliverable.** MDR, PUP, closure_comment, and FP tuning reports auto-close. Only call `close_case` directly for cases that don't need a deliverable (e.g. PUP/PUA closed from triage with no analyst-requested report).

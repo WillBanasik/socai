@@ -142,6 +142,7 @@ Config: `config/client_entities.json` (git-ignored) — unified `clients` list. 
 | `aliases` | No | List of alternative names for fuzzy matching (e.g. `["hbm", "heidelberg cement"]`). `lookup_client` checks these when the exact name doesn't match. |
 | `notes` | No | Free-text description for fuzzy matching and context (industry, key domains, subsidiaries) |
 | `identity` | No | `{ "internal_domains": ["corp.com", ...] }` — optional list of the client's own UPN/email domains. A **zero-request overlay** for `eql_identity_assessment`: when present, a Member account whose UPN domain is *not* in the list is flagged `domain_mismatch`. Classification itself is data-driven from the directory (`UserType`) and works without this; the list only adds the unexpected-domain flag. |
+| `known_infrastructure` | No | List of the client's own domains / hostnames (CIDRs allowed). Domain/host entries are **auto-skipped from enrichment** (known estate, not IOCs) via `enrich._client_infra_domains()` — matched with subdomain logic (`sub.client.com` matches `client.com`). CIDR / bare-IP entries are ignored by the enrichment skip. |
 | `workspace_id` | No | Legacy; migrated to `platforms.sentinel.workspace_id` |
 
 **Platform scope** (`platforms` object):

@@ -118,6 +118,7 @@ Each task run is logged as a `scheduler_task` event in `registry/mcp_server.json
 | `verdict_scored` | `score_verdicts()` | ioc_count, malicious/suspicious/clean counts, confidence_dist (HIGH/MEDIUM/LOW), conflicting_iocs |
 | `report_saved` | `save_report_to_case()` | report_type, auto_closed, disposition, char_count, sections_present, completeness_pct |
 | `investigation_summary` | `index_case()` (on close) | disposition, severity, attack_type, analyst, ioc_totals, durations (total/triage/investigation minutes), phase_timestamps |
+| `close_without_disposition` | `index_case()` (close with no disposition) | floored_to (`inconclusive`), analyst — flags a close that hit the disposition floor |
 
 **Phase timestamps:** Case metadata (`case_meta.json`) now includes a `phase_timestamps` sub-object that accumulates `created_at`, `triage_at`, `active_at`, `closed_at` as the case moves through lifecycle stages. `promote_case()` backfills `triage_at` from `created_at`.
 
@@ -245,6 +246,8 @@ Exposed via the MCP `enrich_iocs` tool, `quick_enrich` tool, and `api/actions.ex
 2. **Client baseline pass** — loads the client's historical profile via `get_client_baseline()`. IOCs seen in 3+ prior cases for this client and never flagged as malicious are added to the skip set.
 
 Both are best-effort — if either fails, enrichment proceeds normally. The combined skip set is passed to `enrich(skip_iocs=...)`.
+
+**Known-clean & client-owned skip.** Independently of triage, `enrich()` drops two classes of domain/URL via `_is_known_clean()`: the global `KNOWN_CLEAN_DOMAINS` set (Microsoft / Google / CDN, etc.), and the **case client's own `known_infrastructure`** — resolved once per run from `config/client_entities.json` via `_client_infra_domains()`. Both use subdomain matching (`contractor.cellc.co.za` matches `cellc.co.za`). Client-owned domains are known estate, never IOCs — skipping them saves quota and keeps them out of verdicts. CIDR / bare-IP entries in `known_infrastructure` are ignored here (domain / url only).
 
 ### IPv4 Tiered Enrichment
 

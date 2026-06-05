@@ -142,3 +142,16 @@ Re-ran both run_kql 0-row footguns against the FIXED on-disk code (CLI `scripts/
 - **Multi-aggregate bare summarize (Run 3)** → now returns the correct single row (total=4.35M, dcount, min/max datetimes). **Does not reproduce** on current code — stale-server/transient artifact, not a bug.
 
 ⇒ **Corrected ranking:** the run_kql "silent-0-row P1 (#4)" collapses into the P0 stale-server item — already fixed on disk, activated by the restart. The only genuine *current-code* P1s were **#2 OpenCTI URL guard** and **#3 verdict/noise** — both implemented + tested. Still-accurate current behaviour: `has`-vs-`contains` tokenisation trap; missing-table `schema_warnings` (good); thin client baseline (real, structural).
+
+---
+
+## Follow-up — P2/P3 batch landed (2026-06-05)
+
+A second loop iteration assessed the ranked P2/P3 worklist against current on-disk code (verify-first) and shipped the low-risk batch:
+
+- **Batch A** (`9981e9d`): registry `client`/`tags`/`attack_type` retention + one-shot backfill; client-owned `known_infrastructure` enrichment skip; `fp_tuning_ticket` disposition no longer forced to `false_positive`; `load_toolset` instruction param fix; `UserId has`→`=~` / `Entities has`→`contains` in the mailbox playbook + corrected the `generate_queries` `has` comment; defang "verdict_summary.json missing" → stderr breadcrumb.
+- **P2-5 dispositions** (`7ee63da`): `index_case` close-invariant (floor a blank close → canonical `inconclusive` + a `close_without_disposition` metric); `mdr_report` defaults to `true_positive`; `closure_comment` now requires an explicit disposition; `close_case` default `resolved`→`inconclusive`; `scripts/backfill_dispositions.py` patched 14 closed cases.
+
+**Four field-note hypotheses were refuted on verification** (do not re-action): `lookup_client` name resolution is fine; `get_client_baseline` has no inclusion gap (empty only at low case counts); the scheduler "boom" was test-bleed already isolated by `conftest` (the 128 entries were stale); and the **"96 blank dispositions" was metric double-counting** — `investigation_summary` re-emits on every close, so the real state was 6 blank + 8 non-canonical `resolved`.
+
+Still open: the completeness metric (`report_saved` events absent from `metrics.jsonl`), young-domain verdict inclusion, lean `list_cases` / `lookup_client`, and the per-user sign-in geo/ASN baseline (the only real fix for the impossible-travel/VPN-FP gap).
