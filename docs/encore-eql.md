@@ -127,9 +127,69 @@ Format: `<TableName> WHERE <col> = "val", <col2> LIKE "%x%" SELECT <col1>, <col2
 
 - **No** pipe operators (`|`), `FROM`, standalone `KEEP`/`LIMIT`, or `like~`.
 - Always `list_tables` to confirm the exact table name, then `list_columns <TableName>` to confirm column names before querying.
-- **BATCH-JOIN** chains datasets: `<table> SELECT <col>, <joinCol> BATCH-JOIN <Table2> AS <alias> ON <joinCol> = <alias>_<rightCol> SELECT <col2>, <rightCol>`. First-table columns need no alias prefix on the left of a join predicate; all subsequent joined columns use `alias_Col`. Join-predicate columns must appear in each dataset's `SELECT`.
+- **BATCH-JOIN** chains two or more datasets into one result set — see [BATCH-JOIN (dataset joins)](#batch-join-dataset-joins) below for the full syntax, the column-reference rules, and worked examples.
 
 Discovery queries: `list version`, `list clients`, `list tables`, `list tables label:<label>`, `list labels`, `list columns`, `list columns <TableName>`.
+
+### BATCH-JOIN (dataset joins)
+
+`BATCH-JOIN` chains two or more datasets into a single result set, so one query can enrich event rows with context from another table — a device's vulnerabilities and logged-on users, a sign-in's identity attributes — without a second round-trip and Python-side stitching. (Validated against the live gateway, 2026-06-05; experiment matrix in the `encore-eql-batch-join` memory.)
+
+**Shape** — each table is a *dataset* with its own optional `WHERE` and a mandatory `SELECT`:
+
+```
+<TableA> [WHERE …] SELECT <colsA…, joinKeyA>
+BATCH-JOIN <TableB> AS <b> ON <joinKeyA> = <b>_<joinKeyB> [WHERE <bareColB …>] SELECT <colsB…, joinKeyB>
+[BATCH-JOIN <TableC> AS <c> ON <keyFromA-or-B> = <c>_<joinKeyC> [WHERE …] SELECT <colsC…, joinKeyC>]
+[ORDER BY <bareCol> DESCENDING]
+```
+
+**Column-reference rules** — the single biggest source of errors. *Where* a joined column sits decides whether it takes the `alias_` prefix:
+
+| Position | First table | Joined table |
+|---|---|---|
+| `SELECT` list | bare (`Id`) | **bare** (`Severity`) |
+| Join predicate, left of `=` | bare (`Id`) | — |
+| Join predicate, right of `=` | — | **`alias_Col`** (`v_MachineId`) |
+| `WHERE` on that dataset | bare | **bare** (`Severity`) |
+| `ORDER BY` | bare | **bare** (`CvssV3`) |
+| **Output JSON key** | bare (`Id`) | **`alias_Col`** (`v_Severity`) |
+
+So `alias_Col` appears in exactly two places — the **right side of a join predicate** and the **output keys**. Everywhere else the joined column is referenced **bare**.
+
+**Hard rules (each is enforced; the error message names the fix):**
+
+- **Every join-predicate column must appear in its own dataset's `SELECT`** — both the left key (in TableA's `SELECT`) and the right key (in the joined table's `SELECT`). Omitting it → `The following column names (MachineId) were not found in the incoming data set (v) … include the predicate column(s) in the select statement.`
+- A joined-table `WHERE` uses the **bare** column name. Using `alias_Col` there → `v_Severity is not a valid column name, permitted option for the … table are: …`.
+- **It is a LEFT join.** An unmatched left row is *kept*, with the joined columns returned as empty strings (`""`) — not dropped. For inner-join behaviour, add a `WHERE` on the joined dataset (any always-present column) or discard rows whose `alias_*` keys are blank.
+- **Join-key equality is case-insensitive** (`tlangelani.mathebula@…` matched `Tlangelani.Mathebula@…`). No need to normalise case before joining.
+- **No `LIMIT` exists** — bound *every* dataset with `WHERE`. A multi-hop star (below) multiplies rows (users × vulnerabilities), so filter the fan-out side hard.
+- **Different column names on each side are expected** (`ON Id = v_MachineId`); **identical names also work** — the alias disambiguates them in the output (`UserPrincipalName` vs `u_UserPrincipalName`).
+- A later join may key off the **first table's** column, not only the immediately-preceding dataset — so you can *star* several tables off one anchor key as well as *chain* A→B→C.
+- The **boolean-filter quirk still applies inside joins**: filter on the `*AsText` mirror column, never the raw boolean (`WHERE IsElevatedAsText = "true"`, not `IsElevated`).
+
+**Worked example 1 — device → logged-on users → critical vulns (3-table star on `MachineId`):**
+
+```
+WindowsDefenderAtp-Machines WHERE Id = "<machineId>" SELECT Id, ComputerDnsName
+BATCH-JOIN WindowsDefenderAtp-MachineUsers AS u ON Id = u_MachineId SELECT AccountName, AccountDomain, MachineId
+BATCH-JOIN WindowsDefenderAtp-MachineVulnerabilities AS v ON Id = v_MachineId WHERE Severity = "Critical" SELECT Name, Severity, CvssV3, MachineId
+```
+
+→ each logged-on user paired with each Critical CVE on their device. Output keys: `Id`/`ComputerDnsName` (anchor, bare), `u_*`, `v_*`. Both joins star off the anchor's `Id`.
+
+**Worked example 2 — sign-in events → identity context (enrich on UPN):**
+
+```
+AzureActiveDirectory-SignInAudits WHERE UserPrincipalName = "<upn>", ConditionalAccessStatus = "failure"
+  SELECT UserPrincipalName, IpAddress, CountryName, ClientAppUsed
+BATCH-JOIN AzureActiveDirectory-Users AS u ON UserPrincipalName = u_UserPrincipalName
+  SELECT Department, IsMfaRegisteredAsText, UserPrincipalName
+```
+
+→ each failed-CA sign-in annotated with the user's department and MFA-registration state — the SOC "who is this and were they protected" pivot in one query.
+
+**Where this helps socai.** The case-scoped `eql_*` tools (`tools/eql.py`) currently fire separate per-entity queries and stitch the results in Python. Joins can collapse the common *event + identity/device context* pairs into a single server-side call: sign-in / risky-activity rows + `AzureActiveDirectory-Users` attributes, or Defender machine rows + `MachineVulnerabilities` / `MachineUsers`. Not yet wired into `QUERY_TEMPLATES` / `POSTURE_TEMPLATES` — candidate optimisation, mind the LEFT-join semantics (an enriched query must not silently swallow unmatched entities).
 
 ## Data surface (indicative)
 
