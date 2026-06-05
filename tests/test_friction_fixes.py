@@ -14,6 +14,12 @@
   - save_report: fp_tuning_ticket no longer hard-codes a false_positive
     disposition (it overrode Benign-Positive determinations on the BP+tuning path).
   - index_case: the registry entry retains client/tags/attack_type on re-index.
+
+2026-06-05 batch (P2-5 blank dispositions):
+  - index_case enforces the close invariant: a closed case with no disposition
+    is floored to canonical "inconclusive".
+  - save_report: mdr_report defaults to true_positive; closure_comment requires
+    an explicit disposition (no silent blank close).
 """
 
 import tools.enrich as enrich
@@ -134,5 +140,90 @@ def test_index_case_registry_retains_client_and_tags():
         assert entry["client"] == "essentra"
         assert entry["tags"] == ["phishing", "bp"]
         assert entry["attack_type"] == "phishing"
+    finally:
+        _cleanup()
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-05 batch (P2-5 blank dispositions)
+# ---------------------------------------------------------------------------
+
+import json as _json
+import shutil as _shutil
+
+
+def _scratch_case(case_id, meta):
+    """Write a throwaway case_meta and return a (case_dir, cleanup) pair.
+    conftest isolates the log paths but NOT cases/ or the registry, so the
+    caller must clean up via try/finally."""
+    from config.settings import CASES_DIR, REGISTRY_FILE
+    from tools.common import save_json
+    case_dir = CASES_DIR / case_id
+
+    def _cleanup():
+        if case_dir.exists():
+            _shutil.rmtree(case_dir)
+        if REGISTRY_FILE.exists():
+            data = _json.loads(REGISTRY_FILE.read_text())
+            data.get("cases", {}).pop(case_id, None)
+            REGISTRY_FILE.write_text(_json.dumps(data, indent=2))
+
+    _cleanup()
+    save_json(case_dir / "case_meta.json", {"case_id": case_id, **meta})
+    return case_dir, _cleanup
+
+
+def test_index_case_floors_blank_disposition_on_close():
+    from tools.common import utcnow
+    from tools.index_case import index_case, CANONICAL_DISPOSITIONS
+    case_dir, _cleanup = _scratch_case(
+        "IV_CASE_FRICTION_DISP",
+        {"title": "disp floor", "status": "active", "created_at": utcnow()},
+    )
+    try:
+        # Close with NO disposition → floored to a canonical "inconclusive".
+        meta = index_case("IV_CASE_FRICTION_DISP", status="closed")
+        assert meta["disposition"] == "inconclusive"
+        assert meta["disposition"] in CANONICAL_DISPOSITIONS
+    finally:
+        _cleanup()
+
+
+def test_index_case_preserves_explicit_disposition():
+    from tools.common import utcnow
+    from tools.index_case import index_case
+    case_dir, _cleanup = _scratch_case(
+        "IV_CASE_FRICTION_DISP2",
+        {"title": "disp explicit", "status": "active", "created_at": utcnow()},
+    )
+    try:
+        meta = index_case("IV_CASE_FRICTION_DISP2", status="closed",
+                          disposition="true_positive")
+        assert meta["disposition"] == "true_positive"
+    finally:
+        _cleanup()
+
+
+def test_mdr_report_defaults_to_true_positive():
+    from tools.save_report import _REPORT_TYPES
+    assert _REPORT_TYPES["mdr_report"]["disposition"] == "true_positive"
+
+
+def test_closure_comment_requires_disposition():
+    from tools.common import utcnow
+    from tools.save_report import save_report_to_case
+    case_id = "IV_CASE_FRICTION_CLOSURE"
+    case_dir, _cleanup = _scratch_case(
+        case_id,
+        {"title": "closure require", "status": "active", "created_at": utcnow()},
+    )
+    try:
+        # No disposition + none already on the case → must error, not close blank.
+        r = save_report_to_case(case_id, "closure_comment",
+                                "BP: expected admin activity.", disposition=None)
+        assert r["status"] == "error"
+        assert "disposition" in r["reason"].lower()
+        meta = _json.loads((case_dir / "case_meta.json").read_text())
+        assert meta["status"] != "closed"
     finally:
         _cleanup()

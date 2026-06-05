@@ -37,7 +37,9 @@ _REPORT_TYPES = {
         "path": "reports/mdr_report.md",
         "title_prefix": "MDR Incident Report",
         "auto_close": True,
-        "disposition": None,        # preserves existing
+        # MDR is the True-Positive deliverable (CLAUDE.md), so default to
+        # true_positive when the caller doesn't pass one — explicit still wins.
+        "disposition": "true_positive",
         "defang": True,
     },
     "pup_report": {
@@ -142,6 +144,22 @@ def save_report_to_case(
             "case_id": case_id,
             "ts": utcnow(),
         }
+
+    # closure_comment is inherently ambiguous (FP / BP / inconclusive) — flooring
+    # it would mislabel the close, so require an explicit disposition unless the
+    # case already carries one. prepare_closure_comment returns the right value
+    # for the chosen classification; pass it through as disposition=.
+    if report_type == "closure_comment" and not disposition:
+        if not load_json(case_dir / "case_meta.json").get("disposition"):
+            return {
+                "status": "error",
+                "reason": ("closure_comment requires a disposition "
+                           "(benign_positive | false_positive | inconclusive). "
+                           "prepare_closure_comment returns it for the chosen "
+                           "classification — pass it as disposition=."),
+                "case_id": case_id,
+                "ts": utcnow(),
+            }
 
     # Defang malicious/suspicious IOCs
     if cfg["defang"]:

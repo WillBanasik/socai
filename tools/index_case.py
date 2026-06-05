@@ -21,6 +21,13 @@ from tools.common import load_json, save_json, utcnow
 # when concurrent investigations both call index_case().
 _registry_lock = threading.Lock()
 
+# A closed case must carry one of these (Sentinel-aligned) dispositions.
+# Anything else is a data-quality leak — see the close-invariant in index_case().
+CANONICAL_DISPOSITIONS = frozenset({
+    "true_positive", "benign_positive", "false_positive",
+    "benign", "pup_pua", "inconclusive",
+})
+
 
 def index_case(
     case_id: str,
@@ -65,6 +72,23 @@ def index_case(
     if disposition:
         meta["disposition"] = disposition
     meta["updated_at"] = utcnow()
+
+    # Invariant: a closed case must carry a canonical disposition. If none was
+    # supplied and none already exists, floor to "inconclusive" (an honest
+    # "not determined") and emit a metric so leaking close-paths stay visible
+    # rather than producing silent blanks. Warn on non-canonical values too.
+    if meta.get("status") == "closed":
+        _disp = meta.get("disposition")
+        if not _disp:
+            meta["disposition"] = "inconclusive"
+            from tools.common import log_metric
+            log_metric("close_without_disposition", case_id=case_id,
+                       floored_to="inconclusive", analyst=meta.get("analyst", ""))
+        elif _disp not in CANONICAL_DISPOSITIONS:
+            from tools.common import log_error
+            log_error(case_id, "index_case.disposition",
+                      f"non-canonical disposition {_disp!r} on close",
+                      severity="warning", context={"disposition": _disp})
 
     # Record phase timestamp
     if status:

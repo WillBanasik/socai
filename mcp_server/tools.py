@@ -1173,13 +1173,15 @@ def _register_tier1(mcp: FastMCP) -> None:
     @mcp.tool(title="Close Case")
     def close_case(
         case_id: str,
-        disposition: str = "resolved",
+        disposition: str = "inconclusive",
     ) -> str:
         """Close a case and set its disposition. Idempotent — safe to call on already-closed cases.
 
         Disposition values: ``true_positive``, ``benign_positive``, ``false_positive``,
-        ``benign``, ``pup_pua``, ``inconclusive``, ``resolved`` (default).
-        Use ``benign_positive`` when the alert fired correctly but activity was authorised.
+        ``benign``, ``pup_pua``, ``inconclusive`` (default). Pass the value that
+        matches the determination — ``inconclusive`` is only the fallback when none
+        is given. Use ``benign_positive`` when the alert fired correctly but activity
+        was authorised.
         """
         _require_scope("investigations:submit")
         # No boundary check — close_case is administrative (bulk close across cases)
