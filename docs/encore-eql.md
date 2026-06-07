@@ -61,7 +61,7 @@ Defaults to the `Performanta` client. Reads `ENCORE_EQL_TOKEN`, refreshes, sends
 
 ## Path B — MCP server (`eql-hosted`)
 
-The `eql-hosted` MCP server exposes these tools: `list_clients`, `resolve_client`, `list_tables`, `list_columns`, `list_labels`, `execute_eql`. Tools that receive a `clientId` route to the multi-client gateway; tools without one route to the single-client local endpoint.
+The `eql-hosted` MCP server exposes these tools: `list_clients`, `resolve_client`, `list_tables`, `list_columns`, `list_labels`, `execute_eql`. Tools that receive a `clientId` route to the multi-client gateway; tools without one route to the single-client local endpoint. It also serves the **`eql://manual`** resource — the full live grammar reference (see [EQL syntax](#eql-syntax)).
 
 ### Claude Code (project `.mcp.json`)
 
@@ -123,17 +123,23 @@ After editing the Desktop config **or rotating the token**, fully **quit and rel
 
 ## EQL syntax
 
-Format: `<TableName> WHERE <col> = "val", <col2> LIKE "%x%" SELECT <col1>, <col2> ORDER BY <col> DESCENDING`
+**The canonical, always-current grammar reference is the live `eql://manual` resource** served by the `eql-hosted` MCP server — read it on demand (`ReadMcpResourceTool(server="eql-hosted", uri="eql://manual")`; discover via `ListMcpResourcesTool`). It is the single source of truth for clause syntax; **this doc deliberately does not duplicate it** — a local copy drifts. **When local notes and the manual disagree, the manual wins.** (Memory: `reference_eql_manual_resource`.)
 
-- **No** pipe operators (`|`), `FROM`, standalone `KEEP`/`LIMIT`, or `like~`.
-- Always `list_tables` to confirm the exact table name, then `list_columns <TableName>` to confirm column names before querying.
-- **BATCH-JOIN** chains two or more datasets into one result set — see [BATCH-JOIN (dataset joins)](#batch-join-dataset-joins) below for the full syntax, the column-reference rules, and worked examples.
+The load-bearing footgun, repeated here because it bites hardest: **EQL is not Elasticsearch EQL and not SQL.** No pipe (`|`), `FROM`, `SELECT *`, standalone `KEEP`/`LIMIT`, `like~`, single quotes, or `ASC`/`DESC`. The format is table-first: `<TableName> WHERE <col> = "val" AND <col2> LIKE "%x%" SELECT <col1>, <col2> ORDER BY <col> DESCENDING`. Always `list_tables` → `list_columns <TableName>` to confirm exact names before querying. Discovery: `list version`, `list clients`, `list labels`, `list tables [label:<label>]`, `list columns [<TableName>]`.
 
-Discovery queries: `list version`, `list clients`, `list tables`, `list tables label:<label>`, `list labels`, `list columns`, `list columns <TableName>`.
+The manual documents clauses this integration historically under-described — worth knowing they exist:
+
+- **`SKIP N` / `TAKE N`** — offset/page-size pagination. There is no `LIMIT` *keyword*, but `TAKE` *does* bound rows (confirmed live, 2026-06-05). Position differs with/without `BATCH-JOIN` — see the manual.
+- **`GROUP BY`** + `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, and **`SORT BY`** (post-aggregation sort, vs `ORDER BY` which sorts pre-aggregation). Confirmed live, 2026-06-05.
+- **`INCLUDE <Table>`** — links tables via internally-defined joins (lighter than `BATCH-JOIN`).
+- **`PROCESS-DATA`** — a second in-memory processing stage over the result set.
+- **Type properties** (`Col.Day`/`.ToUpper`/`.Length`/`.ToText`, alias required) and **static columns** (`"value" AS Name`).
+
+Caveat: the MCP layer is one version ahead of the EQL server, so **verify a less-common clause is live before relying on it** (see [Known server quirks](#known-server-quirks)).
 
 ### BATCH-JOIN (dataset joins)
 
-`BATCH-JOIN` chains two or more datasets into a single result set, so one query can enrich event rows with context from another table — a device's vulnerabilities and logged-on users, a sign-in's identity attributes — without a second round-trip and Python-side stitching. (Validated against the live gateway, 2026-06-05; experiment matrix in the `encore-eql-batch-join` memory.)
+`BATCH-JOIN` chains two or more datasets into a single result set, so one query can enrich event rows with context from another table — a device's vulnerabilities and logged-on users, a sign-in's identity attributes — without a second round-trip and Python-side stitching. **The base BATCH-JOIN grammar is canonical in the live `eql://manual` resource;** what follows is the socai-validated elaboration the manual doesn't spell out — the column-position rules, the exact gateway error messages, LEFT-join semantics, and the boolean/quirk interactions. (Validated against the live gateway, 2026-06-05; experiment matrix in the `reference_eql_batch_join` memory.)
 
 **Shape** — each table is a *dataset* with its own optional `WHERE` and a mandatory `SELECT`:
 
@@ -163,7 +169,7 @@ So `alias_Col` appears in exactly two places — the **right side of a join pred
 - A joined-table `WHERE` uses the **bare** column name. Using `alias_Col` there → `v_Severity is not a valid column name, permitted option for the … table are: …`.
 - **It is a LEFT join.** An unmatched left row is *kept*, with the joined columns returned as empty strings (`""`) — not dropped. For inner-join behaviour, add a `WHERE` on the joined dataset (any always-present column) or discard rows whose `alias_*` keys are blank.
 - **Join-key equality is case-insensitive** (`tlangelani.mathebula@…` matched `Tlangelani.Mathebula@…`). No need to normalise case before joining.
-- **No `LIMIT` exists** — bound *every* dataset with `WHERE`. A multi-hop star (below) multiplies rows (users × vulnerabilities), so filter the fan-out side hard.
+- **No `LIMIT` keyword** — but `TAKE N` bounds rows and `SKIP N` pages (with joins, both sit *after* the join predicates — see the manual). Still bound *every* dataset with `WHERE`: a multi-hop star (below) multiplies rows (users × vulnerabilities), and `TAKE` without an `ORDER BY` takes an arbitrary N, so filter the fan-out side hard regardless.
 - **Different column names on each side are expected** (`ON Id = v_MachineId`); **identical names also work** — the alias disambiguates them in the output (`UserPrincipalName` vs `u_UserPrincipalName`).
 - A later join may key off the **first table's** column, not only the immediately-preceding dataset — so you can *star* several tables off one anchor key as well as *chain* A→B→C.
 - The **boolean-filter quirk still applies inside joins**: filter on the `*AsText` mirror column, never the raw boolean (`WHERE IsElevatedAsText = "true"`, not `IsElevated`).
@@ -240,6 +246,7 @@ Posture additions (client-wide, for the security architecture review): `AllServi
 
 ## See also
 
+- **`eql://manual`** — live MCP resource on the `eql-hosted` server; the canonical EQL grammar reference. Read on demand; **supersedes this doc on any grammar conflict.** Memory: `reference_eql_manual_resource`.
 - `config/client_entities.json` — set `platforms.encore.internal_client_id` (gateway UUID from `list_clients`) per client to enable the socai-native tools above; this is the token-scope gate (see `docs/configuration.md`). The standalone `eql-hosted` MCP / `ENCORE_EQL_TOKEN` path is unaffected by this field.
 - Memory: `encore-gateway-integration` (operational notes, token rotation, wrapper rationale)
 - `scripts/eql_direct.py` — the direct-API helper
