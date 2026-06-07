@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, OPENCTI_KEY, OPENCTI_URL
-from tools.common import get_session, load_json, log_error, utcnow
+from tools.common import eprint, get_session, load_json, log_error, utcnow
 
 # ---------------------------------------------------------------------------
 # LLM system prompt (used by MCP client-side prompts)
@@ -463,11 +463,11 @@ def cve_contextualise(case_id: str) -> dict:
 
     if not cve_sources:
         result = {"status": "no_cves", "reason": "No CVE identifiers found in case artefacts"}
-        print("[cve_contextualise] No CVEs found in case artefacts")
+        eprint("[cve_contextualise] No CVEs found in case artefacts")
         return result
 
     cve_ids = sorted(cve_sources.keys())
-    print(f"[cve_contextualise] Found {len(cve_ids)} unique CVE(s): {', '.join(cve_ids[:10])}")
+    eprint(f"[cve_contextualise] Found {len(cve_ids)} unique CVE(s): {', '.join(cve_ids[:10])}")
 
     # Step 2: Load CISA KEV catalog (cached)
     kev_vulns = _load_kev_catalog(case_id)
@@ -515,9 +515,9 @@ def cve_contextualise(case_id: str) -> dict:
     }
 
     # Print summary
-    print(f"[cve_contextualise] Enriched {len(cve_results)} CVE(s) (in-memory only)")
-    print(f"  CISA KEV hits: {cves_in_kev}")
-    print(f"  Highest CVSS: {highest_cvss}")
+    eprint(f"[cve_contextualise] Enriched {len(cve_results)} CVE(s) (in-memory only)")
+    eprint(f"  CISA KEV hits: {cves_in_kev}")
+    eprint(f"  Highest CVSS: {highest_cvss}")
 
     return output
 

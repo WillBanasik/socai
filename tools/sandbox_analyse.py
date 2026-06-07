@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, HYBRID_KEY
-from tools.common import get_session, load_json, log_error, save_json, utcnow
+from tools.common import eprint, get_session, load_json, log_error, save_json, utcnow
 
 ANYRUN_KEY = os.getenv("ANYRUN_API_KEY", "")
 JOESANDBOX_KEY = os.getenv("JOESANDBOX_API_KEY", "")
@@ -239,7 +239,7 @@ def sandbox_analyse(case_id: str, detonate: bool = False) -> dict:
 
     # --- Tier 1: Hybrid Analysis (free) ---
     fast_tasks = [(fn, sha) for sha in hashes for fn in SANDBOX_FAST]
-    print(f"[sandbox] Tier 1: Querying {len(SANDBOX_FAST)} fast provider(s) "
+    eprint(f"[sandbox] Tier 1: Querying {len(SANDBOX_FAST)} fast provider(s) "
           f"for {len(hashes)} hash(es)...")
 
     if fast_tasks:
@@ -275,11 +275,11 @@ def sandbox_analyse(case_id: str, detonate: bool = False) -> dict:
     tiered_stats["escalated_to_deep"] = len(escalate_hashes)
 
     if tier1_only:
-        print(f"[sandbox] Tier 1: {tier1_only} hash(es) resolved — skipping deep sandbox.")
+        eprint(f"[sandbox] Tier 1: {tier1_only} hash(es) resolved — skipping deep sandbox.")
 
     if escalate_hashes:
         deep_tasks = [(fn, sha) for sha in escalate_hashes for fn in SANDBOX_DEEP]
-        print(f"[sandbox] Tier 2: Querying {len(SANDBOX_DEEP)} deep provider(s) "
+        eprint(f"[sandbox] Tier 2: Querying {len(SANDBOX_DEEP)} deep provider(s) "
               f"for {len(escalate_hashes)} hash(es)...")
         if deep_tasks:
             with ThreadPoolExecutor(max_workers=SANDBOX_WORKERS) as executor:
@@ -301,7 +301,7 @@ def sandbox_analyse(case_id: str, detonate: bool = False) -> dict:
                             "error": str(exc),
                         })
 
-    print(f"[sandbox] Tiered stats: {tiered_stats['tier1_only']} resolved at Tier 1, "
+    eprint(f"[sandbox] Tiered stats: {tiered_stats['tier1_only']} resolved at Tier 1, "
           f"{tiered_stats['escalated_to_deep']} escalated to deep sandbox")
 
     # Extract supplementary IOCs from sandbox results
@@ -366,12 +366,12 @@ def sandbox_analyse(case_id: str, detonate: bool = False) -> dict:
     # Print summary
     ok_count = sum(1 for r in all_results if r.get("status") == "ok")
     provider_count = len(SANDBOX_FAST) + len(SANDBOX_DEEP)
-    print(f"[sandbox_analyse] Checked {len(hashes)} hash(es) across {provider_count} provider(s)")
-    print(f"  Results: {ok_count} found, {len(all_results) - ok_count} not found / error")
+    eprint(f"[sandbox_analyse] Checked {len(hashes)} hash(es) across {provider_count} provider(s)")
+    eprint(f"  Results: {ok_count} found, {len(all_results) - ok_count} not found / error")
     if unique_iocs:
-        print(f"  Supplementary IOCs: {len(unique_iocs)}")
+        eprint(f"  Supplementary IOCs: {len(unique_iocs)}")
     if mitre_ttps:
-        print(f"  MITRE TTPs: {', '.join(mitre_ttps[:10])}")
+        eprint(f"  MITRE TTPs: {', '.join(mitre_ttps[:10])}")
 
     return result
 

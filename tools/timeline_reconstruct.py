@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import load_json, log_error, utcnow
+from tools.common import eprint, load_json, log_error, utcnow
 
 # ---------------------------------------------------------------------------
 # System prompt (used by MCP client-side prompts)
@@ -263,7 +263,7 @@ def timeline_reconstruct(case_id: str) -> dict:
 
     Returns a manifest dict with status, event count, and the timeline data.
     """
-    print(f"[timeline_reconstruct] Scanning artefacts for case {case_id}...")
+    eprint(f"[timeline_reconstruct] Scanning artefacts for case {case_id}...")
 
     # ── 1. Extract events from all sources ───────────────────────────────
     try:
@@ -278,7 +278,7 @@ def timeline_reconstruct(case_id: str) -> dict:
             "ts": utcnow(),
         }
 
-    print(f"[timeline_reconstruct] Extracted {len(events)} events from {len(sources)} source(s)")
+    eprint(f"[timeline_reconstruct] Extracted {len(events)} events from {len(sources)} source(s)")
 
     if not events:
         return {

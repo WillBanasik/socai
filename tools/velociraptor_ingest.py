@@ -38,7 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import log_error, save_json, utcnow, write_artefact
+from tools.common import eprint, log_error, save_json, utcnow, write_artefact
 
 # ---------------------------------------------------------------------------
 # Regex patterns for entity extraction (shared with parse_logs)
@@ -677,7 +677,7 @@ def _normalise_and_write(
     write_artefact(logs_dir / f"{stem}.parsed.json", json.dumps(result, indent=2, default=str))
     write_artefact(logs_dir / f"{stem}.entities.json", json.dumps(entities, indent=2))
 
-    print(f"[velociraptor] {artefact_name}: {len(rows)} row(s), format={fmt}")
+    eprint(f"[velociraptor] {artefact_name}: {len(rows)} row(s), format={fmt}")
 
     return {
         "name": artefact_name,
@@ -846,10 +846,10 @@ def velociraptor_ingest(
 
     save_json(vr_dir / "ingest_manifest.json", manifest)
 
-    print(f"[velociraptor] Ingest complete: {len(artefacts_processed)} artefact(s), "
+    eprint(f"[velociraptor] Ingest complete: {len(artefacts_processed)} artefact(s), "
           f"{total_rows} row(s), {len(uploads_extracted)} raw file(s)")
     if warnings:
-        print(f"[velociraptor] {len(warnings)} warning(s)")
+        eprint(f"[velociraptor] {len(warnings)} warning(s)")
 
     return manifest
 

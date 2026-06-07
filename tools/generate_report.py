@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, CONF_HIGH, CONF_MED, IOC_INDEX_FILE
-from tools.common import defang_report, load_json, log_error, utcnow
+from tools.common import defang_report, eprint, load_json, log_error, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -939,7 +939,7 @@ def generate_report(case_id: str) -> dict:
         if mal_iocs:
             report_text = defang_report(report_text, mal_iocs)
 
-    print(f"[generate_report] Report generated for {case_id} (in-memory only)")
+    eprint(f"[generate_report] Report generated for {case_id} (in-memory only)")
     return {
         "case_id":     case_id,
         "report_path": None,

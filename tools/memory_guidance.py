@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import log_error, save_json, utcnow, write_artefact
+from tools.common import eprint, log_error, save_json, utcnow, write_artefact
 
 # ---------------------------------------------------------------------------
 # IOC regex patterns
@@ -261,7 +261,7 @@ This will extract strings, IOCs, DLL references, and flag suspicious patterns
 
     save_json(mem_dir / "guidance_manifest.json", manifest)
 
-    print(f"[memory] Guidance written: {mem_dir / 'dump_guidance.md'}")
+    eprint(f"[memory] Guidance written: {mem_dir / 'dump_guidance.md'}")
     return manifest
 
 
@@ -350,7 +350,7 @@ def analyse_memory_dump(
     mem_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[memory] Analysing {source.name} ({source.stat().st_size / (1024*1024):.1f} MB)...")
+    eprint(f"[memory] Analysing {source.name} ({source.stat().st_size / (1024*1024):.1f} MB)...")
 
     try:
         data = source.read_bytes()
@@ -360,7 +360,7 @@ def analyse_memory_dump(
         return {"status": "error", "reason": f"Failed to read dump: {exc}"}
 
     # Extract strings
-    print("[memory] Extracting strings...")
+    eprint("[memory] Extracting strings...")
     strings = _extract_strings(data)
 
     # Extract IOCs from strings
@@ -378,7 +378,7 @@ def analyse_memory_dump(
     md5_candidates = set(_RE_MD5.findall(all_text)) - sha1_candidates - sha256_candidates
 
     # DLL references
-    print("[memory] Scanning for DLL references...")
+    eprint("[memory] Scanning for DLL references...")
     dll_matches = set()
     for m in _DLL_PATTERN.finditer(data):
         try:
@@ -391,7 +391,7 @@ def analyse_memory_dump(
     all_dlls = sorted(dll_matches)
 
     # Suspicious patterns
-    print("[memory] Scanning for suspicious patterns...")
+    eprint("[memory] Scanning for suspicious patterns...")
     suspicious_findings = []
     for pattern, description in _SUSPICIOUS_PATTERNS:
         matches = list(pattern.finditer(data))
@@ -403,7 +403,7 @@ def analyse_memory_dump(
             })
 
     # Embedded PE headers
-    print("[memory] Scanning for embedded PE headers...")
+    eprint("[memory] Scanning for embedded PE headers...")
     pe_headers = _find_pe_headers(data)
 
     # Build analysis result
@@ -480,15 +480,15 @@ def analyse_memory_dump(
                    json.dumps(entities, indent=2))
 
     # Print summary
-    print(f"[memory] Strings: {len(strings)}")
-    print(f"[memory] IPs: {len(ips)}, URLs: {len(urls)}, Domains: {len(domains)}")
-    print(f"[memory] DLLs: {len(all_dlls)} total, {len(suspicious_dlls)} suspicious")
-    print(f"[memory] Suspicious patterns: {len(suspicious_findings)}")
-    print(f"[memory] Embedded PE headers: {len(pe_headers)}")
+    eprint(f"[memory] Strings: {len(strings)}")
+    eprint(f"[memory] IPs: {len(ips)}, URLs: {len(urls)}, Domains: {len(domains)}")
+    eprint(f"[memory] DLLs: {len(all_dlls)} total, {len(suspicious_dlls)} suspicious")
+    eprint(f"[memory] Suspicious patterns: {len(suspicious_findings)}")
+    eprint(f"[memory] Embedded PE headers: {len(pe_headers)}")
 
     risk = analysis["risk_indicators"]
     if risk["level"] != "low":
-        print(f"[memory] Risk: {risk['level'].upper()} — {'; '.join(risk['reasons'])}")
+        eprint(f"[memory] Risk: {risk['level'].upper()} — {'; '.join(risk['reasons'])}")
 
     return analysis
 

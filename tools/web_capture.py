@@ -30,7 +30,7 @@ import atexit
 import threading
 
 from config.settings import BROWSER_BACKEND, CAPTURE_SPA_DWELL, CAPTURE_TIMEOUT, CAPTURE_UA, CASES_DIR, SOCAI_BROWSER_POOL_IDLE_SECS, SOCAI_BROWSER_POOL_MAX_USES
-from tools.common import log_error, utcnow, write_artefact
+from tools.common import eprint, log_error, utcnow, write_artefact
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +83,6 @@ class _BrowserPool:
         Only sets a recycle flag — the next caller performs the actual teardown
         on its own thread (Playwright is thread-affine to the creating thread).
         """
-        from tools.common import eprint
         while not self._reaper_stop.is_set():
             self._reaper_stop.wait(timeout=30)
             if self._reaper_stop.is_set():
@@ -604,12 +603,12 @@ def _try_pdf_download(final_url: str, html: str, out_dir: Path) -> dict | None:
             return None
         result = write_artefact(out_dir / "document.pdf", data_bytes)
         result["source_url"] = pdf_url
-        print(f"[web_capture] PDF downloaded: {pdf_url} ({len(data_bytes):,} bytes)")
+        eprint(f"[web_capture] PDF downloaded: {pdf_url} ({len(data_bytes):,} bytes)")
         return result
     except Exception as exc:
         log_error("", "web_capture.pdf_download", str(exc),
                   severity="warning", context={"pdf_url": pdf_url})
-        print(f"[web_capture] PDF download failed for {pdf_url}: {exc}")
+        eprint(f"[web_capture] PDF download failed for {pdf_url}: {exc}")
         return None
 
 
@@ -695,13 +694,13 @@ def _write_capture_artefacts(url: str, case_id: str, data: dict) -> dict:
     manifest["cloudflare_blocked"] = cf.get("blocked", False)
     manifest["cloudflare_challenge"] = cf.get("challenge_type")
     if cf.get("blocked"):
-        print(
+        eprint(
             f"[web_capture] \u26a0\ufe0f  CLOUDFLARE BLOCKED ({cf['challenge_type']}): {url}"
             f" — captured content may be incomplete / challenge page only"
         )
 
     write_artefact(out_dir / "capture_manifest.json", json.dumps(manifest, indent=2))
-    print(f"[web_capture] Captured {url} → {out_dir}")
+    eprint(f"[web_capture] Captured {url} → {out_dir}")
     return manifest
 
 
@@ -718,7 +717,7 @@ def web_capture(url: str, case_id: str) -> dict:
     except Exception as pw_err:
         log_error(case_id, "web_capture.playwright", str(pw_err),
                   severity="warning", context={"url": url, "fallback": "requests"})
-        print(f"[web_capture] Playwright unavailable ({pw_err}), falling back to requests.")
+        eprint(f"[web_capture] Playwright unavailable ({pw_err}), falling back to requests.")
         try:
             data = _capture_with_requests(url)
         except Exception as req_err:
@@ -745,7 +744,7 @@ def _web_capture_batch_sync(urls: list[str], case_id: str) -> list[dict]:
             except Exception as pw_page_err:
                 log_error(case_id, "web_capture_batch.playwright_page", str(pw_page_err),
                           severity="warning", context={"url": url, "fallback": "requests"})
-                print(
+                eprint(
                     f"[web_capture_batch] Playwright failed for {url} "
                     f"({pw_page_err}), trying requests."
                 )
@@ -940,7 +939,7 @@ async def _async_web_capture_batch(urls: list[str], case_id: str) -> list[dict]:
                 if isinstance(result, Exception):
                     log_error(case_id, "web_capture_batch.async_page", str(result),
                               severity="warning", context={"url": url, "fallback": "requests"})
-                    print(f"[web_capture_batch] Async capture failed for {url} ({result}), trying requests.")
+                    eprint(f"[web_capture_batch] Async capture failed for {url} ({result}), trying requests.")
                     try:
                         data = _capture_with_requests(url)
                         results.append(_write_capture_artefacts(url, case_id, data))
@@ -993,7 +992,7 @@ def web_capture_batch(urls: list[str], case_id: str) -> list[dict]:
     except Exception as async_err:
         log_error(case_id, "web_capture_batch.async", str(async_err),
                   severity="warning", context={"url_count": len(urls), "fallback": "sync"})
-        print(f"[web_capture_batch] Async Playwright unavailable ({async_err}), trying sync.")
+        eprint(f"[web_capture_batch] Async Playwright unavailable ({async_err}), trying sync.")
 
     # Fall back to sync Playwright (sequential)
     try:
@@ -1001,7 +1000,7 @@ def web_capture_batch(urls: list[str], case_id: str) -> list[dict]:
     except Exception as pw_err:
         log_error(case_id, "web_capture_batch.playwright", str(pw_err),
                   severity="warning", context={"url_count": len(urls), "fallback": "serial"})
-        print(
+        eprint(
             f"[web_capture_batch] Playwright unavailable ({pw_err}), "
             f"falling back to serial captures."
         )

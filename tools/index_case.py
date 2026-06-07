@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, REGISTRY_FILE
-from tools.common import load_json, save_json, utcnow
+from tools.common import eprint, load_json, save_json, utcnow
 
 # Thread-safety: protects the read-modify-write cycle on case_index.json
 # when concurrent investigations both call index_case().
@@ -53,7 +53,7 @@ def index_case(
                         entry["disposition"] = disposition
                     entry["updated_at"] = utcnow()
                     save_json(REGISTRY_FILE, registry)
-                    print(f"[index_case] Case {case_id} registry updated (status={status}, dir missing)")
+                    eprint(f"[index_case] Case {case_id} registry updated (status={status}, dir missing)")
                     return {**entry, "case_id": case_id, "_warning": "case directory missing, registry updated"}
         return {"error": f"case_meta.json not found at {meta_path}"}
 
@@ -189,7 +189,7 @@ def index_case(
             log_error(case_id, "index_case.case_memory_upsert", str(exc),
                       severity="warning", context={})
 
-    print(f"[index_case] Case {case_id} indexed (status={meta['status']})")
+    eprint(f"[index_case] Case {case_id} indexed (status={meta['status']})")
     return meta
 
 

@@ -24,7 +24,7 @@ from typing import IO, Any
 from mcp.server.fastmcp import FastMCP
 
 from config.settings import MCP_USAGE_LOG, MCP_LOG_RESULTS, MCP_LOG_MAX_RESULT
-from tools.common import utcnow
+from tools.common import eprint, utcnow
 
 _usage_lock = threading.Lock()
 _usage_fh: IO[str] | None = None
@@ -732,7 +732,7 @@ def _emit_live(
     """Print a status line to stderr for live tailing."""
     dur = f" {duration_ms}ms" if duration_ms is not None else ""
     det = f" — {detail}" if detail else ""
-    print(f"[MCP {status:<4}] {tool}{dur} caller={caller}{det}", file=sys.stderr)
+    eprint(f"[MCP {status:<4}] {tool}{dur} caller={caller}{det}")
 
 
 def install_usage_watcher(server: FastMCP) -> None:

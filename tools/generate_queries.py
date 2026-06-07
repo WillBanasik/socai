@@ -25,7 +25,7 @@ from config.sentinel_schema import (
     get_ip_tables, get_domain_tables, get_url_tables,
     get_hash_tables, get_email_tables, has_registry,
 )
-from tools.common import load_json, log_error, utcnow
+from tools.common import eprint, load_json, log_error, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -1163,8 +1163,8 @@ def generate_queries(
     }
 
     ioc_counts = {k: len(v) for k, v in iocs.items() if v}
-    print(f"[generate_queries] Queries generated for {case_id} (in-memory only)")
-    print(f"[generate_queries] Platforms: {platforms} | Patterns detected: {patterns}")
+    eprint(f"[generate_queries] Queries generated for {case_id} (in-memory only)")
+    eprint(f"[generate_queries] Platforms: {platforms} | Patterns detected: {patterns}")
 
     return {
         "case_id":       case_id,

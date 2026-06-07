@@ -50,7 +50,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import log_error, save_json, utcnow, write_artefact
+from tools.common import eprint, log_error, save_json, utcnow, write_artefact
 
 # ---------------------------------------------------------------------------
 # Regex patterns — reused from velociraptor_ingest
@@ -660,7 +660,7 @@ def _normalise_and_write(
     write_artefact(logs_dir / f"{stem}.entities.json",
                    json.dumps(entities, indent=2))
 
-    print(f"[mde] {artefact_name}: {len(rows)} row(s)")
+    eprint(f"[mde] {artefact_name}: {len(rows)} row(s)")
 
     return {
         "name": artefact_name,
@@ -947,7 +947,7 @@ def mde_ingest(
                             "source": name, "dest": str(dest),
                             "size": len(data),
                         })
-                        print(f"[mde] Extracted security EVTX: {Path(name).name} ({len(data)} bytes)")
+                        eprint(f"[mde] Extracted security EVTX: {Path(name).name} ({len(data)} bytes)")
                     except Exception as exc:
                         log_error(case_id, "mde_ingest:extract_security_evtx", str(exc),
                                   severity="warning", traceback=True)
@@ -1109,10 +1109,10 @@ def mde_ingest(
 
     save_json(mde_dir / "ingest_manifest.json", manifest)
 
-    print(f"[mde] Ingest complete: {len(artefacts_processed)} artefact(s), "
+    eprint(f"[mde] Ingest complete: {len(artefacts_processed)} artefact(s), "
           f"{total_rows} row(s), {len(raw_files_extracted)} raw file(s)")
     if warnings:
-        print(f"[mde] {len(warnings)} warning(s)")
+        eprint(f"[mde] {len(warnings)} warning(s)")
 
     return manifest
 

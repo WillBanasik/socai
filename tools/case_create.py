@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import BASE_DIR, CASES_DIR, DEFAULT_CLIENT, REGISTRY_FILE
-from tools.common import load_json, save_json, utcnow
+from tools.common import eprint, load_json, save_json, utcnow
 
 _RE_CASE_ID = re.compile(r"^IV_CASE_\d{3,}$")
 _LOCK_FILE = BASE_DIR / "registry" / ".case_id.lock"
@@ -71,7 +71,7 @@ def case_create(
         )
     case_dir = CASES_DIR / case_id
     if case_dir.exists():
-        print(f"[case_create] Case {case_id} already exists at {case_dir}")
+        eprint(f"[case_create] Case {case_id} already exists at {case_dir}")
     else:
         for sub in ("artefacts", "iocs", "reports", "logs"):
             (case_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -122,7 +122,7 @@ def case_create(
         "report_path": None,
     }
     save_json(REGISTRY_FILE, registry)
-    print(f"[case_create] Case {case_id} initialised at {case_dir}")
+    eprint(f"[case_create] Case {case_id} initialised at {case_dir}")
     return meta
 
 

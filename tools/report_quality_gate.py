@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import load_json, log_error, utcnow
+from tools.common import eprint, load_json, log_error, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ def review_report(case_id: str) -> dict | None:
     }
 
     status = "PASSED" if passed else f"FAILED ({error_count} error(s))"
-    print(f"[quality_gate] {case_id}: {status}, "
+    eprint(f"[quality_gate] {case_id}: {status}, "
           f"{len(flags)} flag(s) total, "
           f"coverage: {coverage['known_knowns_addressed']}/{coverage['known_knowns_total']} knowns")
 

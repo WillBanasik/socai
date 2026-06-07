@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, CLIENT_PLAYBOOKS_DIR
-from tools.common import load_json, log_error, utcnow
+from tools.common import eprint, load_json, log_error, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +319,6 @@ def generate_response_actions(case_id: str) -> dict:
         "ts": utcnow(),
     }
 
-    print(f"[response_actions] Response plan generated for {case_id} "
+    eprint(f"[response_actions] Response plan generated for {case_id} "
           f"(client={client}, priority={priority}, source={priority_source})")
     return result

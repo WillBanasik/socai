@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import log_error, save_json, sha256_bytes, utcnow, write_artefact
+from tools.common import eprint, log_error, save_json, sha256_bytes, utcnow, write_artefact
 
 
 # ---------------------------------------------------------------------------
@@ -379,14 +379,14 @@ def analyse_email(eml_path: str | Path, case_id: str) -> dict:
     save_json(email_dir / "email_analysis.json", result)
 
     # Print summary
-    print(f"[analyse_email] Parsed: {eml_path.name}")
-    print(f"  From: {from_header}")
-    print(f"  Subject: {headers['subject']}")
-    print(f"  Auth: SPF={auth_results['spf']}, DKIM={auth_results['dkim']}, DMARC={auth_results['dmarc']}")
+    eprint(f"[analyse_email] Parsed: {eml_path.name}")
+    eprint(f"  From: {from_header}")
+    eprint(f"  Subject: {headers['subject']}")
+    eprint(f"  Auth: SPF={auth_results['spf']}, DKIM={auth_results['dkim']}, DMARC={auth_results['dmarc']}")
     if spoofing_signals:
         for sig in spoofing_signals:
-            print(f"  ⚠ SPOOFING: {sig['type']} — {sig['detail']}")
-    print(f"  URLs: {len(urls)}, Attachments: {len(attachments)}")
+            eprint(f"  ⚠ SPOOFING: {sig['type']} — {sig['detail']}")
+    eprint(f"  URLs: {len(urls)}, Attachments: {len(attachments)}")
 
     return result
 
