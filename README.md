@@ -22,14 +22,14 @@ SOC-AI provides a complete investigation toolkit for MDR/XDR analysts:
 ```
 CLI (socai.py)           -- entrypoint for all subcommands
 Tools (tools/)           -- stateless functions, no direct LLM calls
-MCP Server (mcp_server/) -- HTTPS SSE on port 8001, JWT RBAC
+MCP Server (mcp_server/) -- HTTP SSE on port 8001 (TLS via upstream proxy), JWT RBAC
 Shared API (api/)        -- auth, actions, timeline, input parsing
 ```
 
 - **No direct LLM API calls** -- all reasoning is handled by the analyst's local Claude Desktop agent via MCP prompts
 - **Human-in-the-loop** -- analyst drives each investigation step; tools gather data, agent reasons
 - **Filesystem state** -- no database; cases in `cases/`, registry in `registry/`, articles in `articles/`
-- **115 MCP tools**, 47 resources, 23 prompts across 3 permission tiers
+- **125 MCP tools**, 47 resources, 24 prompts across 3 permission tiers
 
 ## Quick Start
 
@@ -55,7 +55,7 @@ python3 -m pytest tests/ -v
 
 ## MCP Server
 
-The MCP server exposes the full toolkit to Claude Desktop over HTTPS SSE with JWT RBAC. No LLM calls are made server-side -- the local Claude Desktop agent handles all analytical reasoning via prompts and save tools.
+The MCP server exposes the full toolkit to Claude Desktop over HTTP SSE (TLS terminated by an upstream proxy) with JWT RBAC. No LLM calls are made server-side -- the local Claude Desktop agent handles all analytical reasoning via prompts and save tools.
 
 **Tool categories:** Investigation and triage, case management, enrichment, email and phishing, SIEM queries, dynamic analysis, forensic ingestion, dark web intelligence, cross-case intelligence, report delivery, SOC processes.
 

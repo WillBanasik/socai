@@ -1,6 +1,6 @@
 # MCP Server
 
-socai exposes its investigation tools to external MCP clients over HTTPS SSE with JWT-based role-based access control (RBAC).
+socai exposes its investigation tools to external MCP clients over HTTP SSE (TLS terminated by an upstream reverse proxy) with JWT-based role-based access control (RBAC).
 
 ## Quick Start
 
@@ -49,7 +49,7 @@ Client (Claude Desktop / LLM agent)
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
 │  125 tools, 47 resources│
-│  23 prompts, JSONL logs │
+│  24 prompts, JSONL logs │
 │  Background scheduler   │
 └─────────────────────────┘
     │
@@ -122,14 +122,13 @@ Per-tool permission checks using `_require_scope()`. Admin bypasses all checks.
 
 | Permission | Grants |
 |---|---|
-| `investigations:read` | list_cases, case_summary, read_report, read_case_file, recall_cases, recall_semantic, classify_attack, plan_investigation, get_client_baseline, analyse_file, resources |
+| `investigations:read` | list_cases, case_summary, read_report, read_case_file, recall_cases, recall_semantic, classify_attack, plan_investigation, get_client_baseline, analyse_file, geoip_lookup, resources |
 | `investigations:submit` | capture_urls, enrich_iocs, generate_report, parse_logs, detect_anomalies, correlate_evtx, yara_scan, analyse_memory_dump, analyse_memory_volatility, memory_dump_guide, all write tools, rebuild_client_baseline |
-| `enrichment:run` | geoip_lookup |
 | `campaigns:read` | campaign_cluster, assess_landscape, search_threat_articles |
 | `sentinel:query` | run_kql, load_kql_playbook, generate_sentinel_query, run_kql_batch |
 | `defender_xdr:query` | run_defender_kql |
 | `crowdstrike:query` | run_falcon_cql, query_falcon_detections, query_falcon_hosts, query_falcon_incidents |
-| `ioc_index:read` | recall by IOC, IOC index lookups |
+| `ioc_index:read` | _(granted in `config/roles.json` but not currently enforced as a per-tool gate — recall/IOC-index tools check `investigations:read`)_ |
 | `admin` | All tools including sandbox, browser, response_actions, merge_cases, refresh_geoip |
 
 ## Analyst Roles
@@ -157,7 +156,7 @@ python3 -c "from api.auth import create_token_for_role; print(create_token_for_r
 
 When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg-soc-analyst`, `sg-soc-senior`) to these role names in the auth config.
 
-## Tools (121)
+## Tools (125)
 
 ### Tier 1 -- Core Investigation (32)
 
@@ -221,7 +220,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `correlate_evtx` | `investigations:submit` | Windows EVTX attack chain correlation (7 detectors) |
 | `triage_iocs` | `investigations:submit` | Pre-pipeline IOC reputation check |
 | `score_ioc_verdicts` | `investigations:submit` | Composite verdict scoring + IOC index update |
-| `analyse_file` | `investigations:submit` | Unified tiered static-file analysis (Tier 1 hash/magic/entropy/strings/reputation; Tier 2 auto-escalates to format specialists: PE, Office, PDF, LNK, OneNote, Mach-O, disk image, MSI; Tier 3 YARA on signal) — server-side, requires file on MCP filesystem |
+| `analyse_file` | `investigations:read` | Unified tiered static-file analysis (Tier 1 hash/magic/entropy/strings/reputation; Tier 2 auto-escalates to format specialists: PE, Office, PDF, LNK, OneNote, Mach-O, disk image, MSI; Tier 3 YARA on signal) — server-side, requires file on MCP filesystem |
 | `prepare_file_upload` | `investigations:read` | Mint a signed URL the caller can `curl` to ship a sample from a different sandbox to the MCP server (HTTP path; preferred) |
 | `upload_file_content` | `investigations:read` | Last-resort in-band base64 file upload — capped at 2 MB; bytes land in chat history. Use only when HTTP upload is unreachable |
 | `sandbox_api_lookup` | `investigations:submit` | API-based sandbox report lookup (Hybrid Analysis, Any.Run, Joe) |
@@ -233,11 +232,11 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 
 | Tool | Permission | Description |
 |---|---|---|
-| `generate_investigation_matrix` | `investigations:write` | Generate Rumsfeld reasoning matrix (use `build_investigation_matrix` prompt) |
+| `generate_investigation_matrix` | `investigations:submit` | Generate Rumsfeld reasoning matrix (use `build_investigation_matrix` prompt) |
 | `review_report_quality` | `investigations:read` | Analytical standards quality gate on case report |
-| `run_determination` | `investigations:write` | Evidence-chain disposition analysis (use `run_determination` prompt) |
+| `run_determination` | `investigations:submit` | Evidence-chain disposition analysis (use `run_determination` prompt) |
 | `list_followups` | `investigations:read` | List follow-up investigation proposals for evidence gaps |
-| `execute_followup` | `investigations:write` | Execute an approved follow-up proposal |
+| `execute_followup` | `investigations:submit` | Execute an approved follow-up proposal |
 
 ### Intelligence -- Semantic Memory, Baselines, GeoIP (6)
 
@@ -246,8 +245,8 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `recall_semantic` | `investigations:read` | BM25 semantic case recall by meaning (not just exact IOC match) |
 | `rebuild_case_memory` | `investigations:read` | Rebuild semantic case memory index immediately |
 | `get_client_baseline` | `investigations:read` | Get per-client behavioural profile (IOC recurrence, attack patterns, severity dist.) |
-| `rebuild_client_baseline` | `investigations:write` | Force-rebuild a client's behavioural baseline |
-| `geoip_lookup` | `enrichment:run` | Fast offline IP geolocation via local MaxMind GeoLite2 |
+| `rebuild_client_baseline` | `investigations:submit` | Force-rebuild a client's behavioural baseline |
+| `geoip_lookup` | `investigations:read` | Fast offline IP geolocation via local MaxMind GeoLite2 |
 | `refresh_geoip` | `admin` | Download/update local MaxMind GeoLite2-City database |
 
 ### Dark Web Intelligence (5)
@@ -266,16 +265,16 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 |---|---|---|
 | `check_log_coverage` | `investigations:read` | Check log source coverage and gaps for a client |
 | `can_investigate_attack` | `investigations:read` | Check whether client has sufficient logs for a given attack type |
-| `refresh_log_coverage` | `investigations:write` | Force fresh log source collection from Sentinel |
+| `refresh_log_coverage` | `investigations:submit` | Force fresh log source collection from Sentinel |
 
 ### Exposure Testing (2)
 
 | Tool | Permission | Description |
 |---|---|---|
-| `run_client_exposure_test` | `investigations:write` | External attack surface assessment (DNS, certs, email security, typosquats) |
+| `run_client_exposure_test` | `investigations:submit` | External attack surface assessment (DNS, certs, email security, typosquats) |
 | `get_client_exposure_report` | `investigations:read` | Return latest exposure test results for a client |
 
-### Tier 3 -- Advanced / Restricted (34)
+### Tier 3 -- Advanced / Restricted (44)
 
 | Tool | Permission | Description |
 |---|---|---|
@@ -283,7 +282,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `load_kql_playbook` | `sentinel:query` | Load KQL playbook stages |
 | `load_cql_playbook` | `sentinel:query` | Load CQL (LogScale) playbook stages |
 | `generate_sentinel_query` | `sentinel:query` | Generate composite Sentinel queries |
-| `run_kql_batch` | `sentinel:query` | Execute multiple KQL queries concurrently (max 4 workers) |
+| `run_kql_batch` | `sentinel:query` | Execute multiple KQL queries concurrently (max 8 workers) |
 | `run_defender_kql` | `defender_xdr:query` | Execute KQL against client's Defender XDR Advanced Hunting endpoint (Device*/Email*/Identity*/CloudApp*/Url*/Alert* tables) |
 | `run_falcon_cql` | `crowdstrike:query` | Execute CQL against client's CrowdStrike Falcon NG-SIEM (LogScale) repository |
 | `query_falcon_detections` | `crowdstrike:query` | Falcon detection summaries (FQL filter) |
@@ -391,7 +390,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `cql_investigation` | Unified CQL (LogScale) playbook prompt — same 17 playbooks (every v2 playbook now ships CQL except `reconnaissance` Stage 3, authoritative-DNS enumeration, which is Sentinel-only). Email/M365 stages require the Defender/M365 forwarding connector. |
 | `user_security_check` | Broad-scope user account security review (identity validation → alerts → sign-in risk → email threats → activity audit → risk assessment) |
 
-### Report Generation (8)
+### Report Generation (9)
 
 These prompts load system instructions and case data into the analyst's local Claude Desktop session. The agent generates the report as **markdown**, then `save_report` / `save_threat_article` persists it (handles defanging, auto-close, audit). Template resources (`socai://templates/mdr-report`, `socai://templates/pup-report`) provide the markdown skeleton and section layout. The Claude Desktop visualiser renders the markdown — no HTML, no inline CSS required.
 
@@ -442,7 +441,7 @@ Classification is determined by `tools/ioc_classify.py` and stored in the IOC in
 
 See `docs/pipeline.md` for the full HITL workflow, tool sequence, auto-close rules, and attack-type classification.
 
-**Speculative enrichment:** When `classify_attack` or `add_evidence` is called, the server fires a background thread that calls `quick_enrich(iocs, deep=False)` on extracted IOCs (capped at 20, fast providers only). Results go to the enrichment cache so subsequent calls get cache hits.
+**Speculative enrichment:** When `classify_attack` or `add_evidence` is called, the server fires a background thread that calls `quick_enrich(iocs, depth="fast")` on extracted IOCs (capped at 20, fast providers only). Results go to the enrichment cache so subsequent calls get cache hits.
 
 ## File Structure
 
@@ -455,9 +454,9 @@ mcp_server/
                        #   unhandled exception hook, SSE connection lifecycle middleware
     auth.py            # SocaiTokenVerifier, _require_scope
     config.py          # Env var configuration
-    tools.py           # 115 MCP tool wrappers
+    tools.py           # 125 MCP tool wrappers
     resources.py       # 47 MCP resource implementations
-    prompts.py         # 23 MCP prompt implementations
+    prompts.py         # 24 MCP prompt implementations
     health.py          # /healthz liveness probe (scheduler, filesystem, uptime)
     watchdog.py        # systemd watchdog integration (sd_notify, WATCHDOG=1 loop)
     usage.py           # Tool invocation logging (JSONL + stderr); emits tool_call,

@@ -17,11 +17,11 @@ Shared API (api/)
     └── parse_input.py       → freeform analyst input → structured IOC extraction
 
 MCP Server (mcp_server/)
-    ├── HTTPS SSE transport  → port 8001, separate process
+    ├── HTTP SSE transport   → port 8001, separate process (TLS terminated by upstream proxy)
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
-    ├── 115 tools (3 tiers) → core investigation, extended analysis, advanced/restricted (incl. Sentinel KQL, Defender XDR Advanced Hunting, CrowdStrike Falcon + NG-SIEM)
+    ├── 125 tools (3 tiers) → core investigation, extended analysis, advanced/restricted (incl. Sentinel KQL, Defender XDR Advanced Hunting, CrowdStrike Falcon + NG-SIEM)
     ├── 47 resources        → case data, clients, IOC index, playbooks, sentinel queries, NGSIEM/LogScale refs, articles, landscape
-    ├── 23 prompts          → investigation, KQL, triage, FP, analysis, report generation, forensics
+    ├── 24 prompts          → investigation, KQL, triage, FP, analysis, report generation, forensics
     ├── Save tools (2)       → save_report, save_threat_article (persist agent output)
     ├── RBAC                 → per-tool scopes via JWT claims; filesystem isolation (cases/<ID>/)
     ├── Data hierarchy       → global (cross-client IOCs) / client (internal + baseline profiles) / case (details)
@@ -117,7 +117,6 @@ registry/mcp_usage.jsonl  ← per-tool invocation log (caller, tool, category, g
 registry/quick_enrichments/ ← saved caseless enrichment results (quick_enrich → import into case)
 registry/vuln_hunts/      ← saved caseless Encore vuln hunts (eql_vuln_hunt → import via vuln_hunt_id)
 registry/eql_lookups/     ← saved caseless Encore entity lookups + identity scans (eql_entity_lookup / eql_identity_scan → import via eql_lookup_id)
-registry/batches/         ← batch API metadata + results
 registry/article_index.json ← threat article dedup index
 articles/YYYY-MM/         ← threat article summaries (ET/EV)
 ```
@@ -129,9 +128,9 @@ The system makes **no direct Anthropic API calls**. All LLM reasoning is handled
 | Component | Role |
 |-----------|------|
 | **Claude client (Desktop / Code TUI)** | All analytical reasoning, report writing, disposition analysis, quality review |
-| **MCP prompts (23)** | Load system instructions + case data into the local session |
+| **MCP prompts (24)** | Load system instructions + case data into the local session |
 | **Save tools (2)** | `save_report`, `save_threat_article` — persist agent output (markdown reports) with defanging, auto-close, audit |
-| **MCP tools (115)** | Data gathering only: enrichment APIs, Sentinel / Defender XDR / CrowdStrike queries, file I/O, deterministic logic |
+| **MCP tools (125)** | Data gathering only: enrichment APIs, Sentinel / Defender XDR / CrowdStrike queries, file I/O, deterministic logic |
 
 ## Tool Contracts
 

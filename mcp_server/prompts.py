@@ -1,15 +1,15 @@
 """MCP prompt implementations — workflow templates for LLM consumption.
 
-23 prompts in three categories:
+24 prompts in three categories:
 
 **Guided workflows (7):** ``kql_investigation``, ``cql_investigation``,
 ``triage_alert``, ``triage_file``, ``write_fp_ticket``, ``hitl_investigation``,
 ``user_security_check``
 
-**Client-side report generation (8):** ``write_mdr_report``,
+**Client-side report generation (9):** ``write_mdr_report``,
 ``write_pup_report``, ``write_closure_comment``, ``write_fp_tuning``,
 ``write_executive_summary``, ``write_security_arch_review``,
-``write_threat_article``, ``write_response_plan``
+``write_vuln_hunt_report``, ``write_threat_article``, ``write_response_plan``
 
 **Client-side analysis (8):** ``run_determination``,
 ``build_investigation_matrix``, ``review_report``, ``write_timeline``,

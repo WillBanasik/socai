@@ -6,8 +6,8 @@ Query a client's CrowdStrike Falcon platform — classic Falcon APIs (detections
 
 | | |
 |---|---|
-| Falcon API | `https://api.<region>.crowdstrike.com/...` (oauth2 client credentials) |
-| NG-SIEM | `https://api.<region>.crowdstrike.com/loggingapi/entities/queries/v1/run` |
+| Falcon API | `https://<falcon-api-host>/...` (oauth2 client credentials; host varies by region — see Supported regions) |
+| NG-SIEM | `https://<falcon-api-host>/loggingapi/entities/queries/v1/run` |
 | Auth | Per-client OAuth2 API client (created in client's Falcon console) |
 | Token TTL | ~30 minutes; cached per-client in-process |
 
@@ -119,7 +119,7 @@ incs = query_incidents("heidelberg_materials", filter_="status:20", limit=20)
 
 ### MCP tools (HITL via Claude Desktop)
 
-Scope required: `crowdstrike:query` (granted to `mdr_analyst`, `senior_analyst`, `admin`).
+Scope required: `crowdstrike:query` (granted to the `mdr_analyst` and `senior_analyst` roles in `config/roles.json`; the `admin` scope wildcard satisfies any check).
 
 Tools exposed:
 

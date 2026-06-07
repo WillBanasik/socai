@@ -1,1 +1,1 @@
-"""socai MCP server — exposes investigation tools over HTTPS SSE with RBAC."""
+"""socai MCP server — exposes investigation tools over HTTP SSE (TLS via upstream proxy) with RBAC."""

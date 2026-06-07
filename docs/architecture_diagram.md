@@ -45,7 +45,6 @@ graph TB
             ES["executive_summary"]
             CC["prepare_closure_comment"]
             SAR["security_arch_review"]
-            PPTX["generate_pptx"]
         end
         subgraph Core["Core Utilities (common.py)"]
             WA["write_artefact()"]
@@ -139,7 +138,7 @@ sequenceDiagram
     T->>F: cases/IV_CASE_042/case_meta.json (status=active)
     Note over T,F: Caseless enrichment imported, no provider re-run
 
-    A->>M: run_kql(workspace, query) / enrich_iocs / add_evidence
+    A->>M: run_kql(query, workspace) / enrich_iocs / add_evidence
     M->>A: Sentinel query results, evidence recorded
 
     Note over A,M: Deliverable phase — TP

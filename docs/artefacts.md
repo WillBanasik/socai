@@ -115,7 +115,7 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/sandbox_detonation/dns_queries.json` | DNS lookups attempted |
 | `cases/<ID>/artefacts/sandbox_detonation/dropped_files/ ` | Files created by the malware |
 | `cases/<ID>/artefacts/sandbox_detonation/strings_extracted.json` | Strings from stdout/stderr/dropped files |
-| `cases/<ID>/artefacts/sandbox_detonation/interactive_log.json` | Commands sent via sandbox_exec (interactive mode) |
+| `cases/<ID>/artefacts/sandbox_detonation/interactive_log.json` | Commands sent via the internal `exec_in_sandbox()` helper (interactive mode) |
 | `cases/<ID>/logs/mde_sandbox_detonation.parsed.json` | Normalised sandbox log rows for downstream pipeline |
 | `cases/<ID>/logs/mde_sandbox_detonation.entities.json` | Extracted entities (IPs, domains, URLs, hashes) |
 
@@ -126,14 +126,6 @@ All persistent state is on the filesystem. There is no database.
 | `articles/YYYY-MM/ART-YYYYMMDD-NNNN/article.md` | Generated article summary (markdown) |
 | `articles/YYYY-MM/ART-YYYYMMDD-NNNN/article_manifest.json` | Article metadata: title, category, analyst, sources, fingerprint, Confluence hooks |
 | `registry/article_index.json` | Master index of all produced articles (dedup + listing) |
-| `registry/.article_candidates_cache.json` | Transient cache of last `search_threat_articles` results for web UI |
-
-## Batch Files
-
-| File | Purpose |
-|------|---------|
-| `registry/batches/<batch_id>.json` | Batch submission metadata |
-| `registry/batches/<batch_id>_results.json` | Collected batch results |
 
 ## Client Configuration Files
 

@@ -198,7 +198,7 @@ Runs on **every** captured page regardless of Tier 1 results. Produces a suspici
 
 ### Tier 3 — LLM Purpose Analysis (via prompt)
 
-Pages with a suspicion score >= 0.4 (`_SUSPICION_ESCALATION_THRESHOLD`) that have no clear determination from Tiers 1-2 are flagged for LLM assessment. The `write_phishing_verdict` MCP prompt loads the heuristic results and screenshots into the analyst's local Claude session for purpose analysis and brand impersonation assessment.
+Pages with a suspicion score >= 0.6 (the hard-coded escalation threshold in `detect_phishing_page.py`) that have no clear determination from Tiers 1-2 are flagged for LLM assessment. The `write_phishing_verdict` MCP prompt loads the heuristic results and screenshots into the analyst's local Claude session for purpose analysis and brand impersonation assessment.
 
 **Philosophy**: Legitimate pages serve an obvious purpose. If a page has phishing hallmarks but no malicious IOCs or credential harvester, it doesn't mean it's clean — it means you haven't found it yet.
 
@@ -209,8 +209,9 @@ Findings are written to `artefacts/phishing_detection/phishing_detection.json` w
 - `form_analysis` — form action analysis per page
 - `tls_signals` — certificate anomalies
 - `heuristic_analysis` — per-page Tier 2 signal breakdown and suspicion scores
-- `purpose_assessments` — Tier 3 LLM purpose analysis results
-- `escalation_count` — number of pages escalated to Tier 3
+- `summary` — aggregate scan summary
+
+(Tier 3 verdicting is produced via the separate `write_phishing_verdict` prompt and is not persisted back into this JSON.)
 
 To add a brand: append to `_BRANDS` in `detect_phishing_page.py` with `name`, `patterns` (compiled regexes), and `allowed` (base domain set).
 
@@ -531,7 +532,7 @@ The upload tools above are the *escalation* path, not the default.
 - Analysis via prompt: use `write_pe_verdict` prompt for malicious likelihood, likely category, recommended next steps
 - Output: `artefacts/analysis/pe_analysis.json`
 
-**Auto-YARA scanning:** `analyse_file` runs YARA as Tier 3 with `run_yara="auto"` (escalates on signal); force it with `run_yara="true"` or skip with `run_yara="false"`. For custom rule generation from findings, call the `yara_scan` tool with `generate_rules=True`.
+**Auto-YARA scanning:** `analyse_file` runs YARA as Tier 3 with `run_yara="auto"` (escalates on signal); force it with `run_yara="true"` or skip with `run_yara="false"`. (The `yara_scan` tool's `generate_rules` parameter is a no-op — LLM rule generation was removed; it is retained only for API compatibility.)
 
 ## Office Document Analysis
 
@@ -691,7 +692,7 @@ Outputs: `security_arch_review.md`, `security_arch_manifest.json`. EQL pulls are
 - **Multi-environment playbooks:** clients with multiple environments (e.g. Sentinel/MDE, CrowdStrike workstations, OT) use an `environments` map and optional `escalation_matrix_ot` for environment-specific escalation rules
 - **Resolution:** severity → priority mapping, crown jewel escalation, alert-name override, escalation matrix filtering
 - **Output:** `artefacts/response_actions/response_actions.json` + `response_actions.md`
-- **Pipeline step:** 13 (between CampaignAgent and auto-disposition)
+- **Pipeline position:** recommended on a True-Positive disposition (alongside `prepare_mdr_report`); see `docs/pipeline.md`
 - **MDR report integration:** `_build_context()` includes "Approved Response Actions" section when present
 
 ## Report Generation
@@ -716,7 +717,7 @@ Confidence score: +0.20 if malicious IOCs confirmed, +0.10 for suspicious-only.
 
 Investigation playbooks live in `config/playbooks/<id>.yaml` and describe stage logic, parameters, required capabilities, and definitions in a vendor-neutral form. Per-stage query bodies live under `config/playbooks/<id>/<platform>/*.<ext>` — one subdirectory per SIEM platform. The unified loader (`tools/playbooks.py`) merges the YAML structure with the right query files at render time. KQL parameters use `{{param}}` placeholders sanitised via `_sanitise_kql_value()` (rejects control characters, escapes quotes/backslashes) to prevent query-structure injection.
 
-**Available playbooks** (17 total, multi-platform; the only Sentinel-only gap is `reconnaissance` Stage 3, authoritative-DNS enumeration):
+**Available playbooks** (18 total, multi-platform; the only Sentinel-only gap is `reconnaissance` Stage 3, authoritative-DNS enumeration):
 
 | Playbook | Stages | Sentinel | LogScale | Key parameters |
 |----------|--------|----------|----------|----------------|
@@ -737,6 +738,7 @@ Investigation playbooks live in `config/playbooks/<id>.yaml` and describe stage 
 | `oauth-consent` | 5 (consent events, SP sign-ins, app data access, sign-in context, IP sweep + alerts) | yes | yes¹ | `upn`, `ip`, `object_id`, `lookback` (default 14d) |
 | `web-shell` | 3 (web-server spawned shell, web-shell file drops, post-exploitation) | yes | yes | `device_name`, `lookback` (default 7d) |
 | `insider-data-staging` | 4 (bulk cloud pull, local archiving, removable media, mass print/egress) | yes | yes¹ | `target_upn`, `device_name`, `lookback` (default 14d) |
+| `vulnerability-hunting` | 4 (confirm vulnerable software/patch status, host-side exploitation activity, inbound exploitation attempts, correlated alerts + post-exploitation) | yes | yes | `cve_id` (`__NONE__` = hunt broadly), `device_name`, `software_name`, `lookback` |
 
 ¹ LogScale email/M365 stages require the Microsoft Defender / M365 forwarding connector (`#event.dataset="windows-defender-365.event"`, `#event.module=m365`); endpoint stages ride Falcon-native telemetry. Some Falcon event names in the new endpoint playbooks (e.g. registry-autostart `AsepValueUpdate`) are flagged in the `.cql` headers as needing per-client discovery, with a `ProcessRollup2` command-line fallback.
 
@@ -819,15 +821,11 @@ Pivot values are extracted from case metadata and evidence text automatically vi
 
 ## Output Schemas
 
-`tools/schemas.py` defines Pydantic models that describe the expected structure of analysis outputs. These are used as reference by MCP prompts to guide the local Claude agent's output format:
-- `ArticleSummary` — threat article generation
-- `BrandImpersonationResult` — phishing detection
-- `ExecutiveSummary` — executive summary sections
-- `TimelineAnalysis` — forensic timeline
-- `CveAssessment` — CVE contextualisation
-- `PeAssessment` — PE file analysis
-- `EvtxAnalysis` — EVTX attack chain correlation
-- `PagePurposeAssessment` — Tier 3 phishing purpose check
+There is no standalone schema module. The expected structure of each analytical
+deliverable is defined inline by the MCP prompt that produces it (the `write_*`
+prompts in `mcp_server/prompts.py`) and, for reports, by the markdown templates
+exposed as `socai://templates/*` resources. The save tools (`save_report`,
+`save_threat_article`) accept that markdown directly.
 
 ## Threat Articles
 
@@ -857,7 +855,7 @@ Already-covered topics are flagged in candidate listings. `save_article()` runs 
 - `socai.py articles-generate --urls URL1 URL2` — direct URL mode (skip discovery)
 - `socai.py articles-list --month 2026-03` — list produced articles
 
-**Chat tools:** `search_threat_articles`, `generate_threat_article`, `list_threat_articles`, `check_article_dedup`, `save_threat_article` — available in both case-mode and session-mode. Search results are cached to disk (`registry/.article_candidates_cache.json`) so that `generate_threat_article` can reference candidates by **1-based index** (e.g. `candidate_ids: ["1", "3", "5"]`) without re-fetching RSS feeds. The cache survives server reloads. `check_article_dedup` runs the three-store dedup check and returns match details (including Confluence `page_id`) so the analyst can verify before writing.
+**Chat tools:** `search_threat_articles`, `generate_threat_article`, `check_article_dedup`, `save_threat_article` — available in both case-mode and session-mode. `search_threat_articles` returns candidate stories **inline** (no disk cache); `generate_threat_article` then takes the chosen `candidate_urls` (a list of source URLs) to fetch and draft. `check_article_dedup` runs the three-store dedup check and returns match details (including Confluence `page_id`) so the analyst can verify before writing. (To list already-produced articles, use the CLI `socai.py articles-list`.)
 
 **Confluence integration:** Manifest includes `confluence_page_id`/`confluence_url` fields for tracking published articles. Source config supports `"type": "confluence"` for future feed sources. CQL search (`title ~`) used for dedup and direct page lookup.
 
@@ -873,7 +871,7 @@ Already-covered topics are flagged in candidate listings. `save_article()` runs 
 | **B — Individual VQL file** | Single `.json`, `.csv`, or `.jsonl` file | Direct file path |
 | **C — Directory** | Directory of VQL result files | Also checks for nested `results/` and `uploads/` subdirectories |
 
-### Artefact Normalisers (13 + generic fallback)
+### Artefact Normalisers (12 + generic fallback)
 
 Each Velociraptor VQL artefact type has a dedicated normaliser that maps VQL-specific field names to the standard fields expected by `evtx_correlate`, `detect_anomalies`, `extract_iocs`, and `timeline_reconstruct`:
 
@@ -1013,7 +1011,7 @@ Output: `artefacts/memory/memory_analysis.json` + `memory_analysis_manifest.json
 ```bash
 # Generate dump guidance
 python3 socai.py memory-guide --case IV_CASE_001 --process lsass.exe --pid 672 \
-    --alert "Credential dumping detected" --hostname WORKSTATION01
+    --alert "Credential dumping detected" --host WORKSTATION01
 
 # Analyse a collected dump
 python3 socai.py memory-analyse /path/to/lsass.dmp --case IV_CASE_001
@@ -1106,7 +1104,7 @@ The disconnect detection is fail-open: if the check errors, the session stays al
 python3 socai.py browser-session "https://suspicious-site.com" --case IV_CASE_001
 
 # Stop a specific session
-python3 socai.py browser-stop <session-id>
+python3 socai.py browser-stop --session <session-id>
 
 # List all sessions
 python3 socai.py browser-list
@@ -1154,8 +1152,7 @@ Container configuration:
 ### Interactive Mode
 
 `start_session(..., interactive=True)` keeps the container running for manual inspection:
-- `exec_in_sandbox(session_id, command)` — runs `docker exec` as non-root `sandbox` user, 30s timeout
-- Available as `sandbox_exec` chat tool for Claude to send commands into the running container
+- `exec_in_sandbox(session_id, command)` — runs `docker exec` as non-root `sandbox` user, 30s timeout. **Internal helper only** — not exposed as an MCP tool or CLI command (currently exercised by the test suite).
 
 ### Output
 
@@ -1183,7 +1180,7 @@ python3 socai.py sandbox-list
 
 ### Chat Tools
 
-`start_sandbox_session`, `stop_sandbox_session`, `list_sandbox_sessions`, `sandbox_exec` are available in both case-mode and session-mode chat.
+`start_sandbox_session`, `stop_sandbox_session`, and `list_sandbox_sessions` are available in both case-mode and session-mode chat. (Per-command exec is an internal helper only — see Interactive Mode above.)
 
 ### Requirements
 
@@ -1199,7 +1196,7 @@ See `docs/sandbox.md` for full setup guide and safety details.
 
 ## Save Tools (Client-Side Persistence)
 
-Two MCP tools persist output generated by the local Claude agent:
+Three MCP tools persist output generated by the local Claude agent:
 
 - **`save_report`** — persists a report generated via any `write_*` prompt. Accepts markdown (`.md` is the canonical on-disk format). Handles IOC defanging, auto-close (for MDR/PUP/FP deliverables), and audit logging. Returns the persisted markdown as `report_md` so the analyst can render it as a markdown artifact in the Claude Desktop visualiser. No LLM call. Reports are immediately available via `socai://cases/{case_id}/report` after saving.
 - **`save_threat_article`** — persists a threat article to the article index as markdown (`article.md`). Handles three-store dedup, returns the persisted markdown as `article_md` so Claude Desktop renders it as a markdown artifact in the visualiser. No LLM call.

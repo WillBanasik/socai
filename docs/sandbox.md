@@ -52,12 +52,13 @@ python3 socai.py sandbox-list
 
 ### MCP Tools
 
-Four tools available via MCP:
+Three session tools available via MCP (plus the read-only `sandbox_api_lookup` cloud reputation tool):
 
 - **start_sandbox_session** — start detonation (auto-selects Linux or Wine image)
 - **stop_sandbox_session** — stop session, collect artefacts
 - **list_sandbox_sessions** — list active/completed sessions
-- **sandbox_exec** — execute a command inside a running sandbox (interactive mode only)
+
+> Sending ad-hoc commands into a running container is an **internal** capability only (`exec_in_sandbox()` in `tools/sandbox_session.py`); it is not exposed as an MCP tool or CLI command.
 
 ### Investigation Integration
 
@@ -78,6 +79,12 @@ Cloud sandbox lookups (Hybrid Analysis, Any.Run, Joe Sandbox) run via `sandbox_a
 - Uses `--network=none` — fully air-gapped, no network stack at all
 - Use for samples known to be destructive or when honeypot responses could influence behaviour
 
+### VPN
+
+- Uses `--network=container:<SANDBOX_VPN_CONTAINER>` (default `gluetun`) — routes the sample's real egress through a Mullvad VPN sidecar for OPSEC
+- Selected via `SOCAI_SANDBOX_NETWORK=vpn` or by passing `network_mode="vpn"` to `start_sandbox_session`
+- Use when controlled real egress is required but the MSSP's own IP must not be exposed
+
 ## Artefacts
 
 All artefacts are written via `write_artefact()`/`save_json()` to:
@@ -95,7 +102,7 @@ cases/<case_id>/artefacts/sandbox_detonation/
   dropped_files/               # Files created by the malware (hash-prefixed)
   dropped_files_manifest.json  # Manifest of dropped files with hashes
   strings_extracted.json       # Strings from stdout/stderr/dropped files
-  interactive_log.json         # Commands sent via sandbox_exec (if interactive)
+  interactive_log.json         # Commands sent via exec_in_sandbox() (if interactive)
 ```
 
 Normalised output for downstream IOC extraction:
@@ -108,16 +115,21 @@ cases/<case_id>/logs/
 
 ## Interactive Mode
 
-Interactive mode keeps the container running and allows Claude (or the analyst) to exec commands:
+The CLI `--interactive` flag (`socai.py sandbox-session ... --interactive`) keeps the
+container running until you press Ctrl+C, then collects artefacts on exit — useful for
+watching a long-running detonation. There is **no** analyst-facing per-command exec
+interface (no MCP `sandbox_exec` tool, no Web UI).
+
+Sending ad-hoc commands into the live container is available only as an **internal**
+Python helper, `exec_in_sandbox(session_id, command)` in `tools/sandbox_session.py`
+(currently exercised by the test suite, not wired to any tool/CLI):
 
 ```python
-# Via Web UI tool
-sandbox_exec(session_id="sbx_abc123", command="cat /proc/1/maps")
-sandbox_exec(session_id="sbx_abc123", command="lsof -i")
-sandbox_exec(session_id="sbx_abc123", command="ss -tlnp")
+from tools.sandbox_session import exec_in_sandbox
+exec_in_sandbox(session_id="sbx_abc123", command="cat /proc/1/maps")
 ```
 
-Guard rails:
+Guard rails (when `exec_in_sandbox` is used):
 - Commands execute as the `sandbox` user (non-root)
 - 30-second per-command timeout (max 60s)
 - All commands are logged in `interactive_log.json`

@@ -28,7 +28,7 @@ Add a `_detect_*()` function in `tools/detect_anomalies.py` returning `list[dict
 
 ## New Sandbox Provider
 
-Add a `_*_lookup(sha256: str) -> dict` function in `tools/sandbox_analyse.py`, add to `providers` list in `sandbox_analyse()`.
+Add a `_*_lookup(sha256: str) -> dict` function in `tools/sandbox_analyse.py`, then add it to the module-level `SANDBOX_FAST` (cheap/cached) or `SANDBOX_DEEP` (detonation) list — `sandbox_analyse()` consumes those lists.
 
 ## New Velociraptor Artefact Normaliser
 
@@ -46,7 +46,7 @@ Add entries to `_SUSPICIOUS_PATTERNS` in `tools/memory_guidance.py` with `patter
 
 Add a `@mcp.tool()` handler in `mcp_server/tools.py` in the appropriate tier (`_register_tier1/2/3`). Add RBAC via `_require_scope()` at the top of the handler. If the tool needs orchestration (error handling, timeline logging), add a wrapper in `api/actions.py` following the `_run_action()` pattern. Every `except` block in action wrappers must call `log_error(case_id, step, error, *, severity)` from `tools.common` — never silently swallow exceptions with bare `except: pass`.
 
-**Important:** MCP tools must not make LLM API calls. Tools handle data gathering (API calls, file I/O, external integrations) and deterministic logic only. For anything requiring LLM reasoning, add an MCP prompt instead (see "New MCP Prompt" above).
+**Important:** MCP tools must not make LLM API calls. Tools handle data gathering (API calls, file I/O, external integrations) and deterministic logic only. For anything requiring LLM reasoning, add an MCP prompt instead (see "New MCP Prompt" below).
 
 **Workflow analytics registration:** Every new MCP tool must be added to `TOOL_TAXONOMY` in `mcp_server/usage.py` with a `category` (one of: `lookup`, `enrichment`, `triage`, `analysis`, `delivery`, `admin`, `query`, `intel`, `sandbox`, `infra`) and a `goal` (one of: `quick_answer`, `investigate`, `deliver`, `maintain`). Tools not in the taxonomy are logged as `unknown` — workflow analytics won't classify them correctly.
 
@@ -54,7 +54,11 @@ Add a `@mcp.tool()` handler in `mcp_server/tools.py` in the appropriate tier (`_
 
 ## New Output Schema
 
-Add a Pydantic `BaseModel` subclass to `tools/schemas.py`. The schema is used as a reference by MCP prompts to guide the local Claude agent's output format.
+There is no standalone schema module. The expected structure of a deliverable is
+described inline by the MCP prompt that produces it (the `write_*` prompts in
+`mcp_server/prompts.py`) and, for reports, by the markdown templates exposed as
+`socai://templates/*` resources. To change an output shape, edit the relevant
+prompt text / template rather than a Pydantic model.
 
 ## New MCP Prompt
 
@@ -69,7 +73,7 @@ Add a prompt handler in `mcp_server/prompts.py` that loads system instructions a
    - **`playbook.json`** — `client_name`, `response` (procedures), `crown_jewels` (critical hosts; supports wildcard patterns via fnmatch), `contacts`, `escalation_matrix` (with `activity_blocked`, `sd_ticket`, `phone_call`, `response_action` fields), `containment_capabilities`, `remediation_actions`. For multi-environment clients add `environments` (map of env name → description/platforms) and `escalation_matrix_ot` for environment-specific overrides. Mark TBC fields for onboarding.
    - **`sentinel.md`** — Workspace ID, expected tables, key query patterns. Populate fully after Sentinel onboarding; scaffold from M365 deployment indicators.
 
-3. **Sentinel schema** — once workspace ID is known, run `scripts/discover_sentinel_schemas.py` then `scripts/generate_sentinel_reference.py --client <name>` to auto-populate `sentinel.md` with real table schemas.
+3. **Sentinel schema** — once workspace ID is known, run `scripts/discover_sentinel_schemas.py` then `scripts/generate_sentinel_reference.py <name>` (positional client arg; or `--all`) to auto-populate `sentinel.md` with real table schemas.
 
 Files are resolved by name convention: `config/clients/{client_name}/knowledge.md` (also tries lowercase + underscored variants). `lookup_client` matches against the canonical `name` (auto-normalised for case, whitespace, and hyphens) and against explicit `aliases` declared in `config/client_entities.json`. Substring/fuzzy matching is not supported.
 
@@ -79,7 +83,7 @@ Add entries to `config/article_sources.json` with `"type": "rss"` and `"categori
 
 ## MCP Server
 
-`mcp_server/` exposes 115 tools, 47 resources, and 23 prompts over HTTPS SSE with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). The server makes no LLM calls — all reasoning is handled by the analyst's local Claude client (Claude Desktop or Claude Code) via prompts. Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, `defender_xdr:query`, `crowdstrike:query`, `ioc_index:read`, and `admin` scopes. For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
+`mcp_server/` exposes 125 tools, 47 resources, and 24 prompts over HTTP SSE (TLS terminated by an upstream proxy) with JWT RBAC. The server runs as a separate process on port 8001 (`python -m mcp_server`). The server makes no LLM calls — all reasoning is handled by the analyst's local Claude client (Claude Desktop or Claude Code) via prompts. Auth bridges the existing `api/auth.py` JWT system — same tokens, same permission model. Per-tool RBAC enforces `investigations:read`, `investigations:submit`, `campaigns:read`, `sentinel:query`, `defender_xdr:query`, `crowdstrike:query`, and `admin` scopes (`ioc_index:read` is granted in `config/roles.json` but not currently enforced as a per-tool gate). For stdio transport (Claude Desktop), run `python -m mcp_server.server` with `SOCAI_MCP_TRANSPORT=stdio`.
 
 When adding new analytical capabilities, prefer adding an MCP prompt (in `mcp_server/prompts.py`) + save handler over adding LLM-backed tools. Tools should handle data gathering and persistence only; the local agent handles all reasoning.
 

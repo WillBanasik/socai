@@ -125,11 +125,11 @@ Prompts handle: report generation, analytical reasoning, disposition analysis, q
 
 **Attack types:** `phishing`, `oauth_consent`, `ransomware`, `malware`, `account_compromise`, `credential_access`, `privilege_escalation`, `insider_threat`, `data_exfiltration`, `lateral_movement`, `command_and_control`, `reconnaissance`, `persistence`, `defence_evasion`, `web_shell`, `pup_pua`, `generic`
 
-Each type has a pipeline profile in `PIPELINE_PROFILES` defining which steps to skip, and routes to its matching KQL/CQL playbook (`socai://pipeline-profiles` is the authoritative source):
+Each type has a pipeline profile in `PIPELINE_PROFILES` defining which steps to skip, and routes to its matching KQL/CQL playbook. The step names below are **summarised** (e.g. "sandbox" = `sandbox_analyse` + `sandbox_detonate`, "phishing_detection" = `detect_phishing_page`); `socai://pipeline-profiles` is the authoritative source for the exact `skip` sets:
 
 | Type | Skipped steps |
 |------|---------------|
-| `phishing` | sandbox, anomaly_detection, evtx |
+| `phishing` | sandbox (`sandbox_analyse`, `sandbox_detonate`) |
 | `malware` | phishing_detection |
 | `account_compromise` | sandbox, phishing_detection |
 | `privilege_escalation` | sandbox, phishing_detection, web_capture |
