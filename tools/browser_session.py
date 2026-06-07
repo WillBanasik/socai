@@ -51,7 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import log_error, save_json, utcnow, write_artefact
+from tools.common import eprint, log_error, save_json, utcnow, write_artefact
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -226,14 +226,14 @@ def _stop_container(session_id: str) -> bool:
             if inspect.returncode != 0:
                 # Container doesn't exist — already cleaned up, that's fine
                 return True
-            print(f"[browser] Warning: docker stop failed for {name}: {result.stderr.strip()}")
+            eprint(f"[browser] Warning: docker stop failed for {name}: {result.stderr.strip()}")
             return False
         return True
     except subprocess.TimeoutExpired as exc:
         log_error("", "browser_session:stop_container_timeout", str(exc),
                   severity="warning", traceback=True,
                   context={"session_id": session_id})
-        print(f"[browser] Warning: docker stop timed out for {name} — forcing kill")
+        eprint(f"[browser] Warning: docker stop timed out for {name} — forcing kill")
         try:
             subprocess.run(["docker", "kill", name], capture_output=True, timeout=10)
         except Exception as exc_kill:
@@ -245,7 +245,7 @@ def _stop_container(session_id: str) -> bool:
         log_error("", "browser_session:stop_container", str(exc),
                   severity="warning", traceback=True,
                   context={"session_id": session_id})
-        print(f"[browser] Warning: failed to stop container {name}: {exc}")
+        eprint(f"[browser] Warning: failed to stop container {name}: {exc}")
         return False
 
 
@@ -757,6 +757,11 @@ class _IdleMonitor:
 
     def stop(self) -> None:
         self._running = False
+        # Wake the idle watchdog, which blocks on idle_event.wait(). Without
+        # this, a manual / replaced / cleanup stop leaves that thread blocked
+        # forever (it leaks). It re-checks _running (now False) and exits
+        # cleanly without taking an auto-stop action.
+        self.idle_event.set()
         if self._thread:
             self._thread.join(timeout=5)
 
@@ -793,7 +798,7 @@ class _IdleMonitor:
                     # Only start grace timer after we've had at least one client
                     if self._disconnected_since is None:
                         self._disconnected_since = now
-                        print(f"[browser] No viewers connected — "
+                        eprint(f"[browser] No viewers connected — "
                               f"auto-stop in {int(self._disconnect_grace)}s "
                               f"unless tab is reopened")
                     elif now - self._disconnected_since >= self._disconnect_grace:
@@ -835,17 +840,17 @@ def _shutdown_active_sessions() -> None:
     if not active:
         return
 
-    print(f"\n[browser] Process shutting down — stopping {len(active)} active session(s)...")
+    eprint(f"\n[browser] Process shutting down — stopping {len(active)} active session(s)...")
     for s in active:
         sid = s["session_id"]
         try:
             stop_session(sid, stop_reason="process_exit")
-            print(f"[browser] Session {sid} stopped cleanly on shutdown")
+            eprint(f"[browser] Session {sid} stopped cleanly on shutdown")
         except Exception as exc:
             log_error("", "browser_session:shutdown_stop_session", str(exc),
                       severity="error", traceback=True,
                       context={"session_id": sid})
-            print(f"[browser] Warning: failed to stop {sid} on shutdown: {exc}")
+            eprint(f"[browser] Warning: failed to stop {sid} on shutdown: {exc}")
             # Last resort: force-kill the container
             _stop_container(sid)
 
@@ -872,7 +877,7 @@ def _idle_watchdog(session_id: str, monitor: _IdleMonitor,
         "idle_timeout": f"Session {session_id} idle for {int(monitor._idle_timeout)}s — auto-stopping...",
         "viewer_disconnected": f"Session {session_id} — all viewers disconnected — auto-stopping...",
     }
-    print(f"\n[browser] {_reason_messages.get(reason, f'Session {session_id} — {reason}')}")
+    eprint(f"\n[browser] {_reason_messages.get(reason, f'Session {session_id} — {reason}')}")
 
     try:
         result = stop_session(session_id, stop_reason=reason)
@@ -881,7 +886,7 @@ def _idle_watchdog(session_id: str, monitor: _IdleMonitor,
         log_error("", "browser_session:idle_watchdog_stop", str(exc),
                   severity="error", traceback=True,
                   context={"session_id": session_id, "reason": reason})
-        print(f"[browser] Auto-stop error: {exc}")
+        eprint(f"[browser] Auto-stop error: {exc}")
         _session_results[session_id] = {"status": "error", "reason": str(exc)}
     done_event.set()
 
@@ -931,15 +936,15 @@ def start_session(
             s["status"] = "orphaned"
             _save_session_state(prev_id, s)
         else:
-            print(f"[browser] Stopping previous session {prev_id} (case {s.get('case_id', '?')})...")
+            eprint(f"[browser] Stopping previous session {prev_id} (case {s.get('case_id', '?')})...")
             try:
                 stop_session(prev_id, stop_reason="replaced")
-                print(f"[browser] Previous session {prev_id} stopped — telemetry preserved")
+                eprint(f"[browser] Previous session {prev_id} stopped — telemetry preserved")
             except Exception as exc:
                 log_error(case_id, "browser_session:stop_previous_session", str(exc),
                           severity="warning", traceback=True,
                           context={"prev_session_id": prev_id})
-                print(f"[browser] Warning: failed to stop previous session {prev_id}: {exc}")
+                eprint(f"[browser] Warning: failed to stop previous session {prev_id}: {exc}")
                 _stop_container(prev_id)
                 s["status"] = "orphaned"
                 _save_session_state(prev_id, s)
@@ -966,7 +971,7 @@ def start_session(
     telemetry_dir = SESSIONS_DIR / session_id / "telemetry"
     telemetry_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[browser] Starting session {session_id}...")
+    eprint(f"[browser] Starting session {session_id}...")
 
     # Start Docker container
     try:
@@ -977,13 +982,13 @@ def start_session(
                   context={"session_id": session_id, "url": url})
         return {"status": "error", "reason": str(exc)}
 
-    print(f"[browser] Container started: {container_id[:12]}")
+    eprint(f"[browser] Container started: {container_id[:12]}")
 
     # Wait for noVNC to be ready.
     # Bridge mode: port is published on the host, probe via http.
     # VPN mode: container shares gluetun's network namespace — host can't
     # reach the port directly, so probe via `docker exec` (bash /dev/tcp).
-    print("[browser] Waiting for Chrome to start...")
+    eprint("[browser] Waiting for Chrome to start...")
     ready = False
     container_name = _container_name(session_id)
     last_probe_err: str | None = None
@@ -1083,17 +1088,17 @@ def start_session(
         "idle_timeout": idle_timeout,
     }
 
-    print(f"\n[browser] {'='*60}")
-    print(f"[browser] Session {session_id} is LIVE")
-    print(f"[browser] Open in your browser: {state['novnc_url']}")
-    print(f"[browser] Passive network capture active — no automation markers")
+    eprint(f"\n[browser] {'='*60}")
+    eprint(f"[browser] Session {session_id} is LIVE")
+    eprint(f"[browser] Open in your browser: {state['novnc_url']}")
+    eprint(f"[browser] Passive network capture active — no automation markers")
     if idle_timeout > 0:
-        print(f"[browser] Idle timeout: {int(idle_timeout)}s (auto-stop on network inactivity)")
+        eprint(f"[browser] Idle timeout: {int(idle_timeout)}s (auto-stop on network inactivity)")
     if DISCONNECT_GRACE_SECS > 0:
-        print(f"[browser] Close tab to stop: {DISCONNECT_GRACE_SECS}s grace period before clean shutdown")
+        eprint(f"[browser] Close tab to stop: {DISCONNECT_GRACE_SECS}s grace period before clean shutdown")
     if MAX_SESSION_SECS > 0:
-        print(f"[browser] Max duration: {MAX_SESSION_SECS}s")
-    print(f"[browser] {'='*60}\n")
+        eprint(f"[browser] Max duration: {MAX_SESSION_SECS}s")
+    eprint(f"[browser] {'='*60}\n")
 
     return manifest
 
@@ -1146,7 +1151,7 @@ def _stop_session_inner(
 
     case_id = state.get("case_id", "")
 
-    print(f"[browser] Stopping session {session_id}...")
+    eprint(f"[browser] Stopping session {session_id}...")
 
     # Stop idle monitor
     monitor = _active_monitors.pop(session_id, None)
@@ -1165,7 +1170,7 @@ def _stop_session_inner(
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     # Parse pcap INSIDE the container (tcpdump is there, not on the host)
-    print("[browser] Parsing network capture...")
+    eprint("[browser] Parsing network capture...")
     network_data = _parse_pcap_in_container(session_id)
     _has_container_results = any(
         network_data.get(k) for k in ("dns_queries", "tcp_connections", "http_requests", "tls_sni")
@@ -1186,29 +1191,29 @@ def _stop_session_inner(
     if host_pcap.exists() and host_pcap.stat().st_size > 0:
         shutil.copy2(host_pcap, pcap_path)
         pcap_ok = True
-        print(f"[browser] Pcap recovered from host mount ({pcap_path.stat().st_size:,} bytes)")
+        eprint(f"[browser] Pcap recovered from host mount ({pcap_path.stat().st_size:,} bytes)")
     else:
         pcap_ok = _copy_from_container(session_id, "/telemetry/capture.pcap", pcap_path)
         if pcap_ok:
-            print(f"[browser] Pcap captured via docker cp ({pcap_path.stat().st_size:,} bytes)")
+            eprint(f"[browser] Pcap captured via docker cp ({pcap_path.stat().st_size:,} bytes)")
         else:
-            print("[browser] Warning: no pcap captured")
+            eprint("[browser] Warning: no pcap captured")
 
     # Screenshot
     if host_screenshot.exists() and host_screenshot.stat().st_size > 0:
         shutil.copy2(host_screenshot, screenshot_path)
         screenshot_ok = True
-        print("[browser] Final screenshot recovered from host mount")
+        eprint("[browser] Final screenshot recovered from host mount")
     else:
         screenshot_ok = _copy_from_container(
             session_id, "/telemetry/screenshot_final.png", screenshot_path)
         if screenshot_ok:
-            print("[browser] Final screenshot captured via docker cp")
+            eprint("[browser] Final screenshot captured via docker cp")
 
     # Stop container
     container_stopped = _stop_container(session_id)
     if container_stopped:
-        print("[browser] Container destroyed")
+        eprint("[browser] Container destroyed")
     else:
         log_error(case_id or session_id, "browser_session.stop",
                   f"Container stop failed for {session_id}",
@@ -1340,40 +1345,40 @@ def _stop_session_inner(
     _session_done_events.pop(session_id, None)
 
     # Print summary
-    print(f"\n[browser] {'='*60}")
-    print(f"[browser] Session {session_id} COMPLETE")
-    print(f"[browser] Duration: {duration_sec}s | Stop reason: {stop_reason}")
-    print(f"[browser] Start URL: {state.get('start_url', 'N/A')}")
+    eprint(f"\n[browser] {'='*60}")
+    eprint(f"[browser] Session {session_id} COMPLETE")
+    eprint(f"[browser] Duration: {duration_sec}s | Stop reason: {stop_reason}")
+    eprint(f"[browser] Start URL: {state.get('start_url', 'N/A')}")
     if network_summary:
-        print(f"[browser] DNS queries: {network_summary.get('dns_queries', 0)}")
-        print(f"[browser] TCP connections: {network_summary.get('tcp_connections', 0)}")
-        print(f"[browser] HTTP requests: {network_summary.get('http_requests', 0)}")
-        print(f"[browser] TLS SNI domains: {network_summary.get('tls_sni_domains', 0)}")
-        print(f"[browser] Unique domains: {len(network_summary.get('unique_domains', []))}")
-        print(f"[browser] Unique IPs: {len(network_summary.get('unique_ips', []))}")
+        eprint(f"[browser] DNS queries: {network_summary.get('dns_queries', 0)}")
+        eprint(f"[browser] TCP connections: {network_summary.get('tcp_connections', 0)}")
+        eprint(f"[browser] HTTP requests: {network_summary.get('http_requests', 0)}")
+        eprint(f"[browser] TLS SNI domains: {network_summary.get('tls_sni_domains', 0)}")
+        eprint(f"[browser] Unique domains: {len(network_summary.get('unique_domains', []))}")
+        eprint(f"[browser] Unique IPs: {len(network_summary.get('unique_ips', []))}")
     if dns_queries:
-        print(f"[browser] DNS queries observed:")
+        eprint(f"[browser] DNS queries observed:")
         for entry in dns_queries[:20]:
-            print(f"  {entry['query']}")
+            eprint(f"  {entry['query']}")
     if all_sni:
-        print(f"[browser] TLS connections (SNI):")
+        eprint(f"[browser] TLS connections (SNI):")
         for entry in all_sni[:20]:
-            print(f"  {entry['domain']} → {entry.get('dst_ip', '?')}")
+            eprint(f"  {entry['domain']} → {entry.get('dst_ip', '?')}")
     if all_http:
-        print(f"[browser] HTTP requests:")
+        eprint(f"[browser] HTTP requests:")
         for entry in all_http[:20]:
-            print(f"  {entry.get('method', '?')} {entry.get('url', '?')}")
+            eprint(f"  {entry.get('method', '?')} {entry.get('url', '?')}")
     if all_tcp:
         # Unique dst_ip:dst_port pairs
         seen_dst: set[str] = set()
         for conn in all_tcp:
             key = f"{conn.get('dst_ip', '?')}:{conn.get('dst_port', '?')}"
             seen_dst.add(key)
-        print(f"[browser] TCP destinations ({len(seen_dst)} unique):")
+        eprint(f"[browser] TCP destinations ({len(seen_dst)} unique):")
         for dst in sorted(seen_dst)[:20]:
-            print(f"  {dst}")
-    print(f"[browser] Artefacts: {out_dir}")
-    print(f"[browser] {'='*60}\n")
+            eprint(f"  {dst}")
+    eprint(f"[browser] Artefacts: {out_dir}")
+    eprint(f"[browser] {'='*60}\n")
 
     return manifest
 
@@ -1421,14 +1426,14 @@ def cleanup_orphaned() -> int:
         try:
             result = stop_session(sid, stop_reason="cleanup")
             if result.get("status") == "ok":
-                print(f"[browser] Cleaned session {sid} — artefacts preserved")
+                eprint(f"[browser] Cleaned session {sid} — artefacts preserved")
                 cleaned += 1
                 continue
         except Exception as exc:
             log_error("", "browser_session:cleanup_orphaned", str(exc),
                       severity="warning", traceback=True,
                       context={"session_id": sid})
-            print(f"[browser] Graceful cleanup failed for {sid}: {exc}")
+            eprint(f"[browser] Graceful cleanup failed for {sid}: {exc}")
         # Fallback: force-kill the container, mark state
         _stop_container(sid)
         s["status"] = "cleaned"
@@ -1512,7 +1517,7 @@ def import_session(session_id: str, case_id: str) -> dict:
         "entities": logs_dir / "mde_browser_session.entities.json" if (logs_dir / "mde_browser_session.entities.json").exists() else None,
     })
 
-    print(f"[browser] Imported session {session_id} into {case_id} ({len(copied)} files)")
+    eprint(f"[browser] Imported session {session_id} into {case_id} ({len(copied)} files)")
 
     return {
         "status": "ok",

@@ -229,7 +229,9 @@ def recall(
                     )
                     if now - cached_ts > cache_ttl:
                         continue
-                except Exception:
+                except Exception as exc:
+                    log_error("", "recall.cache_ttl", str(exc), severity="warning",
+                              context={"cache_key": cache_key})
                     continue
             provider = cache_key.split("|")[0] if "|" in cache_key else "unknown"
             providers_hit.append(provider)

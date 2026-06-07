@@ -146,7 +146,9 @@ def _summarise_macros(vbp: "VBA_Parser") -> dict:
             "ole_stream": stream_path,
             "vba_name": vba_filename,
             "code_chars": len(code),
-            "code": code if len(code) < 20_000 else code[:20_000] + "\n... [truncated]",
+            # Full macro source — the artefact is the analyst's source of truth;
+            # truncating dropped evidence (no-slimming tool-return convention).
+            "code": code,
         })
 
     # scan_results: list of tuples (kw_type, keyword, description)

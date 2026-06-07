@@ -201,6 +201,7 @@ def extract_and_enrich(
         from tools.extract_iocs import extract_iocs
         from tools.enrich import enrich
         from tools.score_verdicts import score_verdicts, update_ioc_index
+        from tools.common import eprint, log_error
 
         ioc_result = extract_iocs(case_id, include_private=include_private)
 
@@ -212,10 +213,11 @@ def extract_and_enrich(
             if triage_result.get("status") == "ok":
                 skip_iocs.update(triage_result.get("skip_enrichment_iocs", []))
                 if skip_iocs:
-                    print(f"[enrich] Triage: skipping {len(skip_iocs)} IOC(s) "
+                    eprint(f"[enrich] Triage: skipping {len(skip_iocs)} IOC(s) "
                           f"with sufficient cached coverage.")
-        except Exception:
-            pass  # triage is best-effort; don't block enrichment
+        except Exception as exc:
+            # triage is best-effort; log but don't block enrichment
+            log_error(case_id, "enrich.triage_skip", str(exc), severity="info")
 
         # --- Phase 1: Client baseline — skip IOCs that are routine for client ---
         try:
@@ -233,10 +235,11 @@ def extract_and_enrich(
                             if seen >= 3 and ioc_val not in known_mal:
                                 skip_iocs.add(ioc_val)
                     if skip_iocs:
-                        print(f"[enrich] Baseline: {len(skip_iocs)} IOC(s) are "
+                        eprint(f"[enrich] Baseline: {len(skip_iocs)} IOC(s) are "
                               f"routine for client '{client}' — included in skip set.")
-        except Exception:
-            pass  # baseline is best-effort
+        except Exception as exc:
+            # baseline is best-effort; log but don't block enrichment
+            log_error(case_id, "enrich.baseline_skip", str(exc), severity="info")
 
         enrich_result = enrich(case_id, skip_iocs=skip_iocs or None, depth=depth)
 
@@ -262,10 +265,12 @@ def extract_and_enrich(
 
         idx_result = update_ioc_index(case_id)
 
-        # Build contextual summary
-        ioc_total = ioc_result.get("total", 0)
+        # Build contextual summary. extract_iocs() returns "total" as a
+        # per-type dict ({"ipv4": 2, ...}), not an int — sum the visible types
+        # for the headline count (formatting the dict produced garbage output).
         ioc_types = ioc_result.get("iocs", {})
         type_counts = {t: len(v) for t, v in ioc_types.items() if v and not t.startswith("_")}
+        ioc_total = sum(type_counts.values())
 
         enriched = enrich_result.get("live_calls", 0) if enrich_result else 0
         cached = enrich_result.get("cache_hits", 0) if enrich_result else 0
@@ -298,8 +303,11 @@ def extract_and_enrich(
         if not mal_count and not sus_count:
             lines.append("  No malicious or suspicious IOCs detected.")
 
-        new_idx = idx_result.get("new", 0) if idx_result else 0
-        recurring = idx_result.get("recurring", 0) if idx_result else 0
+        # update_ioc_index returns counts under "new_iocs"/"recurring_iocs"
+        # ("recurring" is the IOC *list*). Read the count keys so the message
+        # and the structured field below are integers, not a list/0.
+        new_idx = idx_result.get("new_iocs", 0) if idx_result else 0
+        recurring = idx_result.get("recurring_iocs", 0) if idx_result else 0
         if recurring:
             lines.append(f"\n{recurring} IOC(s) seen in prior investigations — recurring infrastructure.")
 

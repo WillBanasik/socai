@@ -441,14 +441,19 @@ def cmd_closure_comment(args: argparse.Namespace) -> None:
         query_text=query_text,
     )
 
-    status = result.get("status", "unknown")
+    # _run_action wraps the inner result as {"status":"ok",...,"result":{...}};
+    # the real closure_comment status ("use_prompt") lives in the inner dict.
+    inner = result.get("result", {}) if isinstance(result, dict) else {}
+    status = inner.get("status", result.get("status", "unknown"))
     if status == "use_prompt":
         print(f"[closure-comment] Case {args.case} ready. "
               f"Use the write_closure_comment MCP prompt with "
               f"classification=\"{args.classification}\" to produce the comment, "
               f"then call save_report with report_type=\"closure_comment\".")
+    elif result.get("status") == "error":
+        print(f"[closure-comment] error: {result.get('error', inner.get('reason', ''))}")
     else:
-        print(f"[closure-comment] {status}: {result.get('reason', '')}")
+        print(f"[closure-comment] {status}: {inner.get('reason', '')}")
     if args.json:
         print(json.dumps(result, indent=2, default=str))
 

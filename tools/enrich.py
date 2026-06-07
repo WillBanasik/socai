@@ -101,19 +101,7 @@ def _asn_lookup_bulk(ips: list[str]) -> dict[str, dict]:
 
     Falls back to sequential DNS queries (fast enough for <100 IPs).
     """
-    import socket
     results: dict[str, dict] = {}
-
-    for ip in ips:
-        try:
-            parts = ip.strip().split(".")
-            if len(parts) != 4:
-                continue
-            query = f"{parts[3]}.{parts[2]}.{parts[1]}.{parts[0]}.origin.asn.cymru.com"
-            answers = socket.getaddrinfo(query, None, socket.AF_INET, socket.SOCK_DGRAM)
-            # TXT record via DNS — use direct resolution
-        except Exception:
-            pass
 
     # Team Cymru DNS TXT records — more reliable approach using dnspython if
     # available, otherwise fall back to a lightweight HTTP API.
@@ -1749,7 +1737,7 @@ def _ip_needs_deep_enrichment(ip: str, fast_results: list[dict]) -> bool:
         if r.get("provider") == "abuseipdb" and (r.get("total_reports", 0) > 0):
             return True
         # ThreatFox / URLhaus: found = escalate
-        if r.get("provider") in ("threatfox", "urlhaus") and (r.get("malware") or r.get("threat_type")):
+        if r.get("provider") in ("threatfox", "urlhaus") and (r.get("malware_family") or r.get("threat_type")):
             return True
 
     return False
@@ -1774,7 +1762,7 @@ def _domain_needs_deep_enrichment(domain: str, fast_results: list[dict]) -> bool
         if r.get("provider") == "whoisxml" and r.get("newly_registered"):
             return True
         # ThreatFox / URLhaus: found = escalate
-        if r.get("provider") in ("threatfox", "urlhaus") and (r.get("malware") or r.get("threat_type")):
+        if r.get("provider") in ("threatfox", "urlhaus") and (r.get("malware_family") or r.get("threat_type")):
             return True
 
     return False
@@ -1795,7 +1783,7 @@ def _url_needs_deep_enrichment(url: str, fast_results: list[dict]) -> bool:
         verdict = r.get("verdict", "")
         if verdict in ("malicious", "suspicious"):
             return True
-        if r.get("provider") in ("threatfox", "urlhaus") and (r.get("malware") or r.get("threat_type")):
+        if r.get("provider") in ("threatfox", "urlhaus") and (r.get("malware_family") or r.get("threat_type")):
             return True
 
     return False
@@ -1822,7 +1810,7 @@ def _hash_needs_deep_enrichment(hash_val: str, fast_results: list[dict]) -> bool
         verdict = r.get("verdict", "")
         if verdict in ("malicious", "suspicious"):
             return True  # Confirmed bad — get full picture
-        if r.get("provider") in ("threatfox", "malwarebazaar") and (r.get("malware") or r.get("threat_type")):
+        if r.get("provider") in ("threatfox", "malwarebazaar") and (r.get("malware_family") or r.get("threat_type")):
             return True
 
     # If we reach here: fast providers checked it and nothing was flagged.

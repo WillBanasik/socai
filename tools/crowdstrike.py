@@ -148,8 +148,13 @@ def _acquire_token(client: str) -> tuple[str, str]:
             raise FalconError(
                 f"token request returned {resp.status_code}: {resp.text[:300]}"
             )
-        payload = resp.json()
-        token = payload["access_token"]
+        try:
+            payload = resp.json()
+            token = payload["access_token"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise FalconError(
+                f"token response had unexpected body: {resp.text[:300]}"
+            ) from exc
         expires_in = int(payload.get("expires_in", 1800))
         _token_cache[cache_key] = (token, now + expires_in)
         return host, token

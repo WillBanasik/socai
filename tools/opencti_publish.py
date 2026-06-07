@@ -631,11 +631,15 @@ def generate_posting_package(article_id: str) -> dict:
         ("Email Addresses", "Email-Addr", emails, email_block),
     ]
     obs_num = 2
+    obs_idx = 0  # sub-section letter index (2a, 2b, ...) — advances per rendered section
     for label, octi_type, items, block in obs_items:
         if not items or block == "None extracted":
             continue
+        anchor = label.lower().replace(" ", "-")
         obs_sections += f"""
-<h3>{obs_num}{'abcde'[obs_num-2]}. {label} ({len(items)})</h3>
+<h3 id="{anchor}">{obs_num}{'abcde'[obs_idx]}. {label} ({len(items)})</h3>"""
+        obs_idx += 1
+        obs_sections += f"""
 <div class="section">
     <div class="section-header">
         <span class="paste-label">Create as Observables &rarr; {e(octi_type)} &amp; add to Report</span>

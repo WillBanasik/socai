@@ -207,7 +207,13 @@ def _speculative_enrich_bg(
             finally:
                 _spec_enrich_slots.release()
 
-        _spec_thr.Thread(target=_bg, daemon=True, name=thread_name).start()
+        try:
+            _spec_thr.Thread(target=_bg, daemon=True, name=thread_name).start()
+        except Exception:
+            # start() failed after we acquired a slot — release it so the
+            # semaphore isn't permanently drained, then fall through.
+            _spec_enrich_slots.release()
+            raise
     except Exception:
         pass  # advisory — never block caller
 
@@ -859,7 +865,10 @@ def _register_tier1(mcp: FastMCP) -> None:
                 "analyst": meta.get("analyst"),
                 "created_at": meta.get("created_at"),
                 "updated_at": meta.get("updated_at"),
-                "report_exists": any(
+                "report_exists": (
+                    any((case_dir / "reports").glob("*.md"))
+                    if (case_dir / "reports").is_dir() else False
+                ) or any(
                     (case_dir / "reports" / f).exists()
                     for f in ("mdr_report.html", "pup_report.html", "investigation_report.html")
                 ),
@@ -1597,7 +1606,7 @@ def _register_tier1(mcp: FastMCP) -> None:
             title=title,
             analyst_notes=notes,
             tags=tags,
-            urls=urls or (file_names if file_names else None),
+            urls=urls,
             eml_paths=["provided.eml"] if eml_provided else None,
             zip_path="provided.zip" if file_names else None,
             log_paths=["provided.log"] if logs_provided else None,
@@ -3606,7 +3615,7 @@ def _register_tier2_rumsfeld(mcp: FastMCP) -> None:
             "message": (
                 f"Use the build_investigation_matrix prompt to generate the "
                 f"matrix for {case_id}, then call add_finding with "
-                f'analysis_type="investigation_matrix" to persist it.'
+                f'finding_type="investigation_matrix" to persist it.'
             ),
         })
 
@@ -3647,7 +3656,7 @@ def _register_tier2_rumsfeld(mcp: FastMCP) -> None:
             "message": (
                 f"Use the run_determination prompt to analyse evidence for "
                 f"{case_id}, then call add_finding with "
-                f'analysis_type="determination" to persist the result.'
+                f'finding_type="determination" to persist the result.'
             ),
         })
 
@@ -4940,10 +4949,11 @@ def _register_tier3(mcp: FastMCP) -> None:
 
     @mcp.tool(title="YARA Scan")
     async def yara_scan(case_id: str, generate_rules: bool = False) -> str:
-        """Scan case artefacts against YARA rules: built-in (PE, PowerShell, C2, RAT),
-        custom rules from ``config/yara_rules/``, and optionally LLM-generated rules.
+        """Scan case artefacts against YARA rules: built-in (PE, PowerShell, C2, RAT)
+        and custom rules from ``config/yara_rules/``.
 
-        Requires ``yara-python``. Set ``generate_rules=True`` to create custom rules from PE analysis.
+        Requires ``yara-python``. ``generate_rules`` is a no-op (LLM rule generation
+        was removed); it is retained only for API compatibility.
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)

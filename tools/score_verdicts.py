@@ -70,15 +70,19 @@ def _is_force_clean(ioc: str, ioc_type: str) -> bool:
 def _composite_verdict(providers: dict[str, str]) -> tuple[str, str]:
     """
     Given {provider_name: verdict_string}, return (composite_verdict, confidence).
-    Only counts providers that returned a recognised verdict (not None / empty).
+
+    Confidence is computed over *decisive* verdicts only (malicious / suspicious
+    / clean). Non-verdict provider results (informational, private_internal,
+    etc.) map to 'unknown' and are excluded from the denominator — counting them
+    contradicted this contract and diluted confidence.
     """
     counts: dict[str, int] = {"malicious": 0, "suspicious": 0, "clean": 0, "unknown": 0}
     for v in providers.values():
         key = v if v in counts else "unknown"
         counts[key] += 1
 
-    total = sum(counts.values())
-    if total == 0:
+    decisive = counts["malicious"] + counts["suspicious"] + counts["clean"]
+    if decisive == 0:
         return "unknown", "LOW"
 
     if counts["malicious"] > 0 and counts["malicious"] >= counts["suspicious"]:
@@ -91,10 +95,10 @@ def _composite_verdict(providers: dict[str, str]) -> tuple[str, str]:
         verdict = "unknown"
 
     winning = counts[verdict]
-    pct = winning / total if total > 0 else 0
-    if total >= 3 and pct >= 0.66:
+    pct = winning / decisive if decisive > 0 else 0
+    if decisive >= 3 and pct >= 0.66:
         confidence = "HIGH"
-    elif total >= 2 and pct > 0.50:
+    elif decisive >= 2 and pct > 0.50:
         confidence = "MEDIUM"
     else:
         confidence = "LOW"
@@ -116,8 +120,8 @@ def score_verdicts(case_id: str) -> dict:
             if _meta.get("status") == "closed":
                 eprint(f"[score_verdicts] Case {case_id} is closed — skipping verdict scoring.")
                 return {"error": f"Case {case_id} is closed.", "case_id": case_id}
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error(case_id, "score_verdicts.closed_guard", str(exc), severity="warning")
 
     enrich_path = CASES_DIR / case_id / "artefacts" / "enrichment" / "enrichment.json"
     if not enrich_path.exists():
