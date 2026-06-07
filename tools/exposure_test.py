@@ -83,6 +83,18 @@ def _client_key(client: str) -> str:
     return client.strip().lower().replace(" ", "_")
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """Best-effort int() that tolerates malformed input (e.g. a bad DMARC pct=).
+
+    A non-numeric tag value previously raised ValueError out of _parse_dmarc and
+    aborted the entire exposure test; fall back to a default instead.
+    """
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 # ---------------------------------------------------------------------------
 # Phase 1 — DNS Enumeration
 # ---------------------------------------------------------------------------
@@ -207,7 +219,7 @@ def _parse_dmarc(domain: str) -> dict:
         "subdomain_policy": tags.get("sp", ""),
         "rua": [u.strip() for u in tags.get("rua", "").split(",") if u.strip()],
         "ruf": [u.strip() for u in tags.get("ruf", "").split(",") if u.strip()],
-        "pct": int(tags.get("pct", "100")),
+        "pct": _safe_int(tags.get("pct", "100"), default=100),
     }
 
 
@@ -379,7 +391,7 @@ def assess_services(ips: list[str]) -> dict:
 
     try:
         from tools.enrich import quick_enrich
-        enrichment = quick_enrich(ips, deep=True)
+        enrichment = quick_enrich(ips, depth="full")
     except Exception as exc:
         log_error("", "exposure.services", str(exc), severity="warning")
         return {"ips_assessed": len(ips), "results": [], "findings": [],

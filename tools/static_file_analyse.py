@@ -245,6 +245,7 @@ _SPECIALIST_DISPATCH: dict[str, tuple[str, str]] = {
     "Raw disk image (.img)":     ("tools.disk_image_analyse",  "disk_image_analyse"),
     "VHD disk image":            ("tools.disk_image_analyse",  "disk_image_analyse"),
     "VHDX disk image":           ("tools.disk_image_analyse",  "disk_image_analyse"),
+    "PE/DOS executable":         ("tools.pe_analysis",         "analyse_pe"),
 }
 
 

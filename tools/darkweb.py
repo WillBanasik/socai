@@ -810,10 +810,14 @@ def darkweb_summary(
 
     # Auto-extract IOCs if none provided
     if not emails and not domains and not ips:
-        iocs_path = case_dir / "artefacts" / "enrichment" / "iocs.json"
+        iocs_path = case_dir / "iocs" / "iocs.json"
         if iocs_path.exists():
             try:
-                iocs = load_json(iocs_path)
+                # Canonical artefact: cases/<id>/iocs/iocs.json with IOC lists
+                # nested under the "iocs" key (same shape correlate/index_case
+                # read). The old artefacts/enrichment/iocs.json path + top-level
+                # keys never matched anything, so auto-extract found no IOCs.
+                iocs = load_json(iocs_path).get("iocs", {})
                 emails = iocs.get("email", [])
                 domains = iocs.get("domain", [])
                 ips = iocs.get("ipv4", [])

@@ -1,4 +1,4 @@
-"""socai MCP server — HTTPS SSE transport with JWT RBAC.
+"""socai MCP server — HTTP SSE transport with JWT RBAC (TLS terminated upstream).
 
 Standalone process on port 8001. Shares filesystem state (cases/, registry/)
 with the CLI. Stateless against the same data.
@@ -32,7 +32,6 @@ import signal
 import subprocess
 import sys
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +46,7 @@ from mcp_server.tools import register_tools
 from mcp_server.resources import register_resources
 from mcp_server.prompts import register_prompts
 from mcp_server.logging_config import setup_mcp_logger, mcp_log
+from tools.common import eprint
 
 from config.settings import MCP_SERVER_PID
 
@@ -298,59 +298,9 @@ def _reap_orphaned_browsers() -> None:
                 except (OSError, ValueError):
                     pass
         mcp_log("browser_orphan_cleanup", killed=len(pids))
-        print(f"[server] Cleaned up {len(pids)} orphaned Chromium process(es)")
+        eprint(f"[server] Cleaned up {len(pids)} orphaned Chromium process(es)")
     except Exception:
         pass  # pgrep not available or no matches — fine
-
-
-# ---------------------------------------------------------------------------
-# Lifespan (startup / shutdown hooks)
-# ---------------------------------------------------------------------------
-
-@asynccontextmanager
-async def _socai_lifespan(server: FastMCP):
-    """Log server startup and shutdown events."""
-    global _server_start_time
-    _server_start_time = time.monotonic()
-
-    # Share start time with health module
-    from mcp_server import health as _health_mod
-    _health_mod._server_start_time = _server_start_time
-
-    _check_stale_pid()
-    _reap_orphaned_browsers()
-    _write_pid()
-
-    tool_count = len(server._tool_manager._tools) if hasattr(server, "_tool_manager") else 0
-    mcp_log("server_start",
-            transport=MCP_TRANSPORT, host=MCP_HOST, port=MCP_PORT,
-            pid=os.getpid(), tool_count=tool_count)
-
-    from tools.scheduler import start_scheduler, stop_scheduler
-    start_scheduler()
-
-    # Systemd watchdog + readiness notification
-    import asyncio
-    from mcp_server.watchdog import sd_notify, watchdog_loop
-    sd_notify("READY=1")
-    _wd_task = asyncio.create_task(watchdog_loop())
-
-    try:
-        yield {}
-    finally:
-        _wd_task.cancel()
-        try:
-            await _wd_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        sd_notify("STOPPING=1")
-        stop_scheduler()
-        from mcp_server.usage import flush_all_sessions
-        flushed = flush_all_sessions()
-        uptime_s = int(time.monotonic() - _server_start_time)
-        mcp_log("server_stop", reason="shutdown", pid=os.getpid(),
-                uptime_s=uptime_s, sessions_flushed=flushed)
-        _remove_pid()
 
 
 # ---------------------------------------------------------------------------
@@ -618,7 +568,7 @@ def main() -> None:
 
     transport = MCP_TRANSPORT
     if transport not in ("sse", "streamable-http", "stdio"):
-        print(f"Unknown transport {transport!r}, falling back to 'sse'")
+        eprint(f"Unknown transport {transport!r}, falling back to 'sse'")
         transport = "sse"
 
     # Create server with transport-appropriate auth settings
@@ -634,17 +584,33 @@ def main() -> None:
             pid=os.getpid(), tool_count=tool_count)
 
     if transport == "stdio":
-        print("socai MCP server (stdio, no auth)", file=sys.stderr)
+        eprint("socai MCP server (stdio, no auth)")
     else:
-        print(f"socai MCP server starting on {MCP_HOST}:{MCP_PORT} ({transport})")
+        eprint(f"socai MCP server starting on {MCP_HOST}:{MCP_PORT} ({transport})")
 
     # Start background scheduler (GeoIP refresh, baselines, case memory)
     from tools.scheduler import start_scheduler, stop_scheduler
     start_scheduler()
 
-    # Notify systemd we're ready (no-op if not under systemd)
-    from mcp_server.watchdog import sd_notify
+    # Notify systemd we're ready, then ping the watchdog (no-ops if not under
+    # systemd / no WatchdogSec). The watchdog runs in a daemon thread at process
+    # scope — NOT a FastMCP/asyncio lifespan task: under SSE, FastMCP runs its
+    # lifespan once per client connection, so a connection-scoped watchdog would
+    # start/stop with each client and miss WATCHDOG= pings whenever idle. A daemon
+    # thread (mirroring the scheduler) pings for the server's whole lifetime.
+    from mcp_server.watchdog import sd_notify, watchdog_loop, watchdog_interval_s
     sd_notify("READY=1")
+    if watchdog_interval_s() is not None:
+        import asyncio
+        import threading
+
+        def _run_watchdog() -> None:
+            try:
+                asyncio.run(watchdog_loop())
+            except Exception:  # pragma: no cover - watchdog must never crash the server
+                pass
+
+        threading.Thread(target=_run_watchdog, daemon=True, name="sd-watchdog").start()
 
     try:
         server.run(transport=transport, mount_path=MCP_MOUNT_PATH)

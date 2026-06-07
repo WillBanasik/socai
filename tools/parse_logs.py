@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import log_error, utcnow, write_artefact
+from tools.common import eprint, log_error, utcnow, write_artefact
 
 _RE_ISO  = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}")
 _RE_IP   = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -188,13 +188,17 @@ def parse_logs(
         "row_count": len(rows),
         "entities": entities,
         "entity_totals": {k: len(v) for k, v in entities.items()},
-        "rows_sample": rows[:20],
+        # All parsed rows — downstream tools (correlate, detect_anomalies,
+        # timeline_reconstruct, evtx_correlate) read this key and expect the
+        # full set, matching velociraptor_ingest / mde_ingest which also write
+        # all rows here. Truncating to a sample silently dropped evidence.
+        "rows_sample": rows,
     }
 
     stem = log_path.stem
     write_artefact(logs_dir / f"{stem}.parsed.json",  json.dumps(result, indent=2))
     write_artefact(logs_dir / f"{stem}.entities.json", json.dumps(entities, indent=2))
-    print(f"[parse_logs] {log_path.name}: {len(rows)} row(s), format={fmt}")
+    eprint(f"[parse_logs] {log_path.name}: {len(rows)} row(s), format={fmt}")
     return result
 
 

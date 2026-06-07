@@ -128,19 +128,39 @@ def _is_printable(data: bytes) -> bool:
         return False
 
 
+def _format_one_string(offset, identifier, data) -> dict:
+    """Serialise a single YARA string match."""
+    if _is_printable(data):
+        data_repr = data.decode("ascii")
+    else:
+        data_repr = data.hex()
+    return {"offset": offset, "identifier": identifier, "data": data_repr}
+
+
 def _format_match_strings(match) -> list[dict]:
-    """Convert YARA match string tuples to serialisable dicts."""
+    """Convert YARA match strings to serialisable dicts.
+
+    Handles both the legacy yara-python API (``match.strings`` is a list of
+    ``(offset, identifier, data)`` tuples) and the >=4.3 API (``match.strings``
+    is a list of ``StringMatch`` objects, each with an ``identifier`` and one or
+    more ``.instances`` carrying ``.offset`` / ``.matched_data``). The pinned
+    ``yara-python>=4.3.0`` uses the object API, under which the old tuple unpack
+    raised and crashed every scan that produced a match.
+    """
     results = []
-    for offset, identifier, data in match.strings:
-        if _is_printable(data):
-            data_repr = data.decode("ascii")
-        else:
-            data_repr = data.hex()
-        results.append({
-            "offset": offset,
-            "identifier": identifier,
-            "data": data_repr,
-        })
+    for s in match.strings:
+        if isinstance(s, (tuple, list)):  # legacy API: (offset, identifier, data)
+            offset, identifier, data = s
+            results.append(_format_one_string(offset, identifier, data))
+        else:  # >=4.3 StringMatch object
+            identifier = getattr(s, "identifier", "")
+            instances = getattr(s, "instances", None)
+            if instances is None:  # extreme fallback — treat as a flat object
+                results.append(_format_one_string(getattr(s, "offset", 0), identifier,
+                                                   getattr(s, "matched_data", b"")))
+                continue
+            for inst in instances:
+                results.append(_format_one_string(inst.offset, identifier, inst.matched_data))
     return results
 
 

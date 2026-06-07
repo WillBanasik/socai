@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, STRINGS_MIN_LEN
-from tools.common import log_error, sha256_file, utcnow, write_artefact
+from tools.common import eprint, log_error, sha256_file, utcnow, write_artefact
 
 
 def _extract_strings(file_path: Path, min_len: int = STRINGS_MIN_LEN) -> str:
@@ -80,7 +80,22 @@ def extract_zip(
             for entry in zf.infolist():
                 if entry.is_dir():
                     continue
-                dest = out_dir / entry.filename
+                # Zip Slip guard: this tool extracts attacker-controlled
+                # archives, so reject any entry whose name escapes out_dir via
+                # ``../`` traversal or an absolute path before writing.
+                try:
+                    dest = (out_dir / entry.filename).resolve()
+                    dest.relative_to(out_dir.resolve())
+                except (ValueError, OSError):
+                    log_error(case_id, "extract_zip.path_traversal",
+                              f"Blocked entry escaping extraction dir: {entry.filename}",
+                              severity="warning",
+                              context={"entry": entry.filename, "zip": str(zip_path)})
+                    manifest["errors"].append({
+                        "entry": entry.filename,
+                        "error": "path traversal blocked (Zip Slip)",
+                    })
+                    continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     data = zf.read(entry.filename, pwd=pwd_bytes)
@@ -109,7 +124,7 @@ def extract_zip(
         manifest["errors"].append({"entry": str(zip_path), "error": f"BadZipFile: {e}"})
 
     write_artefact(out_dir / "hash_manifest.json", json.dumps(manifest, indent=2))
-    print(f"[extract_zip] Extracted {len(manifest['files'])} file(s) to {out_dir}")
+    eprint(f"[extract_zip] Extracted {len(manifest['files'])} file(s) to {out_dir}")
     return manifest
 
 

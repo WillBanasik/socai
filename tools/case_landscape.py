@@ -79,7 +79,7 @@ def assess_landscape(
 
     Args:
         days: Only include cases from the last N days (None = all time)
-        client: Filter to cases matching this client name (substring match on title)
+        client: Filter to cases matching this client name (matches the registry `client` field, falling back to the case title for older entries)
 
     Returns structured landscape dict with statistics, patterns, and recommendations.
     """
@@ -103,8 +103,15 @@ def assess_landscape(
             if created and created < cutoff:
                 continue
         if client:
-            title = (cmeta.get("title", "") or "").lower()
-            if client.lower() not in title:
+            wanted = client.lower()
+            # Match the authoritative `client` registry field, not the case
+            # title (a title substring match both missed cases whose title
+            # omitted the client name and pulled in unrelated cases that merely
+            # mentioned it). Fall back to the title only for older entries that
+            # predate the client field / its backfill.
+            entry_client = (cmeta.get("client", "") or "").lower()
+            haystack = entry_client or (cmeta.get("title", "") or "").lower()
+            if wanted not in haystack:
                 continue
         cases[cid] = cmeta
 

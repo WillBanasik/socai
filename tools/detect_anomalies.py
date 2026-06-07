@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import load_json, log_error, utcnow
+from tools.common import eprint, load_json, log_error, utcnow
 
 # Configuration
 BUSINESS_HOURS_START = int(os.getenv("SOCAI_BUSINESS_HOURS_START", "8"))
@@ -67,14 +67,21 @@ def _load_parsed_logs(case_id: str) -> list[dict]:
     return all_events
 
 
-def _load_prior_entities() -> set[str]:
-    """Load entities from all prior cases for first-seen detection."""
+def _load_prior_entities(exclude_case_id: str | None = None) -> set[str]:
+    """Load entities from all prior cases for first-seen detection.
+
+    ``exclude_case_id`` skips the current case so its own entities are not
+    counted as their own prior — otherwise ``current - prior`` is always empty
+    and the first-seen detector never fires.
+    """
     entities: set[str] = set()
     if not CASES_DIR.exists():
         return entities
 
     for case_dir in CASES_DIR.iterdir():
         if not case_dir.is_dir():
+            continue
+        if exclude_case_id and case_dir.name == exclude_case_id:
             continue
         logs_dir = case_dir / "logs"
         if not logs_dir.exists():
@@ -269,9 +276,9 @@ def _detect_first_seen(events: list[dict], case_id: str) -> list[dict]:
     if not current_entities:
         return findings
 
-    # Load prior entities (exclude current case)
-    prior_entities = _load_prior_entities()
-    # Remove current case entities from prior (they might overlap)
+    # Load prior entities, excluding the current case (so its own entities
+    # aren't treated as their own prior — which would zero out new_entities).
+    prior_entities = _load_prior_entities(exclude_case_id=case_id)
 
     new_entities = current_entities - prior_entities
     for entity in sorted(new_entities)[:20]:  # Cap output
@@ -419,9 +426,9 @@ def detect_anomalies(case_id: str) -> dict:
     }
 
     # Print summary
-    print(f"[detect_anomalies] Analysed {len(events)} events, found {len(all_findings)} anomaly(ies)")
+    eprint(f"[detect_anomalies] Analysed {len(events)} events, found {len(all_findings)} anomaly(ies)")
     for atype, count in type_counts.most_common():
-        print(f"  {atype}: {count}")
+        eprint(f"  {atype}: {count}")
 
     return result
 

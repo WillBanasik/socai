@@ -38,7 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR, STRINGS_MIN_LEN
-from tools.common import log_error, save_json, utcnow
+from tools.common import eprint, log_error, save_json, utcnow
 
 # ---------------------------------------------------------------------------
 # Optional dependency
@@ -408,6 +408,61 @@ def _analyse_pe(filepath: Path, case_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def analyse_pe(file_path: Path | str, case_id: str) -> dict:
+    """Deep PE analysis of a single file — specialist entry point for the
+    tiered ``file_analyse`` dispatch (signature ``fn(file_path, case_id)``).
+
+    ``_SPECIALIST_FILE_TYPES`` advertised a PE specialist but the dispatch table
+    had no PE entry, so ``dispatch_specialist`` returned None and PE deep parse
+    was unreachable. This wraps ``_analyse_pe`` and surfaces key signals as
+    flags for the parent static-analysis result.
+    """
+    fp = Path(file_path)
+    if not HAS_PEFILE:
+        log_error(case_id, "pe_analysis", "pefile not installed", severity="info")
+        return {"status": "skipped", "reason": "pefile not installed", "file": str(fp)}
+
+    try:
+        analysis = _analyse_pe(fp, case_id)
+    except Exception as exc:
+        log_error(case_id, "pe_analysis", f"Failed to analyse {fp.name}: {exc}",
+                  severity="warning", context={"file": str(fp)})
+        return {"status": "error", "reason": str(exc), "file": str(fp)}
+
+    sections = analysis.get("sections", []) or []
+    any_packed = bool(analysis.get("packer_signatures"))
+    any_wx = any(s.get("writable_executable") for s in sections)
+    any_high_entropy = any(s.get("high_entropy") for s in sections)
+
+    flags: list[str] = []
+    if any_packed:
+        flags.append("PE packer signature(s): " + ", ".join(analysis["packer_signatures"]))
+    if any_wx:
+        flags.append("PE writable+executable section(s)")
+    if any_high_entropy:
+        flags.append("PE high-entropy section(s)")
+    if analysis.get("flagged_apis"):
+        flags.append(f"{len(analysis['flagged_apis'])} suspicious imported API(s)")
+
+    manifest = {
+        "status": "ok",
+        "timestamp": utcnow(),
+        "case_id": case_id,
+        "file": str(fp),
+        "flags": flags,
+        # Top-level signal keys read by the tiered file_analyse Tier-3
+        # auto-escalation (file_analyse.py reads tier2.get("any_packed") /
+        # ("any_writable_executable_sections")), matching pe_deep_analyse's
+        # aggregate contract so a packed / W+X PE escalates to YARA.
+        "any_packed": any_packed,
+        "any_writable_executable_sections": any_wx,
+        "any_high_entropy_sections": any_high_entropy,
+        "analysis": analysis,
+    }
+    save_json(CASES_DIR / case_id / "artefacts" / "analysis" / f"pe_analysis_{fp.name}.json", manifest)
+    return manifest
+
+
 def pe_deep_analyse(case_id: str) -> dict:
     """Run deep PE analysis on all PE files in a case.
 
@@ -469,13 +524,13 @@ def pe_deep_analyse(case_id: str) -> dict:
     out_path = CASES_DIR / case_id / "artefacts" / "analysis" / "pe_analysis.json"
     save_json(out_path, manifest)
 
-    print(f"[pe_analysis] Analysed {len(file_results)} PE file(s) for {case_id}")
+    eprint(f"[pe_analysis] Analysed {len(file_results)} PE file(s) for {case_id}")
     if total_flagged:
-        print(f"  Flagged APIs: {total_flagged}")
+        eprint(f"  Flagged APIs: {total_flagged}")
     if any_packed:
-        print("  Packer signatures detected")
+        eprint("  Packer signatures detected")
     if any_wx:
-        print("  W+X sections detected")
+        eprint("  W+X sections detected")
 
     return manifest
 

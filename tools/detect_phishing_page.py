@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from html.parser import HTMLParser
 from config.settings import CASES_DIR
-from tools.common import KNOWN_CLEAN_DOMAINS, load_json, log_error, utcnow, write_artefact
+from tools.common import eprint, KNOWN_CLEAN_DOMAINS, load_json, log_error, utcnow, write_artefact
 
 # ---------------------------------------------------------------------------
 # Brand definitions
@@ -211,9 +211,20 @@ def _hostname(url: str) -> str:
         return ""
 
 
+def _strip_www(host: str) -> str:
+    """Lowercase a hostname and strip a leading ``www.`` prefix.
+
+    ``str.lstrip("www.")`` strips a *set* of characters {w, .}, so it mangles
+    hosts like ``wwwest.com`` -> ``est.com`` and ``w3.example.com`` -> ``3...``.
+    This removes only the literal leading ``www.`` label.
+    """
+    h = (host or "").lower()
+    return h[4:] if h.startswith("www.") else h
+
+
 def _domain_allowed(hostname: str, allowed: set[str]) -> bool:
     """Return True if hostname is or is a subdomain of any allowed base domain."""
-    h = hostname.lower().lstrip("www.")
+    h = _strip_www(hostname)
     for d in allowed:
         if h == d or h.endswith("." + d):
             return True
@@ -316,7 +327,7 @@ def _extract_form_actions(html: str, final_url: str) -> list[dict]:
     except Exception:
         return []
 
-    page_host = _hostname(final_url).lower().lstrip("www.")
+    page_host = _strip_www(_hostname(final_url))
     results = []
 
     for form in parser.forms:
@@ -327,7 +338,7 @@ def _extract_form_actions(html: str, final_url: str) -> list[dict]:
             resolved_action = final_url
         else:
             resolved_action = urllib.parse.urljoin(final_url, action)
-            action_host = _hostname(resolved_action).lower().lstrip("www.")
+            action_host = _strip_www(_hostname(resolved_action))
 
         # Determine if action is external
         external = bool(action_host and page_host and action_host != page_host
@@ -380,7 +391,7 @@ def _load_domain_age(case_id: str, hostname: str) -> int | None:
         return None
 
     # Domain to look up (strip www.)
-    domain = hostname.lower().lstrip("www.")
+    domain = _strip_www(hostname)
 
     # Check enrichment results for WHOISXML data
     # enrichment.json format: {"results": [list of result dicts], "summary": {...}}
@@ -390,7 +401,7 @@ def _load_domain_age(case_id: str, hostname: str) -> int | None:
             if not isinstance(result, dict):
                 continue
             if result.get("provider") == "whoisxml" and result.get("status") == "ok":
-                ioc_val = result.get("ioc", "").lower().lstrip("www.")
+                ioc_val = _strip_www(result.get("ioc", ""))
                 if ioc_val == domain:
                     age = result.get("domain_age_days")
                     if age is not None:
@@ -783,13 +794,20 @@ def detect_phishing_page(case_id: str) -> dict:
     if web_dir.exists():
         manifest_paths = list(web_dir.rglob("capture_manifest.json"))
 
-    print(f"[detect_phishing_page] Scanning {len(manifest_paths)} page(s) — Tier 1 (brands/forms/TLS) + Tier 2 (heuristics)")
+    eprint(f"[detect_phishing_page] Scanning {len(manifest_paths)} page(s) — Tier 1 (brands/forms/TLS) + Tier 2 (heuristics)")
 
     # -----------------------------------------------------------------------
     # TIER 1 — Brand regex, credential harvest, TLS, domain age
     # -----------------------------------------------------------------------
     for manifest_path in manifest_paths:
-        manifest = json.loads(manifest_path.read_text())
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (ValueError, OSError) as exc:
+            # One corrupt/truncated manifest (e.g. an interrupted web_capture
+            # write) must not abort the whole scan — skip it and continue.
+            log_error(case_id, "detect_phishing_page.load_manifest", str(exc),
+                      severity="warning", context={"manifest": str(manifest_path)})
+            continue
         title = manifest.get("title", "")
         final_url = manifest.get("final_url", manifest.get("url", ""))
         hostname = _hostname(final_url)
@@ -861,7 +879,7 @@ def detect_phishing_page(case_id: str) -> dict:
                         "source": "form_analysis",
                     }
                     all_findings.append(harvest_finding)
-                    print(
+                    eprint(
                         f"[detect_phishing_page] CREDENTIAL HARVEST "
                         f"[{'EXTERNAL' if form_risk['external_harvest'] else 'LOCAL'}] "
                         f"{hostname}"
@@ -939,7 +957,7 @@ def detect_phishing_page(case_id: str) -> dict:
 
             if all_signals:
                 signal_names = [s["signal"] for s in all_signals]
-                print(
+                eprint(
                     f"[detect_phishing_page] Tier 2 heuristics {hostname}: "
                     f"score={suspicion_score:.2f} signals={signal_names}"
                 )
@@ -960,7 +978,7 @@ def detect_phishing_page(case_id: str) -> dict:
                 "source": "heuristic",
             }
             all_findings.append(heuristic_finding)
-            print(
+            eprint(
                 f"[detect_phishing_page] HEURISTIC HIT "
                 f"[{'HIGH' if suspicion_score >= 0.8 else 'MEDIUM'}] "
                 f"{hostname} (score={suspicion_score:.2f})"
@@ -1011,25 +1029,25 @@ def detect_phishing_page(case_id: str) -> dict:
             source = f.get("source", "regex")
             if source == "form_analysis":
                 continue  # already printed above
-            print(
+            eprint(
                 f"[detect_phishing_page] FINDING [{f['confidence'].upper()}] "
                 f"{f['brand']} -> {f['hostname']} (via {source})"
             )
     if tls_signals:
         for ts in tls_signals:
-            print(
+            eprint(
                 f"[detect_phishing_page] SUSPICIOUS TLS: {ts['hostname']} "
                 f"— {', '.join(ts['reasons'])}"
             )
     if not deduped and not form_analysis_results and not tls_signals:
         if heuristic_results:
-            print(
+            eprint(
                 f"[detect_phishing_page] No definitive findings, but "
                 f"{len(heuristic_results)} page(s) had heuristic signals "
                 f"({scanned} page(s) scanned)"
             )
         else:
-            print(
+            eprint(
                 f"[detect_phishing_page] No phishing signals detected "
                 f"({scanned} page(s) scanned)"
             )

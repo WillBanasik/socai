@@ -29,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
-from tools.common import is_private_ip, load_json, log_error, utcnow
+from tools.common import eprint, is_private_ip, load_json, log_error, utcnow
 
 # ---------------------------------------------------------------------------
 # System prompt (used by MCP client-side prompts)
@@ -223,21 +223,28 @@ def _detect_brute_force_success(events: list[dict]) -> list[dict]:
         for e in ip_events:
             if e["event_id"] == 4625:
                 failures.append(e)
-            elif e["event_id"] == 4624 and len(failures) >= BRUTE_FORCE_THRESHOLD:
-                # Check window: failures must be within BRUTE_FORCE_WINDOW of the success
-                first_fail_ts = failures[0]["timestamp"]
+            elif e["event_id"] == 4624:
                 success_ts = e["timestamp"]
-                window_secs = (success_ts - first_fail_ts).total_seconds()
-                if window_secs <= BRUTE_FORCE_WINDOW:
+                # Only the failures within BRUTE_FORCE_WINDOW immediately before
+                # the success count toward the burst. Measuring from failures[0]
+                # (the earliest failure ever seen for this IP) let a single old,
+                # unrelated 4625 widen the window past the threshold and miss a
+                # genuine burst-then-success chain.
+                recent_failures = [
+                    f for f in failures
+                    if 0 <= (success_ts - f["timestamp"]).total_seconds() <= BRUTE_FORCE_WINDOW
+                ]
+                if len(recent_failures) >= BRUTE_FORCE_THRESHOLD:
+                    window_secs = (success_ts - recent_failures[0]["timestamp"]).total_seconds()
                     chains.append({
                         "chain": "brute_force_success",
                         "severity": _CHAIN_SEVERITY["brute_force_success"],
                         "source_ip": ip,
                         "target_user": e["target_user"],
-                        "failures": len(failures),
+                        "failures": len(recent_failures),
                         "success_time": success_ts.isoformat(),
                         "window_seconds": round(window_secs, 1),
-                        "events": [f["raw"] for f in failures[-3:]] + [e["raw"]],
+                        "events": [f["raw"] for f in recent_failures[-3:]] + [e["raw"]],
                     })
                     break  # One chain per IP
 
@@ -479,7 +486,7 @@ def evtx_correlate(case_id: str) -> dict:
     # Sort by timestamp
     events.sort(key=lambda e: e["timestamp"])
 
-    print(f"[evtx_correlate] Analysing {len(events)} normalised events "
+    eprint(f"[evtx_correlate] Analysing {len(events)} normalised events "
           f"(from {len(raw_events)} raw) for case {case_id}...")
 
     # Run all detectors
@@ -497,9 +504,9 @@ def evtx_correlate(case_id: str) -> dict:
     for c in all_chains:
         chain_summary[c["chain"]] += 1
 
-    print(f"[evtx_correlate] Detected {len(all_chains)} attack chain(s)")
+    eprint(f"[evtx_correlate] Detected {len(all_chains)} attack chain(s)")
     for ctype, count in sorted(chain_summary.items()):
-        print(f"  {ctype}: {count}")
+        eprint(f"  {ctype}: {count}")
 
     result = {
         "status": "ok",
