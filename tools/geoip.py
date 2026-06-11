@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import tarfile
 import threading
@@ -176,7 +177,14 @@ def refresh_geoip_db(force: bool = False) -> dict:
                     f = tar.extractfile(member)
                     if f:
                         GEOIP_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-                        GEOIP_DB_PATH.write_bytes(f.read())
+                        # Temp file + atomic rename: an in-place write_bytes
+                        # truncates the inode a concurrent lookup_ip holds
+                        # mmap-open (garbage reads / SIGBUS). After rename the
+                        # old inode stays valid for the existing reader until
+                        # _close_reader() drops it.
+                        tmp_path = GEOIP_DB_PATH.with_suffix(".mmdb.part")
+                        tmp_path.write_bytes(f.read())
+                        os.replace(tmp_path, GEOIP_DB_PATH)
                         _save_meta({"updated_at": utcnow(), "source": "maxmind-geolite2"})
                         # Drop the cached reader so the next lookup reopens the
                         # freshly-downloaded database instead of the old handle.

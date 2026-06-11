@@ -70,11 +70,17 @@ def case_create(
             f"(e.g. IV_CASE_001). Omit case_id to auto-generate."
         )
     case_dir = CASES_DIR / case_id
-    if case_dir.exists():
-        eprint(f"[case_create] Case {case_id} already exists at {case_dir}")
-    else:
-        for sub in ("artefacts", "iocs", "reports", "logs"):
-            (case_dir / sub).mkdir(parents=True, exist_ok=True)
+    meta_path = case_dir / "case_meta.json"
+    if meta_path.exists():
+        # Re-creating an existing case must not wipe its state — the old
+        # behaviour overwrote case_meta.json (losing attack_type/disposition/
+        # phase timestamps and resetting status to triage) and clobbered the
+        # registry entry. Return the existing record untouched instead.
+        eprint(f"[case_create] Case {case_id} already exists at {case_dir} "
+               f"— returning existing meta unchanged")
+        return load_json(meta_path)
+    for sub in ("artefacts", "iocs", "reports", "logs"):
+        (case_dir / sub).mkdir(parents=True, exist_ok=True)
 
     resolved_client = client or DEFAULT_CLIENT
     meta = {
@@ -95,33 +101,36 @@ def case_create(
         "report_path": None,
         "phase_timestamps": {"created_at": utcnow()},
     }
-    save_json(case_dir / "case_meta.json", meta)
+    save_json(meta_path, meta)
     from tools.common import log_metric
     log_metric("case_phase_change", case_id=case_id,
                phase="created", status=status, analyst=analyst,
                client=resolved_client, severity=severity)
 
-    # Update registry
+    # Update registry — share index_case's lock so this read-modify-write
+    # can't race a concurrent index_case() and drop entries.
+    from tools.index_case import _registry_lock
     REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if REGISTRY_FILE.exists():
-        registry = load_json(REGISTRY_FILE)
-    else:
-        registry = {"cases": {}}
+    with _registry_lock:
+        if REGISTRY_FILE.exists():
+            registry = load_json(REGISTRY_FILE)
+        else:
+            registry = {"cases": {}}
 
-    registry["cases"][case_id] = {
-        "title": meta["title"],
-        "severity": severity,
-        "client": resolved_client,
-        "tags": tags or [],
-        "attack_type": None,
-        "disposition": None,
-        "status": status,
-        "created_at": meta["created_at"],
-        "updated_at": meta["updated_at"],
-        "case_dir": str(case_dir),
-        "report_path": None,
-    }
-    save_json(REGISTRY_FILE, registry)
+        registry["cases"][case_id] = {
+            "title": meta["title"],
+            "severity": severity,
+            "client": resolved_client,
+            "tags": tags or [],
+            "attack_type": None,
+            "disposition": None,
+            "status": status,
+            "created_at": meta["created_at"],
+            "updated_at": meta["updated_at"],
+            "case_dir": str(case_dir),
+            "report_path": None,
+        }
+        save_json(REGISTRY_FILE, registry)
     eprint(f"[case_create] Case {case_id} initialised at {case_dir}")
     return meta
 
