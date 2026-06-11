@@ -64,18 +64,21 @@ def _analyse_gaps(matrix: dict) -> list[dict]:
 # Follow-up proposal generation
 # ---------------------------------------------------------------------------
 
-# Map suggested tools to actual socai tool calls
+# Map suggested tools to actual ``api.actions`` function names. Entries with
+# ``"tool": "manual"`` have no actions-layer equivalent (they need analyst
+# input / run as MCP tools) — execute_followup returns a "manual" status
+# naming the MCP tool to run instead of attempting a call.
 _TOOL_MAP = {
     "sentinel_query": {
-        "tool": "generate_sentinel_query",
-        "description": "Run Sentinel composite query",
+        "tool": "generate_queries",
+        "description": "Generate Sentinel hunting queries for the case IOCs",
     },
     "log_correlate": {
         "tool": "correlate",
         "description": "Re-run log correlation with updated IOCs",
     },
     "enrich": {
-        "tool": "enrich",
+        "tool": "extract_and_enrich",
         "description": "Run enrichment pass (with pivot IOCs)",
     },
     "web_capture": {
@@ -83,20 +86,24 @@ _TOOL_MAP = {
         "description": "Capture additional URLs",
     },
     "sandbox": {
-        "tool": "sandbox_session",
-        "description": "Submit sample for sandbox detonation",
+        "tool": "manual",
+        "description": "Submit sample for sandbox detonation "
+                       "(run start_sandbox_session)",
     },
     "velociraptor": {
-        "tool": "velociraptor",
-        "description": "Ingest Velociraptor collection for endpoint data",
+        "tool": "manual",
+        "description": "Ingest Velociraptor collection for endpoint data "
+                       "(run ingest_velociraptor)",
     },
     "mde_package": {
-        "tool": "mde_package",
-        "description": "Ingest MDE investigation package",
+        "tool": "manual",
+        "description": "Ingest MDE investigation package "
+                       "(run ingest_mde_package)",
     },
     "browser_session": {
-        "tool": "browser_session",
-        "description": "Open disposable browser session for URL analysis",
+        "tool": "manual",
+        "description": "Open disposable browser session for URL analysis "
+                       "(run start_browser_session)",
     },
 }
 
@@ -146,6 +153,35 @@ def _propose_followups(
     return proposals
 
 
+def propose_followups(case_id: str) -> dict:
+    """Generate and persist follow-up proposals from the investigation matrix.
+
+    Reads ``artefacts/analysis/investigation_matrix.json``, derives gaps, maps
+    them to proposals, and writes ``followup_proposals.json`` so
+    ``list_proposals`` / ``execute_followup`` have something to act on.
+    """
+    matrix_path = (CASES_DIR / case_id / "artefacts" / "analysis"
+                   / "investigation_matrix.json")
+    if not matrix_path.exists():
+        return {"error": "No investigation matrix found — run "
+                         "generate_investigation_matrix first.",
+                "case_id": case_id}
+
+    matrix = load_json(matrix_path)
+    gaps = _analyse_gaps(matrix)
+    proposals = _propose_followups(case_id, matrix, gaps)
+    out = {
+        "case_id": case_id,
+        "generated_at": utcnow(),
+        "gap_count": len(gaps),
+        "proposals": proposals,
+    }
+    proposals_path = (CASES_DIR / case_id / "artefacts" / "analysis"
+                      / "followup_proposals.json")
+    save_json(proposals_path, out)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Follow-up execution (analyst-approved)
 # ---------------------------------------------------------------------------
@@ -190,20 +226,28 @@ def execute_followup(case_id: str, proposal_id: str) -> dict:
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
 
-        # Update proposal status
-        target["status"] = "executed"
+        # Only a successful run counts as executed — marking a failed/unknown
+        # call "executed" closed the matrix gap with no work actually done.
+        ok = (isinstance(result, dict)
+              and not result.get("error")
+              and result.get("status") != "error")
+        target["status"] = "executed" if ok else "failed"
         target["executed_at"] = utcnow()
-        target["result_status"] = result.get("status", "unknown")
+        target["result_status"] = (
+            result.get("status", "ok") if ok else "error")
         save_json(proposals_path, data)
 
-        # Try to update the matrix with new findings
-        try:
-            from tools.investigation_matrix import update_matrix
-            update_matrix(case_id, f"followup.{proposal_id}", {
-                "resolve_unknowns": [target.get("resolves", "")],
-            })
-        except Exception:
-            pass
+        if ok:
+            # Try to update the matrix with new findings
+            try:
+                from tools.investigation_matrix import update_matrix
+                update_matrix(case_id, f"followup.{proposal_id}", {
+                    "resolve_unknowns": [target.get("resolves", "")],
+                })
+            except Exception as exc:
+                log_error(case_id, f"followup.update_matrix.{proposal_id}",
+                          str(exc), severity="warning",
+                          traceback=traceback.format_exc())
 
         return result
     except Exception as exc:

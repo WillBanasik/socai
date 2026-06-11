@@ -135,7 +135,9 @@ _KEYWORD_RULES: list[tuple[str, list[str], int]] = [
     # control" matches "command and control"; dots are preserved, so the dotted
     # variant is kept separately.
     ("command_and_control", [
-        "command and control", "command.and.control", " c2 ", " c2", "c2 ",
+        "command and control", "command.and.control",
+        # Bare "c2" needs boundaries — plain substring matching hits "EC2".
+        re.compile(r"(?<![a-z0-9])c2(?![a-z0-9])"),
         "c2 beacon", "c2 callback", "c2 framework", "beacon", "beaconing",
         "callback", "call back", "implant", "dns tunnel", "dns tunnelling",
         "dns tunneling", "tunnelling", "tunneling", "lolbin", "lolbin callout",
@@ -485,9 +487,19 @@ def classify_attack_type(
 
     for attack_type, keywords, weight in _KEYWORD_RULES:
         for kw in keywords:
-            if kw in combined_norm:
+            if isinstance(kw, re.Pattern):
+                hit = bool(kw.search(combined_norm))
+                label = kw.pattern
+            else:
+                # Normalise the keyword the same way as the input — hyphenated
+                # keywords ("risky sign-in") could otherwise never match the
+                # normalised text ("risky sign in") and common Entra alerts
+                # fell through to generic.
+                hit = re.sub(r"[_\-/]", " ", kw) in combined_norm
+                label = kw
+            if hit:
                 scores[attack_type] += weight
-                signals[attack_type].append(f"keyword '{kw}' in title/notes/tags")
+                signals[attack_type].append(f"keyword '{label}' in title/notes/tags")
                 break  # one keyword match per rule is enough
 
     # --- Input-shape heuristics ---

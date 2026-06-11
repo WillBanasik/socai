@@ -12,7 +12,7 @@ Usage:
 
     playbooks = list_playbooks()
     pb = load_playbook("phishing")
-    query = render_stage(pb, stage=1, params={"target_ids": '"id-1","id-2"'})
+    query = render_stage(pb, stage=1, params={"target_ids": ["id-1", "id-2"]})
 """
 from __future__ import annotations
 
@@ -94,13 +94,45 @@ def _sanitise_kql_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def render_stage(playbook: dict, stage: int, params: dict[str, str]) -> str:
+def _render_param_value(value, _sanitise=_sanitise_kql_value) -> str:
+    """Render one parameter value for inline substitution.
+
+    Scalars are escaped whole. Lists/tuples/sets expand to a comma-joined
+    sequence of individually quoted, escaped elements — the shape the
+    ``dynamic([{{ids}}])`` / ``values=[{{ids}}]`` templates expect. (Escaping
+    a pre-joined ``'"a","b"'`` string instead turned every quote into ``\\"``
+    and rendered every multi-ID playbook stage as invalid KQL/CQL.)
+    """
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(f'"{_sanitise(str(v))}"' for v in value)
+    return _sanitise(value)
+
+
+def _merge_declared_defaults(declared, params: dict | None) -> dict:
+    """Fill omitted params from the playbook's declared ``default:`` values.
+
+    Without this a literal ``{{param}}`` survives into the rendered query —
+    e.g. omitting ``device_name`` left ``where device == "{{device_name}}"``,
+    so the ``__NONE__`` sweep-all guard never matched anything.
+    """
+    merged = {
+        p["name"]: p["default"]
+        for p in (declared or [])
+        if isinstance(p, dict) and p.get("name") and p.get("default") is not None
+    }
+    merged.update(params or {})
+    return merged
+
+
+def render_stage(playbook: dict, stage: int, params: dict) -> str:
     """Render a specific stage's KQL with parameter substitution.
 
     Parameters are replaced using {{param_name}} syntax. Values are escaped
-    via ``_sanitise_kql_value`` to prevent query-structure injection.
+    via ``_render_param_value`` to prevent query-structure injection; list
+    values expand to ``"a", "b"`` for ``dynamic([...])`` templates.
     """
-    safe = {k: _sanitise_kql_value(v) for k, v in params.items()}
+    merged = _merge_declared_defaults(playbook.get("params"), params)
+    safe = {k: _render_param_value(v) for k, v in merged.items()}
     stages = playbook.get("stages", [])
     for s in stages:
         if s.get("stage") == stage:

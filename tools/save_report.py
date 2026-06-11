@@ -41,6 +41,7 @@ _REPORT_TYPES = {
         # true_positive when the caller doesn't pass one — explicit still wins.
         "disposition": "true_positive",
         "defang": True,
+        "requires_findings": True,
     },
     "pup_report": {
         "path": "reports/pup_report.md",
@@ -48,6 +49,7 @@ _REPORT_TYPES = {
         "auto_close": True,
         "disposition": "pup_pua",
         "defang": True,
+        "requires_findings": True,
     },
     "closure_comment": {
         "path": "artefacts/closure_comments/closure_comment.md",
@@ -76,6 +78,7 @@ _REPORT_TYPES = {
         "auto_close": False,
         "disposition": None,
         "defang": False,
+        "requires_findings": True,
     },
     "security_arch_review": {
         "path": "artefacts/security_architecture/security_arch_review.md",
@@ -83,6 +86,7 @@ _REPORT_TYPES = {
         "auto_close": False,
         "disposition": None,
         "defang": True,
+        "requires_findings": True,
     },
     "vuln_hunt_report": {
         "path": "artefacts/vuln_hunt/vuln_hunt_report.md",
@@ -157,6 +161,44 @@ def save_report_to_case(
                            "(benign_positive | false_positive | inconclusive). "
                            "prepare_closure_comment returns it for the chosen "
                            "classification — pass it as disposition=."),
+                "case_id": case_id,
+                "ts": utcnow(),
+            }
+
+    # Analytical-Standards rule 9 gate: evidence-bearing deliverables (MDR,
+    # PUP, exec summary, sec arch) require a recorded evidence + findings
+    # chain. A report on a case with no add_evidence/add_finding record is by
+    # definition unprovable (rules 1-4) — refuse rather than paper over it.
+    if cfg.get("requires_findings"):
+        notes_path = case_dir / "notes" / "analyst_input.md"
+        notes_text = ""
+        if notes_path.exists():
+            try:
+                notes_text = notes_path.read_text(errors="replace")
+            except OSError as exc:
+                log_error(case_id, "save_report.rule9_gate", str(exc),
+                          severity="warning")
+        segments = [s.strip() for s in notes_text.split("\n\n---\n\n") if s.strip()]
+        has_finding = any(s.startswith("**Finding (") for s in segments)
+        has_evidence = any(not s.startswith("**Finding (") for s in segments)
+        if not (has_finding and has_evidence):
+            missing = []
+            if not has_evidence:
+                missing.append("add_evidence (raw observations: query hits, "
+                               "enrichment verdicts, log entries)")
+            if not has_finding:
+                missing.append("add_finding (analyst conclusions tied to the "
+                               "evidence)")
+            return {
+                "status": "error",
+                "reason": (
+                    f"Refusing to save {report_type}: case {case_id} has no "
+                    f"recorded {' or '.join(m.split(' (')[0] for m in missing)} "
+                    "entries (Analytical Standards rule 9). Backfill the "
+                    "record from the data already in context — "
+                    + "; then ".join(missing) +
+                    " — and call save_report again."
+                ),
                 "case_id": case_id,
                 "ts": utcnow(),
             }

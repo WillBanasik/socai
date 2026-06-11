@@ -133,7 +133,9 @@ def render_stage(playbook: dict, stage: int, params: dict[str, str]) -> str:
     Parameters are replaced using ``{{param_name}}`` syntax. Values are
     escaped via ``_sanitise_cql_value`` to prevent query-structure injection.
     """
-    safe = {k: _sanitise_cql_value(v) for k, v in params.items()}
+    from tools.kql_playbooks import _merge_declared_defaults, _render_param_value
+    merged = _merge_declared_defaults(playbook.get("params"), params)
+    safe = {k: _render_param_value(v, _sanitise_cql_value) for k, v in merged.items()}
     stages = playbook.get("stages", [])
     for s in stages:
         if s.get("stage") == stage:
@@ -154,7 +156,9 @@ def render_sub_query(
     sub_query : int
         0-based sub-query index within the stage.
     """
-    safe = {k: _sanitise_cql_value(v) for k, v in params.items()}
+    from tools.kql_playbooks import _merge_declared_defaults, _render_param_value
+    merged = _merge_declared_defaults(playbook.get("params"), params)
+    safe = {k: _render_param_value(v, _sanitise_cql_value) for k, v in merged.items()}
     stages = playbook.get("stages", [])
     for s in stages:
         if s.get("stage") == stage:

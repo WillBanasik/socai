@@ -386,9 +386,12 @@ def render_stage_for_platform(
     if "error" in pb:
         return pb
 
-    # Reuse the existing KQL sanitiser — same escape rules work for CQL.
-    from tools.kql_playbooks import _sanitise_kql_value
-    safe = {k: _sanitise_kql_value(v) for k, v in params.items()}
+    # Reuse the existing KQL param renderer — same escape rules work for CQL.
+    # List values expand to '"a", "b"' (for dynamic([...]) / values=[...]);
+    # declared YAML defaults fill any params the caller omitted.
+    from tools.kql_playbooks import _merge_declared_defaults, _render_param_value
+    merged = _merge_declared_defaults(pb.get("params"), params)
+    safe = {k: _render_param_value(v) for k, v in merged.items()}
 
     query_language = (pb.get("platform") or {}).get("query_language", "")
     sweep_all_hosts = (

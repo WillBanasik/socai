@@ -1135,9 +1135,14 @@ def get_matrix_summary(case_id: str) -> dict:
 
 
 def list_followup_proposals(case_id: str) -> dict:
-    """List follow-up proposals for a case."""
-    from tools.followup import list_proposals
+    """List follow-up proposals for a case (generated from the investigation
+    matrix on first call — nothing else writes followup_proposals.json)."""
+    from tools.followup import list_proposals, propose_followups
     proposals = list_proposals(case_id)
+    if not proposals:
+        generated = propose_followups(case_id)
+        if not generated.get("error"):
+            proposals = generated.get("proposals", [])
     return {"case_id": case_id, "proposals": proposals, "count": len(proposals)}
 
 

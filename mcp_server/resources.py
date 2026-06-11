@@ -1321,7 +1321,7 @@ def register_resources(mcp: FastMCP) -> None:
                         "yara_scan": "YARA rule scanning against case files. Saves results to disk.",
                         "analyse_memory_dump": "Fast memory-dump triage — strings, IOCs, suspicious patterns, embedded PE detection.",
                         "analyse_memory_volatility": "Volatility3 deep analysis — pslist/netscan/malfind/cmdline/svcscan with auto OS detection.",
-                        "sandbox_lookup": "Query sandbox providers (VT, Joe, Triage) for file hashes.",
+                        "sandbox_api_lookup": "Query sandbox providers (VT, Joe, Triage) for file hashes.",
                     },
                 },
                 "siem_and_queries": {
@@ -1400,8 +1400,8 @@ def register_resources(mcp: FastMCP) -> None:
                     "tools": {
                         "xposed_breach_check": "Check historical breach databases — which breaches was this email/domain in? (XposedOrNot)",
                         "ahmia_darkweb_search": "Search indexed .onion sites for keywords, IOCs, or threat actor references (Ahmia.fi, Tor required for full search).",
-                        "intelx_search": "Search dark web, paste sites, data leaks, and documents for a specific indicator (Intelligence X).",
-                        "parse_stealer_logs": "Parse infostealer log archives (.rar/.zip/.7z) into structured data with credential redaction.",
+                        "intelx_search_tool": "Search dark web, paste sites, data leaks, and documents for a specific indicator (Intelligence X).",
+                        "parse_stealer_logs_tool": "Parse infostealer log archives (.rar/.zip/.7z) into structured data with credential redaction.",
                         "darkweb_exposure_summary": "Aggregate all dark web exposure data for a case — runs XposedOrNot for all case indicators.",
                     },
                 },

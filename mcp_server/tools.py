@@ -367,6 +367,31 @@ def _ensure_case(
     return case_id
 
 
+def _compose_error(obj: dict) -> str:
+    """Build the full ToolError text from an error dict.
+
+    Error dicts routinely carry the actionable part in ``detail``/``hint``/
+    ``message`` (gateway error text, anti-retry hints, config guidance) —
+    surfacing only the headline collapsed them all to e.g. "Unknown error".
+    Non-string extras (candidate lists etc.) are appended as compact JSON.
+    """
+    parts: list[str] = []
+    for key in ("reason", "error", "message", "detail", "hint", "note"):
+        v = obj.get(key)
+        if isinstance(v, str) and v.strip() and v not in parts:
+            parts.append(v)
+    extras = {k: v for k, v in obj.items()
+              if k not in ("status", "ts", "case_id", "reason", "error",
+                           "message", "detail", "hint", "note")
+              and not isinstance(v, str)}
+    if extras:
+        try:
+            parts.append(json.dumps(extras, default=str)[:1000])
+        except (TypeError, ValueError):
+            pass
+    return " — ".join(parts) or "Unknown error"
+
+
 def _json(obj: object) -> str:
     """Serialise *obj* to a compact JSON string.
 
@@ -374,12 +399,16 @@ def _json(obj: object) -> str:
     MCP clients receive ``isError: true`` instead of a misleading success.
     """
     if isinstance(obj, dict):
-        # {"status": "error", "reason": "..."}
+        # {"status": "error", "reason"/"message"/"detail"/"hint": ...}
         if obj.get("status") == "error":
-            raise ToolError(obj.get("reason") or obj.get("error") or "Unknown error")
-        # {"error": "...", maybe "case_id"/"path"}  (small error-only dicts)
-        if "error" in obj and isinstance(obj["error"], str) and len(obj) <= 3:
-            raise ToolError(obj["error"])
+            raise ToolError(_compose_error(obj))
+        # {"error": "...", plus detail/hint/metadata}  (error-only dicts —
+        # excludes partial-success payloads that carry data alongside)
+        if (isinstance(obj.get("error"), str) and obj["error"]
+                and len(obj) <= 6
+                and not any(k in obj for k in ("rows", "results", "data",
+                                               "report_md", "queries"))):
+            raise ToolError(_compose_error(obj))
     return json.dumps(obj, indent=2, default=str)
 
 
@@ -3843,11 +3872,16 @@ def _register_tier3(mcp: FastMCP) -> None:
         cql: str,
         repo: str = "",
         max_rows: int = 50,
+        start: str = "7d",
+        end: str = "now",
     ) -> str:
         """Execute a read-only CQL query against the client's Falcon NG-SIEM (LogScale) repository.
 
         Requires ``platforms.crowdstrike.api_enabled=true`` in client_entities.json.
         ``repo`` defaults to ``platforms.crowdstrike.ngsiem_repo``. Max 1000 rows.
+        ``start``/``end`` set the search window (LogScale relative time, e.g.
+        "24h", "7d", "30d", or epoch ms) — default last 7 days, echoed back as
+        ``window`` in the result.
         """
         _require_scope("crowdstrike:query")
 
@@ -3866,7 +3900,8 @@ def _register_tier3(mcp: FastMCP) -> None:
         limit = max(1, min(int(max_rows), 1000))
         try:
             result = await asyncio.to_thread(
-                lambda: _run_falcon_cql(client, cql, repo=(repo or None), timeout=30)
+                lambda: _run_falcon_cql(client, cql, repo=(repo or None), timeout=30,
+                                        start=(start or "7d"), end=(end or "now"))
             )
         except FalconNotConfigured as exc:
             return _json({
@@ -3883,6 +3918,7 @@ def _register_tier3(mcp: FastMCP) -> None:
             "row_count": len(rows),
             "truncated": len(rows) > limit,
             "elapsed_ms": result["stats"]["elapsed_ms"],
+            "window": result["stats"].get("window"),
         }
         if len(rows) > 500:
             out["_hint"] = (

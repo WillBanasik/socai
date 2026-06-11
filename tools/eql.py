@@ -543,6 +543,22 @@ def _freshness(rows: list[dict]) -> dict | None:
     return out or None
 
 
+def _apply_coverage(entry: dict[str, Any], rows: list, errors: list) -> None:
+    """Set ``entry['coverage']`` for an HTTP-200 EQL response.
+
+    The gateway returns 200 with ``ErrorMessages`` populated and empty
+    ``Data`` for a *failed* query — labelling that ``no_data_for_client``
+    misreads a broken query on a curated table as "product not onboarded".
+    """
+    if rows:
+        entry["coverage"] = "ok"
+    elif errors:
+        entry["coverage"] = "query_error"
+        entry["error"] = "; ".join(str(e) for e in errors)[:500]
+    else:
+        entry["coverage"] = "no_data_for_client"
+
+
 def _cap(rows: list[dict], limit: int) -> tuple[list[dict], bool]:
     """Return (most-recent `limit` rows, truncated?) — non-lossy: caller keeps total."""
     if len(rows) <= limit:
@@ -633,7 +649,7 @@ def _run_entity_queries(
                 entry["rows"] = rows
                 entry["errors"] = res["errors"]
                 entry["freshness"] = _freshness(rows)
-                entry["coverage"] = "ok" if rows else "no_data_for_client"
+                _apply_coverage(entry, rows, res["errors"])
             except EqlError as exc:
                 # One bad table must not sink the whole context pull.
                 entry["row_count"] = 0
@@ -884,9 +900,10 @@ def _assess_identities(
         queries_run += 1
         try:
             res = run_eql(internal_client_id, q)
-            return {"query": q, "rows": res["rows"], "row_count": res["row_count"],
-                    "errors": res["errors"],
-                    "coverage": "ok" if res["rows"] else "no_data_for_client"}
+            out = {"query": q, "rows": res["rows"], "row_count": res["row_count"],
+                   "errors": res["errors"]}
+            _apply_coverage(out, res["rows"], res["errors"])
+            return out
         except EqlError as exc:
             log_error(log_case_id, "eql.identity_assessment", str(exc),
                       severity="warning", context={"table": tpl["table"], "value": value})
@@ -1183,7 +1200,7 @@ def posture_context(case_id: str, depth: str = "auto") -> dict[str, Any]:
             entry["rows"] = rows
             entry["errors"] = res["errors"]
             entry["freshness"] = _freshness(rows)
-            entry["coverage"] = "ok" if rows else "no_data_for_client"
+            _apply_coverage(entry, rows, res["errors"])
         except EqlError as exc:
             # One bad table must not sink the whole posture pull.
             entry["row_count"] = 0
@@ -1325,7 +1342,7 @@ def vuln_hunt(client_name: str, depth: str = "auto") -> dict[str, Any]:
             entry["rows"] = rows
             entry["errors"] = res["errors"]
             entry["freshness"] = _freshness(rows)
-            entry["coverage"] = "ok" if rows else "no_data_for_client"
+            _apply_coverage(entry, rows, res["errors"])
         except EqlError as exc:
             # One bad table must not sink the whole hunt.
             entry["row_count"] = 0

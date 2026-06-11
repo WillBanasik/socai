@@ -604,6 +604,16 @@ def cmd_determination(args: argparse.Namespace) -> None:
         print(f"Failed to generate determination for {args.case}")
         return
 
+    # llm_determine is a use_prompt stub since the LLM-removal refactor —
+    # the analysis itself runs on the Claude Desktop seat via MCP prompt.
+    if result.get("status") == "use_prompt":
+        print(f"[determination] Case {args.case} ready. Determination now "
+              f"runs on the Claude Desktop seat — use the "
+              f"\"{result.get('prompt', 'run_determination')}\" MCP prompt, "
+              f"then record the conclusion with "
+              f"{result.get('save_tool', 'add_finding')}.")
+        return
+
     if args.json:
         print(json.dumps(result, indent=2, default=str))
     else:
@@ -674,6 +684,19 @@ def cmd_articles(args: argparse.Namespace) -> None:
         case_id=getattr(args, "case", None),
     )
 
+    # generate_articles is a use_prompt stub since the LLM-removal refactor —
+    # writing happens on the Claude Desktop seat via MCP prompt + save tool.
+    if isinstance(results, dict) and results.get("status") == "use_prompt":
+        print("\n[articles] Article writing now runs on the Claude Desktop "
+              "seat. For each selected story, use the "
+              f"\"{results.get('prompt', 'write_threat_article')}\" MCP prompt "
+              f"and persist with {results.get('save_tool', 'save_threat_article')}:")
+        for c in selected:
+            print(f"  - [{c['category']}] {c['title']}")
+            if c.get("source_url"):
+                print(f"      {c['source_url']}")
+        return
+
     for r in results:
         print(f"  ✓ {r['category']} | {r['title']}")
         print(f"    → {r['article_path']}")
@@ -718,6 +741,15 @@ def cmd_articles_generate(args: argparse.Namespace) -> None:
         analyst=args.analyst,
         case_id=getattr(args, "case", None),
     )
+
+    # Same use_prompt redirect as cmd_articles (LLM-removal refactor).
+    if isinstance(results, dict) and results.get("status") == "use_prompt":
+        print("[articles-generate] Article writing now runs on the Claude "
+              "Desktop seat. Use the "
+              f"\"{results.get('prompt', 'write_threat_article')}\" MCP prompt "
+              f"with the URL(s) above and persist with "
+              f"{results.get('save_tool', 'save_threat_article')}.")
+        return
 
     for r in results:
         print(f"  ✓ {r['category']} | {r['title']}")

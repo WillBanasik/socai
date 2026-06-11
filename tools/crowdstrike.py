@@ -178,6 +178,8 @@ def run_falcon_cql(
     cql: str,
     repo: str | None = None,
     timeout: int = 30,
+    start: str = "7d",
+    end: str = "now",
 ) -> dict[str, Any]:
     """Run a CQL query against the client's NG-SIEM / Falcon LogScale repository.
 
@@ -195,10 +197,15 @@ def run_falcon_cql(
         LogScale repository ID. Falls back to ``platforms.crowdstrike.ngsiem_repo``.
     timeout : int
         Per-request HTTP timeout in seconds.
+    start, end : str
+        Search window (LogScale relative time like ``"7d"``/``"now"`` or epoch
+        ms). Always sent explicitly and echoed in ``stats.window`` — when
+        omitted from the request body LogScale silently pins the search to its
+        own ~24h default, so multi-day sweeps read as "no hits".
 
     Returns
     -------
-    dict with ``rows`` (list[dict]) and ``stats`` (row_count, elapsed_ms).
+    dict with ``rows`` (list[dict]) and ``stats`` (row_count, elapsed_ms, window).
 
     Raises
     ------
@@ -218,7 +225,8 @@ def run_falcon_cql(
 
     host, token = _acquire_token(client)
     url = f"https://{host}/loggingapi/entities/queries/v1/run"
-    body = {"queryString": cql, "repository": repo_id}
+    body = {"queryString": cql, "repository": repo_id,
+            "start": start or "7d", "end": end or "now"}
     started = time.time()
     try:
         resp = get_session().post(
@@ -233,7 +241,10 @@ def run_falcon_cql(
         raise FalconError(f"request failed: {exc}") from exc
 
     elapsed_ms = int((time.time() - started) * 1000)
-    return _handle_response(client, host, resp, "run_cql", elapsed_ms)
+    result = _handle_response(client, host, resp, "run_cql", elapsed_ms)
+    result.setdefault("stats", {})["window"] = {
+        "start": body["start"], "end": body["end"]}
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +285,14 @@ def _query_paged(
     ids_payload = _handle_response(client, host, ids_resp, queries_path,
                                    int((time.time() - started) * 1000))
     resources = ids_payload.get("resources") or []
+    # Total matches server-side — without it a result hitting the limit reads
+    # as "exactly <limit>" instead of "first <limit> of N".
+    pagination = (ids_payload.get("meta") or {}).get("pagination") or {}
+    total = pagination.get("total")
     if not resources:
-        return {"rows": [], "stats": {"row_count": 0, "elapsed_ms": ids_payload["stats"]["elapsed_ms"]}}
+        return {"rows": [],
+                "stats": {"row_count": 0, "total_available": total,
+                          "elapsed_ms": ids_payload["stats"]["elapsed_ms"]}}
 
     # Fetch entity summaries.
     started2 = time.time()
@@ -299,6 +316,8 @@ def _query_paged(
         "stats": {
             "row_count": len(rows),
             "id_count": len(resources),
+            "total_available": total,
+            "truncated": bool(isinstance(total, int) and total > len(resources)),
             "elapsed_ms": ids_payload["stats"]["elapsed_ms"] + sum_payload["stats"]["elapsed_ms"],
         },
     }

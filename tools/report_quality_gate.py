@@ -211,10 +211,20 @@ def review_report(case_id: str) -> dict | None:
     """
     case_dir = CASES_DIR / case_id
 
-    # Load report
-    report_path = case_dir / "reports" / "investigation_report.md"
-    if not report_path.exists():
+    # Load report — deliverables persist to per-type paths (save_report);
+    # ``investigation_report.md`` is the legacy pipeline name, kept last for
+    # old cases. Review the most recently written deliverable.
+    candidates = [
+        case_dir / "reports" / "mdr_report.md",
+        case_dir / "reports" / "pup_report.md",
+        case_dir / "artefacts" / "executive_summary" / "executive_summary.md",
+        case_dir / "artefacts" / "security_architecture" / "security_arch_review.md",
+        case_dir / "reports" / "investigation_report.md",
+    ]
+    existing = [p for p in candidates if p.exists()]
+    if not existing:
         return None
+    report_path = max(existing, key=lambda p: p.stat().st_mtime)
 
     report_text = report_path.read_text(errors="ignore")
     if not report_text.strip():
@@ -227,6 +237,20 @@ def review_report(case_id: str) -> dict | None:
 
     # Run all checks
     flags: list[dict] = []
+
+    # Without a matrix the confirmed-claim and coverage checks have nothing
+    # to verify against — the gate must not silently pass as if they ran.
+    if matrix is None:
+        flags.append({
+            "severity": "warning",
+            "rule": "no_investigation_matrix",
+            "location": "case",
+            "finding": "No investigation matrix on file — evidence-backing "
+                       "checks could not run.",
+            "context": "",
+            "suggestion": "Run generate_investigation_matrix, then re-run "
+                          "the quality gate.",
+        })
 
     # 1. Deterministic: confirmed claims
     flags.extend(_check_confirmed_claims(report_text, matrix))
@@ -247,6 +271,7 @@ def review_report(case_id: str) -> dict | None:
     result = {
         "case_id": case_id,
         "ts": utcnow(),
+        "report_path": str(report_path),
         "passed": passed,
         "error_count": error_count,
         "warning_count": sum(1 for f in flags if f.get("severity") == "warning"),

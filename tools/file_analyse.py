@@ -147,18 +147,26 @@ def _tier3_should_run(
         return True, "reputation=malicious"
 
     if tier2:
-        # Format-specific signals that justify YARA cost
+        # Format-specific signals that justify YARA cost. These must match
+        # (lowercased) what the specialists actually append to ``flags`` —
+        # invented tokens here meant macro docs / OneNote droppers / MSI
+        # payloads never auto-escalated on depth="auto".
         flags = tier2.get("flags", []) or []
         strong_signals = (
-            "macro_autoexec",
-            "vba_suspicious",
-            "dde_field",
-            "javascript",
-            "embedded_pe",
-            "openaction",
-            "launch_action",
-            "lolbin",
-            "powershell_evasion",
+            # office_analyse
+            "macros:", "autoexec:", "suspicious_keywords:", "dde_links:",
+            "external_template:",
+            # pdf_analyse (OpenAction JS surfaces under JAVASCRIPT:)
+            "javascript:", "launch_action:", "embedded_files:",
+            "exploit_vector_keywords:",
+            # onenote / msi / disk-image droppers
+            "executable_payloads:", "embedded_payloads:", "custom_action:",
+            "iso_payloads:",
+            # lnk_analyse
+            "lolbin_target:", "powershell evasion", "no_target_file:",
+            "icon_spoofing:",
+            # macho_analyse
+            "dylibs_network_or_infostealer:", "encrypted_segments:",
         )
         for f in flags:
             lf = str(f).lower()

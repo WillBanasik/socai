@@ -168,7 +168,7 @@ Analysts select these from the Claude Desktop prompt picker for structured workf
 | Dynamic Analysis | start_sandbox_session, stop_sandbox_session, list_sandbox_sessions, start_browser_session, stop_browser_session, list_browser_sessions |
 | Reporting | generate_report, prepare_mdr_report, prepare_pup_report, prepare_executive_summary, generate_weekly, prepare_closure_comment, prepare_fp_tuning_ticket, reconstruct_timeline, security_arch_review, response_actions |
 | Threat Intelligence | assess_landscape, search_threat_articles, generate_threat_article, search_confluence (ET/EV articles only) |
-| Dark Web Intelligence | xposed_breach_check (breach data), ahmia_darkweb_search (.onion search), intelx_search (pastes/leaks/darknet), parse_stealer_logs, darkweb_exposure_summary |
+| Dark Web Intelligence | xposed_breach_check (breach data), ahmia_darkweb_search (.onion search), intelx_search_tool (pastes/leaks/darknet), parse_stealer_logs_tool, darkweb_exposure_summary |
 
 `search_confluence` is exclusively for browsing published ET/EV threat articles on the wiki.
 

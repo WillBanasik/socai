@@ -209,6 +209,35 @@ def test_mdr_report_defaults_to_true_positive():
     assert _REPORT_TYPES["mdr_report"]["disposition"] == "true_positive"
 
 
+def test_mdr_report_requires_evidence_and_findings():
+    # Analytical-Standards rule-9 gate: evidence-bearing deliverables refuse
+    # to save when the case has no add_evidence/add_finding record.
+    from tools.common import utcnow
+    from tools.save_report import save_report_to_case
+    case_id = "IV_CASE_FRICTION_RULE9"
+    case_dir, _cleanup = _scratch_case(
+        case_id,
+        {"title": "rule9 gate", "status": "active", "created_at": utcnow()},
+    )
+    try:
+        r = save_report_to_case(case_id, "mdr_report", "## MDR\n\nBody.")
+        assert r["status"] == "error"
+        assert "rule 9" in r["reason"]
+        meta = _json.loads((case_dir / "case_meta.json").read_text())
+        assert meta["status"] != "closed"
+
+        # Backfilling the chain unblocks the save.
+        notes_dir = case_dir / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "analyst_input.md").write_text(
+            "KQL hit: 1 row\n\n---\n\n**Finding (verdict):** TP, backed above\n"
+        )
+        r2 = save_report_to_case(case_id, "mdr_report", "## MDR\n\nBody.")
+        assert r2["status"] == "ok"
+    finally:
+        _cleanup()
+
+
 def test_closure_comment_requires_disposition():
     from tools.common import utcnow
     from tools.save_report import save_report_to_case

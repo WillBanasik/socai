@@ -196,11 +196,31 @@ def defang_ioc(value: str) -> str:
 
 
 
+def _is_fs_path_token(token: str) -> bool:
+    """True when *token* looks like a filesystem path (never defanged).
+
+    Web-capture artefacts live under domain-named directories
+    (``artefacts/web/<domain>/``), so a blind substring defang turned every
+    Artefact Index entry into a nonexistent path. URLs (``scheme://``) are
+    explicitly NOT paths — they must still be defanged.
+    """
+    t = token.strip("\"'`<>()[]{},;*")
+    if "://" in t:
+        return False
+    return (
+        t.startswith(("/", "./", "~/"))
+        or "cases/" in t or "artefacts/" in t or "reports/" in t
+        or _re.match(r"^[A-Za-z]:\\", t) is not None
+    )
+
+
 def defang_report(text: str, malicious_iocs: set[str] | None = None) -> str:
     """Defang all *malicious_iocs* wherever they appear in *text*.
 
     Only IOCs in the provided set are defanged — clean IOCs are left intact.
-    Uses a single compiled regex pass for O(M) instead of O(N×M).
+    Matches inside filesystem-path tokens (artefact paths) are skipped:
+    hashes and file paths are never defanged. Uses a single compiled regex
+    pass for O(M) instead of O(N×M).
     """
     if not malicious_iocs:
         return text
@@ -219,7 +239,20 @@ def defang_report(text: str, malicious_iocs: set[str] | None = None) -> str:
     pattern = _re.compile(
         "|".join(_re.escape(k) for k in sorted(replacements, key=len, reverse=True))
     )
-    return pattern.sub(lambda m: replacements[m.group(0)], text)
+
+    def _replace(m: "_re.Match[str]") -> str:
+        s, start, end = m.string, m.start(), m.end()
+        ts = start
+        while ts > 0 and not s[ts - 1].isspace():
+            ts -= 1
+        te = end
+        while te < len(s) and not s[te].isspace():
+            te += 1
+        if _is_fs_path_token(s[ts:te]):
+            return m.group(0)
+        return replacements[m.group(0)]
+
+    return pattern.sub(_replace, text)
 
 
 # ---------------------------------------------------------------------------

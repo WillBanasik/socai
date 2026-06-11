@@ -98,11 +98,20 @@ def passthrough_middleware():
 
 @pytest.fixture
 def mdr_report_on_disk():
+    from config.settings import CASES_DIR
     from tools.case_create import case_create
     from tools.save_report import save_report_to_case
 
     case_create(TEST_CASE, title="report http test", severity="low",
                 client="Test Client")
+    # save_report enforces the Analytical-Standards rule-9 gate: an MDR
+    # report needs a recorded evidence + finding chain first.
+    notes_dir = CASES_DIR / TEST_CASE / "notes"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    (notes_dir / "analyst_input.md").write_text(
+        "Sentinel query hit: sign-in from 203.0.113.7"
+        "\n\n---\n\n**Finding (verdict):** test verdict backed by the above\n"
+    )
     md = "## MDR — test\n\nMarkdown body."
     result = save_report_to_case(
         case_id=TEST_CASE, report_type="mdr_report", report_text=md,

@@ -48,9 +48,11 @@ _FALLBACK_IP_TABLES = [
     ),
     (
         "IdentityLogonEvents",
-        ["SourceIPAddress", "DestinationIPAddress"],
+        # Schema has IPAddress (source side) + DestinationIPAddress — there
+        # is no SourceIPAddress column; referencing it fails the whole query.
+        ["IPAddress", "DestinationIPAddress"],
         "TimeGenerated, AccountName, AccountDomain, DeviceName, LogonType, ActionType, "
-        "FailureReason, SourceIPAddress, DestinationIPAddress",
+        "FailureReason, IPAddress, DestinationIPAddress",
         "Authentication events",
     ),
     (
@@ -454,10 +456,10 @@ def _build_kql_timeline(iocs: dict, tables: list[str] | None, collector: list | 
         if tables is None or "IdentityLogonEvents" in tables:
             union_parts.append(
                 "IdentityLogonEvents\n"
-                "| where SourceIPAddress in (ips) or DestinationIPAddress in (ips)\n"
+                "| where IPAddress in (ips) or DestinationIPAddress in (ips)\n"
                 "| project TimeGenerated, Source=\"IdentityLogonEvents\",\n"
                 "          Entity=AccountName,\n"
-                "          Detail=strcat(ActionType, \" from \", SourceIPAddress,\n"
+                "          Detail=strcat(ActionType, \" from \", IPAddress,\n"
                 "                       \" to \", DestinationIPAddress)"
             )
         if tables is None or "IdentityQueryEvents" in tables:

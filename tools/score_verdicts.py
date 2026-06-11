@@ -87,9 +87,13 @@ def _composite_verdict(providers: dict[str, str]) -> tuple[str, str]:
 
     if counts["malicious"] > 0 and counts["malicious"] >= counts["suspicious"]:
         verdict = "malicious"
-    elif counts["suspicious"] > 0 and counts["malicious"] == 0:
+    elif counts["suspicious"] > 0:
+        # Covers suspicious-only AND suspicious-majority-over-malicious
+        # (e.g. 1 malicious + 2 suspicious). A decisive bad vote must never
+        # collapse to "unknown" — that drops the IOC from high_priority,
+        # leaves it undefanged in reports, and hides it from campaign_cluster.
         verdict = "suspicious"
-    elif counts["clean"] > 0 and counts["malicious"] == 0 and counts["suspicious"] == 0:
+    elif counts["clean"] > 0:
         verdict = "clean"
     else:
         verdict = "unknown"

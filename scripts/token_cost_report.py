@@ -154,6 +154,10 @@ def _load_turns(transcripts: Path | None) -> list[dict]:
 
     repo_str = str(REPO_ROOT)
     turns: list[dict] = []
+    # One API call can appear as several records sharing message.id
+    # (streaming chunks, resumed-session replays) — without dedup the same
+    # call bills 2-3× (measured 2.24× input inflation).
+    seen_ids: dict[str, int] = {}  # message.id → index into turns
     for d in search_dirs:
         for fp in d.glob("*.jsonl"):
             try:
@@ -185,13 +189,25 @@ def _load_turns(transcripts: Path | None) -> list[dict]:
                     ts = _parse_ts(rec.get("timestamp"))
                     if ts is None:
                         continue
-                    turns.append({
+                    entry = {
                         "ts": ts,
                         "model": msg.get("model"),
                         "tier": _model_tier(msg.get("model")),
                         "usage": usage,
                         "sidechain": bool(rec.get("isSidechain")),
-                    })
+                    }
+                    msg_id = msg.get("id")
+                    if msg_id:
+                        idx = seen_ids.get(msg_id)
+                        if idx is not None:
+                            # Duplicate of an already-counted call — keep the
+                            # record with the larger (final cumulative) usage.
+                            if ((usage.get("output_tokens") or 0)
+                                    >= (turns[idx]["usage"].get("output_tokens") or 0)):
+                                turns[idx] = entry
+                            continue
+                        seen_ids[msg_id] = len(turns)
+                    turns.append(entry)
     turns.sort(key=lambda t: t["ts"])
     return turns
 
