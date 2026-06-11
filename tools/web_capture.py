@@ -319,6 +319,49 @@ def _safe_dirname(url: str) -> str:
     return host[:80]
 
 
+def _check_url_capture_safe(url: str) -> str | None:
+    """Return a rejection reason when *url* must not be captured, else None.
+
+    Capture URLs are attacker-influenced (lure links, redirect hops) and the
+    backends run with host-filesystem and — when the OPSEC proxy is unset —
+    LAN/IMDS network reach: ``file:///…/.env`` reads host files straight into
+    case artefacts, ``http://169.254.169.254/`` is SSRF. Allow only http(s)
+    to globally routable hosts.
+    """
+    import ipaddress
+    import socket
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return "unparseable URL"
+    if parsed.scheme.lower() not in ("http", "https"):
+        return f"scheme '{parsed.scheme}' not allowed (http/https only)"
+    host = parsed.hostname
+    if not host:
+        return "URL has no host"
+
+    try:
+        addrs = {ipaddress.ip_address(host)}
+    except ValueError:
+        # Hostname, not an IP literal — resolve best-effort. Local DNS is
+        # exactly what an unproxied capture would use, so the check matches
+        # the risky configuration; resolution failure is not a block (the
+        # capture itself will fail, or the OPSEC proxy resolves remotely).
+        try:
+            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+            addrs = {ipaddress.ip_address(info[4][0]) for info in infos}
+        except (OSError, ValueError):
+            return None
+    for ip in addrs:
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None:
+            ip = mapped
+        if not ip.is_global or ip.is_multicast:
+            return f"host resolves to non-global address {ip}"
+    return None
+
+
 def _capture_with_requests(url: str) -> dict:
     """
     Fallback: use requests to follow redirects and capture HTML/text.
@@ -329,12 +372,24 @@ def _capture_with_requests(url: str) -> dict:
     from tools.common import get_opsec_session
 
     headers = {"User-Agent": CAPTURE_UA}
+
+    def _block_unsafe_redirect(resp, **_kw):
+        # Fires per hop before requests follows Location — without this an
+        # http(s) lure can bounce the capture into file:// or a private/IMDS
+        # address even though the entry URL passed _check_url_capture_safe.
+        if resp.is_redirect:
+            target = urllib.parse.urljoin(resp.url, resp.headers.get("location", ""))
+            reason = _check_url_capture_safe(target)
+            if reason:
+                raise ValueError(f"redirect blocked ({reason}): {target}")
+
     resp = get_opsec_session().get(
         url,
         headers=headers,
         timeout=CAPTURE_TIMEOUT,
         allow_redirects=True,
         verify=True,
+        hooks={"response": _block_unsafe_redirect},
     )
 
     chain = []
@@ -496,6 +551,20 @@ def _capture_with_playwright_context(url: str, context) -> dict:
         intermediate_urls = [u for u in all_nav_urls if u != url and u != final_url]
 
         for i, inter_url in enumerate(intermediate_urls):
+            # Hop URLs come from the page's own redirects/JS — fully
+            # attacker-controlled, and goto() here is a fresh top-level
+            # navigation where file:// works. Same gate as the entry URL.
+            unsafe = _check_url_capture_safe(inter_url)
+            if unsafe:
+                log_error("", "web_capture.intermediate_hop_blocked",
+                          f"{inter_url}: {unsafe}", severity="warning",
+                          context={"url": inter_url, "hop": i + 1})
+                intermediate_captures.append({
+                    "url": inter_url,
+                    "hop_index": i + 1,
+                    "error": f"URL blocked: {unsafe}",
+                })
+                continue
             inter_page = context.new_page()
             try:
                 inter_page.goto(inter_url, timeout=CAPTURE_TIMEOUT * 1000, wait_until="networkidle")
@@ -709,6 +778,17 @@ def web_capture(url: str, case_id: str) -> dict:
     Capture *url* and persist artefacts under the case folder.
     Returns a manifest dict with all artefact paths and SHA-256s.
     """
+    reason = _check_url_capture_safe(url)
+    if reason:
+        log_error(case_id, "web_capture.url_blocked", f"{url}: {reason}",
+                  severity="warning", context={"url": url})
+        return {
+            "error": f"URL blocked: {reason}",
+            "blocked": True,
+            "url": url,
+            "case_id": case_id,
+            "ts": utcnow(),
+        }
     try:
         if BROWSER_BACKEND == "playwright":
             data = _capture_with_playwright(url)
@@ -871,6 +951,19 @@ async def _async_capture_page(url: str, context, semaphore) -> dict:
             intermediate_captures = []
             intermediate_urls = [u for u in all_nav_urls if u != url and u != final_url]
             for i, inter_url in enumerate(intermediate_urls):
+                # Same gate as the sync path: hop URLs are attacker-controlled
+                # and this goto() is a fresh top-level navigation.
+                unsafe = _check_url_capture_safe(inter_url)
+                if unsafe:
+                    log_error("", "web_capture.async_intermediate_hop_blocked",
+                              f"{inter_url}: {unsafe}", severity="warning",
+                              context={"url": inter_url, "hop": i + 1})
+                    intermediate_captures.append({
+                        "url": inter_url,
+                        "hop_index": i + 1,
+                        "error": f"URL blocked: {unsafe}",
+                    })
+                    continue
                 inter_page = await context.new_page()
                 try:
                     await inter_page.goto(inter_url, timeout=CAPTURE_TIMEOUT * 1000, wait_until="networkidle")
@@ -968,6 +1061,37 @@ def web_capture_batch(urls: list[str], case_id: str) -> list[dict]:
     then falls back to sync Playwright (sequential), then to serial
     requests-based capture if Playwright is unavailable entirely.
     """
+    if not urls:
+        return []
+
+    # Gate every URL before any backend touches it (file:// / SSRF guard);
+    # blocked entries keep their slot in the result list.
+    blocked: dict[int, dict] = {}
+    safe_urls: list[str] = []
+    for i, url in enumerate(urls):
+        unsafe = _check_url_capture_safe(url)
+        if unsafe:
+            log_error(case_id, "web_capture.url_blocked", f"{url}: {unsafe}",
+                      severity="warning", context={"url": url})
+            blocked[i] = {
+                "error": f"URL blocked: {unsafe}",
+                "blocked": True,
+                "url": url,
+                "case_id": case_id,
+                "ts": utcnow(),
+            }
+        else:
+            safe_urls.append(url)
+
+    if not blocked:
+        return _web_capture_batch_dispatch(urls, case_id)
+    captured = iter(
+        _web_capture_batch_dispatch(safe_urls, case_id) if safe_urls else [])
+    return [blocked.get(i) or next(captured) for i in range(len(urls))]
+
+
+def _web_capture_batch_dispatch(urls: list[str], case_id: str) -> list[dict]:
+    """Backend dispatch for ``web_capture_batch`` (URLs already gated)."""
     if not urls:
         return []
 

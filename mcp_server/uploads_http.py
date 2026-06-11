@@ -48,6 +48,15 @@ _ROUTE_PREFIX = "/cases/"
 _ROUTE_SUFFIX = "/uploads"
 _UPLOAD_SUBDIR = "artefacts/uploads"
 _FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]")
+_CASE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def validate_case_id(case_id: str) -> bool:
+    """True when ``case_id`` is a plain identifier that cannot escape
+    ``CASES_DIR`` (no separators, no ``..``). Mirrors the read-side gate in
+    ``read_case_file``/``list_case_files`` — the upload path must be at least
+    as strict, since it *writes*."""
+    return bool(case_id) and bool(_CASE_ID_RE.match(case_id))
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +144,10 @@ def store_inband_upload(
     import base64
     import binascii
     import hashlib
+
+    if not validate_case_id(case_id):
+        return {"status": "error",
+                "error": "Invalid case_id (must match [A-Za-z0-9_-]+)"}
 
     if not content_b64:
         return {"status": "error", "error": "content_b64 is empty"}
@@ -252,6 +265,17 @@ class UploadsMiddleware:
         method = scope.get("method", "").upper()
         if method != "POST":
             await _send_json(send, 405, {"error": "Method not allowed; POST required"})
+            return
+
+        # _parse_route rejects "/" in the id, but "." / ".." still slip
+        # through it — and the escape guard below derives its root from this
+        # same untrusted id, so it can never catch that. Gate hard here.
+        if not validate_case_id(case_id):
+            mcp_log("upload_rejected", case_id=case_id,
+                    reason="invalid case_id")
+            await _send_json(send, 400,
+                             {"error": "Invalid case_id (must match "
+                                       "[A-Za-z0-9_-]+)"})
             return
 
         query = _extract_query(scope)

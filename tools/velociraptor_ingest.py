@@ -578,10 +578,24 @@ def _extract_collector_zip(
 
         for name in upload_files:
             try:
-                data = zf.read(name, pwd=pwd)
                 # Preserve directory structure under uploads/
                 rel = name.split("uploads/", 1)[-1]
-                dest = uploads_dir / rel
+                # Zip Slip guard: collector ZIPs are attacker-influenceable
+                # (tampered or crafted), so reject any member whose path
+                # escapes uploads_dir via ``../`` traversal or an absolute
+                # path before writing.
+                dest = (uploads_dir / rel).resolve()
+                try:
+                    dest.relative_to(uploads_dir.resolve())
+                except (ValueError, OSError):
+                    log_error(case_id, "velociraptor_ingest.path_traversal",
+                              f"Blocked upload entry escaping uploads dir: {name}",
+                              severity="warning",
+                              context={"entry": name})
+                    warnings.append(
+                        f"Blocked path-traversal entry (Zip Slip): {name}")
+                    continue
+                data = zf.read(name, pwd=pwd)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 write_artefact(dest, data)
                 uploads_extracted.append({

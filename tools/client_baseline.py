@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -32,9 +33,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config.settings import BASELINES_DIR, CASES_DIR, REGISTRY_FILE
 from tools.common import load_json, log_error, utcnow
 
+_CLIENT_KEY_UNSAFE_RE = re.compile(r"[^a-z0-9._-]")
+
 
 def _client_key(client: str) -> str:
-    return client.strip().lower().replace(" ", "_")
+    """Filesystem-safe client key.
+
+    The key reaches Path construction on both the read and write side
+    (``registry/baselines/<key>.json``), so path separators and other unsafe
+    characters must not survive — a raw ``client`` of ``../../config/x``
+    would otherwise read or overwrite arbitrary ``.json`` files. Dots are
+    kept (existing keys like ``biu.com`` rely on them); without a separator
+    they cannot traverse.
+    """
+    key = client.strip().lower().replace(" ", "_")
+    key = _CLIENT_KEY_UNSAFE_RE.sub("_", key)
+    return key.lstrip(".")
 
 
 def _get_cases_for_client(client: str) -> list[tuple[str, dict]]:

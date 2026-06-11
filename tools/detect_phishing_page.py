@@ -51,11 +51,13 @@ _BRANDS: list[dict] = [
             re.compile(r"\bAzure\s+Active\s+Directory\b", re.I),
         ],
         "allowed": {
+            # Corporate/identity domains only — azurewebsites.net / azurefd.net
+            # are customer-named shared hosting: a Microsoft-branded login page
+            # there is the attack, not the brand.
             "microsoft.com", "microsoftonline.com", "live.com", "azure.com",
             "office.com", "sharepoint.com", "outlook.com", "windows.com",
             "bing.com", "skype.com", "xbox.com", "msn.com", "microsoft365.com",
-            "onenote.com", "onedrive.live.com", "azure.net", "azurewebsites.net",
-            "azurefd.net",
+            "onenote.com", "onedrive.live.com", "azure.net",
         },
     },
     {
@@ -67,9 +69,11 @@ _BRANDS: list[dict] = [
             re.compile(r"\bGoogle\s+Workspace\b", re.I),
         ],
         "allowed": {
+            # No googleapis.com: storage.googleapis.com serves arbitrary
+            # user buckets — a classic Google-brand phish host.
             "google.com", "google.co.uk", "google.com.au", "google.ca",
             "google.de", "google.fr", "google.co.jp", "google.co.in",
-            "googleapis.com", "gstatic.com", "youtube.com",
+            "gstatic.com", "youtube.com",
             "gmail.com", "googlemail.com", "accounts.google.com",
         },
     },
@@ -102,9 +106,10 @@ _BRANDS: list[dict] = [
             re.compile(r"\bAmazon\s+Web\s+Services\b", re.I),
         ],
         "allowed": {
+            # No amazonaws.com: S3/EC2-hosted pages are user content.
             "amazon.com", "amazon.co.uk", "amazon.de", "amazon.fr",
             "amazon.ca", "amazon.com.au", "amazon.co.jp", "amazon.in",
-            "amazon.es", "amazon.it", "amazonaws.com", "amazonpay.com",
+            "amazon.es", "amazon.it", "amazonpay.com",
             "signin.aws.amazon.com",
         },
     },
@@ -127,8 +132,10 @@ _BRANDS: list[dict] = [
     },
     {
         "name": "Dropbox",
+        # No dropboxusercontent.com: it renders user-uploaded files — a
+        # Dropbox-branded credential page there is a phish hosted in Dropbox.
         "patterns": [re.compile(r"\bDropbox\b", re.I)],
-        "allowed": {"dropbox.com", "dropboxusercontent.com"},
+        "allowed": {"dropbox.com"},
     },
     {
         "name": "Adobe",

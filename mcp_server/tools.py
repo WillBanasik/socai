@@ -3340,7 +3340,14 @@ def _register_tier2(mcp: FastMCP) -> None:
             expected_artefact_path,
             mint_upload_token,
             sanitise_filename,
+            validate_case_id,
         )
+
+        if not validate_case_id(case_id):
+            return _json({
+                "status": "error",
+                "error": "Invalid case_id (must match [A-Za-z0-9_-]+)",
+            })
         from mcp_server.auth import _get_caller_email
         from mcp_server.config import (
             MCP_UPLOAD_MAX_BYTES,
@@ -3399,9 +3406,19 @@ def _register_tier2(mcp: FastMCP) -> None:
         _require_scope("investigations:read")
         _check_client_boundary(case_id)
 
-        from mcp_server.uploads_http import sanitise_filename, store_inband_upload
+        from mcp_server.uploads_http import (
+            sanitise_filename,
+            store_inband_upload,
+            validate_case_id,
+        )
         from mcp_server.config import MCP_INBAND_UPLOAD_MAX_BYTES
         from mcp_server.logging_config import mcp_log
+
+        if not validate_case_id(case_id):
+            return _json({
+                "status": "error",
+                "error": "Invalid case_id (must match [A-Za-z0-9_-]+)",
+            })
 
         safe = sanitise_filename(filename)
         if safe is None:

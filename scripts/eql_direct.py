@@ -8,10 +8,12 @@ blocked by Cloudflare (403) before reaching the app.
 
 Usage:
     python3 scripts/eql_direct.py clients
-    python3 scripts/eql_direct.py query "list tables"            [--client Performanta]
-    python3 scripts/eql_direct.py query "list version"
-    python3 scripts/eql_direct.py query "list labels"
-    python3 scripts/eql_direct.py query "list tables label:<label>"
+    python3 scripts/eql_direct.py query "list tables" --client <name>
+    python3 scripts/eql_direct.py query "list version" --client <name>
+    python3 scripts/eql_direct.py query "list labels" --client <name>
+    python3 scripts/eql_direct.py query "list tables label:<label>" --client <name>
+
+--client is mandatory for queries — there is deliberately no default tenant.
 
 The refresh token is never printed. Guard it — it has access to all Encore clients.
 
@@ -93,11 +95,15 @@ def main():
 
     if cmd == "query":
         if len(args) < 2:
-            sys.exit('Usage: query "<eql>" [--client <name>]')
+            sys.exit('Usage: query "<eql>" --client <name>')
         eql = args[1]
-        client = "Performanta"
-        if "--client" in args:
-            client = args[args.index("--client") + 1]
+        # No default tenant: an unscoped query silently runs against the
+        # MSSP's own client (the 2026-06-01 workspace-leak class). Require
+        # explicit scoping every time.
+        if "--client" not in args or args.index("--client") + 1 >= len(args):
+            sys.exit("Error: --client <name> is required (no default tenant; "
+                     "run 'clients' to list valid names).")
+        client = args[args.index("--client") + 1]
         path = f"/client/request?client={urllib.parse.quote(client)}"
         status, raw = _req("POST", path, token=token, body=eql, accept="application/json")
         print(f"HTTP {status}  (client={client})  query={eql!r}")

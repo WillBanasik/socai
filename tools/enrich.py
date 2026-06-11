@@ -309,6 +309,21 @@ def _abuseipdb_lookup(ioc: str, ioc_type: str) -> dict:
     }
 
 
+def _scrub_secret(text: str, *secrets: str) -> str:
+    """Redact API keys from provider error text before it is persisted.
+
+    requests exceptions embed the full request URL, so query-param-auth
+    providers (Shodan, proxycheck, WhoisXML) would otherwise leak their key
+    into enrichment.json / error_log.jsonl on a connection/timeout error.
+    """
+    from urllib.parse import quote
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "<REDACTED>")
+            text = text.replace(quote(secret, safe=""), "<REDACTED>")
+    return text
+
+
 def _shodan_lookup(ioc: str, ioc_type: str) -> dict:
     """Shodan host lookup — open ports, services, CVEs, org/ASN."""
     if ioc_type != "ipv4":
@@ -323,7 +338,8 @@ def _shodan_lookup(ioc: str, ioc_type: str) -> dict:
             timeout=15,
         )
     except Exception as exc:
-        return {"provider": "shodan", "status": "error", "ioc": ioc, "error": str(exc)}
+        return {"provider": "shodan", "status": "error", "ioc": ioc,
+                "error": _scrub_secret(str(exc), SHODAN_KEY)}
 
     if resp.status_code == 404:
         return {"provider": "shodan", "status": "not_found", "ioc": ioc}
@@ -580,7 +596,8 @@ def _proxycheck_lookup(ioc: str, ioc_type: str) -> dict:
             timeout=15,
         )
     except Exception as exc:
-        return {"provider": "proxycheck", "status": "error", "ioc": ioc, "error": str(exc)}
+        return {"provider": "proxycheck", "status": "error", "ioc": ioc,
+                "error": _scrub_secret(str(exc), PROXYCHECK_KEY)}
 
     if resp.status_code != 200:
         return {"provider": "proxycheck", "status": f"http_{resp.status_code}", "ioc": ioc}
@@ -1165,7 +1182,8 @@ def _whoisxml_lookup(ioc: str, ioc_type: str) -> dict:
             timeout=15,
         )
     except Exception as exc:
-        return {"provider": "whoisxml", "status": "error", "ioc": ioc, "error": str(exc)}
+        return {"provider": "whoisxml", "status": "error", "ioc": ioc,
+                "error": _scrub_secret(str(exc), WHOISXML_KEY)}
 
     if resp.status_code == 401:
         return {"provider": "whoisxml", "status": "invalid_api_key", "ioc": ioc}

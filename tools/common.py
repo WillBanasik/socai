@@ -13,24 +13,24 @@ KNOWN_CLEAN_DOMAINS: frozenset[str] = frozenset({
     "mozilla.org", "firefox.com", "mozilla.net", "mozgcp.net",
     # Google / Alphabet
     "google.com", "google.co.uk", "google.com.au", "google.ca",
-    "google.de", "google.fr", "googleapis.com", "gstatic.com",
-    "googleusercontent.com", "googlesyndication.com",
+    "google.de", "google.fr", "gstatic.com",
+    "googlesyndication.com",
     # YouTube / Consent
     "youtube.com", "youtu.be", "ytimg.com", "consent.youtube.com",
     # Web standards
     "w3.org", "ietf.org", "rfc-editor.org", "whatwg.org",
     # Microsoft (already in phishing allowlist; include here for IOC/crawl skip)
     "microsoft.com", "microsoftonline.com", "azure.com", "azure.net",
-    "azurewebsites.net", "windows.com", "office.com", "live.com",
+    "windows.com", "office.com", "live.com",
     "bing.com", "msn.com",
     # Apple
     "apple.com", "icloud.com",
-    # Amazon / AWS (CDN / legitimate infra)
-    "amazon.com", "amazonaws.com", "cloudfront.net",
+    # Amazon (corporate apex only — AWS-hosted content is user-controlled)
+    "amazon.com",
     # Cloudflare
     "cloudflare.com", "cloudflare.net",
     # Developer platforms
-    "github.com", "github.io", "githubusercontent.com", "githubassets.com",
+    "github.com", "githubassets.com",
     "stackoverflow.com", "stackexchange.com",
     # Reference / encyclopaedias
     "wikipedia.org", "wikimedia.org", "wikpedia.org",
@@ -73,6 +73,11 @@ KNOWN_CLEAN_DOMAINS: frozenset[str] = frozenset({
     #   firebase.google.com, netlify.app, vercel.app, heroku.com,
     #   pastebin.com, ghostbin.com, transfer.sh, wetransfer.com,
     #   discord.com (CDN abuse), telegram.org
+    # Same reason — shared cloud hosting where anyone can serve content under
+    # the vendor's domain (phish on phish.s3.amazonaws.com must NOT be
+    # auto-cleared):
+    #   amazonaws.com, cloudfront.net, azurewebsites.net, googleapis.com,
+    #   googleusercontent.com, github.io, githubusercontent.com
 })
 import hashlib
 import json

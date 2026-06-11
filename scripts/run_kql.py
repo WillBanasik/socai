@@ -16,7 +16,6 @@ Workspace codes (--code) resolve via config/workspace_tables.json.
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -41,13 +40,16 @@ class KqlQueryError(RuntimeError):
 
 
 def _resolve_workspace(workspace_id: str | None, code: str | None) -> str:
-    """Return a workspace ID from explicit ID or workspace code."""
+    """Return a workspace ID from explicit ID or workspace code.
+
+    Deliberately no environment-variable fallback: an implicit default
+    workspace is how unscoped queries leak into the wrong tenant (the
+    2026-06-01 incident). Scoping must be explicit per invocation.
+    """
     if workspace_id:
         return workspace_id
     if not code:
-        code = os.environ.get("SOCAI_SENTINEL_WORKSPACE", "").strip() or None
-    if not code:
-        print("Error: supply --workspace-id, --code, or set SOCAI_SENTINEL_WORKSPACE", file=sys.stderr)
+        print("Error: supply --workspace-id or --code (no default workspace)", file=sys.stderr)
         sys.exit(1)
     try:
         with open(_WORKSPACE_FILE) as f:
