@@ -193,6 +193,69 @@ def test_import_ids_reject_traversal():
 
 
 # ---------------------------------------------------------------------------
+# Batch D — unbounded reads
+# ---------------------------------------------------------------------------
+
+def test_analyse_memory_dump_via_mmap(tmp_path):
+    import shutil
+    from config.settings import CASES_DIR
+    from tools.memory_guidance import analyse_memory_dump
+
+    case_id = "IV_CASE_SWEEP_MEM"
+    dump = tmp_path / "proc.dmp"
+    dump.write_bytes(
+        b"\x00" * 64
+        + b"http://sweeptest-c2.example.com/payload\x00"
+        + b"kernel32.dll\x00"
+        + b"\x00" * 64
+    )
+    try:
+        r = analyse_memory_dump(dump, case_id)
+        assert r["status"] == "ok"
+        assert r["dump_size_bytes"] == dump.stat().st_size
+        assert any("sweeptest-c2" in u for u in r["iocs"]["urls"])
+        assert "kernel32.dll" in r["dlls"]["all"]
+    finally:
+        shutil.rmtree(CASES_DIR / case_id, ignore_errors=True)
+
+
+def test_static_file_analyse_caps_large_files(tmp_path, monkeypatch):
+    import hashlib
+    import shutil
+    import tools.static_file_analyse as sfa
+    from config.settings import CASES_DIR
+
+    monkeypatch.setattr(sfa, "_ANALYSIS_READ_CAP", 1024)
+    big = tmp_path / "big.bin"
+    payload = b"A" * 5000
+    big.write_bytes(payload)
+    case_id = "IV_CASE_SWEEP_STATIC"
+    try:
+        r = sfa.static_file_analyse(big, case_id, dispatch_specialist=False)
+        # Reported size and hashes must describe the FULL file...
+        assert r["size_bytes"] == 5000
+        assert r["hashes"]["sha256"] == hashlib.sha256(payload).hexdigest()
+        # ...while the analysis buffer is capped and flagged as such.
+        assert r["analysis_bytes"] == 1024
+        assert any("ANALYSIS_TRUNCATED" in f for f in r["flags"])
+    finally:
+        shutil.rmtree(CASES_DIR / case_id, ignore_errors=True)
+
+
+def test_hashing_sink_streams_and_keeps_head():
+    import hashlib
+    from tools.disk_image_analyse import _HashingSink
+
+    sink = _HashingSink(keep_limit=10)
+    sink.write(b"0123456789")
+    sink.write(b"ABCDEF")  # beyond the keep limit — hashed but not retained
+    assert sink.size == 16
+    assert bytes(sink.head) == b"0123456789"
+    assert sink.sha256.hexdigest() == hashlib.sha256(b"0123456789ABCDEF").hexdigest()
+    assert sink.md5.hexdigest() == hashlib.md5(b"0123456789ABCDEF").hexdigest()
+
+
+# ---------------------------------------------------------------------------
 # CrowdStrike 401 one-shot token retry
 # ---------------------------------------------------------------------------
 

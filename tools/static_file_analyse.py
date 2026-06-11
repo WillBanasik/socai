@@ -25,6 +25,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config.settings import CASES_DIR, STRINGS_MIN_LEN
 from tools.common import eprint, log_error, utcnow, write_artefact
 
+# In-RAM analysis buffer cap (entropy / strings / magic). Files above this —
+# disk images, memory carriers — are triaged on their head while hashes are
+# streamed over the full file. Specialist analysers do their own IO.
+_ANALYSIS_READ_CAP = 32 * 1024 * 1024
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -34,6 +39,22 @@ def _compute_hashes(data: bytes) -> dict:
         "md5":    hashlib.md5(data).hexdigest(),
         "sha1":   hashlib.sha1(data).hexdigest(),
         "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def _stream_hashes(file_path: Path) -> dict:
+    """Full-file hashes computed in chunks — identical output to
+    ``_compute_hashes`` without holding the file in RAM."""
+    md5, sha1, sha256 = hashlib.md5(), hashlib.sha1(), hashlib.sha256()
+    with open(file_path, "rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            md5.update(chunk)
+            sha1.update(chunk)
+            sha256.update(chunk)
+    return {
+        "md5": md5.hexdigest(),
+        "sha1": sha1.hexdigest(),
+        "sha256": sha256.hexdigest(),
     }
 
 
@@ -300,8 +321,23 @@ def static_file_analyse(
     so it can decide whether the specialist parse is worth the cost.
     """
     file_path = Path(file_path)
-    data = file_path.read_bytes()
     filename = file_path.name
+    file_size = file_path.stat().st_size
+
+    # Cap the in-RAM analysis buffer: disk images / memory carriers run to
+    # GBs and per-byte entropy + strings over the whole file was both an OOM
+    # risk and pointless (magic, headers, and triage signal live at the
+    # front). Hashes are ALWAYS full-file — a partial hash would misidentify
+    # the artefact — streamed in chunks when the file exceeds the cap.
+    data = file_path.read_bytes() if file_size <= _ANALYSIS_READ_CAP else None
+    if data is None:
+        with open(file_path, "rb") as fh:
+            data = fh.read(_ANALYSIS_READ_CAP)
+        hashes = _stream_hashes(file_path)
+        analysis_truncated = True
+    else:
+        hashes = _compute_hashes(data)
+        analysis_truncated = False
 
     analysis_dir = CASES_DIR / case_id / "artefacts" / "analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -315,9 +351,9 @@ def static_file_analyse(
         "case_id": case_id,
         "ts": utcnow(),
         "file_type": file_type,
-        "size_bytes": len(data),
+        "size_bytes": file_size,
         "entropy": round(_entropy(data), 4),
-        "hashes": _compute_hashes(data),
+        "hashes": hashes,
         "strings_count": len(strings_list),
         "strings_sample": strings_list[:200],
         "pe_metadata": _pe_metadata(data) if data[:2] == b"MZ" else None,
@@ -325,6 +361,12 @@ def static_file_analyse(
         "specialist_analysis": None,
         "flags": [],
     }
+    if analysis_truncated:
+        result["analysis_bytes"] = len(data)
+        result["flags"].append(
+            f"ANALYSIS_TRUNCATED: entropy/strings computed over first "
+            f"{len(data) // (1024 * 1024)} MB of {file_size // (1024 * 1024)} MB "
+            f"(hashes are full-file)")
 
     # Heuristic flags
     if result["entropy"] > 7.2:

@@ -27,6 +27,7 @@ Usage (standalone):
 from __future__ import annotations
 
 import json
+import mmap
 import re
 import struct
 import sys
@@ -352,9 +353,19 @@ def analyse_memory_dump(
 
     eprint(f"[memory] Analysing {source.name} ({source.stat().st_size / (1024*1024):.1f} MB)...")
 
+    # Memory-map the dump instead of reading it into RAM: process dumps run
+    # to multi-GB and read_bytes() doubled as an OOM generator. Every
+    # downstream scan (regex finditer, .find, slicing) works on the mmap
+    # directly and the OS pages data in and out as needed.
+    fh = None
     try:
-        data = source.read_bytes()
+        dump_size = source.stat().st_size
+        fh = open(source, "rb")
+        data = (mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+                if dump_size else b"")
     except Exception as exc:
+        if fh is not None:
+            fh.close()
         log_error(case_id, "memory_analyse.read", str(exc), severity="error",
                   context={"file": str(source)})
         return {"status": "error", "reason": f"Failed to read dump: {exc}"}
@@ -406,14 +417,22 @@ def analyse_memory_dump(
     eprint("[memory] Scanning for embedded PE headers...")
     pe_headers = _find_pe_headers(data)
 
+    # Last buffer use — release the mapping before building the manifest.
+    if hasattr(data, "close"):
+        try:
+            data.close()
+        except Exception:
+            pass
+    fh.close()
+
     # Build analysis result
     analysis = {
         "status": "ok",
         "case_id": case_id,
         "ts": utcnow(),
         "source": str(source),
-        "dump_size_bytes": len(data),
-        "dump_size_mb": round(len(data) / (1024 * 1024), 2),
+        "dump_size_bytes": dump_size,
+        "dump_size_mb": round(dump_size / (1024 * 1024), 2),
         "strings_extracted": len(strings),
         "iocs": {
             "ips": ips,

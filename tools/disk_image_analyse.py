@@ -58,6 +58,37 @@ _RISKY_EXTS = {".exe", ".dll", ".scr", ".sys", ".ocx", ".lnk", ".js", ".vbs",
                ".chm", ".cpl"}
 
 
+class _HashingSink(io.RawIOBase):
+    """Write-only sink that hashes a stream and retains only its head.
+
+    pycdlib's ``get_file_from_iso_fp`` writes member data into a file-like
+    object; collecting it in a BytesIO pulled every member — including
+    multi-GB payloads — fully into RAM just to hash it. This sink hashes in
+    flight and keeps at most ``keep_limit`` bytes (the extraction cap), so
+    members that qualify for extraction are still written out intact.
+    """
+
+    def __init__(self, keep_limit: int) -> None:
+        super().__init__()
+        self.sha256 = hashlib.sha256()
+        self.md5 = hashlib.md5()
+        self.size = 0
+        self._keep_limit = keep_limit
+        self.head = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, b) -> int:
+        chunk = bytes(b)
+        self.sha256.update(chunk)
+        self.md5.update(chunk)
+        self.size += len(chunk)
+        if len(self.head) < self._keep_limit:
+            self.head.extend(chunk[: self._keep_limit - len(self.head)])
+        return len(chunk)
+
+
 def _detect_format(data_head: bytes, data_tail: bytes, ext: str) -> str:
     """Pick the right container format using head/tail bytes + extension."""
     if data_head.startswith(_VHDX_HEADER_COOKIE):
@@ -198,9 +229,8 @@ def _list_iso(file_path: Path, case_id: str, image_name: str) -> dict:
             for fname in files:
                 iso_path = f"{dirname.rstrip('/')}/{fname}" if dirname != "/" else f"/{fname}"
                 try:
-                    buf = io.BytesIO()
-                    facade.get_file_from_iso_fp(buf, iso_path=iso_path)
-                    blob = buf.getvalue()
+                    sink = _HashingSink(_EXTRACT_THRESHOLD_BYTES)
+                    facade.get_file_from_iso_fp(sink, iso_path=iso_path)
                 except Exception as exc:
                     entries.append({
                         "iso_path": iso_path,
@@ -208,23 +238,23 @@ def _list_iso(file_path: Path, case_id: str, image_name: str) -> dict:
                     })
                     continue
 
-                sha = hashlib.sha256(blob).hexdigest()
                 ext = Path(fname).suffix.lower()
                 entry = {
                     "iso_path": iso_path,
-                    "size": len(blob),
-                    "sha256": sha,
-                    "md5": hashlib.md5(blob).hexdigest(),
+                    "size": sink.size,
+                    "sha256": sink.sha256.hexdigest(),
+                    "md5": sink.md5.hexdigest(),
                     "extension": ext,
                 }
-                # Extract small/interesting files only
-                if len(blob) <= _EXTRACT_THRESHOLD_BYTES and (
-                    ext in _RISKY_EXTS or len(blob) <= 1024 * 1024
+                # Extract small/interesting files only. Members within the
+                # threshold are fully retained in the sink's head buffer.
+                if sink.size <= _EXTRACT_THRESHOLD_BYTES and (
+                    ext in _RISKY_EXTS or sink.size <= 1024 * 1024
                 ):
                     safe_name = iso_path.lstrip("/").replace("/", "_") or "root"
                     dest = extract_root / safe_name
                     try:
-                        write_artefact(dest, blob)
+                        write_artefact(dest, bytes(sink.head))
                         entry["extracted_path"] = str(dest)
                     except Exception as exc:
                         entry["extract_error"] = str(exc)
