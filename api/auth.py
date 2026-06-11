@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import os
+import secrets as _secrets
+import sys
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -14,7 +16,22 @@ from jose import jwt
 from config.settings import BASE_DIR
 
 USERS_FILE = BASE_DIR / "config" / "users.json"
-JWT_SECRET = os.getenv("SOCAI_JWT_SECRET", "change-me-in-production-set-SOCAI_JWT_SECRET")
+JWT_SECRET = os.getenv("SOCAI_JWT_SECRET", "")
+if not JWT_SECRET:
+    # No static fallback. The old source-visible default meant anyone who had
+    # read the repo could mint valid tokens against any deployment that forgot
+    # to set SOCAI_JWT_SECRET — a full network auth bypass. An ephemeral
+    # per-process secret keeps same-process mint/verify working (dev, tests)
+    # while being unpredictable; tokens simply die on restart. Production must
+    # set SOCAI_JWT_SECRET in .env.
+    JWT_SECRET = _secrets.token_hex(32)
+    print(
+        "[auth] WARNING: SOCAI_JWT_SECRET is not set — using an ephemeral "
+        "per-process JWT secret. Tokens will not survive a restart and other "
+        "processes cannot verify them. Set SOCAI_JWT_SECRET in .env for "
+        "production.",
+        file=sys.stderr,
+    )
 JWT_ALGORITHM = "HS256"
 JWT_TTL_HOURS = int(os.getenv("SOCAI_JWT_TTL_HOURS", "8"))
 

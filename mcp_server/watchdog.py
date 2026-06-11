@@ -72,8 +72,15 @@ async def watchdog_loop() -> None:
     from mcp_server.health import health_response
 
     while True:
-        # Only ping if health checks pass — lets systemd restart on hang
-        status, _ = health_response()
-        if status == 200:
+        # Liveness, not readiness: this loop executing at all proves the
+        # event loop isn't hung — which is what WatchdogSec exists to catch.
+        # A dead background scheduler thread turns /healthz 503 (degraded,
+        # for monitoring) but must NOT withhold the ping: doing so made
+        # systemd kill a fully-serving transport (and live analyst sessions)
+        # over a non-critical worker, in a restart loop. Only an unwritable
+        # filesystem — the server genuinely cannot operate — blocks the ping.
+        _, body = health_response()
+        fs_ok = body.get("checks", {}).get("filesystem", {}).get("ok", True)
+        if fs_ok:
             sd_notify("WATCHDOG=1")
         await asyncio.sleep(interval)
