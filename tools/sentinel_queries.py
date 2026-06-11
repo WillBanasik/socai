@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import BASE_DIR, CASES_DIR
 from tools.kql_playbooks import _parse_frontmatter, _sanitise_kql_value
+from tools.common import utcnow_dt
 
 SENTINEL_QUERIES_DIR = BASE_DIR / "config" / "kql_playbooks" / "sentinel"
 
@@ -83,7 +84,7 @@ def render_query(
         available = [s["id"] for s in list_scenarios()]
         return {"error": f"Scenario {scenario_id!r} not found. Available: {available}"}
 
-    now = datetime.now(timezone.utc)
+    now = utcnow_dt()
     lookback_start = now - timedelta(hours=lookback_hours)
     lookback_end = now
 

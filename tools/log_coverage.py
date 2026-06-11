@@ -490,9 +490,10 @@ def get_coverage(client: str) -> dict:
             data = load_json(cov_path)
             collected_at = data.get("collected_at", "")
             if collected_at:
-                from datetime import datetime, timezone
+                from datetime import datetime
+                from tools.common import utcnow_dt
                 ts = datetime.fromisoformat(collected_at.replace("Z", "+00:00"))
-                age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+                age_hours = (utcnow_dt() - ts).total_seconds() / 3600
                 if age_hours < 24:
                     return data
         except Exception as exc:

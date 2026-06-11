@@ -164,8 +164,10 @@ def _build_query_context(attack_type: str) -> str:
                     f"- **{s['id']}**: {s.get('description', s.get('name', ''))}{marker}\n"
                     f"  Parameters: {params or 'none'} | Tables: {tables or 'N/A'}"
                 )
-    except Exception:
-        pass  # Resilient — skip if unavailable
+    except Exception as exc:
+        # Resilient — skip if unavailable, but leave a trace
+        log_error("", "investigation_matrix.list_scenarios", str(exc),
+                  severity="warning")
 
     # -- Multi-stage KQL playbooks --------------------------------------------
     try:

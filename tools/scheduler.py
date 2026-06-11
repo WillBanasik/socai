@@ -122,8 +122,11 @@ def start_scheduler() -> None:
                     results = {name: build_client_baseline(name) for name in _names}
                     return {"refreshed": list(results.keys())}
                 tasks.append(("baseline_refresh", 24 * 3600, _refresh_all_baselines))
-        except Exception:
-            pass
+        except Exception as exc:
+            # A silently-skipped registration means the task never runs and
+            # nobody knows — log it (same below).
+            log_error("", "scheduler.register.baseline_refresh", str(exc),
+                      severity="warning")
 
         # Coverage refresh — daily log source coverage collection per client
         try:
@@ -136,8 +139,9 @@ def start_scheduler() -> None:
                         results[name] = r.get("status", "error")
                     return {"refreshed": list(results.keys())}
                 tasks.append(("coverage_refresh", 24 * 3600, _refresh_all_coverage))
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error("", "scheduler.register.coverage_refresh", str(exc),
+                      severity="warning")
 
         # Article discovery — daily or weekly auto-fetch of RSS candidates
         try:
@@ -151,8 +155,9 @@ def start_scheduler() -> None:
                     return {"total": len(candidates), "new": len(uncovered),
                             "candidates": [c["title"] for c in uncovered[:10]]}
                 tasks.append(("article_discovery", interval, _auto_discover_articles))
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error("", "scheduler.register.article_discovery", str(exc),
+                      severity="warning")
 
         # Article auto-publish — push unpublished articles to OpenCTI (daily)
         try:
@@ -172,8 +177,9 @@ def start_scheduler() -> None:
                             published.append(a["article_id"])
                     return {"published": published, "count": len(published)}
                 tasks.append(("article_auto_publish", 24 * 3600, _auto_publish_articles))
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error("", "scheduler.register.article_auto_publish", str(exc),
+                      severity="warning")
 
         _scheduler_thread = threading.Thread(
             target=_scheduler_loop,

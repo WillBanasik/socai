@@ -25,7 +25,7 @@ from pptx.enum.shapes import MSO_CONNECTOR_TYPE
 from pptx.enum.text import PP_ALIGN
 
 from config.settings import CASES_DIR
-from tools.common import audit, load_json, utcnow
+from tools.common import audit, eprint, load_json, utcnow
 
 # ── Palette ──────────────────────────────────────────────────────────────────
 NAVY        = RGBColor(0x0D, 0x1B, 0x2A)   # slide background
@@ -792,7 +792,7 @@ def generate_pptx(case_id: str) -> dict:
     out_bytes = out_path.read_bytes()
     audit("generate_pptx", str(out_path), extra={"case_id": case_id})
 
-    print(f"[generate_pptx] {len(prs.slides)} slides written to {out_path}")
+    eprint(f"[generate_pptx] {len(prs.slides)} slides written to {out_path}")
     return {
         "case_id":    case_id,
         "pptx_path":  str(out_path),

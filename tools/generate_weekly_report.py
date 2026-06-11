@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import REGISTRY_FILE, WEEKLY_REPORTS
-from tools.common import eprint, load_json, log_error, utcnow, write_artefact
+from tools.common import eprint, load_json, log_error, utcnow, utcnow_dt, write_artefact
 
 
 def _week_bounds(year: int, week: int) -> tuple[datetime, datetime]:
@@ -65,7 +65,7 @@ def generate_weekly_report(
     Generate a weekly rollup report.
     If year/week not specified, uses the current ISO week.
     """
-    now = datetime.now(timezone.utc)
+    now = utcnow_dt()
     if year is None:
         year = now.isocalendar().year
     if week is None:

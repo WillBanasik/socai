@@ -4745,16 +4745,24 @@ def _register_tier3(mcp: FastMCP) -> None:
         _check_client_boundary(case_id)
 
         # Store alert as evidence so the prompt can access it
+        evidence_warning = None
         if alert_data:
             try:
                 from api import actions
                 actions.add_evidence(case_id, alert_data)
-            except Exception:
-                pass  # best-effort
+            except Exception as exc:
+                # Surface it — a silently-missing evidence chain re-emerges
+                # later as a save_report rule-9 refusal.
+                from tools.common import log_error
+                log_error(case_id, "prepare_closure_comment.add_evidence",
+                          str(exc), severity="warning")
+                evidence_warning = (f"add_evidence failed ({exc}) — record the "
+                                    "alert with add_evidence before saving.")
 
         return _json({
             "status": "use_prompt",
             "case_id": case_id,
+            **({"evidence_warning": evidence_warning} if evidence_warning else {}),
             "classification": classification,
             "label": cfg["label"],
             "disposition": cfg["disposition"],
@@ -4791,15 +4799,21 @@ def _register_tier3(mcp: FastMCP) -> None:
         _check_client_boundary(case_id)
 
         # Store alert as evidence so the prompt can access it
+        evidence_warning = None
         try:
             from api import actions
             actions.add_evidence(case_id, alert_data)
-        except Exception:
-            pass  # best-effort
+        except Exception as exc:
+            from tools.common import log_error
+            log_error(case_id, "prepare_fp_tuning_ticket.add_evidence",
+                      str(exc), severity="warning")
+            evidence_warning = (f"add_evidence failed ({exc}) — record the "
+                                "alert with add_evidence before saving.")
 
         return _json({
             "status": "use_prompt",
             "case_id": case_id,
+            **({"evidence_warning": evidence_warning} if evidence_warning else {}),
             "prompt": "write_fp_tuning",
             "save_tool": "save_report",
             "save_args": {"report_type": "fp_tuning_ticket"},

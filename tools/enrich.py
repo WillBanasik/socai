@@ -133,7 +133,10 @@ def _asn_lookup_bulk(ips: list[str]) -> dict[str, dict]:
                         prefix = fields[1]
                         results[ip] = {"asn": asn, "prefix": prefix, "owner": ""}
                     break
-            except Exception:
+            except Exception as exc:
+                # NXDOMAIN is routine for unannounced/private space — info, not warning
+                log_error("", "enrich.asn_lookup", str(exc),
+                          severity="info", context={"ip": ip})
                 continue
 
         # Batch ASN-to-name resolution
@@ -148,7 +151,9 @@ def _asn_lookup_bulk(ips: list[str]) -> dict[str, dict]:
                     if len(fields) >= 5:
                         asn_names[asn] = fields[4]
                     break
-            except Exception:
+            except Exception as exc:
+                log_error("", "enrich.asn_name_lookup", str(exc),
+                          severity="info", context={"asn": asn})
                 continue
         for ip, info in results.items():
             info["owner"] = asn_names.get(info["asn"], "")

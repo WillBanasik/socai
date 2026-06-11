@@ -25,6 +25,8 @@ from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 
+from tools.common import eprint
+
 # ── Palette ──────────────────────────────────────────────────────────────────
 NAVY        = RGBColor(0x0D, 0x1B, 0x2A)
 DARK_NAVY   = RGBColor(0x09, 0x12, 0x1C)
@@ -1156,8 +1158,8 @@ def generate_capabilities_pptx() -> str:
     out_path = Path(__file__).resolve().parent.parent / "socai_capabilities_showcase.pptx"
     prs.save(str(out_path))
 
-    print(f"[generate_capabilities_pptx] {len(prs.slides)} slides written to {out_path}")
-    print(f"[generate_capabilities_pptx] Size: {out_path.stat().st_size:,} bytes")
+    eprint(f"[generate_capabilities_pptx] {len(prs.slides)} slides written to {out_path}")
+    eprint(f"[generate_capabilities_pptx] Size: {out_path.stat().st_size:,} bytes")
     return str(out_path)
 
 

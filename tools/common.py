@@ -285,6 +285,15 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def utcnow_dt() -> datetime:
+    """Timezone-aware current UTC time as a ``datetime``.
+
+    Use instead of per-module ``datetime.now(timezone.utc)`` — same value,
+    one convention. ``utcnow()`` remains the canonical string form.
+    """
+    return datetime.now(timezone.utc)
+
+
 def eprint(*args, **kwargs) -> None:
     """print() to stderr. Use for progress/status — stdout is the JSON-RPC channel in stdio MCP mode."""
     import sys

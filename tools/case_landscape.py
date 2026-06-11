@@ -36,7 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import BASE_DIR, IOC_INDEX_FILE, REGISTRY_FILE
-from tools.common import load_json, log_error, save_json, utcnow
+from tools.common import load_json, log_error, save_json, utcnow, utcnow_dt
 
 LINKS_INDEX_FILE = BASE_DIR / "registry" / "case_links.json"
 CAMPAIGNS_FILE = BASE_DIR / "registry" / "campaigns.json"
@@ -83,7 +83,7 @@ def assess_landscape(
 
     Returns structured landscape dict with statistics, patterns, and recommendations.
     """
-    now = datetime.now(timezone.utc)
+    now = utcnow_dt()
     cutoff = now - timedelta(days=days) if days else None
 
     # Load data sources
