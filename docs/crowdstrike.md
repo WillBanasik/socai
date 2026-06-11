@@ -125,7 +125,7 @@ Tools exposed:
 
 | Tool | Purpose |
 |---|---|
-| `run_falcon_cql(client, cql, repo?, max_rows?)` | NG-SIEM event hunting |
+| `run_falcon_cql(client, cql, repo?, start?, end?)` | NG-SIEM event hunting. `start`/`end` default to `"7d"`/`"now"` and are echoed back as `stats.window` |
 | `query_falcon_detections(client, filter_fql?, limit?)` | Detection summaries |
 | `query_falcon_hosts(client, filter_fql?, limit?)` | Host inventory |
 | `query_falcon_incidents(client, filter_fql?, limit?)` | Incidents |
@@ -145,10 +145,12 @@ Some endpoint playbook stages reference Falcon events not yet seen across onboar
 ## Limits & gotchas
 
 - **No `union`-style cross-repo queries** — CQL is per-repo. Each client = one repo.
-- **30-min token TTL** — refresh handled automatically by the in-process cache (keyed `client@host`, refreshed 120 s before the server-provided `expires_in`, evicted on 401). The refresh runs under the cache lock so concurrent cold-cache callers for a client coalesce onto one `/oauth2/token` request rather than a refresh storm. All HTTP goes through the pooled `get_session()`.
+- **30-min token TTL** — refresh handled automatically by the in-process cache (keyed `client@host`, refreshed 120 s before the server-provided `expires_in`, evicted on 401). A 401 mid-session triggers **one fresh-token retry** before failing (Falcon revokes the prior token whenever a new grant is issued, so expiry/revocation between calls is routine, not an error). The refresh runs under the cache lock so concurrent cold-cache callers for a client coalesce onto one `/oauth2/token` request rather than a refresh storm. All HTTP goes through the pooled `get_session()`.
 - **Rate limits** vary by Falcon tier. 429 responses surface `X-Ratelimit-Retryafter` in the error message.
 - **403 = scope missing** — the API client in Falcon console needs the relevant read scope; can't be fixed from Performanta side.
 - **`run_falcon_cql` is synchronous-only in v1** — large result sets that need the async `start/status/result` pattern aren't supported yet. Practical limit: queries that complete within 30s and return ≤10K rows.
+- **The search window is always sent explicitly** (`start`/`end`, default `"7d"`/`"now"`, echoed as `stats.window`) — when omitted from the request body LogScale silently pins the search to its own ~24h default, so multi-day sweeps read as "no hits".
+- **Classic queries surface server-side totals** — `query_detections`/`query_hosts`/`query_incidents` return `stats.total_available` and `stats.truncated`, so a result hitting the `limit` reads as "first N of M", not "exactly N".
 - **Audit trail**: queries appear in the client's Falcon audit log under the API client name (e.g. `Performanta-MDR-Tooling`). Analyst attribution is in socai's own audit + case linkage.
 
 ## Artefacts

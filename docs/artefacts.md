@@ -9,7 +9,7 @@ All persistent state is on the filesystem. There is no database.
 | `registry/case_index.json` | Master registry; updated by `case_create` and `index_case` |
 | `registry/audit.log` | Append-only JSONL; one line per artefact written (never truncate) |
 | `registry/error_log.jsonl` | Append-only error log; one JSONL line per error/warning/info |
-| `registry/enrichment_cache.json` | Cross-run enrichment cache; keyed by `provider\|ioc`, TTL-controlled |
+| `registry/enrichment_cache.json` | Cross-run enrichment cache; keyed by `provider\|ioc`, TTL-controlled. Saves are flock-serialised (`.lock` sidecar) merge-and-atomic-replace: per-key newer-`cached_at` wins, expired entries are evicted on save, readers never see a partial file |
 | `registry/ioc_index.json` | Cross-case IOC index; keyed by IOC value; tracks `first_seen`, `last_seen`, `cases[]`, composite verdict |
 | `registry/campaigns.json` | Cross-case campaign clusters; updated by `campaign_cluster` |
 | `registry/metrics.jsonl` | Append-only investigation metrics; case phase changes, enrichment duration/coverage, verdict confidence, report completeness, investigation summaries |
@@ -61,8 +61,8 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/yara/generated_rules.yar` | LLM-generated case-specific YARA rules |
 | `cases/<ID>/artefacts/evtx/evtx_correlation.json` | Windows Event Log attack chain detection |
 | `cases/<ID>/artefacts/cve/cve_context.json` | CVE contextualisation (NVD, EPSS, KEV, OpenCTI) |
-| `cases/<ID>/artefacts/eql_context/posture.json` | Encore EQL client-wide posture baseline (`eql_posture_context`) — Secure Score, MFA/identity, privileged access, compliance, Defender recs, vuln exposure, training |
-| `cases/<ID>/artefacts/eql_context/<entity>.json` | Encore EQL per-entity context (`eql_entity_context`) — identity/device/detection/exposure for a named user/host/IP |
+| `cases/<ID>/artefacts/eql_context/posture_<ts>.json` | Encore EQL client-wide posture baseline (`eql_posture_context`) — Secure Score, MFA/identity, privileged access, compliance, Defender recs, vuln exposure, training. Timestamped: a re-run snapshots alongside the earlier pull instead of overwriting it |
+| `cases/<ID>/artefacts/eql_context/<entity>_<ts>.json` | Encore EQL per-entity context (`eql_entity_context`) — identity/device/detection/exposure for a named user/host/IP. Timestamped per pull |
 | `cases/<ID>/artefacts/eql_context/identity_assessment_<ts>.json` | Encore EQL identity assessment (`eql_identity_assessment`) — per-user internal/external classification + managed devices; per-host asset classification + local admins |
 | `cases/<ID>/artefacts/eql_context/adhoc_<ts>.json` | Encore EQL raw query result (`eql_query` escape hatch) |
 | `cases/<ID>/artefacts/eql_context/entity_lookup_EQL_<ts>.json` | Promoted caseless entity lookup (`import_eql_lookup` / `create_case(eql_lookup_id=)`) — full payload from `eql_entity_lookup` |

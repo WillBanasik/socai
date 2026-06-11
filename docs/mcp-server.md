@@ -87,7 +87,7 @@ python3 -c "from api.auth import create_access_token; print(create_access_token(
 **Token TTL:** Controlled by `SOCAI_JWT_TTL_HOURS` (default `8`). For centrally hosted deployments behind a VPN, longer TTLs (24h–30d) reduce friction. Tokens carry the analyst's role, email, and permissions — the MCP server reads these on every request.
 
 **Security checklist:**
-- Set a strong random `SOCAI_JWT_SECRET` in `.env` (the default is insecure)
+- Set a strong random `SOCAI_JWT_SECRET` in `.env`. There is **no static fallback**: when unset, the server generates an ephemeral per-process secret and warns on stderr — tokens then die on restart and cannot be verified by any other process (the old source-visible default let anyone who had read the repo mint valid tokens)
 - Use TLS (Caddy/nginx reverse proxy) — JWTs over plain HTTP are interceptable
 - Bind `SOCAI_MCP_HOST=127.0.0.1` when behind a reverse proxy
 - `chmod 600 config/users.json` (contains password hashes)
@@ -108,7 +108,7 @@ Set `SOCAI_MCP_AUTH=entra_id` to validate Azure AD tokens instead. `SocaiTokenVe
 | `SOCAI_MCP_LOG_LEVEL` | `INFO` | Structured log level |
 | `SOCAI_MCP_LOG_RESULTS` | `1` | Log tool result previews (`0` to disable) |
 | `SOCAI_MCP_LOG_MAX_RESULT` | `2000` | Max chars per result preview in logs |
-| `SOCAI_JWT_SECRET` | (insecure default) | JWT signing secret — **must set in production** |
+| `SOCAI_JWT_SECRET` | (ephemeral per-process secret when unset) | JWT signing secret — **must set in production**; without it tokens die on restart and other processes can't verify them |
 | `SOCAI_JWT_TTL_HOURS` | `8` | Token expiry (hours); `720` = 30 days |
 | `MAXMIND_LICENSE_KEY` | — | MaxMind license key for local GeoIP database (free at maxmind.com) |
 | `SOCAI_MCP_PUBLIC_BASE_URL` | `http://127.0.0.1:<port>` | Public origin used to build signed `upload_url` links (file uploads only — reports are returned inline in the `save_report` response, not via URL). Override with the public Azure URL in production. |
@@ -188,12 +188,12 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `quick_enrich` | `investigations:read` | Caseless ad-hoc IOC enrichment (no case required) |
 | `import_enrichment` | `investigations:submit` | Import caseless enrichment results into a case (avoids re-enrichment) |
 | `query_opencti` | `investigations:read` | Direct OpenCTI queries (IOCs, CVEs, keyword search) |
-| `extract_iocs_from_text` | — | Extract IOCs from raw text (caseless) |
+| `extract_iocs_from_text` | — | Extract IOCs from raw text (caseless). Refangs defanged input first (`hxxp`, `[.]`, `[@]`) so pasted threat intel extracts correctly |
 | `search_confluence` | `investigations:read` | Search/browse published ET/EV threat articles on Confluence wiki |
 | `list_clients` | `investigations:read` | List all registered clients with names, aliases, and configured platforms |
 | `list_toolsets` | `investigations:read` | List available tool groups and which are currently loaded |
 | `load_toolset` | `investigations:read` | Load a specialist tool group so its tools become callable this session |
-| `audit_user_activity` | `investigations:read` | Audit MCP tool activity from the server log — who called what, when |
+| `audit_user_activity` | `investigations:read` | Audit MCP tool activity from the server log — who called what, when. The `max_events` cap keeps the **newest** events |
 
 ### Tier 2 -- Extended Analysis (28)
 
@@ -221,7 +221,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `triage_iocs` | `investigations:read` | Pre-pipeline IOC reputation check (read-only — consults cache/index, persists nothing) |
 | `score_ioc_verdicts` | `investigations:submit` | Composite verdict scoring + IOC index update |
 | `analyse_file` | `investigations:read` | Unified tiered static-file analysis (Tier 1 hash/magic/entropy/strings/reputation; Tier 2 auto-escalates to format specialists: PE, Office, PDF, LNK, OneNote, Mach-O, disk image, MSI; Tier 3 YARA on signal) — server-side, requires file on MCP filesystem |
-| `prepare_file_upload` | `investigations:read` | Mint a signed URL the caller can `curl` to ship a sample from a different sandbox to the MCP server (HTTP path; preferred) |
+| `prepare_file_upload` | `investigations:read` | Mint a signed URL the caller can `curl` to ship a sample from a different sandbox to the MCP server (HTTP path; preferred). `case_id` is validated against `[A-Za-z0-9_-]+` and the write path is confined to `cases/` |
 | `upload_file_content` | `investigations:read` | Last-resort in-band base64 file upload — capped at 2 MB; bytes land in chat history. Use only when HTTP upload is unreachable |
 | `sandbox_api_lookup` | `investigations:submit` | API-based sandbox report lookup (Hybrid Analysis, Any.Run, Joe) |
 | `query_cyberint_alerts` | `investigations:read` | Query Cyberint CTI alert feed (single alert or filtered list) |
@@ -302,7 +302,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `ingest_velociraptor` | `investigations:submit` | Ingest Velociraptor offline collector data |
 | `ingest_mde_package` | `investigations:submit` | Ingest MDE investigation package |
 | `generate_weekly` | `investigations:read` | Weekly SOC report |
-| `save_report` | `investigations:submit` | Persist a locally-generated markdown report (defang, auto-close, audit). No LLM call. |
+| `save_report` | `investigations:submit` | Persist a locally-generated markdown report (defang, auto-close, audit). No LLM call. Evidence-bearing types (`mdr_report`, `pup_report`, `executive_summary`, `security_arch_review`) **refuse to save** until the case has at least one `add_evidence` and one `add_finding` entry (Analytical Standards rule 9) — backfill the chain, then retry. |
 | `link_cases` | `investigations:submit` | Link related cases |
 | `merge_cases` | `admin` | Merge duplicate cases |
 | `response_actions` | `investigations:submit` | Recommend containment/response actions |
@@ -627,7 +627,7 @@ SOCAI_MCP_HOST=127.0.0.1 python3 -m mcp_server
 }
 ```
 
-Returns `200` when healthy, `503` when degraded (scheduler dead or filesystem read-only). The systemd watchdog uses the same checks — if any fail, watchdog pings stop and systemd restarts the server.
+Returns `200` when healthy, `503` when degraded (scheduler dead or filesystem read-only). The systemd watchdog pings on **liveness, not full readiness**: only an unwritable filesystem withholds `WATCHDOG=1` (the server genuinely cannot operate). A dead background scheduler thread degrades `/healthz` for monitoring but does **not** stop the pings — withholding them made systemd kill a fully-serving transport (and live analyst sessions) in a restart loop over a non-critical worker.
 
 ### Security checklist
 

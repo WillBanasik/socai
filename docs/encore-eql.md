@@ -48,16 +48,16 @@ Distinguish failures: **Cloudflare HTML 403** = UA/edge problem; **clean JSON 40
 ## Path A — `scripts/eql_direct.py`
 
 ```bash
-python3 scripts/eql_direct.py query "list version"            # health check
-python3 scripts/eql_direct.py clients                         # all client aliases + region
-python3 scripts/eql_direct.py query "list tables" [--client <alias>]
-python3 scripts/eql_direct.py query "list labels"
-python3 scripts/eql_direct.py query "list tables label:<label>"
-python3 scripts/eql_direct.py query "list columns <TableName>"
+python3 scripts/eql_direct.py query "list version" --client <alias>            # health check
+python3 scripts/eql_direct.py clients                                          # all client aliases + region
+python3 scripts/eql_direct.py query "list tables" --client <alias>
+python3 scripts/eql_direct.py query "list labels" --client <alias>
+python3 scripts/eql_direct.py query "list tables label:<label>" --client <alias>
+python3 scripts/eql_direct.py query "list columns <TableName>" --client <alias>
 python3 scripts/eql_direct.py query '<TableName> WHERE <col> = "x" SELECT <col1>, <col2>' --client <alias>
 ```
 
-Defaults to the `Performanta` client. Reads `ENCORE_EQL_TOKEN`, refreshes, sends a browser UA, never prints the token. Query endpoint: `POST /client/request?client=<alias>` with the raw EQL string as the body. Clients: `GET /system/clients` → `[{internalClientId, targetRegionId, aliases[]}]` — use any alias as the `--client` value.
+**`--client` is mandatory for every query — there is deliberately no default tenant.** A silent default is the same failure class as the 2026-06-01 unscoped-KQL leak (querying the MSSP's own tenant on behalf of a client case); the script exits with an error instead. Run `clients` to list valid aliases. Reads `ENCORE_EQL_TOKEN`, refreshes, sends a browser UA, never prints the token. Query endpoint: `POST /client/request?client=<alias>` with the raw EQL string as the body. Clients: `GET /system/clients` → `[{internalClientId, targetRegionId, aliases[]}]` — use any alias as the `--client` value.
 
 ## Path B — MCP server (`eql-hosted`)
 
@@ -127,73 +127,21 @@ After editing the Desktop config **or rotating the token**, fully **quit and rel
 
 The load-bearing footgun, repeated here because it bites hardest: **EQL is not Elasticsearch EQL and not SQL.** No pipe (`|`), `FROM`, `SELECT *`, standalone `KEEP`/`LIMIT`, `like~`, single quotes, or `ASC`/`DESC`. The format is table-first: `<TableName> WHERE <col> = "val" AND <col2> LIKE "%x%" SELECT <col1>, <col2> ORDER BY <col> DESCENDING`. Always `list_tables` → `list_columns <TableName>` to confirm exact names before querying. Discovery: `list version`, `list clients`, `list labels`, `list tables [label:<label>]`, `list columns [<TableName>]`.
 
-The manual documents clauses this integration historically under-described — worth knowing they exist:
-
-- **`SKIP N` / `TAKE N`** — offset/page-size pagination. There is no `LIMIT` *keyword*, but `TAKE` *does* bound rows (confirmed live, 2026-06-05). Position differs with/without `BATCH-JOIN` — see the manual.
-- **`GROUP BY`** + `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, and **`SORT BY`** (post-aggregation sort, vs `ORDER BY` which sorts pre-aggregation). Confirmed live, 2026-06-05.
-- **`INCLUDE <Table>`** — links tables via internally-defined joins (lighter than `BATCH-JOIN`).
-- **`PROCESS-DATA`** — a second in-memory processing stage over the result set.
-- **Type properties** (`Col.Day`/`.ToUpper`/`.Length`/`.ToText`, alias required) and **static columns** (`"value" AS Name`).
+Beyond the basic `WHERE` / `SELECT` / `ORDER BY` shape above, the manual is the **authoritative and frequently-updated** source for the full clause set — pagination, grouping/aggregation, sorting, predefined joins (`INCLUDE`), dataset joins (`BATCH-JOIN`), post-processing (`PROCESS-DATA`), type properties, and built-in functions. **Do not rely on any clause list, aggregator set, operator list, or function list cached in this doc or in memory — read the manual.** It changes often (the supported-aggregator set has already shifted once), so an enumeration here would only go stale and mislead. The job of this doc is the socai integration around EQL, not the language itself.
 
 Caveat: the MCP layer is one version ahead of the EQL server, so **verify a less-common clause is live before relying on it** (see [Known server quirks](#known-server-quirks)).
 
 ### BATCH-JOIN (dataset joins)
 
-`BATCH-JOIN` chains two or more datasets into a single result set, so one query can enrich event rows with context from another table — a device's vulnerabilities and logged-on users, a sign-in's identity attributes — without a second round-trip and Python-side stitching. **The base BATCH-JOIN grammar is canonical in the live `eql://manual` resource;** what follows is the socai-validated elaboration the manual doesn't spell out — the column-position rules, the exact gateway error messages, LEFT-join semantics, and the boolean/quirk interactions. (Validated against the live gateway, 2026-06-05; experiment matrix in the `reference_eql_batch_join` memory.)
+`BATCH-JOIN` correlates rows across tables in one query — enrich event rows with identity/device context server-side instead of firing separate queries and stitching them in Python. **The grammar — the shape, the bare-vs-`alias_` column-reference rules, LEFT-join semantics, predicate-columns-in-`SELECT`, NULL-key handling, and `SKIP`/`TAKE` positioning — is canonical in the live `eql://manual` resource; read it before composing a join.** A full local copy used to live here and was removed: the manual now documents BATCH-JOIN in detail, and a duplicate only drifts.
 
-**Shape** — each table is a *dataset* with its own optional `WHERE` and a mandatory `SELECT`:
+What the manual does *not* spell out — socai-validated field notes (live against the za.encore.io gateway, Performanta tenant, 2026-06-05; re-verify if the gateway changes, not when the manual changes):
 
-```
-<TableA> [WHERE …] SELECT <colsA…, joinKeyA>
-BATCH-JOIN <TableB> AS <b> ON <joinKeyA> = <b>_<joinKeyB> [WHERE <bareColB …>] SELECT <colsB…, joinKeyB>
-[BATCH-JOIN <TableC> AS <c> ON <keyFromA-or-B> = <c>_<joinKeyC> [WHERE …] SELECT <colsC…, joinKeyC>]
-[ORDER BY <bareCol> DESCENDING]
-```
-
-**Column-reference rules** — the single biggest source of errors. *Where* a joined column sits decides whether it takes the `alias_` prefix:
-
-| Position | First table | Joined table |
-|---|---|---|
-| `SELECT` list | bare (`Id`) | **bare** (`Severity`) |
-| Join predicate, left of `=` | bare (`Id`) | — |
-| Join predicate, right of `=` | — | **`alias_Col`** (`v_MachineId`) |
-| `WHERE` on that dataset | bare | **bare** (`Severity`) |
-| `ORDER BY` | bare | **bare** (`CvssV3`) |
-| **Output JSON key** | bare (`Id`) | **`alias_Col`** (`v_Severity`) |
-
-So `alias_Col` appears in exactly two places — the **right side of a join predicate** and the **output keys**. Everywhere else the joined column is referenced **bare**.
-
-**Hard rules (each is enforced; the error message names the fix):**
-
-- **Every join-predicate column must appear in its own dataset's `SELECT`** — both the left key (in TableA's `SELECT`) and the right key (in the joined table's `SELECT`). Omitting it → `The following column names (MachineId) were not found in the incoming data set (v) … include the predicate column(s) in the select statement.`
-- A joined-table `WHERE` uses the **bare** column name. Using `alias_Col` there → `v_Severity is not a valid column name, permitted option for the … table are: …`.
-- **It is a LEFT join.** An unmatched left row is *kept*, with the joined columns returned as empty strings (`""`) — not dropped. For inner-join behaviour, add a `WHERE` on the joined dataset (any always-present column) or discard rows whose `alias_*` keys are blank.
-- **Join-key equality is case-insensitive** (`tlangelani.mathebula@…` matched `Tlangelani.Mathebula@…`). No need to normalise case before joining.
-- **No `LIMIT` keyword** — but `TAKE N` bounds rows and `SKIP N` pages (with joins, both sit *after* the join predicates — see the manual). Still bound *every* dataset with `WHERE`: a multi-hop star (below) multiplies rows (users × vulnerabilities), and `TAKE` without an `ORDER BY` takes an arbitrary N, so filter the fan-out side hard regardless.
-- **Different column names on each side are expected** (`ON Id = v_MachineId`); **identical names also work** — the alias disambiguates them in the output (`UserPrincipalName` vs `u_UserPrincipalName`).
-- A later join may key off the **first table's** column, not only the immediately-preceding dataset — so you can *star* several tables off one anchor key as well as *chain* A→B→C.
-- The **boolean-filter quirk still applies inside joins**: filter on the `*AsText` mirror column, never the raw boolean (`WHERE IsElevatedAsText = "true"`, not `IsElevated`).
-
-**Worked example 1 — device → logged-on users → critical vulns (3-table star on `MachineId`):**
-
-```
-WindowsDefenderAtp-Machines WHERE Id = "<machineId>" SELECT Id, ComputerDnsName
-BATCH-JOIN WindowsDefenderAtp-MachineUsers AS u ON Id = u_MachineId SELECT AccountName, AccountDomain, MachineId
-BATCH-JOIN WindowsDefenderAtp-MachineVulnerabilities AS v ON Id = v_MachineId WHERE Severity = "Critical" SELECT Name, Severity, CvssV3, MachineId
-```
-
-→ each logged-on user paired with each Critical CVE on their device. Output keys: `Id`/`ComputerDnsName` (anchor, bare), `u_*`, `v_*`. Both joins star off the anchor's `Id`.
-
-**Worked example 2 — sign-in events → identity context (enrich on UPN):**
-
-```
-AzureActiveDirectory-SignInAudits WHERE UserPrincipalName = "<upn>", ConditionalAccessStatus = "failure"
-  SELECT UserPrincipalName, IpAddress, CountryName, ClientAppUsed
-BATCH-JOIN AzureActiveDirectory-Users AS u ON UserPrincipalName = u_UserPrincipalName
-  SELECT Department, IsMfaRegisteredAsText, UserPrincipalName
-```
-
-→ each failed-CA sign-in annotated with the user's department and MFA-registration state — the SOC "who is this and were they protected" pivot in one query.
+- **Gateway error strings** (fast-diagnosis aids, not in the manual):
+  - Predicate column missing from a dataset's `SELECT` → `The following column names (MachineId) were not found in the incoming data set (v) … include the predicate column(s) in the select statement.`
+  - `alias_Col` used anywhere other than the predicate RHS / output keys (e.g. in a joined dataset's `WHERE`) → `v_Severity is not a valid column name, permitted option for the … table are: …`.
+- **The boolean-filter quirk applies inside joins too** — filter on the `*AsText` mirror column, never the raw boolean (`WHERE IsElevatedAsText = "true"`, not `IsElevated`). See the EQL filter quirk under [Vulnerability hunting](#vulnerability-hunting-two-modes).
+- **Join-key equality is case-insensitive** (`tlangelani.mathebula@…` matched `Tlangelani.Mathebula@…`) — no need to normalise case before joining.
 
 **Where this helps socai.** The case-scoped `eql_*` tools (`tools/eql.py`) currently fire separate per-entity queries and stitch the results in Python. Joins can collapse the common *event + identity/device context* pairs into a single server-side call: sign-in / risky-activity rows + `AzureActiveDirectory-Users` attributes, or Defender machine rows + `MachineVulnerabilities` / `MachineUsers`. Not yet wired into `QUERY_TEMPLATES` / `POSTURE_TEMPLATES` — candidate optimisation, mind the LEFT-join semantics (an enriched query must not silently swallow unmatched entities).
 
@@ -214,7 +162,7 @@ For inline HITL use, these socai MCP tools wrap EQL so the analyst never hand-re
 
 - **`eql_identity_assessment(case_id, users=, hosts=, cap=5)`** — the **lean scoping step that runs first**, before the heavier `eql_entity_context` pull. Given several users (and/or hosts), it classifies each user **internal vs external** from authoritative directory data — `UserType=Member` → internal (with on-prem-sync sub-state from `OnPremisesSamAccountName`), `Guest` / `#EXT#` UPN → external, no record → not-in-directory — and pulls **lean managed-device context** (`Intune-ManagedDevices`: name/OS/compliance/encryption/last-seen) so the exact device context is in session. A **host need not map to a single user** — a server or shared device is classified as an **asset** instead: `managed_asset` (known + in a control plane), `known_unmanaged`, or `not_in_directory`, with `managed_in` listing which platforms manage it. For any *known* host it also pulls **local admins** (`LateralMovement-LocalAdmins`) — the "who operates this device" answer for a multi-user server — skipping that query for an unknown (`not_in_directory`) host. **Request discipline:** a device query fires *only* for users that resolve to a real non-guest record (guests / not-in-directory cost a single query each), and a **soft cap** (`cap`, default 5 per list) means entries beyond the cap are returned under `not_assessed` rather than queried — raise `cap` to assess more; nothing is silently dropped. Optional zero-request overlay: a per-client `identity.internal_domains` list (in `client_entities.json`) flags a Member account sitting on an unexpected UPN domain. Use this to decide *which* entities are worth the deep `eql_entity_context` look. *Reactive — keyed on the entities named in the incident.*
 - **`eql_entity_context(case_id, user=, host=, ip=)`** — runs a curated query set (identity, sign-ins, risky activities, device posture across CrowdStrike/Defender/Intune, detections, vuln exposure, Cloudflare) for the named entity, stamps freshness + coverage, writes the raw payload to `cases/<id>/artefacts/eql_context/` and a provenance note into the evidence chain. Call it during the baseline/contextualisation step for the entities `eql_identity_assessment` flagged as worth it. *Reactive — keyed on an entity named in the incident.*
-- **`eql_posture_context(case_id)`** — runs a curated **client-wide** (no-WHERE) query set for the preventative-control / best-practice configuration baseline: Secure Score, MFA/identity coverage, privileged-role assignments, app-credential hygiene, device/encryption compliance, Defender configuration recommendations, vulnerability exposure, security-awareness training. Writes the full payload to `artefacts/eql_context/posture.json` + an evidence note. Snapshot tables are ordered newest-first (top row = current state). *This is the primary input to the security architecture review (`write_security_arch_review`).* See `POSTURE_TEMPLATES` in `tools/eql.py`.
+- **`eql_posture_context(case_id)`** — runs a curated **client-wide** (no-WHERE) query set for the preventative-control / best-practice configuration baseline: Secure Score, MFA/identity coverage, privileged-role assignments, app-credential hygiene, device/encryption compliance, Defender configuration recommendations, vulnerability exposure, security-awareness training. Writes the full payload to `artefacts/eql_context/posture_<ts>.json` (timestamped — a re-run snapshots alongside the earlier pull) + an evidence note. Snapshot tables are ordered newest-first (top row = current state). *This is the primary input to the security architecture review (`write_security_arch_review`).* See `POSTURE_TEMPLATES` in `tools/eql.py`.
 - **`eql_query(case_id, eql)`** — analyst escape hatch for a raw EQL string, same scope gate, same persistence.
 - **`eql_vuln_hunt(client)`** — a **caseless** EQL tool: proactive vulnerability hunting. Resolves the client by name (exact, via the same `_resolve_encore_id` gate — never fuzzy) and runs `VULN_HUNT_TEMPLATES` (exposed hosts ranked by exploitability; actively-exploited CVEs; new 48h KEVs; EDR compensating-control tasks; exposure summary). Persists to `registry/vuln_hunts/VH_<ts>.json` (mirrors `quick_enrich`) and returns a `hunt_id` + triage summary. **Promote** with `import_vuln_hunt(hunt_id, case_id)` or `create_case(vuln_hunt_id=…)`. See `VULN_HUNT_TEMPLATES` in `tools/eql.py`.
 
@@ -236,13 +184,13 @@ Encore pre-computes the exploit/KEV prioritisation (EPSS, in-the-wild, ransomwar
 
 The deliverable is **`prepare_vuln_hunt_report`** → `write_vuln_hunt_report` prompt → `save_report(report_type="vuln_hunt_report")` — a prioritised remediation worklist ending in a machine-readable JSON handoff (`control_type`: `patch` | `edr_soar_mitigation`) for a downstream engineering pipeline. Non-closing (a hunt is proactive). Confirmed exploitation escalates to a live incident, not just a ticket.
 
-**EQL filter quirk (load-bearing):** boolean columns cannot be filtered (`WHERE HasActiveExploit = "true"` → `Boolean is not compatible with true (Text)`), and there is no `LIMIT`. So large catalogues are bounded via a **Text** `WHERE` (the 41k-row `VulnerabilityPrioritization-Vulnerabilities` table → `Classification = "Actively Exploited"`, ~117 rows) and exploit flags are filtered **client-side** on ranked results. The CVE table's `PrioritizationIndex` saturates — rank CVEs by `Epss`, not the index (the host table's index ranks fine).
+**EQL filter quirk (load-bearing):** boolean columns cannot be filtered (`WHERE HasActiveExploit = "true"` → `Boolean is not compatible with true (Text)`) — a backend/type-system behaviour, not a grammar rule, so it lives here rather than deferring to the manual. So large catalogues are bounded via a **Text** `WHERE` (the 41k-row `VulnerabilityPrioritization-Vulnerabilities` table → `Classification = "Actively Exploited"`, ~117 rows) and exploit flags are filtered **client-side** on ranked results. The CVE table's `PrioritizationIndex` saturates — rank CVEs by `Epss`, not the index (the host table's index ranks fine).
 
 Posture additions (client-wide, for the security architecture review): `AllServicePrincipals` (enterprise-app / OAuth privilege inventory) and `DirectoryAudits` (recent privileged changes) joined the existing `POSTURE_TEMPLATES`; `LateralMovement-LocalAdmins` enriches host `entity_context` (blast radius). `DirectoryAudits.InitiatedBy` is a display name and lateral-movement account names are sam-style — neither keys off a UPN, hence client-wide rather than entity-scoped.
 
 **Token-scope gate.** Both tools resolve `case_id` → the case's client → `platforms.encore.internal_client_id`, and pin every query to that UUID. The caller cannot supply a client/clientId, and a client without an `internal_client_id` mapping (or read `access`) is refused **before any HTTP call**. So although `ENCORE_EQL_TOKEN` spans all clients, the socai-native path is structurally single-client per case. (The `eql-hosted` MCP server, Path B, is the unrestricted multi-client surface — use it for ad-hoc/cross-client research.)
 
-**Freshness/coverage.** Posture snapshots refresh ~daily; event tables within ~1–2h; `SignInAudits` is a rolling ~7-day window. An empty result is reported as `no_data_for_client` — the product is not ingested for that client; it is **never** evidence of "clean".
+**Freshness/coverage.** Posture snapshots refresh ~daily; event tables within ~1–2h; `SignInAudits` is a rolling ~7-day window. Each query entry carries a `coverage` value: `ok` (rows returned), `no_data_for_client` (clean empty result — the product is not ingested for that client; **never** evidence of "clean"), or `query_error` (the gateway returned errors — the entry's `error` field carries them inline). A failed query on a curated table must never be misread as a clean/empty estate — check `coverage` before concluding anything from an empty result.
 
 ## See also
 

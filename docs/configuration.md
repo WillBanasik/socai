@@ -95,7 +95,7 @@ Hosting providers (Linode/Akamai hosting, DigitalOcean, OCI) are deliberately **
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `SOCAI_JWT_SECRET` | (insecure default) | JWT signing secret — **must set in production** |
+| `SOCAI_JWT_SECRET` | (ephemeral per-process secret when unset) | JWT signing secret — **must set in production**. No static fallback: unset means a random per-process secret (stderr warning), so tokens die on restart and other processes can't verify them |
 | `SOCAI_JWT_TTL_HOURS` | `8` | Token expiry in hours (`24` = daily, `720` = 30 days) |
 
 Users are managed locally in `config/users.json` (bcrypt-hashed passwords). Roles are defined in `config/roles.json` — they control the assistant's tone, explanation depth, and response style, not which tools are accessible.

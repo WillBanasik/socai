@@ -126,7 +126,7 @@ All investigative output — conversational analysis, reports, case artefacts �
 6. **Never produce final reports on incomplete evidence** without clearly marking what is confirmed, what is assessed (inference), and what is unknown.
 7. **Language discipline:** "Confirmed" = data proves it. "Assessed" / "Assessed with [high/medium/low] confidence" = inference supported by evidence. "Unknown" / "Not determined" = no data. Never use "confirmed" for an inference.
 8. **Verify before asserting.** Never assume a fact when the data to confirm it is available. If a directory, identity table, log, or lookup can resolve an attribute (role, department, ownership, configuration), query it before stating it. The data source is authoritative — inferences drawn from context, naming conventions, or prior assumptions are not.
-9. **Evidence and findings MUST be logged via tools before any report is produced.** `save_report` (MDR, PUP, exec summary, sec arch) requires a prior chain of `add_evidence` (raw observations: query hits, file analysis, enrichment verdicts, audit log entries) and `add_finding` (analyst conclusions tied to specific evidence IDs). A report on a case with no recorded `evidence` or `findings` artefacts is by definition unprovable and violates rules 1–4. If the analyst asks for a report on such a case, **stop and backfill the evidence/findings record from the data already in context before generating the report.** Never paper over a missing chain by writing prose straight into the report.
+9. **Evidence and findings MUST be logged via tools before any report is produced.** `save_report` (MDR, PUP, exec summary, sec arch) requires a prior chain of `add_evidence` (raw observations: query hits, file analysis, enrichment verdicts, audit log entries) and `add_finding` (analyst conclusions tied to specific evidence IDs). A report on a case with no recorded `evidence` or `findings` artefacts is by definition unprovable and violates rules 1–4. If the analyst asks for a report on such a case, **stop and backfill the evidence/findings record from the data already in context before generating the report.** Never paper over a missing chain by writing prose straight into the report. Enforced in code: `save_report` **refuses** evidence-bearing types (mdr_report, pup_report, executive_summary, security_arch_review) until the case notes contain at least one evidence entry and one `**Finding (...)**` entry — no bypass flag.
 
 ### Behavioural Assessment
 
@@ -189,7 +189,7 @@ The upload tools (`prepare_file_upload`, `upload_file_content`) are the escalati
 - `print(...)` is only acceptable inside `if __name__ == "__main__":` blocks (CLI entrypoints), where stdout legitimately carries the tool's user-facing output
 
 ### Timestamps and utilities
-- Use `utcnow()` from `tools/common.py` — never `datetime.now()` or `datetime.utcnow()`
+- Use `utcnow()` from `tools/common.py` for timestamp strings and `utcnow_dt()` for tz-aware `datetime` values — never `datetime.now()` or `datetime.utcnow()`
 
 ### Metrics logging
 - Use `log_metric(event, *, case_id, **fields)` from `tools/common.py` for investigation metrics

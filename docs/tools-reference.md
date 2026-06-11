@@ -142,6 +142,8 @@ Each task run is logged as a `scheduler_task` event in `registry/mcp_server.json
 
 `web_capture_batch` is used automatically when `len(urls) > 1` and the Playwright backend is active.
 
+**URL safety gate (SSRF guard):** every capture target — including each intermediate redirect hop — is checked before fetch: scheme must be `http(s)` (no `file://`, no custom schemes) and the resolved address must be globally routable (loopback, RFC 1918, link-local/IMDS `169.254.169.254`, and multicast are refused). Blocked URLs return `{"error": "URL blocked: …", "blocked": true}`; in a batch, blocked slots are returned in place so indexes still line up. A DNS failure is *not* a block (an unproxied capture resolves remotely via the OPSEC proxy).
+
 Each capture produces: `page.html`, `page.txt`, `screenshot.png`, `redirect_chain.json`, `capture_manifest.json`. The manifest includes a `tls_certificate` object (for HTTPS URLs) with `subject_cn`, `issuer_cn`, `issuer_org`, `san`, `not_before`, `not_after`, `cert_age_days`, `days_remaining`, `self_signed`. Additional outputs when present:
 - `xhr_responses.json` — JSON/text API responses intercepted during page load (useful for SPAs that fetch content via XHR; skips analytics/font/image noise)
 - `hop_XX/` subdirectories — intermediate redirect hops captured in separate tabs
@@ -217,7 +219,7 @@ To add a brand: append to `_BRANDS` in `detect_phishing_page.py` with `name`, `p
 
 ## Enrichment Pipeline
 
-`tools/enrich.py` uses a **tiered enrichment model** with **cross-type parallelism**. All four IOC type groups (IPv4, domain, URL, hash) run concurrently via `ThreadPoolExecutor(max_workers=4)`. Within each type group, the tier sequence remains sequential (Tier 1 results inform Tier 2 escalation decisions). Within each tier, individual provider calls run concurrently via a second `ThreadPoolExecutor` (default 25 workers, `SOCAI_ENRICH_WORKERS`). Provider functions have the signature `(ioc: str, ioc_type: str) -> dict`. Results with `status: "ok"` are cached in `registry/enrichment_cache.json` with a configurable TTL (default 24 hours, `SOCAI_ENRICH_CACHE_TTL`; set to `0` to disable).
+`tools/enrich.py` uses a **tiered enrichment model** with **cross-type parallelism**. All four IOC type groups (IPv4, domain, URL, hash) run concurrently via `ThreadPoolExecutor(max_workers=4)`. Within each type group, the tier sequence remains sequential (Tier 1 results inform Tier 2 escalation decisions). Within each tier, individual provider calls run concurrently via a second `ThreadPoolExecutor` (default 25 workers, `SOCAI_ENRICH_WORKERS`). Provider functions have the signature `(ioc: str, ioc_type: str) -> dict`. Results with `status: "ok"` are cached in `registry/enrichment_cache.json` with a configurable TTL (default 24 hours, `SOCAI_ENRICH_CACHE_TTL`; set to `0` to disable). Cache saves are crash- and concurrency-safe: an flock on a `.lock` sidecar serialises cross-process save cycles (CLI `enrich` + MCP `quick_enrich` are separate processes), the on-disk cache is re-read and merged per-key (newer `cached_at` wins) so concurrent runs don't drop each other's entries, expired entries are evicted on save, and the file is written via temp-file + `os.replace` so readers never see a partial cache.
 
 ### Depth Parameter
 
@@ -339,7 +341,7 @@ Ahmia.fi requires no API key or configuration.
 
 `tools/score_verdicts.py` runs after `enrich()`. It groups enrichment results by IOC value, only counting results where `status == "ok"`, then applies:
 - **malicious** — >=1 provider says malicious AND malicious_count >= suspicious_count
-- **suspicious** — >=1 provider says suspicious AND malicious_count == 0
+- **suspicious** — >=1 provider says suspicious and malicious doesn't win the count above (e.g. 1 malicious + 2 suspicious → suspicious). A decisive bad vote never collapses to `unknown`
 - **clean** — all responsive providers say clean
 - **forced clean** — ubiquitous-benign infrastructure (Microsoft 365 / Google / CDN domains such as `sharepointonline.com`, via `_FORCE_CLEAN_DOMAINS`) is always scored clean regardless of provider votes, so a single mis-flagging provider cannot propagate a false `malicious` verdict into `ioc_index.json` (which would otherwise pollute recall + campaign clustering)
 - **Confidence**: HIGH (>=3 providers, >66% agree), MEDIUM (>=2 providers, strict majority >50%), LOW (otherwise)
@@ -402,6 +404,8 @@ Triage is automatically called by `extract_and_enrich()` before enrichment. Its 
 - **Noise suppression:** `_BENIGN_DOMAINS` and `_BENIGN_EXACT` sets exclude common benign infrastructure
 - Campaign ID: `CAMP-YYYY-XXXXXX` (deterministic from sorted case set hash)
 - Confidence: HIGH (3+ shared IOCs with malicious verdict), MEDIUM (2+ mixed), LOW (otherwise)
+- `first_seen` on each campaign is the earliest `first_seen` timestamp across its shared IOCs (from `ioc_index.json`)
+- **Process-local cache:** results are cached against `ioc_index.json`'s `(mtime_ns, size)` with a 10-minute TTL — repeat calls while the index is unchanged skip the Union-Find rebuild, the per-member-case TTP file reads, and the registry rewrite
 
 ## Sandbox Analysis
 
@@ -482,9 +486,9 @@ Classification runs early in the investigation (before case creation). Results a
 
 `tools/timeline_reconstruct.py` assembles a chronological event timeline from all case artefacts:
 - Scans: `case_meta.json`, `capture_manifest.json`, `redirect_chain.json`, `email_analysis.json`, `enrichment.json`, `sandbox_results.json`, `triage_summary.json`, `anomaly_report.json`, `logs/*.parsed.json`, `ioc_index.json`
-- Each event: `{timestamp, source, event_type, detail}`, sorted chronologically
+- Each event: `{timestamp, source, event_type, detail}`, sorted chronologically — timestamps are parsed to tz-aware datetimes for the sort, so RFC 2822 email dates interleave correctly with ISO artefact timestamps (unparseable stamps sort last)
 - Analysis via prompt: use `write_timeline` prompt for attack phase mapping (MITRE ATT&CK), dwell time gap analysis, key event identification, narrative summary
-- Output: `artefacts/timeline/timeline.json`
+- Output: returned to the caller in the manifest (`timeline.events`) — no artefact is persisted to disk
 
 ## Cross-Sandbox File Upload
 
@@ -583,7 +587,7 @@ The upload tools above are the *escalation* path, not the default.
 `tools/disk_image_analyse.py` (the disk-image specialist invoked by `analyse_file` Tier 2) inspects disk-image carriers commonly used for ISO smuggling:
 
 - Dependencies: `pycdlib` for ISO 9660 / Joliet / Rock Ridge / UDF; raw byte parsing for VHD/VHDX
-- ISO/IMG: walks every file via pycdlib, computes sha256 + md5, auto-extracts small files and any risky extension (`.exe .dll .lnk .js .vbs .ps1 .bat .hta .cpl .msi …`) under `artefacts/disk_images/<image>/`
+- ISO/IMG: walks every file via pycdlib, computes sha256 + md5, auto-extracts small files and any risky extension (`.exe .dll .lnk .js .vbs .ps1 .bat .hta .cpl .msi …`) under `artefacts/disk_images/<image>/`. Members are hashed in-flight through a streaming sink that retains only the 8 MiB extraction head — a multi-GB payload inside an image no longer loads fully into RAM just to be hashed
 - VHD/VHDX: surfaces metadata only (cookie, creator, disk type, geometry, unique ID). The embedded filesystem is not mounted — mount externally if contents need triage.
 - Output: `artefacts/analysis/<filename>.disk_image_analysis.json`
 
@@ -600,12 +604,15 @@ The upload tools above are the *escalation* path, not the default.
 
 `analyse_file` is the unified entry point for static file analysis. It recognises all of the above formats from magic bytes / extension and auto-escalates on signal: Tier 1 covers hash / magic / entropy / strings / reputation; Tier 2 invokes the matching format specialist (PE, Office, PDF, LNK, OneNote, MSI, Mach-O, disk image) and returns its output under `specialist_analysis`; Tier 3 runs YARA when warranted (or when forced via `depth="full"` or `run_yara="true"`). Key flags from specialists are merged into the parent `flags` array prefixed with `SPECIALIST:`. The analyst usually only needs to call `analyse_file` — escalation happens for free.
 
+Tier 1's in-RAM analysis buffer is capped at 32 MB: for larger files (disk images, memory carriers) entropy/strings/magic run over the head and the result carries an `ANALYSIS_TRUNCATED` flag plus `analysis_bytes`. **Hashes are always full-file** (streamed in chunks when over the cap) and `size_bytes` reports the true file size — a partial hash would misidentify the artefact.
+
 ## YARA Scanning
 
 `tools/yara_scan.py` scans case files against YARA rules:
 - Dependency: `yara-python` (optional)
 - Built-in rules: SuspiciousPE, PowerShellObfuscation, C2Patterns, Base64PEHeader, CommonRATStrings
-- External rules (optional): drop `*.yar` / `*.yara` into `config/yara_rules/` — the directory is not present by default; create it to add custom rules
+- External rules (optional): drop `*.yar` / `*.yara` into `config/yara_rules/` — the directory is not present by default; create it to add custom rules. Each file compiles independently: one broken rule file is logged and skipped, the rest still load
+- Matching is bounded by a 60-second per-file timeout (a pathological regex rule against a large artefact logs a per-file warning instead of hanging the scan)
 - Output: `artefacts/yara/yara_results.json`
 - Also runs automatically via `analyse_file(run_yara="auto")` (Tier 3) — a separate `yara_scan` call is only needed if YARA was skipped during file analysis
 
@@ -680,7 +687,7 @@ Use the `write_security_arch_review` prompt followed by `save_report` to generat
 
 **Recommended flow:** Run sec arch review *before* the MDR report. The MDR report's `_build_context()` automatically loads the sec arch findings and the `write_mdr_report` prompt instructs Claude Desktop to distil the control gap analysis and platform-specific recommendations into the Client-Responsible Remediation subsection — producing specific, actionable hardening steps rather than generic advice.
 
-Outputs: `security_arch_review.md`, `security_arch_manifest.json`. EQL pulls are persisted separately under `artefacts/eql_context/` (`posture.json` + per-entity files).
+Outputs: `security_arch_review.md`, `security_arch_manifest.json`. EQL pulls are persisted separately under `artefacts/eql_context/` (timestamped `posture_<ts>.json` + per-entity files).
 
 ## Response Actions
 
