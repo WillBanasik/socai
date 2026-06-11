@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +31,15 @@ from tools.common import eprint, load_json, log_error, save_json, utcnow
 
 CAMPAIGNS_FILE = BASE_DIR / "registry" / "campaigns.json"
 CAMPAIGN_MIN_IOCS = int(os.getenv("SOCAI_CAMPAIGN_MIN_IOCS", "2"))
+
+# Process-local cache of the last global build, keyed on the IOC index file
+# identity. Every call previously rebuilt the Union-Find AND re-read each
+# member case's security_arch_structured.json even when nothing had changed.
+# The TTL bounds staleness from per-case TTP files changing without an index
+# change (e.g. a sec-arch run on an already-indexed case).
+_CLUSTER_CACHE_MAX_AGE_S = 600
+_cluster_cache: dict = {}
+_cluster_cache_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Noise suppression — IOCs that must NEVER form campaign links
@@ -226,6 +237,32 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
     Read-only against case state — safe to run on closed cases for retrospective
     campaign analysis. Only writes to the global ``CAMPAIGNS_FILE`` registry.
     """
+    # Serve from the process-local cache when the index file is unchanged.
+    try:
+        st = IOC_INDEX_FILE.stat()
+        index_key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        index_key = None
+    with _cluster_cache_lock:
+        cached = dict(_cluster_cache)
+    if (index_key is not None
+            and cached.get("index_key") == index_key
+            and time.monotonic() - cached.get("built_at", 0.0) < _CLUSTER_CACHE_MAX_AGE_S):
+        campaigns = cached["campaigns"]
+        linked = ([c for c in campaigns if case_id in c.get("cases", [])]
+                  if case_id else campaigns)
+        eprint(f"[campaign_cluster] Cache hit (index unchanged): "
+               f"{len(campaigns)} campaign(s) globally; "
+               f"{len(linked)} linked to {case_id or 'ALL'}")
+        return {
+            "status": "ok",
+            "campaigns": linked,
+            "total": len(linked),
+            "campaigns_global_total": len(campaigns),
+            "case_id": case_id,
+            "ts": utcnow(),
+        }
+
     ioc_index = _load_optional(IOC_INDEX_FILE)
     if not ioc_index:
         return {"status": "no_data", "reason": "ioc_index.json not found or empty", "campaigns": []}
@@ -296,6 +333,14 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
         "updated_at": utcnow(),
     }
     save_json(CAMPAIGNS_FILE, campaigns_data)
+
+    with _cluster_cache_lock:
+        _cluster_cache.clear()
+        _cluster_cache.update({
+            "index_key": index_key,
+            "built_at": time.monotonic(),
+            "campaigns": campaigns,
+        })
 
     # When scoped to a case, return ONLY campaigns that actually contain it.
     # Otherwise the caller mislabels unrelated global campaigns as "linked to

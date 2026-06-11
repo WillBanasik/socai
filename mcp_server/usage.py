@@ -640,14 +640,24 @@ def flush_all_sessions() -> int:
 # Logging helpers
 # ---------------------------------------------------------------------------
 
+# Cap on logged param values. These logs exist for workflow analytics —
+# without a cap, upload_file_content's base64 body (up to ~2.7 MB) landed
+# verbatim in BOTH mcp_usage.jsonl and mcp_server.jsonl on every upload.
+_PARAM_VALUE_CAP = 2048
+
+
 def _sanitise_params(params: dict[str, Any] | None) -> dict[str, Any]:
-    """Return a copy of *params* with sensitive fields redacted."""
+    """Return a copy of *params* with sensitive fields redacted and large
+    values truncated."""
     if not params:
         return {}
     out: dict[str, Any] = {}
     for k, v in params.items():
         if k in _SENSITIVE_KEYS:
             out[k] = "***"
+        elif isinstance(v, str) and len(v) > _PARAM_VALUE_CAP:
+            out[k] = (v[:_PARAM_VALUE_CAP]
+                      + f"…[truncated {len(v) - _PARAM_VALUE_CAP} chars]")
         else:
             out[k] = v
     return out

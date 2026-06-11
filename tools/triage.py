@@ -101,11 +101,13 @@ def triage(case_id: str, urls: list[str] | None = None, severity: str = "medium"
     cache_ttl = timedelta(hours=ENRICH_CACHE_TTL) if ENRICH_CACHE_TTL > 0 else None
     now = datetime.fromisoformat(utcnow().replace("Z", "+00:00"))
 
+    # One-pass ioc→providers index instead of rescanning the whole cache per IOC.
+    from tools.enrich import index_cache_by_ioc
+    cache_by_ioc = index_cache_by_ioc(enrich_cache)
+
     for ioc in input_iocs:
         fresh_providers = 0
-        for cache_key, cached in enrich_cache.items():
-            if not cache_key.endswith(f"|{ioc}"):
-                continue
+        for _provider, cached in cache_by_ioc.get(ioc, ()):
             # Cache entries are {"result": {...,"status":...}, "cached_at": ...};
             # the provider status lives under "result", not at the top level.
             if cached.get("result", {}).get("status") != "ok":

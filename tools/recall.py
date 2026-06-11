@@ -213,11 +213,13 @@ def recall(
     cache_ttl = timedelta(hours=ENRICH_CACHE_TTL) if ENRICH_CACHE_TTL > 0 else None
     now = datetime.now(timezone.utc)
 
+    # One-pass ioc→providers index instead of rescanning the whole cache per IOC.
+    from tools.enrich import index_cache_by_ioc
+    cache_by_ioc = index_cache_by_ioc(enrich_cache)
+
     for ioc in all_search_iocs:
         providers_hit: list[str] = []
-        for cache_key, cached in enrich_cache.items():
-            if not cache_key.endswith(f"|{ioc}"):
-                continue
+        for provider, cached in cache_by_ioc.get(ioc, ()):
             # Cache entries are {"result": {...,"status":...}, "cached_at": ...};
             # the provider status lives under "result", not at the top level.
             if cached.get("result", {}).get("status") != "ok":
@@ -231,9 +233,8 @@ def recall(
                         continue
                 except Exception as exc:
                     log_error("", "recall.cache_ttl", str(exc), severity="warning",
-                              context={"cache_key": cache_key})
+                              context={"cache_key": f"{provider}|{ioc}"})
                     continue
-            provider = cache_key.split("|")[0] if "|" in cache_key else "unknown"
             providers_hit.append(provider)
         if providers_hit:
             cached_enrichments.append({

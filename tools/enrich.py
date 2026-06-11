@@ -29,7 +29,9 @@ Writes:
 from __future__ import annotations
 
 import base64
+import fcntl
 import json
+import os
 import sys
 import threading
 import time
@@ -1611,9 +1613,66 @@ def _cache_load() -> dict:
 
 
 def _cache_save(cache: dict) -> None:
+    """Merge our entries into the on-disk cache and atomically replace it.
+
+    The old implementation was a plain whole-file overwrite: concurrent
+    writers (CLI ``enrich`` + MCP ``quick_enrich`` are separate processes)
+    lost each other's fresh entries wholesale, a crash mid-write corrupted
+    the file, and expired entries accumulated forever.
+
+    - flock on a sidecar lockfile serialises cross-process save cycles.
+    - The on-disk cache is re-read under the lock and merged per-key,
+      keeping whichever entry has the newer ``cached_at``.
+    - Entries past the TTL are evicted, bounding the file.
+    - Temp file + ``os.replace`` means readers never see a partial file.
+    """
     ENRICH_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(ENRICH_CACHE_FILE, "w") as fh:
-        json.dump(cache, fh, indent=2, default=str)
+    lock_path = ENRICH_CACHE_FILE.with_suffix(".lock")
+    with open(lock_path, "w") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            merged = _cache_load()
+            for key, entry in cache.items():
+                current = merged.get(key)
+                # ISO-8601 strings compare chronologically.
+                if current is None or str(entry.get("cached_at", "")) >= str(
+                        current.get("cached_at", "")):
+                    merged[key] = entry
+
+            if ENRICH_CACHE_TTL > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=ENRICH_CACHE_TTL)
+
+                def _fresh(entry: dict) -> bool:
+                    try:
+                        cached_at = datetime.fromisoformat(
+                            str(entry.get("cached_at", "")).replace("Z", "+00:00"))
+                        return cached_at >= cutoff
+                    except Exception:
+                        return True  # malformed stamp: keep, never silently drop
+
+                merged = {k: v for k, v in merged.items() if _fresh(v)}
+
+            tmp_path = ENRICH_CACHE_FILE.with_suffix(".json.tmp")
+            with open(tmp_path, "w") as fh:
+                json.dump(merged, fh, separators=(",", ":"), default=str)
+            os.replace(tmp_path, ENRICH_CACHE_FILE)
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+
+
+def index_cache_by_ioc(cache: dict) -> dict[str, list[tuple[str, dict]]]:
+    """One-pass index of the enrichment cache: ``ioc → [(provider, entry)]``.
+
+    Cache keys are ``"{provider}|{ioc}"``. Callers needing per-IOC provider
+    coverage (recall, triage) previously rescanned the entire cache once per
+    IOC with ``endswith`` — O(IOCs × cache). Build this map once instead.
+    """
+    by_ioc: dict[str, list[tuple[str, dict]]] = {}
+    for key, entry in cache.items():
+        provider, sep, ioc = key.partition("|")
+        if sep and ioc:
+            by_ioc.setdefault(ioc, []).append((provider, entry))
+    return by_ioc
 
 
 def _cache_get(cache: dict, ioc: str, provider: str) -> dict | None:
