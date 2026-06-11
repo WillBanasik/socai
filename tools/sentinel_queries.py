@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import BASE_DIR, CASES_DIR
-from tools.kql_playbooks import _parse_frontmatter
+from tools.kql_playbooks import _parse_frontmatter, _sanitise_kql_value
 
 SENTINEL_QUERIES_DIR = BASE_DIR / "config" / "kql_playbooks" / "sentinel"
 
@@ -87,21 +87,27 @@ def render_query(
     lookback_start = now - timedelta(hours=lookback_hours)
     lookback_end = now
 
-    # Parse additional UPNs into a KQL dynamic list
-    extra_upns = [u.strip() for u in additional_upns.split(",") if u.strip()] if additional_upns else []
-    extra_upns_kql = ", ".join(f'"{u}"' for u in extra_upns) if extra_upns else ""
+    # Escape caller-supplied values before they land inside quoted KQL
+    # string literals — same rule as the stage-based playbook renderer.
+    try:
+        extra_upns = ([u.strip() for u in additional_upns.split(",") if u.strip()]
+                      if additional_upns else [])
+        extra_upns_kql = (", ".join(f'"{_sanitise_kql_value(u)}"' for u in extra_upns)
+                          if extra_upns else "")
 
-    # Build substitution map
-    params = {
-        "upn": upn,
-        "ip": ip,
-        "object_id": object_id,
-        "mailbox_id": mailbox_id,
-        "additional_upns": extra_upns_kql,
-        "lookback_start": lookback_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "lookback_end": lookback_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "lookback_hours": str(lookback_hours),
-    }
+        # Build substitution map
+        params = {
+            "upn": _sanitise_kql_value(upn),
+            "ip": _sanitise_kql_value(ip),
+            "object_id": _sanitise_kql_value(object_id),
+            "mailbox_id": _sanitise_kql_value(mailbox_id),
+            "additional_upns": extra_upns_kql,
+            "lookback_start": lookback_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "lookback_end": lookback_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "lookback_hours": str(lookback_hours),
+        }
+    except ValueError as exc:  # control characters in a parameter value
+        return {"error": str(exc), "scenario": scenario_id}
 
     query = scenario["query_template"]
     for key, value in params.items():

@@ -169,6 +169,7 @@ def _extract_shared_iocs(ioc_index: dict, cases: frozenset[str]) -> list[dict]:
                 "verdict": entry.get("verdict", "unknown"),
                 "confidence": entry.get("confidence", "UNKNOWN"),
                 "cases": sorted(overlap),
+                "first_seen": entry.get("first_seen", ""),
             })
     return shared
 
@@ -277,8 +278,10 @@ def cluster_campaigns(case_id: str | None = None) -> dict:
             "shared_ioc_count": len(shared_iocs),
             "common_ttps": common_ttps,
             "confidence": confidence,
+            # Earliest first_seen timestamp across the shared IOCs (the old
+            # min() ran over case IDs, putting "IV_CASE_…" in a time field).
             "first_seen": min(
-                (i.get("cases", [""])[0] for i in shared_iocs),
+                (i["first_seen"] for i in shared_iocs if i.get("first_seen")),
                 default="",
             ),
             "updated_at": utcnow(),

@@ -3305,14 +3305,16 @@ def _register_tier2(mcp: FastMCP) -> None:
         )
         return _json(result)
 
-    @mcp.tool(title="Score Verdicts", annotations={"readOnlyHint": True})
+    @mcp.tool(title="Score Verdicts")
     async def score_ioc_verdicts(case_id: str) -> str:
         """Compute composite verdicts (malicious/suspicious/clean/unknown + confidence)
         for all enriched IOCs and update the cross-case IOC index.
 
         Requires ``enrich_iocs`` to have run first.
         """
-        _require_scope("investigations:read")
+        # Writes the verdicts artefact + global IOC index — submit scope
+        # (docs/mcp-server.md), not read; readOnlyHint dropped to match.
+        _require_scope("investigations:submit")
         _check_client_boundary(case_id)
 
         from tools.score_verdicts import score_verdicts, update_ioc_index

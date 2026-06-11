@@ -104,7 +104,12 @@ def audit_user(
         if not log_path.exists():
             continue
         with open(log_path) as fh:
-            for line in fh:
+            # Files are visited newest-first, but lines within a file run
+            # oldest→newest — iterate them reversed so the max_events cap
+            # keeps the NEWEST events (it previously kept the oldest and
+            # dropped recent activity). Rotation bounds files at 10 MB, so
+            # readlines() is safe.
+            for line in reversed(fh.readlines()):
                 scanned += 1
                 try:
                     r = json.loads(line)

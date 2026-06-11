@@ -88,8 +88,17 @@ def _acquire_token(tenant_id: str) -> str:
                 f"token request returned {resp.status_code}: {resp.text[:300]}"
             )
 
-        payload = resp.json()
-        token = payload["access_token"]
+        try:
+            payload = resp.json()
+            token = payload["access_token"]
+        except (ValueError, KeyError) as exc:
+            # 200 with a non-JSON body (proxy interstitial) or a JSON body
+            # missing access_token — surface as a DefenderHuntingError, not
+            # an unhandled JSONDecodeError/KeyError traceback.
+            raise DefenderHuntingError(
+                f"token response was not valid JSON with access_token: "
+                f"{resp.text[:300]}"
+            ) from exc
         expires_in = int(payload.get("expires_in", 3600))
         _token_cache[tenant_id] = (token, now + expires_in)
         return token
@@ -187,7 +196,13 @@ def run_defender_kql(client: str, query: str, timeout: int = 30) -> dict[str, An
             f"HTTP {resp.status_code}: {resp.text[:300]}"
         )
 
-    payload = resp.json()
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        # 200 with a non-JSON body (gateway/proxy HTML error page).
+        raise DefenderHuntingError(
+            f"hunting response was not valid JSON: {resp.text[:300]}"
+        ) from exc
     rows = payload.get("Results") or []
     schema = payload.get("Schema") or []
     return {

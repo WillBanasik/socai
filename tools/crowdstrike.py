@@ -16,7 +16,7 @@ Region + NG-SIEM repo are declared in config/client_entities.json under
 client_credentials and cached in-process (~30 min TTL).
 
 Public API:
-    run_falcon_cql(client, cql, repo=None, timeout=30) -> dict
+    run_falcon_cql(client, cql, repo=None, timeout=30, start="7d", end="now") -> dict
     query_detections(client, filter_=None, limit=50) -> dict
     query_hosts(client, filter_=None, limit=50) -> dict
     query_incidents(client, filter_=None, limit=50) -> dict
@@ -169,6 +169,25 @@ def _invalidate_token(client: str, host: str) -> None:
         _token_cache.pop(f"{client}@{host}", None)
 
 
+def _send_with_auth_retry(client, send) -> tuple[str, requests.Response]:
+    """Acquire a token, fire ``send(host, token)``, and on a 401 refresh the
+    token once and resend.
+
+    Falcon OAuth2 tokens routinely expire or get revoked mid-session (a new
+    grant revokes the prior token); without the retry every expiry surfaced
+    as a hard FalconError even though a fresh token succeeds. A second 401
+    falls through to ``_handle_response``'s terminal handling. Returns
+    ``(host, response)``.
+    """
+    host, token = _acquire_token(client)
+    resp = send(host, token)
+    if resp.status_code == 401:
+        _invalidate_token(client, host)
+        host, token = _acquire_token(client)
+        resp = send(host, token)
+    return host, resp
+
+
 # ---------------------------------------------------------------------------
 # NG-SIEM (Falcon LogScale) — CQL query
 # ---------------------------------------------------------------------------
@@ -223,18 +242,20 @@ def run_falcon_cql(
             f"(set platforms.crowdstrike.ngsiem_repo or pass repo=)"
         )
 
-    host, token = _acquire_token(client)
-    url = f"https://{host}/loggingapi/entities/queries/v1/run"
     body = {"queryString": cql, "repository": repo_id,
             "start": start or "7d", "end": end or "now"}
-    started = time.time()
-    try:
-        resp = get_session().post(
-            url,
+
+    def _send(host: str, token: str) -> requests.Response:
+        return get_session().post(
+            f"https://{host}/loggingapi/entities/queries/v1/run",
             json=body,
             headers={**_auth_headers(token), "Content-Type": "application/json"},
             timeout=timeout,
         )
+
+    started = time.time()
+    try:
+        host, resp = _send_with_auth_retry(client, _send)
     except requests.RequestException as exc:
         log_error("", "crowdstrike.run_cql", str(exc),
                   severity="error", context={"client": client})
@@ -264,19 +285,21 @@ def _query_paged(
     1. ``GET <queries_path>?filter=...&limit=...`` returns a list of IDs.
     2. ``POST <summaries_path>`` with the IDs returns full entity records.
     """
-    host, token = _acquire_token(client)
     params: dict[str, Any] = {"limit": max(1, min(int(limit), 1000))}
     if filter_:
         params["filter"] = filter_
 
-    started = time.time()
-    try:
-        ids_resp = get_session().get(
+    def _send_ids(host: str, token: str) -> requests.Response:
+        return get_session().get(
             f"https://{host}{queries_path}",
             params=params,
             headers=_auth_headers(token),
             timeout=30,
         )
+
+    started = time.time()
+    try:
+        host, ids_resp = _send_with_auth_retry(client, _send_ids)
     except requests.RequestException as exc:
         log_error("", f"crowdstrike{queries_path}", str(exc),
                   severity="error", context={"client": client})
@@ -295,14 +318,17 @@ def _query_paged(
                           "elapsed_ms": ids_payload["stats"]["elapsed_ms"]}}
 
     # Fetch entity summaries.
-    started2 = time.time()
-    try:
-        sum_resp = get_session().post(
+    def _send_summaries(host: str, token: str) -> requests.Response:
+        return get_session().post(
             f"https://{host}{summaries_path}",
             json={"ids": resources},
             headers={**_auth_headers(token), "Content-Type": "application/json"},
             timeout=30,
         )
+
+    started2 = time.time()
+    try:
+        host, sum_resp = _send_with_auth_retry(client, _send_summaries)
     except requests.RequestException as exc:
         log_error("", f"crowdstrike{summaries_path}", str(exc),
                   severity="error", context={"client": client})

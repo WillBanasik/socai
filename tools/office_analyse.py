@@ -91,7 +91,9 @@ def _dde_links(file_path: Path) -> list[str]:
     if not zipfile.is_zipfile(file_path):
         return []
     hits: list[str] = []
-    pattern = re.compile(rb"DDEAUTO?\s+[^<]+", re.IGNORECASE)
+    # Match both DDEAUTO and plain DDE field codes (DDEAUTO? only made the
+    # final O optional, so a plain "DDE cmd ..." field never matched).
+    pattern = re.compile(rb"DDE(?:AUTO)?\s+[^<]+", re.IGNORECASE)
     try:
         with zipfile.ZipFile(file_path) as zf:
             for name in zf.namelist():

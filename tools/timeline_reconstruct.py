@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -72,6 +74,31 @@ def _add(events: list[dict], timestamp: str | None, source: str,
             "event_type": event_type,
             "detail": detail,
         })
+
+
+def _sort_key(event: dict):
+    """Chronological sort key tolerant of mixed timestamp formats.
+
+    Artefacts mix ISO 8601 (enrichment, sandbox, triage) with RFC 2822
+    (email Date headers) — a plain string sort puts every email event at
+    the end of the timeline, after the activity it initiated. Parse both
+    to tz-aware datetimes; unparseable timestamps sort after parsed ones,
+    ordered by raw string.
+    """
+    ts = event.get("timestamp", "")
+    dt = None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            dt = parsedate_to_datetime(ts)
+        except (TypeError, ValueError):
+            dt = None
+    if dt is None:
+        return (1, datetime.max.replace(tzinfo=timezone.utc), ts)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (0, dt, ts)
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +318,7 @@ def timeline_reconstruct(case_id: str) -> dict:
         }
 
     # ── 2. Sort events chronologically ───────────────────────────────────
-    events.sort(key=lambda e: e.get("timestamp", ""))
+    events.sort(key=_sort_key)
 
     # ── 3. Build output ──────────────────────────────────────────────────
     timeline_data: dict = {

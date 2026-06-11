@@ -218,7 +218,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `parse_logs` | `investigations:submit` | Parse CSV/JSON/JSONL logs, extract entities |
 | `detect_anomalies` | `investigations:submit` | Behavioural anomaly detection (6 detectors) |
 | `correlate_evtx` | `investigations:submit` | Windows EVTX attack chain correlation (7 detectors) |
-| `triage_iocs` | `investigations:submit` | Pre-pipeline IOC reputation check |
+| `triage_iocs` | `investigations:read` | Pre-pipeline IOC reputation check (read-only — consults cache/index, persists nothing) |
 | `score_ioc_verdicts` | `investigations:submit` | Composite verdict scoring + IOC index update |
 | `analyse_file` | `investigations:read` | Unified tiered static-file analysis (Tier 1 hash/magic/entropy/strings/reputation; Tier 2 auto-escalates to format specialists: PE, Office, PDF, LNK, OneNote, Mach-O, disk image, MSI; Tier 3 YARA on signal) — server-side, requires file on MCP filesystem |
 | `prepare_file_upload` | `investigations:read` | Mint a signed URL the caller can `curl` to ship a sample from a different sandbox to the MCP server (HTTP path; preferred) |

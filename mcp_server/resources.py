@@ -1103,7 +1103,7 @@ def register_resources(mcp: FastMCP) -> None:
         return _json({
             "mdr_report": {
                 "auto_close": True,
-                "disposition": "preserves_existing",
+                "disposition": "true_positive (default — explicit disposition= overrides)",
                 "prompt": "write_mdr_report",
                 "use_for": "Standard MDR client deliverable.",
             },
@@ -1115,7 +1115,7 @@ def register_resources(mcp: FastMCP) -> None:
             },
             "closure_comment": {
                 "auto_close": True,
-                "disposition": "from_classification",
+                "disposition": "required_explicit (refuses to close blank — spans BP/FP/inconclusive)",
                 "prompt": "write_closure_comment",
                 "classifications": [
                     "bp_suspicious_but_expected",
@@ -1132,9 +1132,10 @@ def register_resources(mcp: FastMCP) -> None:
             },
             "fp_tuning_ticket": {
                 "auto_close": True,
-                "disposition": "false_positive",
+                "disposition": ("preserves_existing (the closure_comment sets it; "
+                                "pass disposition= to set or override)"),
                 "prompt": "write_fp_tuning",
-                "use_for": "False positive plus rule-tuning recommendation.",
+                "use_for": "Rule-tuning recommendation following an FP (or BP) determination.",
             },
             "executive_summary": {
                 "auto_close": False,

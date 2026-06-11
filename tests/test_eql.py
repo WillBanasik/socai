@@ -421,8 +421,8 @@ class TestPostureContext:
         for call in post.call_args_list:
             url = call.args[0] if call.args else call.kwargs.get("url", "")
             assert "client=uuid-perf-123" in url
-        # full payload persisted as posture.json
-        assert (CASES_DIR / TEST_CASE / "artefacts" / "eql_context" / "posture.json").exists()
+        # full payload persisted as a timestamped posture artefact
+        assert list((CASES_DIR / TEST_CASE / "artefacts" / "eql_context").glob("posture_*.json"))
 
     def test_posture_refused_when_unmapped_no_http(self, monkeypatch, _case):
         monkeypatch.setattr(eql, "get_client_config", _mapped_config)
@@ -443,7 +443,8 @@ class TestPostureContext:
         assert d0["rows_returned"] == eql._MAX_ROWS_INLINE
         assert d0["truncated"] is True
         # full set persisted to the artefact
-        art = json.loads((CASES_DIR / TEST_CASE / "artefacts" / "eql_context" / "posture.json").read_text())
+        art_path = next((CASES_DIR / TEST_CASE / "artefacts" / "eql_context").glob("posture_*.json"))
+        art = json.loads(art_path.read_text())
         assert len(art["domains"][0]["rows"]) == 140
 
     def test_posture_bad_table_does_not_sink_pull(self, monkeypatch, _case):

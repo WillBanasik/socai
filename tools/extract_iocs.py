@@ -41,7 +41,11 @@ _RE_DOMAIN = re.compile(
     r"tech|app|dev|cloud|digital|media|news|agency|ru|cn|de|fr|nl|be|au|ca|"
     r"jp|br|in|sg|ph|id|za|mx|ar|cl|pe|vc|cc|pw|tk|ga|ml|cf|gq|md|"
     r"bg|es|it|pt|pl|cz|ro|hu|hr|rs|ua|kz|tr|ke|ng|eg|ae|il|kr|tw|"
-    r"th|vn|my|nz|se|no|dk|fi|at|ch|ie|lt|lv|ee|sk|si|gr|cy|"
+    r"th|vn|my|nz|se|no|dk|fi|at|ch|ie|lt|lv|ee|sk|si|gr|cy|eu|me|us|"
+    # .zip/.mov TLDs deliberately excluded: artefact text is full of
+    # attachment filenames (invoice.zip) that would extract as bogus domain
+    # IOCs; .zip-TLD phishing links still extract via the URL regex, which
+    # does not consult this list.
     r"onion|local|internal|icu|live|click|link|pw|fun|shop|work|space|"
     r"monster|beauty|bar|hair|skin|makeup|lol|world|today|"
     r"pro|ltd|sbs|cyou|buzz|quest|cfd)\b",
@@ -61,6 +65,24 @@ _NOISE_DOMAINS: frozenset[str] = frozenset({
     "example.com", "localhost", "test.com", "domain.com",
     "openssl.org",
 }) | KNOWN_CLEAN_DOMAINS
+
+
+# Defang normalisation — pasted threat intel and analyst notes carry
+# hxxps://evil[.]com, 1.2.3[.]4, user[@]bad[.]com. Without refanging, none
+# of those ever match the extraction regexes.
+_REFANG_SUBS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bhxxp(s?)://", re.IGNORECASE), r"http\1://"),
+    (re.compile(r"\[\.\]|\(\.\)|\{\.\}|\[dot\]|\(dot\)", re.IGNORECASE), "."),
+    (re.compile(r"\[@\]|\(@\)|\[at\]", re.IGNORECASE), "@"),
+    (re.compile(r"\[:\]//"), "://"),
+]
+
+
+def _refang(text: str) -> str:
+    """Normalise common defanging conventions before IOC extraction."""
+    for pattern, repl in _REFANG_SUBS:
+        text = pattern.sub(repl, text)
+    return text
 
 
 def _domain_from_url(url: str) -> str:
@@ -102,6 +124,7 @@ def _is_private_ip(ip: str) -> bool:
 
 
 def _extract_from_text(text: str, include_private: bool = False) -> dict:
+    text = _refang(text)
     iocs: dict[str, set] = {
         "ipv4": set(),
         "domain": set(),

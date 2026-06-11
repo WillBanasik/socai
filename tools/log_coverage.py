@@ -38,11 +38,13 @@ _DOMAINS_FILE = BASE_DIR / "config" / "coverage_domains.json"
 _USAGE_QUERY = """\
 Usage
 | where TimeGenerated > ago(30d)
+| summarize DayMB = sum(Quantity), DayLast = max(TimeGenerated)
+    by DataType, Day = bin(TimeGenerated, 1d)
 | summarize
-    LastEvent = max(TimeGenerated),
-    DailyAvgMB = round(avg(Quantity), 2),
-    TotalMB = round(sum(Quantity), 2),
-    DaysSeen = dcount(bin(TimeGenerated, 1d))
+    LastEvent = max(DayLast),
+    DailyAvgMB = round(avg(DayMB), 2),
+    TotalMB = round(sum(DayMB), 2),
+    DaysSeen = count()
     by DataType
 | extend
     StaleDays = datetime_diff('day', now(), LastEvent),

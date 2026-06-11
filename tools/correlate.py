@@ -10,6 +10,7 @@ Results are computed and returned to the caller; no artefacts are persisted to d
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -17,6 +18,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import CASES_DIR
 from tools.common import eprint, load_json, log_error, utcnow
+
+
+def _domain_in_value(domain: str, value: str) -> bool:
+    """True when *domain* appears in *value* on hostname-label boundaries.
+
+    A plain substring test cross-matches short domains (``t.co`` is inside
+    ``microsoft.com``). Require label boundaries: a leading dot (subdomain of
+    the IOC) or trailing ``/``/``:``/end is fine, but the match must not be
+    flanked by hostname characters or continue into further labels
+    (``evil.com`` must not hit ``evil.com.attacker.net``).
+    """
+    return bool(re.search(
+        rf"(?<![a-z0-9-]){re.escape(domain.lower())}(?!\.?[a-z0-9-])",
+        value.lower(),
+    ))
 
 
 def _load_all_entities(logs_dir: Path) -> dict[str, list]:
@@ -81,7 +97,7 @@ def correlate(case_id: str) -> dict:
     for dom in ioc_domains:
         for ent_vals in entities.values():
             for val in ent_vals:
-                if dom.lower() in val.lower():
+                if _domain_in_value(dom, val):
                     domain_hits.append({"domain": dom, "matched_in": val})
                     break
     if domain_hits:

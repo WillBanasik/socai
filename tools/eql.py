@@ -51,6 +51,7 @@ boundaries (the case's Encore id must match the payload's).
 """
 from __future__ import annotations
 
+import re
 import sys
 import threading
 import time
@@ -104,6 +105,11 @@ _FRESHNESS_FIELDS = (
     "ActivityDateTime", "DetectedDateTime", "DateTime", "LastSeen",
     "LastCommsDate", "EntryDate",
 )
+
+
+# Caseless-store ids (VH_<ts>, EQL_<ts>, EQLID_<ts>) interpolate into registry
+# paths — reject anything that could traverse out of the store directory.
+_IMPORT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class EqlError(RuntimeError):
@@ -711,9 +717,13 @@ def entity_context(
         "_window_note": _ENTITY_WINDOW_NOTE,
     }
 
-    # Persist the FULL raw payload as a case artefact (nothing dropped on disk).
+    # Persist the FULL raw payload as a case artefact (nothing dropped on
+    # disk). Timestamped so a re-pull later in the investigation snapshots
+    # alongside the first instead of overwriting it.
     slug = "_".join(sorted(entities.values()))[:60].replace("/", "_") or "entity"
-    save_json(CASES_DIR / case_id / "artefacts" / "eql_context" / f"{slug}.json", output)
+    stamp = utcnow().replace(":", "").replace("-", "").replace("T", "_").split(".")[0]
+    save_json(CASES_DIR / case_id / "artefacts" / "eql_context"
+              / f"{slug}_{stamp}.json", output)
 
     # Cap inline AFTER persisting the full set, then append the evidence note.
     _cap_entity_rows_inline(queries)
@@ -1227,8 +1237,11 @@ def posture_context(case_id: str, depth: str = "auto") -> dict[str, Any]:
         ),
     }
 
-    # Persist the FULL raw payload (nothing dropped on disk).
-    save_json(CASES_DIR / case_id / "artefacts" / "eql_context" / "posture.json", output)
+    # Persist the FULL raw payload (nothing dropped on disk). Timestamped so a
+    # re-run snapshots alongside the earlier pull instead of overwriting it.
+    stamp = utcnow().replace(":", "").replace("-", "").replace("T", "_").split(".")[0]
+    save_json(CASES_DIR / case_id / "artefacts" / "eql_context"
+              / f"posture_{stamp}.json", output)
 
     # Cap what we surface inline (snapshot histories can be hundreds of rows);
     # row_count keeps the true total, full history lives in the artefact above.
@@ -1396,6 +1409,8 @@ def import_vuln_hunt(hunt_id: str, case_id: str) -> dict[str, Any]:
     ``import_enrichment``."""
     from config.settings import VULN_HUNT_DIR
 
+    if not _IMPORT_ID_RE.match(hunt_id or ""):
+        return {"error": f"Invalid hunt_id {hunt_id!r} (must match [A-Za-z0-9_-]+)."}
     vh_path = VULN_HUNT_DIR / f"{hunt_id}.json"
     if not vh_path.exists():
         return {"error": f"Vuln hunt '{hunt_id}' not found."}
@@ -1483,6 +1498,8 @@ def import_eql_lookup(lookup_id: str, case_id: str) -> dict[str, Any]:
     Mirrors ``import_vuln_hunt`` / ``import_enrichment``."""
     from config.settings import EQL_LOOKUP_DIR
 
+    if not _IMPORT_ID_RE.match(lookup_id or ""):
+        return {"error": f"Invalid lookup_id {lookup_id!r} (must match [A-Za-z0-9_-]+)."}
     path = EQL_LOOKUP_DIR / f"{lookup_id}.json"
     if not path.exists():
         return {"error": f"EQL lookup '{lookup_id}' not found."}

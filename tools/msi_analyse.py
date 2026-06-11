@@ -55,26 +55,23 @@ _MSI_TABLE = (
 
 
 def decode_msi_name(name: str) -> str:
-    """Decode an MSI-mangled stream name. Returns the original on failure."""
+    """Decode an MSI-mangled stream name. Returns the original on failure.
+
+    Three disjoint codepoint ranges: [0x3800, 0x4800) packs two base-64
+    chars (low 6 bits first), [0x4800, 0x4840) is a single char, and
+    0x4840 is the table-name marker rendered as ``!`` (e.g. !CustomAction).
+    """
     out: list[str] = []
     try:
         for ch in name:
             cp = ord(ch)
-            if 0x3800 <= cp <= 0x4840:
-                # 2-character encoding
+            if 0x3800 <= cp < 0x4800:
+                # 2-character encoding: first char in low 6 bits, second in high
                 cp -= 0x3800
-                if cp < 0x40:
-                    out.append(_MSI_TABLE[cp])
-                else:
-                    # second char in upper 6 bits, first in lower 6
-                    cp -= 0x40
-                    lo = cp & 0x3F
-                    hi = (cp >> 6) & 0x3F
-                    out.append(_MSI_TABLE[lo])
-                    out.append(_MSI_TABLE[hi])
-            elif 0x4800 <= cp <= 0x483F:
-                cp -= 0x4800
-                out.append(_MSI_TABLE[cp])
+                out.append(_MSI_TABLE[cp & 0x3F])
+                out.append(_MSI_TABLE[(cp >> 6) & 0x3F])
+            elif 0x4800 <= cp < 0x4840:
+                out.append(_MSI_TABLE[cp - 0x4800])
             elif cp == 0x4840:
                 out.append("!")  # leading bang marker for tables
             else:

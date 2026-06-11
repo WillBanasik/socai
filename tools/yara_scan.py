@@ -214,11 +214,13 @@ def _compile_external_rules() -> tuple[list, int]:
         try:
             rules = yara.compile(filepath=str(rf))
             compiled.append(rules)
-        except yara.SyntaxError as exc:
+        except Exception as exc:
+            # Catch any compile failure (SyntaxError, missing module, IO) —
+            # one bad external rule file must skip, not discard the rest.
             log_error(
                 case_id="",
                 step="yara_scan",
-                error=f"Syntax error in {rf.name}: {exc}",
+                error=f"Failed to compile {rf.name}: {exc}",
                 severity="warning",
             )
     return compiled, len(rule_files)
@@ -229,7 +231,9 @@ def _scan_with_rules(rules, targets: list[Path], case_dir: Path) -> list[dict]:
     matches: list[dict] = []
     for path in targets:
         try:
-            hits = rules.match(filepath=str(path))
+            # timeout bounds pathological regex rules against large
+            # artefacts — raises yara.TimeoutError, logged per-file below.
+            hits = rules.match(filepath=str(path), timeout=60)
         except Exception as exc:
             log_error(
                 case_id="",

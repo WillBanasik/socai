@@ -32,8 +32,9 @@ KNOWN_CLEAN_DOMAINS: frozenset[str] = frozenset({
     # Developer platforms
     "github.com", "githubassets.com",
     "stackoverflow.com", "stackexchange.com",
-    # Reference / encyclopaedias
-    "wikipedia.org", "wikimedia.org", "wikpedia.org",
+    # Reference / encyclopaedias ("wikpedia.org" typosquat removed — it was
+    # allowlisting an unregistered-lookalike domain as clean)
+    "wikipedia.org", "wikimedia.org",
     # News / major media (often crawled via link-following)
     "washingtonpost.com", "nytimes.com", "bbc.com", "bbc.co.uk",
     "theguardian.com", "reuters.com",
