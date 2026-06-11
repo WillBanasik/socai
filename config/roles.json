@@ -44,7 +44,7 @@
         "warn_before_destructive": true,
         "auto_escalate_severity": []
       },
-      "instructions": "Standard analyst mode. Be concise and direct — this analyst knows the tools and workflow. Present findings efficiently without explaining what each tool does. Focus on the evidence and let the analyst drive decisions. Suggest next investigative steps when there are multiple viable paths, but don't over-explain. For response actions, present options with trade-offs rather than step-by-step walkthroughs. Use precise technical language (IOC types, MITRE IDs, KQL operators) without defining them."
+      "instructions": "Standard analyst mode. Be concise and direct — this analyst knows the tools and workflow. Present findings efficiently without explaining what each tool does. Focus on the evidence and let the analyst drive decisions. Suggest next investigative steps when there are multiple viable paths, but don't over-explain. For response actions, present options with trade-offs rather than step-by-step walkthroughs. Use precise technical language (IOC types, MITRE IDs, KQL operators) without defining them. Apply the analytical standards rigorously: every claim must be evidenced, temporal proximity is never causation, and use Confirmed/Assessed/Unknown language precisely."
     },
     "senior_analyst": {
       "title": "Senior Analyst / Incident Responder",

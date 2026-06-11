@@ -419,6 +419,32 @@ def _pop_message(result: dict) -> dict:
     return result
 
 
+def _rule9_readiness(case_id: str) -> dict:
+    """Evidence/finding chain status for evidence-bearing deliverables.
+
+    Returned by the ``prepare_*`` tools for rule-9-gated report types so a
+    missing chain surfaces BEFORE the report is written, not as a
+    ``save_report`` refusal after the prose already exists.
+    """
+    from tools.save_report import evidence_finding_counts
+
+    evidence_count, finding_count = evidence_finding_counts(case_id)
+    out: dict = {
+        "evidence_entries": evidence_count,
+        "finding_entries": finding_count,
+    }
+    if not (evidence_count and finding_count):
+        out["rule9_warning"] = (
+            f"Case has {evidence_count} evidence and {finding_count} finding "
+            "entries — save_report will REFUSE this report type until both "
+            "exist (Analytical Standards rule 9). Backfill with add_evidence "
+            "(raw observations) and add_finding (conclusions tied to that "
+            "evidence) from the data already in context BEFORE writing the "
+            "report."
+        )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Tier 1 — Core Investigation tools
 # ---------------------------------------------------------------------------
@@ -1275,7 +1301,11 @@ def _register_tier1(mcp: FastMCP) -> None:
         """Record an analytical conclusion against a case. Use for structured findings, not raw data.
 
         ``add_evidence`` is for raw input; this tool is for conclusions drawn from evidence.
-        Auto-promotes triage → active on first finding.
+        Tie each finding to the evidence that supports it — name the specific
+        evidence entries (query hits, enrichment verdicts, log entries) in
+        ``detail``. State confidence per the language discipline: Confirmed
+        (data proves it), Assessed with high/medium/low confidence (inference),
+        Unknown (no data). Auto-promotes triage → active on first finding.
         """
         _require_scope("investigations:submit")
         _check_client_boundary(case_id)
@@ -1395,6 +1425,7 @@ def _register_tier1(mcp: FastMCP) -> None:
                 f"to generate the report, then call save_report with "
                 f'report_type="mdr_report" to persist it.'
             ),
+            **_rule9_readiness(case_id),
         })
 
     @mcp.tool(title="Prepare PUP/PUA Report")
@@ -1419,6 +1450,7 @@ def _register_tier1(mcp: FastMCP) -> None:
                 f"to generate the report, then call save_report with "
                 f'report_type="pup_report" to persist it.'
             ),
+            **_rule9_readiness(case_id),
         })
 
     @mcp.tool(title="Load Report Template")
@@ -2272,7 +2304,7 @@ def _register_tier1(mcp: FastMCP) -> None:
                 "tool": "add_finding",
                 "depends_on": "add_evidence",
                 "reason": "MANDATORY before any report — findings must be backed by logged evidence "
-                          "(Analytical Standards rule 8). A report on a case with no findings is unprovable.",
+                          "(Analytical Standards rule 9). A report on a case with no findings is unprovable.",
             })
 
             # Phase 5 — Verdict & Output. Do NOT default to an MDR report — that is the
@@ -3243,6 +3275,7 @@ def _register_tier2(mcp: FastMCP) -> None:
                 f"summary for {case_id}, then call save_report with "
                 f'report_type="executive_summary" to persist it.'
             ),
+            **_rule9_readiness(case_id),
         })
 
     @mcp.tool(title="Parse Log Files")
@@ -4522,6 +4555,7 @@ def _register_tier3(mcp: FastMCP) -> None:
                 f"review for {case_id}, then call save_report with "
                 f'report_type="security_arch_review" to persist it.'
             ),
+            **_rule9_readiness(case_id),
         })
 
     @mcp.tool(title="Prepare Vulnerability Hunt Worklist")

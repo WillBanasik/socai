@@ -235,6 +235,9 @@ and response style accordingly:
 - Reports auto-close cases via `save_report` (called after `prepare_mdr_report`, `prepare_pup_report`, `prepare_closure_comment`).
 - Analytical standards: every finding must be provable with data. Never speculate or fill evidence gaps.
 - Language: "Confirmed" = data proves it. "Assessed" = inference. "Unknown" = no data.
+- Temporal proximity is never causation — a causal claim needs a data-level link (shared hash, URL, PID, audit entry).
+- Log evidence (`add_evidence`) and findings (`add_finding`) BEFORE any report — `save_report` refuses evidence-bearing types without a recorded chain (Analytical Standards rule 9).
+- Full standards: read `socai://analytical-standards`.
 """
 
 

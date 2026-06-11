@@ -256,3 +256,91 @@ def test_closure_comment_requires_disposition():
         assert meta["status"] != "closed"
     finally:
         _cleanup()
+
+
+def test_evidence_finding_counts():
+    # Shared counter behind the rule-9 gate and the prepare_* early warning.
+    from tools.common import utcnow
+    from tools.save_report import evidence_finding_counts
+    case_id = "IV_CASE_FRICTION_R9COUNTS"
+    case_dir, _cleanup = _scratch_case(
+        case_id,
+        {"title": "r9 counts", "status": "active", "created_at": utcnow()},
+    )
+    try:
+        assert evidence_finding_counts(case_id) == (0, 0)
+
+        notes_dir = case_dir / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "analyst_input.md").write_text(
+            "KQL hit: 1 row\n\n---\n\nEnrichment verdict: malicious"
+            "\n\n---\n\n**Finding (verdict):** TP, backed above\n"
+        )
+        assert evidence_finding_counts(case_id) == (2, 1)
+    finally:
+        _cleanup()
+
+
+def test_prepare_rule9_readiness_warns_then_clears():
+    # The prepare_* payload surfaces a missing evidence/finding chain BEFORE
+    # the report is written; the warning clears once the chain is backfilled.
+    from tools.common import utcnow
+    from mcp_server.tools import _rule9_readiness
+    case_id = "IV_CASE_FRICTION_R9PREP"
+    case_dir, _cleanup = _scratch_case(
+        case_id,
+        {"title": "r9 prep", "status": "active", "created_at": utcnow()},
+    )
+    try:
+        out = _rule9_readiness(case_id)
+        assert out["evidence_entries"] == 0
+        assert out["finding_entries"] == 0
+        assert "rule 9" in out["rule9_warning"]
+
+        notes_dir = case_dir / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "analyst_input.md").write_text(
+            "KQL hit: 1 row\n\n---\n\n**Finding (verdict):** TP, backed above\n"
+        )
+        out2 = _rule9_readiness(case_id)
+        assert out2 == {"evidence_entries": 1, "finding_entries": 1}
+    finally:
+        _cleanup()
+
+
+def test_save_report_returns_quality_warnings():
+    # Non-blocking analytical-standards prose check at save time: causal and
+    # speculative language is flagged in the manifest, never refused.
+    from tools.common import utcnow
+    from tools.save_report import save_report_to_case
+    case_id = "IV_CASE_FRICTION_QWARN"
+    case_dir, _cleanup = _scratch_case(
+        case_id,
+        {"title": "quality warnings", "status": "active", "created_at": utcnow()},
+    )
+    try:
+        notes_dir = case_dir / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "analyst_input.md").write_text(
+            "KQL hit: 1 row\n\n---\n\n**Finding (verdict):** TP, backed above\n"
+        )
+        r = save_report_to_case(
+            case_id, "mdr_report",
+            "## MDR\n\nThe phishing email likely led to execution on the host.",
+        )
+        assert r["status"] == "ok"
+        assert r["quality_warning_count"] >= 2  # 'likely' + 'led to'
+        rules = {f["rule"] for f in r["quality_warnings"]}
+        assert "speculative_language" in rules
+        assert "causal_claim" in rules
+
+        # Clean text produces no flags — and still saves.
+        r2 = save_report_to_case(
+            case_id, "mdr_report",
+            "## MDR\n\nConfirmed: hash 4f2a matched 62/70 VT engines.",
+        )
+        assert r2["status"] == "ok"
+        assert r2["quality_warnings"] == []
+        assert r2["quality_warning_count"] == 0
+    finally:
+        _cleanup()

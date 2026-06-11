@@ -203,6 +203,20 @@ def _check_matrix_coverage(report_text: str, matrix: dict | None) -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
+def text_quality_flags(report_text: str) -> list[dict]:
+    """Deterministic prose checks that need no case context.
+
+    Runs the causal-language and speculative-language detectors only — the
+    confirmed-claim and coverage checks need the investigation matrix and
+    stay in ``review_report``. Used by ``save_report`` to annotate every
+    save with non-blocking ``quality_warnings``.
+    """
+    flags: list[dict] = []
+    flags.extend(_check_causal_language(report_text))
+    flags.extend(_check_speculation(report_text))
+    return flags
+
+
 def review_report(case_id: str) -> dict | None:
     """Review the investigation report against matrix and analytical standards.
 

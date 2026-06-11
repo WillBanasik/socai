@@ -112,6 +112,8 @@ RULES:
 3. Do NOT use the words "false positive" unless the classification is one of the False Positive variants.
 4. Do NOT suggest tuning, remediation, or follow-up actions — just the closure justification.
 5. Tone: direct, factual, confident.
+6. Language discipline (analytical standards): "confirmed" only where the case data proves it — \
+an inference is "assessed"; if the data is missing, say undetermined rather than overstating.
 
 CLASSIFICATION-SPECIFIC GUIDANCE:
 {tone}

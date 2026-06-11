@@ -112,6 +112,35 @@ findings are unrelated or when the relationship has not been established.
 
 ---
 
+## Verify Before Asserting (Non-Negotiable)
+
+Never assume a fact when the data to confirm it is available. If a
+directory, identity table, log, or lookup can resolve an attribute
+(role, department, ownership, configuration), query it before stating
+it. The data source is authoritative — inferences drawn from context,
+naming conventions, or prior assumptions are not.
+
+---
+
+## Evidence and Finding Logging (Required Before Reports)
+
+Every report must be backed by a recorded chain on the case:
+
+- `add_evidence` — raw observations (query hits, file analysis,
+  enrichment verdicts, audit log entries)
+- `add_finding` — analyst conclusions tied to the specific evidence
+  that supports them, with confidence stated as Confirmed / Assessed /
+  Unknown
+
+A report on a case with no recorded evidence or findings is by
+definition unprovable. `save_report` refuses evidence-bearing report
+types (MDR, PUP, executive summary, security architecture review)
+until the case has at least one evidence entry and one finding entry.
+Backfill the chain from data already in context before writing report
+prose — never paper over a missing chain.
+
+---
+
 ## Environmental Context (Always Evaluate)
 
 Where applicable, consider:

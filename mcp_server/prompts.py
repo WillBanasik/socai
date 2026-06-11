@@ -56,7 +56,15 @@ _ANALYTICAL_STANDARDS = [
     "- Language: \"Confirmed\" = data proves it. \"Assessed\" = inference. \"Unknown\" = no data",
     "- Never combine Sentinel classifications (TP + BP is invalid)",
     "- Actively seek disconfirming evidence before concluding",
+    "- Verify before asserting: if a directory, identity table, log, or lookup can resolve "
+    "a fact, query it before stating it — never assume from naming or context",
+    "- Log evidence (`add_evidence`) and findings (`add_finding`) BEFORE any report — "
+    "`save_report` refuses evidence-bearing types without a recorded chain (rule 9)",
 ]
+
+# Joined form for prompts built as plain/f-string concatenation rather than
+# line lists — same single source of truth.
+_ANALYTICAL_STANDARDS_TEXT = "\n".join(_ANALYTICAL_STANDARDS)
 
 _BEHAVIOURAL_ASSESSMENT = [
     "## Behavioural Assessment",
@@ -366,6 +374,19 @@ def register_prompts(mcp: FastMCP) -> None:
             lines.append("## Definitions")
             for defn in pb["definitions"]:
                 lines.append(f"- **{defn['term']}**: {defn['definition']}")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+        lines.extend(_ANALYTICAL_STANDARDS)
+        lines.append("")
+        lines.append("## Verdict")
+        lines.append("")
+        lines.append("Interpret each stage's results against the standards above before "
+                      "moving to the next stage. When the stages are complete, determine "
+                      "the Sentinel incident classification:")
+        lines.append("")
+        lines.extend(_CLASSIFICATION_TREE)
 
         return "\n".join(lines)
 
@@ -547,6 +568,19 @@ def register_prompts(mcp: FastMCP) -> None:
             lines.append("## Definitions")
             for defn in pb["definitions"]:
                 lines.append(f"- **{defn['term']}**: {defn['definition']}")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+        lines.extend(_ANALYTICAL_STANDARDS)
+        lines.append("")
+        lines.append("## Verdict")
+        lines.append("")
+        lines.append("Interpret each stage's results against the standards above before "
+                      "moving to the next stage. When the stages are complete, determine "
+                      "the Sentinel incident classification (used across all platforms):")
+        lines.append("")
+        lines.extend(_CLASSIFICATION_TREE)
 
         return "\n".join(lines)
 
@@ -1407,6 +1441,10 @@ def register_prompts(mcp: FastMCP) -> None:
             "2. **Client-Responsible Remediation** — actions only the client can perform "
             "(password resets, policy changes, user briefings)\n\n"
             "Reference specific technologies, users, hosts, and IOCs from the case data.\n\n"
+            "Ground every recommended action in evidence recorded on the case — name the "
+            "finding or observation it addresses. If the evidence is insufficient to justify "
+            "an action, state what data is missing instead of recommending on speculation "
+            "(analytical standards apply).\n\n"
             "---\n\n"
             f"## Client Playbook\n\n```json\n{playbook_text}\n```\n\n"
             "---\n\n"
@@ -2050,6 +2088,7 @@ def register_prompts(mcp: FastMCP) -> None:
             "- **high** — clear brand impersonation or credential harvesting on wrong domain\n"
             "- **medium** — suspicious elements but ambiguous (e.g. generic login, no clear brand)\n"
             "- **low** — minor indicators, likely benign but worth noting\n\n"
+            f"{_ANALYTICAL_STANDARDS_TEXT}\n\n"
             "---\n\n"
             f"# Case Data\n\n"
             f"{context}\n\n"
@@ -2117,6 +2156,8 @@ def register_prompts(mcp: FastMCP) -> None:
         return (
             f"# PE Malware Assessment — Instructions\n\n"
             f"{prompt}\n\n"
+            f"---\n\n"
+            f"{_ANALYTICAL_STANDARDS_TEXT}\n\n"
             f"---\n\n"
             f"# PE Analysis Data\n\n"
             f"{context}\n\n"
@@ -2204,6 +2245,8 @@ def register_prompts(mcp: FastMCP) -> None:
         return (
             f"# CVE Contextualisation — Instructions\n\n"
             f"{prompt}\n\n"
+            f"---\n\n"
+            f"{_ANALYTICAL_STANDARDS_TEXT}\n\n"
             f"---\n\n"
             f"# Case Data\n\n"
             f"{context}\n\n"

@@ -718,6 +718,25 @@ def register_resources(mcp: FastMCP) -> None:
     # SOC Process Documentation
     # ------------------------------------------------------------------
 
+    @mcp.resource("socai://analytical-standards")
+    def analytical_standards() -> str:
+        """Canonical analytical standards and reasoning guidelines (full text).
+
+        Evidence-first analysis, mandatory alternative-explanation evaluation,
+        co-occurrence vs causation, determination language discipline
+        (Confirmed / Assessed / Unknown), verify-before-asserting, the
+        evidence/finding logging requirement (rule 9), and the Sentinel
+        TP/BP/FP classification guide. Re-read this mid-session whenever a
+        verdict, report, or attribution is being formed.
+        """
+        _require_scope("investigations:read")
+
+        import pathlib
+        doc_path = pathlib.Path(__file__).resolve().parent.parent / "config" / "analytical_guidelines.md"
+        if doc_path.exists():
+            return doc_path.read_text(encoding="utf-8")
+        return "Analytical guidelines not found."
+
     @mcp.resource("socai://incident-handling")
     def incident_handling() -> str:
         """Incident handling process — role priorities, SOAR queue workflow, and escalation rules.

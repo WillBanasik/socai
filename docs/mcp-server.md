@@ -302,7 +302,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `ingest_velociraptor` | `investigations:submit` | Ingest Velociraptor offline collector data |
 | `ingest_mde_package` | `investigations:submit` | Ingest MDE investigation package |
 | `generate_weekly` | `investigations:read` | Weekly SOC report |
-| `save_report` | `investigations:submit` | Persist a locally-generated markdown report (defang, auto-close, audit). No LLM call. Evidence-bearing types (`mdr_report`, `pup_report`, `executive_summary`, `security_arch_review`) **refuse to save** until the case has at least one `add_evidence` and one `add_finding` entry (Analytical Standards rule 9) — backfill the chain, then retry. |
+| `save_report` | `investigations:submit` | Persist a locally-generated markdown report (defang, auto-close, audit). No LLM call. Evidence-bearing types (`mdr_report`, `pup_report`, `executive_summary`, `security_arch_review`) **refuse to save** until the case has at least one `add_evidence` and one `add_finding` entry (Analytical Standards rule 9) — backfill the chain, then retry. The corresponding `prepare_*` tools return `evidence_entries`/`finding_entries` counts plus a `rule9_warning` when either is zero, so the gap surfaces before writing. Every save also runs the deterministic prose checks (causal/speculative language) and returns the flags as non-blocking `quality_warnings`. |
 | `link_cases` | `investigations:submit` | Link related cases |
 | `merge_cases` | `admin` | Merge duplicate cases |
 | `response_actions` | `investigations:submit` | Recommend containment/response actions |
@@ -324,7 +324,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `analyse_memory_dump` | `investigations:submit` | Process memory dump analysis (strings, IOCs, risk scoring) |
 | `analyse_memory_volatility` | `investigations:submit` | Volatility3 deep analysis — pslist/netscan/malfind/cmdline; auto OS-detect |
 
-## Resources (47)
+## Resources (48)
 
 | URI | Description |
 |---|---|
@@ -371,6 +371,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://articles` | Threat article index |
 | `socai://landscape` | Threat landscape summary |
 | `socai://role` | Current analyst role, permissions, and behavioural instructions |
+| `socai://analytical-standards` | Canonical analytical standards — evidence-first reasoning, causation discipline, Confirmed/Assessed/Unknown language, rule-9 logging requirement, TP/BP/FP guide (full text of `config/analytical_guidelines.md`) |
 | `socai://incident-handling` | SOC process: role priorities, SOAR queue workflow, escalation rules |
 | `socai://service-requests` | SOC process: SD queue monitoring, ticket lifecycle, Teams channels |
 | `socai://time-tracking` | SOC process: Kantata categories, overtime logging, on-call hours |
@@ -512,7 +513,7 @@ Separate from server logs, the pipeline writes structured investigation metrics 
 | `case_phase_change` | Case status transitions | phase, prev_status, analyst, client, severity |
 | `enrichment_complete` | `enrich()` finishes | duration_ms, total_iocs, enriched_iocs, ioc_coverage_pct, cache_hits, tiered stats |
 | `verdict_scored` | `score_verdicts()` finishes | ioc_count, malicious/suspicious/clean counts, confidence_dist (HIGH/MEDIUM/LOW) |
-| `report_saved` | `save_report()` persists a report | report_type, auto_closed, disposition, char_count, completeness_pct |
+| `report_saved` | `save_report()` persists a report | report_type, auto_closed, disposition, char_count, completeness_pct, quality_warning_count |
 | `investigation_summary` | Case closes | disposition, severity, attack_type, analyst, durations (total/triage/investigation minutes), phase_timestamps |
 
 **Phase timestamps:** Each case's `case_meta.json` now contains a `phase_timestamps` object tracking `created_at`, `triage_at`, `active_at`, `closed_at`. These enable precise measurement of triage duration, investigation duration, and total time-to-close.

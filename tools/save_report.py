@@ -99,6 +99,33 @@ _REPORT_TYPES = {
 
 
 # ---------------------------------------------------------------------------
+# Evidence / finding chain inspection
+# ---------------------------------------------------------------------------
+
+def evidence_finding_counts(case_id: str) -> tuple[int, int]:
+    """Count recorded evidence and finding entries on a case.
+
+    Uses the same segmentation as the rule-9 gate: ``notes/analyst_input.md``
+    is split on the entry delimiter; a segment starting ``**Finding (`` is a
+    finding, anything else is evidence. The ``prepare_*`` tools call this to
+    surface a missing chain BEFORE the report is written, rather than as a
+    save-time refusal afterwards.
+    """
+    notes_path = CASES_DIR / case_id / "notes" / "analyst_input.md"
+    if not notes_path.exists():
+        return 0, 0
+    try:
+        notes_text = notes_path.read_text(errors="replace")
+    except OSError as exc:
+        log_error(case_id, "save_report.evidence_finding_counts", str(exc),
+                  severity="warning")
+        return 0, 0
+    segments = [s.strip() for s in notes_text.split("\n\n---\n\n") if s.strip()]
+    findings = sum(1 for s in segments if s.startswith("**Finding ("))
+    return len(segments) - findings, findings
+
+
+# ---------------------------------------------------------------------------
 # Main function
 # ---------------------------------------------------------------------------
 
@@ -170,17 +197,9 @@ def save_report_to_case(
     # chain. A report on a case with no add_evidence/add_finding record is by
     # definition unprovable (rules 1-4) — refuse rather than paper over it.
     if cfg.get("requires_findings"):
-        notes_path = case_dir / "notes" / "analyst_input.md"
-        notes_text = ""
-        if notes_path.exists():
-            try:
-                notes_text = notes_path.read_text(errors="replace")
-            except OSError as exc:
-                log_error(case_id, "save_report.rule9_gate", str(exc),
-                          severity="warning")
-        segments = [s.strip() for s in notes_text.split("\n\n---\n\n") if s.strip()]
-        has_finding = any(s.startswith("**Finding (") for s in segments)
-        has_evidence = any(not s.startswith("**Finding (") for s in segments)
+        evidence_count, finding_count = evidence_finding_counts(case_id)
+        has_finding = finding_count > 0
+        has_evidence = evidence_count > 0
         if not (has_finding and has_evidence):
             missing = []
             if not has_evidence:
@@ -267,6 +286,17 @@ def save_report_to_case(
             log_error(case_id, "save_report.auto_close", str(exc),
                       severity="warning", traceback=tb.format_exc())
 
+    # Analytical-standards prose check (non-blocking): flag causal claims and
+    # speculative language at the moment the deliverable is persisted. The
+    # matrix-backed checks stay in review_report — these two are self-contained.
+    quality_warnings: list[dict] = []
+    try:
+        from tools.report_quality_gate import text_quality_flags
+        quality_warnings = text_quality_flags(report_text)
+    except Exception as exc:
+        log_error(case_id, "save_report.quality_check", str(exc),
+                  severity="warning", traceback=tb.format_exc())
+
     # Write manifest
     manifest = {
         "case_id": case_id,
@@ -277,6 +307,8 @@ def save_report_to_case(
         "disposition": disposition or cfg["disposition"],
         "status": "ok",
         "ts": ts,
+        "quality_warnings": quality_warnings,
+        "quality_warning_count": len(quality_warnings),
     }
     manifest_path = out_path.parent / f"{out_path.stem}_manifest.json"
     save_json(manifest_path, manifest)
@@ -303,6 +335,7 @@ def save_report_to_case(
                char_count=len(report_text),
                sections_present=_sections_present,
                sections_count=len(_sections_present),
-               completeness_pct=round(len(_sections_present) / len(_section_markers) * 100, 1))
+               completeness_pct=round(len(_sections_present) / len(_section_markers) * 100, 1),
+               quality_warning_count=len(quality_warnings))
 
     return manifest

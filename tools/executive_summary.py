@@ -44,6 +44,14 @@ Constraints:
   - AMBER: Significant risk identified; remediation needed within days.
   - GREEN: Low risk; routine findings or confirmed benign activity.
 
+Analytical standards (non-negotiable — plain-English equivalents are fine):
+- Distinguish confirmed fact from assessment: say "confirmed" only where \
+the investigation data proves it; otherwise present it as an assessment \
+("we assess", "the evidence suggests") with how certain the team is. \
+Never present an inference as established fact.
+- Do not speculate beyond the recorded evidence and findings. If something \
+is not known, say so plainly — executives act on gaps too.
+
 Produce a structured executive summary with all required fields.\
 """
 
