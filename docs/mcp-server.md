@@ -612,6 +612,19 @@ For manual startup without systemd:
 SOCAI_MCP_HOST=127.0.0.1 python3 -m mcp_server
 ```
 
+### Startup troubleshooting (WSL)
+
+Two failure modes observed 2026-06-12, after a WSL reboot killed a long-lived manually-started server:
+
+- **`systemctl --user` fails with `Failed to connect to bus: No such file or directory`** even though `user@<uid>.service` is active. WSL can over-mount `/run/user/<uid>` with a second tmpfs during boot, shadowing the user manager's `bus`/`systemd/private` sockets from every process started afterwards. Verify with `ss -lx | grep "user/$(id -u)"` (kernel still lists the real sockets) and `grep run/user /proc/self/mountinfo` (two tmpfs entries for the same mount point). The manager and the services it spawns are unaffected — only *talking* to it from new shells is broken until the next clean boot. To enable the service without the bus, create the symlink `systemctl enable` would have created:
+
+  ```bash
+  mkdir -p ~/.config/systemd/user/default.target.wants
+  ln -sfn /home/will/socai/deploy/socai-mcp.service ~/.config/systemd/user/default.target.wants/
+  ```
+
+- **Claude Code session started while the server was down.** Starting the server afterwards is not enough: the TUI's MCP client re-opens the SSE stream but skips the `initialize` handshake, so every tool call fails with `-32602` (server log: `Received request before initialization was complete`). Restarting the server does not clear it — the client must re-handshake, which only the analyst can trigger via `/mcp` → socai → reconnect (or a new session). Investigation work can proceed through the socai CLI and the underlying tool functions in the meantime.
+
 ### Health endpoint
 
 `GET /healthz` returns a JSON liveness probe (no auth required):

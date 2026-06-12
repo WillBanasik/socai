@@ -6,6 +6,13 @@
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now socai-mcp
 #
+# If `systemctl --user` fails with "Failed to connect to bus" (WSL can shadow
+# /run/user/<uid> with a second tmpfs at boot; verify the real sockets with
+# `ss -lx | grep user/1000`), enable offline — this symlink is all `enable` does:
+#   mkdir -p ~/.config/systemd/user/default.target.wants
+#   ln -sfn /home/will/socai/deploy/socai-mcp.service ~/.config/systemd/user/default.target.wants/
+# The service then starts on the next boot.
+#
 # Logs:
 #   journalctl --user -u socai-mcp -f
 #
