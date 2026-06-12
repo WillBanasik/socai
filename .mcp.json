@@ -13,6 +13,14 @@
       "headers": {
         "Authorization": "Bearer ${SOCAI_MCP_TOKEN}"
       }
+    },
+    "socai-stdio": {
+      "type": "stdio",
+      "command": "bash",
+      "args": ["-c", "cd /home/will/socai && exec python3 -m mcp_server"],
+      "env": {
+        "SOCAI_MCP_TRANSPORT": "stdio"
+      }
     }
   }
 }

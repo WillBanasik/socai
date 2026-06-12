@@ -623,7 +623,7 @@ Two failure modes observed 2026-06-12, after a WSL reboot killed a long-lived ma
   ln -sfn /home/will/socai/deploy/socai-mcp.service ~/.config/systemd/user/default.target.wants/
   ```
 
-- **Claude Code session started while the server was down.** Starting the server afterwards is not enough: the TUI's MCP client re-opens the SSE stream but skips the `initialize` handshake, so every tool call fails with `-32602` (server log: `Received request before initialization was complete`). Restarting the server does not clear it — the client must re-handshake, which only the analyst can trigger via `/mcp` → socai → reconnect (or a new session). Investigation work can proceed through the socai CLI and the underlying tool functions in the meantime.
+- **Claude Code session started while the server was down.** Starting the server afterwards is not enough: the TUI's MCP client re-opens the SSE stream but skips the `initialize` handshake, so every tool call fails with `-32602` (server log: `Received request before initialization was complete`). Restarting the server does not clear it — the client must re-handshake, which only the analyst can trigger via `/mcp` → socai → reconnect (or a new session). In the meantime use the `socai-stdio` seat (per-session spawn, unaffected by any of this — see "Per-session stdio fallback"); the socai CLI and underlying tool functions remain the last resort.
 
 ### Health endpoint
 
@@ -724,6 +724,8 @@ The `env` block in Claude Desktop config is **not** forwarded into WSL processes
 
 Claude Code (the terminal / IDE client) connects to the **same** server as Claude Desktop — it is a second analyst seat, not a separate backend. Use it both for codebase development and for investigation work; the split is defined in `CLAUDE.md` → "Working mode (Claude Code / TUI)" (engineering mode = freehand `Bash`/`Edit`; investigation mode = drive the pipeline through `mcp__socai__*` tools/prompts, not ad-hoc `az`/`curl`).
 
+The project `.mcp.json` registers the server **twice**: `socai` (SSE to the shared `socai-mcp` systemd service — preferred when connected) and `socai-stdio` (a per-session stdio spawn of the same server — the always-available fallback; see "Per-session stdio fallback" below). Both run identical code against the same filesystem state.
+
 ### Local connection (SSE over loopback)
 
 1. **Start the server** (SSE is the default), with `SOCAI_JWT_SECRET` set in `.env`:
@@ -741,6 +743,12 @@ python3 -m mcp_server          # listens on 127.0.0.1:8001, SSE endpoint /sse
       "type": "sse",
       "url": "http://127.0.0.1:8001/sse",
       "headers": { "Authorization": "Bearer ${SOCAI_MCP_TOKEN}" }
+    },
+    "socai-stdio": {
+      "type": "stdio",
+      "command": "bash",
+      "args": ["-c", "cd /home/will/socai && exec python3 -m mcp_server"],
+      "env": { "SOCAI_MCP_TRANSPORT": "stdio" }
     }
   }
 }
@@ -775,3 +783,12 @@ The minted token and the running server share the same `SOCAI_JWT_SECRET` (both 
 4. **Restart Claude Code** (or `/mcp` → reconnect) and approve the `socai` project server. `mcp__socai__*` tools then appear. Project `.mcp.json` servers stay pending until approved — check `enabledMcpjsonServers` for the project in `~/.claude.json`; if `[]`, approve via `/mcp`.
 
 > **Same gotcha applies to `eql-hosted`:** `${ENCORE_EQL_TOKEN}` only resolves if it is in Claude Code's environment (e.g. the same `settings.local.json` `env` block), not merely in `.env`. See `docs/encore-eql.md`.
+
+### Per-session stdio fallback (`socai-stdio`)
+
+The second `.mcp.json` entry spawns the server directly inside the Claude Code session over stdio (`SOCAI_MCP_TRANSPORT=stdio`). Nothing has to be running beforehand: Claude Code launches `python3 -m mcp_server` itself at session start and tears it down at session end.
+
+- **No systemd, no port, no token** — stdio is the local-trust model (auth skipped, role `senior_analyst`+admin equivalent), so it works even when the `socai-mcp` service never started, `systemctl --user` cannot reach the bus (WSL bus shadow), or the SSE client is `-32602`-wedged. It is the in-session workaround for every failure mode in "Startup troubleshooting (WSL)".
+- **Same state** — it is the same server code on the same filesystem (`.env` is loaded by `config/settings.py` with a repo-anchored path, so credentials resolve without the shell). Cases, registry, audit and metrics are shared with the SSE instance.
+- **Safe to run alongside the SSE service** — each instance runs its own background scheduler (tasks are idempotent/freshness-guarded), and `_reap_orphaned_browsers` only kills chromiums with **no live `mcp_server` ancestor**, so a starting stdio instance leaves the SSE instance's pooled browser alone.
+- **Which to use:** prefer `mcp__socai__*` (SSE seat — shared long-lived instance, per-token workflow analytics) when it is connected; use `mcp__socai-stdio__*` whenever it is not. Approve both server names once (`enabledMcpjsonServers` in `.claude/settings.local.json`).

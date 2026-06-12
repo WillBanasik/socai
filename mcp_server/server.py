@@ -283,6 +283,11 @@ def _reap_orphaned_browsers() -> None:
     On unclean shutdown the pooled browser's atexit handler may not fire,
     leaving chromium-headless-shell processes consuming ~400 MB each.
     This runs at startup to reclaim those resources.
+
+    Only true orphans are killed: a chromium whose parent chain still contains
+    a live ``mcp_server`` process belongs to another running instance (e.g. the
+    SSE service while a per-session stdio instance starts) and must be left
+    alone.
     """
     try:
         result = subprocess.run(
@@ -293,17 +298,54 @@ def _reap_orphaned_browsers() -> None:
         if not pids:
             return
         my_pid = str(os.getpid())
+        killed = 0
+        skipped = 0
         for pid in pids:
             pid = pid.strip()
-            if pid and pid != my_pid:
-                try:
-                    os.kill(int(pid), signal.SIGKILL)
-                except (OSError, ValueError):
-                    pass
-        mcp_log("browser_orphan_cleanup", killed=len(pids))
-        eprint(f"[server] Cleaned up {len(pids)} orphaned Chromium process(es)")
+            if not pid or pid == my_pid:
+                continue
+            try:
+                if _has_live_mcp_ancestor(int(pid)):
+                    skipped += 1
+                    continue
+                os.kill(int(pid), signal.SIGKILL)
+                killed += 1
+            except (OSError, ValueError):
+                pass
+        if killed or skipped:
+            mcp_log("browser_orphan_cleanup", killed=killed, skipped_live=skipped)
+        if killed:
+            eprint(f"[server] Cleaned up {killed} orphaned Chromium process(es)")
     except Exception:
         pass  # pgrep not available or no matches — fine
+
+
+def _has_live_mcp_ancestor(pid: int) -> bool:
+    """Return True if any live ancestor of ``pid`` is an mcp_server process.
+
+    Walks the /proc PPID chain (orphans re-parent to init or a subreaper, so a
+    dead server never appears in the chain). Used by ``_reap_orphaned_browsers``
+    to distinguish abandoned chromiums from ones owned by a concurrently
+    running server instance.
+    """
+    my_pid = os.getpid()
+    for _ in range(15):
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+            # Field layout: pid (comm) state ppid ... — comm may contain spaces.
+            ppid = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return False
+        if ppid <= 1:
+            return False
+        try:
+            cmdline = Path(f"/proc/{ppid}/cmdline").read_bytes().replace(b"\0", b" ")
+        except OSError:
+            return False
+        if b"mcp_server" in cmdline and ppid != my_pid:
+            return True
+        pid = ppid
+    return False
 
 
 # ---------------------------------------------------------------------------
