@@ -80,6 +80,12 @@
 - **Encore:** internal client id `<uuid>` (<access>)
 - **Other (from data sources):** <notable connectors>
 - See `registry/ngsiem_connectors/<client>.json` for the full `@dataConnectionID` list (NG-SIEM clients).
+- **Identity containment authority:** `<performanta_delegated | client_actioned>` — [INTERNAL] confirm
+  (`platforms.identity_response` in `client_entities.json`). `performanta_delegated` = we hold
+  Entra/Defender identity-action delegation + SOP cover, so the analyst can reset passwords and
+  revoke sessions (client does MFA reset / disable / OAuth-grant revoke). `client_actioned` = all
+  identity actions go to the client. A policy fact — never inferred from integration presence.
+  See `socai://containment-authority`.
 
 ---
 
@@ -122,7 +128,11 @@ Observed-legitimate identities/senders/agents — treat as known relationships, 
 
 - **Source:** `PerformantaLab/mdr_soar` → `client_response_templates/<client>.json` (fetched live)
 - **Notification channel / SLA:** <channel, hours>
-- **Containment authority:** <pre-approved actions vs confirm-first; hypercare = notify-only>
+- **Containment authority (GitHub overrides capability):** <pre-approved actions vs confirm-first;
+  hypercare = notify-only>. This GitHub response process is the **authority of record** — it
+  overrides the `identity_response` capability above and can only *restrict* it (set the template's
+  top-level `containment_policy`: `pre_approved` | `confirm_first` | `prohibited`). See
+  `socai://containment-authority`.
 - **Contacts (P1/P2):** see live template
 
 ---

@@ -709,6 +709,27 @@ def register_resources(mcp: FastMCP) -> None:
             return doc_path.read_text(encoding="utf-8")
         return "Analytical guidelines not found."
 
+    @mcp.resource("socai://containment-authority")
+    def containment_authority() -> str:
+        """Who actions containment/remediation — SOC analyst vs client (full text).
+
+        The capability rule of thumb: identity containment split by platform
+        identity-plane access (performanta_delegated → analyst does password
+        reset + session revoke only, client does MFA reset / disable / OAuth-grant
+        revoke; client_actioned → all identity to the client), and symmetric
+        endpoint containment (network contain, IOCs, AV/on-demand scan) wherever
+        we hold the EDR/XDR action API. The per-client GitHub response process is
+        the authority of record and overrides this — it can only restrict.
+        Read this when forming a response/containment recommendation.
+        """
+        _require_scope("investigations:read")
+
+        import pathlib
+        doc_path = pathlib.Path(__file__).resolve().parent.parent / "docs" / "containment-authority.md"
+        if doc_path.exists():
+            return doc_path.read_text(encoding="utf-8")
+        return "Containment authority documentation not found."
+
     @mcp.resource("socai://incident-handling")
     def incident_handling() -> str:
         """Incident handling process — role priorities, SOAR queue workflow, and escalation rules.

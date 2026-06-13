@@ -39,6 +39,111 @@ _RESPONSE_ACTION_LABELS = {
 
 
 # ---------------------------------------------------------------------------
+# Containment & remediation authority (capability layer)
+# ---------------------------------------------------------------------------
+# General rule of thumb — what the SOC is *technically able* to do, derived from
+# the client's platform / identity-plane access. The per-client GitHub response
+# process is the authority of record and overrides this (see _apply_containment
+# _override). Canonical reference: docs/containment-authority.md
+# (socai://containment-authority).
+
+# Identity actions split by platforms.identity_response. Per SOP the analyst's
+# identity authority is password reset + session revoke ONLY; everything that
+# changes the account's standing is client remediation.
+_IDENTITY_CAPABILITY = {
+    "performanta_delegated": {
+        "analyst": [
+            "Reset password",
+            "Revoke sessions (invalidates refresh tokens; ~1 h access-token tail)",
+        ],
+        "client": [
+            "Reset / re-register MFA",
+            "Disable account",
+            "Revoke OAuth / app-consent grant",
+        ],
+    },
+    "client_actioned": {
+        "analyst": [],
+        "client": [
+            "Reset password",
+            "Revoke sessions",
+            "Reset / re-register MFA",
+            "Disable account",
+            "Revoke OAuth / app-consent grant",
+        ],
+    },
+}
+
+# Endpoint containment is symmetric across EDR/XDR — the SOC actions it wherever
+# we hold the action API. No SOC-vs-client split, only the GitHub override.
+_ENDPOINT_ACTIONS = [
+    "Network contain / isolate device",
+    "Add IOCs (block hash / domain / IP)",
+    "AV / on-demand scan",
+]
+
+# GitHub response-template top-level containment_policy → effect on SOC execution.
+_CONTAINMENT_POLICY_EFFECT = {
+    "pre_approved":  {"soc_may_execute": True,  "label": "Pre-approved — SOC may execute permitted containment"},
+    "confirm_first": {"soc_may_execute": True,  "label": "Confirm-first — SOC must confirm with client before containing"},
+    "prohibited":    {"soc_may_execute": False, "label": "Prohibited — SOC must NOT contain; notify only"},
+}
+
+
+def _compute_containment_authority(client: str, playbook: dict) -> dict:
+    """Resolve who actions containment/remediation for *client*.
+
+    Capability layer (rule of thumb, from ``platforms``) gated by the GitHub
+    response process (authority of record — can only restrict). See
+    docs/containment-authority.md.
+    """
+    cfg = get_client_config(client) or {}
+    platforms = cfg.get("platforms", {}) or {}
+
+    identity_mode = str(platforms.get("identity_response", "client_actioned")).lower()
+    if identity_mode not in _IDENTITY_CAPABILITY:
+        identity_mode = "client_actioned"
+    identity_cap = _IDENTITY_CAPABILITY[identity_mode]
+
+    # Endpoint capability — present wherever we hold an EDR/XDR action API.
+    endpoint_tech = []
+    if (platforms.get("defender_xdr") or {}).get("api_enabled"):
+        endpoint_tech.append("Defender XDR")
+    if (platforms.get("crowdstrike") or {}).get("api_enabled"):
+        endpoint_tech.append("CrowdStrike Falcon")
+    endpoint_actions = list(_ENDPOINT_ACTIONS) if endpoint_tech else []
+
+    # GitHub override gate — authority of record, can only restrict.
+    policy = str(playbook.get("containment_policy", "pre_approved")).lower()
+    effect = _CONTAINMENT_POLICY_EFFECT.get(policy, _CONTAINMENT_POLICY_EFFECT["pre_approved"])
+    soc_may_execute = effect["soc_may_execute"]
+
+    # SOC-executed actions = analyst identity actions + endpoint actions,
+    # suppressed when the client response process prohibits containment.
+    soc_actions = list(identity_cap["analyst"]) + endpoint_actions
+    suppressed = (not soc_may_execute) and bool(soc_actions)
+
+    return {
+        "identity_response_mode": identity_mode,
+        "identity_analyst_actions": identity_cap["analyst"],
+        "identity_client_actions": identity_cap["client"],
+        "endpoint_technologies": endpoint_tech,
+        "endpoint_actions": endpoint_actions,
+        "soc_executed_actions": soc_actions,
+        "containment_policy": policy,
+        "containment_policy_label": effect["label"],
+        "soc_may_execute": soc_may_execute,
+        "soc_actions_suppressed": suppressed,
+        "suppression_reason": (
+            f"Suppressed by client response process (containment_policy={policy})"
+            if suppressed else None
+        ),
+        "note": "Capability = what the SOC can do (platform access). The GitHub "
+                "response process is the authority of record and overrides it.",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -231,6 +336,46 @@ def _render_markdown(data: dict) -> str:
                     lines.append(f"- {', '.join(parts)}")
         lines.append("")
 
+    # Containment authority (capability layer + GitHub override)
+    auth = data.get("containment_authority")
+    if auth:
+        lines.append("## Containment Authority")
+        lines.append("")
+        lines.append(f"> Capability rule of thumb (identity mode: `{auth['identity_response_mode']}`), "
+                     "gated by the client's GitHub response process. "
+                     "GitHub is the authority of record and can only restrict.")
+        lines.append("")
+        lines.append(f"**Client response process:** {auth['containment_policy_label']}")
+        lines.append("")
+        if auth.get("soc_actions_suppressed"):
+            lines.append(f"> **Containment withheld — {auth['suppression_reason']}.** "
+                         "The actions below are within SOC *capability* but the client's "
+                         "agreed response process prohibits SOC execution — notify only.")
+            lines.append("")
+
+        # SOC-executed (identity analyst actions + endpoint)
+        soc = auth.get("soc_executed_actions", [])
+        if soc:
+            tail = " — *SUPPRESSED, notify only*" if auth.get("soc_actions_suppressed") else ""
+            lines.append(f"### SOC-Executed (capability){tail}")
+            for a in soc:
+                lines.append(f"- {a}")
+            if auth.get("endpoint_technologies"):
+                lines.append(f"- _Endpoint via: {', '.join(auth['endpoint_technologies'])}_")
+            lines.append("")
+        else:
+            lines.append("### SOC-Executed (capability)")
+            lines.append("- _None — no SOC-actionable identity or endpoint capability for this client._")
+            lines.append("")
+
+        # Client responsibility (identity remediation)
+        client_ident = auth.get("identity_client_actions", [])
+        if client_ident:
+            lines.append("### Client Responsibility (identity)")
+            for a in client_ident:
+                lines.append(f"- {a}")
+            lines.append("")
+
     # Containment capabilities
     caps = data.get("containment_capabilities", [])
     if caps:
@@ -352,6 +497,9 @@ def generate_response_actions(case_id: str) -> dict:
     if alert_override and alert_override.get("contact_process"):
         contact_process = alert_override["contact_process"]
 
+    # 6. Containment authority — capability (rule of thumb) gated by GitHub override
+    containment_authority = _compute_containment_authority(client, playbook)
+
     # Build result
     result = {
         "case_id": case_id,
@@ -363,6 +511,7 @@ def generate_response_actions(case_id: str) -> dict:
             "contacts": playbook.get("contacts", []),
             "permitted_actions": permitted_actions,
         },
+        "containment_authority": containment_authority,
         "containment_capabilities": playbook.get("containment_capabilities", []),
         "remediation_actions": playbook.get("remediation_actions", []),
         "malicious_iocs": malicious_iocs,

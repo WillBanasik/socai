@@ -698,6 +698,103 @@ def test_response_actions_no_playbook(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# containment authority (capability layer + GitHub override gate)
+# ---------------------------------------------------------------------------
+
+def test_containment_authority_delegated_with_endpoint(monkeypatch):
+    """performanta_delegated + endpoint API → analyst does pwd reset + session
+    revoke; endpoint actions present; client owns MFA/disable/OAuth-grant."""
+    from tools import response_actions
+
+    monkeypatch.setattr(response_actions, "get_client_config", lambda c: {
+        "name": c,
+        "platforms": {
+            "identity_response": "performanta_delegated",
+            "defender_xdr": {"api_enabled": True},
+            "crowdstrike": {"api_enabled": False},
+        },
+    })
+
+    auth = response_actions._compute_containment_authority("test_client", {})
+
+    assert auth["identity_response_mode"] == "performanta_delegated"
+    assert auth["identity_analyst_actions"] == [
+        "Reset password",
+        "Revoke sessions (invalidates refresh tokens; ~1 h access-token tail)",
+    ]
+    # Account-standing changes are client remediation, never the analyst.
+    assert "Disable account" in auth["identity_client_actions"]
+    assert "Revoke OAuth / app-consent grant" in auth["identity_client_actions"]
+    assert "Defender XDR" in auth["endpoint_technologies"]
+    assert auth["endpoint_actions"]  # symmetric endpoint capability present
+    assert auth["soc_may_execute"] is True
+    assert auth["soc_actions_suppressed"] is False
+
+
+def test_containment_authority_client_actioned(monkeypatch):
+    """client_actioned (e.g. Falcon/NGSIEM) → all identity actions to the client,
+    analyst has none; no endpoint API → no SOC endpoint actions."""
+    from tools import response_actions
+
+    monkeypatch.setattr(response_actions, "get_client_config", lambda c: {
+        "name": c,
+        "platforms": {
+            "identity_response": "client_actioned",
+            "defender_xdr": {"api_enabled": False},
+            "crowdstrike": {"api_enabled": False},
+        },
+    })
+
+    auth = response_actions._compute_containment_authority("test_client", {})
+
+    assert auth["identity_analyst_actions"] == []
+    assert "Reset password" in auth["identity_client_actions"]
+    assert "Revoke sessions" in auth["identity_client_actions"]
+    assert auth["endpoint_technologies"] == []
+    assert auth["soc_executed_actions"] == []
+    assert auth["soc_actions_suppressed"] is False  # nothing to suppress
+
+
+def test_containment_authority_github_prohibits(monkeypatch):
+    """GitHub response process is the authority of record: containment_policy=
+    prohibited suppresses SOC-capable actions (notify-only), with a reason."""
+    from tools import response_actions
+
+    monkeypatch.setattr(response_actions, "get_client_config", lambda c: {
+        "name": c,
+        "platforms": {
+            "identity_response": "performanta_delegated",
+            "defender_xdr": {"api_enabled": True},
+        },
+    })
+
+    # Capability exists, but the client's agreed process prohibits containment.
+    auth = response_actions._compute_containment_authority(
+        "test_client", {"containment_policy": "prohibited"})
+
+    assert auth["soc_executed_actions"]          # capability is present...
+    assert auth["soc_may_execute"] is False      # ...but GitHub overrides it
+    assert auth["soc_actions_suppressed"] is True
+    assert "containment_policy=prohibited" in auth["suppression_reason"]
+
+
+def test_containment_authority_default_and_unknown_mode(monkeypatch):
+    """Absent identity_response defaults to client_actioned; absent
+    containment_policy defaults to pre_approved (no restriction)."""
+    from tools import response_actions
+
+    monkeypatch.setattr(response_actions, "get_client_config", lambda c: {
+        "name": c, "platforms": {},
+    })
+
+    auth = response_actions._compute_containment_authority("test_client", {})
+
+    assert auth["identity_response_mode"] == "client_actioned"
+    assert auth["containment_policy"] == "pre_approved"
+    assert auth["soc_may_execute"] is True
+
+
+# ---------------------------------------------------------------------------
 # command-and-control + reconnaissance playbooks (kill-chain gap remediation)
 # ---------------------------------------------------------------------------
 
