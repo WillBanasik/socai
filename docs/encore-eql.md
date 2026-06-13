@@ -88,7 +88,7 @@ Claude Desktop has **no native HTTP MCP transport**, so it bridges to stdio via 
 1. **`mcp-remote` does not expand `${VAR}`** in `--header` — a placeholder is sent literally and 401s.
 2. **Desktop spawns commands with no shell**, so the OS can't expand it either, and a GUI-launched Desktop does not inherit `~/.bashrc`, so the token isn't in its environment.
 
-The fix is a launch wrapper that resolves the token at runtime — the secret stays in `~/.bashrc` and never lands in a config file.
+The fix is a launch wrapper that resolves the token at runtime. This is the **one exception** to the `.env`-single-source rule above: a GUI-launched Claude Desktop can't see the repo `.env`, so the wrapper sources the token from the shell environment instead (it never lands in a config file). The socai MCP server and `scripts/eql_direct.py` still read the repo `.env`; only the Desktop GUI wrapper uses the shell env. (The wrapper could equally `source` the repo `.env` to keep a single source.)
 
 `~/.config/Claude/eql-remote.sh` (`chmod +x`):
 

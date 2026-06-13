@@ -45,6 +45,8 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/campaign/campaign_links.json` | *Legacy — no longer written.* `campaign_cluster` now returns results to the caller; reports load this file only if a pre-existing copy is present. Cross-case overlap lives in `registry/campaigns.json`. |
 | `cases/<ID>/artefacts/closure_comments/closure_comment.md` | 2-sentence Sentinel-aligned closure comment (BP / FP / Undetermined) |
 | `cases/<ID>/artefacts/closure_comments/closure_comment_manifest.json` | Closure comment metadata (classification, disposition, etc.) |
+| `cases/<ID>/artefacts/fp_comms/fp_tuning_ticket.md` | FP detection-tuning ticket (fired-correctly determination + control-model-branched remediation + machine-readable JSON handoff); preserves the case's existing disposition |
+| `cases/<ID>/artefacts/fp_comms/fp_tuning_ticket_manifest.json` | FP tuning ticket metadata |
 | `cases/<ID>/artefacts/timeline/timeline.json` | Forensic timeline with sorted events + LLM analysis |
 | `cases/<ID>/artefacts/analysis/pe_analysis.json` | Deep PE file analysis (imports, entropy, packers) |
 | `cases/<ID>/artefacts/analysis/<file>.office_analysis.json` | Office macro / DDE / template-injection analysis (DOC/XLS/DOCX/XLSX/PPTM/RTF) |
@@ -76,6 +78,8 @@ All persistent state is on the filesystem. There is no database.
 | `cases/<ID>/artefacts/response_actions/response_actions.json` | Client-specific response plan (machine-readable) |
 | `cases/<ID>/artefacts/response_actions/response_actions.md` | Formatted response plan (human-readable) |
 | `cases/<ID>/reports/pup_report.md` | PUP/PUA investigation report (lightweight MDR variant) |
+| `cases/<ID>/artefacts/vuln_hunt/vuln_hunt_report.md` | Vulnerability-hunt worklist deliverable (`save_report(report_type="vuln_hunt_report")`) — prioritised remediation worklist + machine-readable handoff; supplementary, does not auto-close |
+| `cases/<ID>/artefacts/vuln_hunt/vuln_hunt_report_manifest.json` | Vuln-hunt report metadata |
 | `cases/<ID>/artefacts/velociraptor/ingest_manifest.json` | Velociraptor ingest processing summary |
 | `cases/<ID>/artefacts/velociraptor/collection_context.json` | Copied from offline collector ZIP (if present) |
 | `cases/<ID>/artefacts/velociraptor/host_info.json` | Host metadata from `Generic.Client.Info` (if present) |

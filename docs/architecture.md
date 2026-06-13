@@ -12,7 +12,7 @@ CLI (socai.py)
 
 Shared API (api/)
     ├── auth.py              → JWT constants + user store (shared with MCP)
-    ├── actions.py           → tool orchestration wrappers (16+ pipeline actions)
+    ├── actions.py           → tool orchestration wrappers (~35 action wrappers)
     ├── timeline.py          → case timeline event log
     └── parse_input.py       → freeform analyst input → structured IOC extraction
 
@@ -20,7 +20,7 @@ MCP Server (mcp_server/)
     ├── HTTP SSE transport   → port 8001, separate process (TLS terminated by upstream proxy)
     ├── JWT RBAC             → SocaiTokenVerifier bridges api/auth.py tokens
     ├── 125 tools (3 tiers) → core investigation, extended analysis, advanced/restricted (incl. Sentinel KQL, Defender XDR Advanced Hunting, CrowdStrike Falcon + NG-SIEM)
-    ├── 47 resources        → case data, clients, IOC index, playbooks, sentinel queries, NGSIEM/LogScale refs, articles, landscape
+    ├── 49 resources        → case data, clients, IOC index, playbooks, sentinel queries, NGSIEM/LogScale refs, articles, landscape
     ├── 24 prompts          → investigation, KQL, triage, FP, analysis, report generation, forensics
     ├── Save tools (2)       → save_report, save_threat_article (persist agent output)
     ├── RBAC                 → per-tool scopes via JWT claims; filesystem isolation (cases/<ID>/)

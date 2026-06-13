@@ -153,12 +153,15 @@ Config: `config/client_entities.json` (git-ignored) — unified `clients` list. 
     "sentinel":     { "workspace_id": "<GUID>" },
     "defender_xdr": { "api_enabled": true, "tenant_id": "<GUID>" },
     "crowdstrike":  { "api_enabled": true, "falcon_region": "eu-1", "ngsiem_repo": "<repo>" },
-    "encore":       { "internal_client_id": "<gateway-uuid>", "access": "read" }
+    "encore":       { "internal_client_id": "<gateway-uuid>", "access": "read" },
+    "identity_response": "performanta_delegated"
   }
 }
 ```
 
-The `platforms` object determines which security platforms are available for investigation of that client's incidents. Used by `lookup_client` (MCP tool), `socai://clients` (resource), workspace resolution in `run_kql`, the `hitl_investigation` prompt (Phase 0 client gate), and per-platform query routers (`tools/defender_hunting.py`, `tools/crowdstrike.py`, `tools/eql.py`).
+The `platforms` object determines which security platforms are available for investigation of that client's incidents.
+
+**`platforms.identity_response`** (`performanta_delegated` | `client_actioned`) and the optional **`platforms.identity_integration`** (e.g. `netiq`) drive **containment/remediation authority** — who actions an identity step, SOC analyst vs client. `performanta_delegated` = we hold Entra/Defender identity-action delegation + SOP cover (analyst resets password + revokes sessions; client does MFA reset / disable / OAuth-grant revoke); `client_actioned` = all identity actions go to the client. It is a **policy fact set explicitly per client** — never inferred from integration presence (a Sentinel workspace alone does not confer it). Read by `tools/response_actions.py` (`_compute_containment_authority`) and gated by the per-client GitHub response process (authority of record). See `docs/containment-authority.md` / `socai://containment-authority`. Used by `lookup_client` (MCP tool), `socai://clients` (resource), workspace resolution in `run_kql`, the `hitl_investigation` prompt (Phase 0 client gate), and per-platform query routers (`tools/defender_hunting.py`, `tools/crowdstrike.py`, `tools/eql.py`).
 
 **`platforms.encore`** — `internal_client_id` is the Encore gateway client UUID (from `list_clients` / `eql_direct.py clients`); it is the **token-scope gate** for the socai-native EQL tools. The case-scoped tools (`eql_identity_assessment`, `eql_entity_context`, `eql_posture_context`, `eql_query`) resolve a case → its client → this UUID; the caseless tools (`eql_entity_lookup`, `eql_identity_scan`, `eql_vuln_hunt`) resolve a client *by name* → this UUID via the same gate (`resolve_client_by_name`). Either way every query is pinned to the resolved UUID; a client with no `internal_client_id` (or `access` not in {`read`, `true`}) is refused before any HTTP call, so the all-client `ENCORE_EQL_TOKEN` can never reach a client the case/lookup isn't mapped to. Promoting a caseless lookup into a case additionally refuses if the lookup's UUID ≠ the case's (cross-client guard). The standalone `eql-hosted` MCP server is unaffected (it takes a `clientId` directly). Gateway is the source of truth for these UUIDs — human-verify the mapping.
 
@@ -169,7 +172,7 @@ The `platforms` object determines which security platforms are available for inv
 | Sentinel | `az` CLI session (`az login`) | Uses user-delegated token, no app reg today |
 | Defender XDR | `SOCAI_DEFENDER_APP_CLIENT_ID`, `SOCAI_DEFENDER_APP_CLIENT_SECRET` | One multi-tenant Performanta app reg; admin-consented per client tenant. See `docs/defender-hunting.md`. |
 | CrowdStrike | `SOCAI_CROWDSTRIKE_<CLIENT>_CLIENT_ID`, `SOCAI_CROWDSTRIKE_<CLIENT>_CLIENT_SECRET` | Per-client API client created in each client's Falcon console; `<CLIENT>` is the client name uppercased with non-alphanumerics → underscore (e.g. `HEIDELBERG_MATERIALS`, `SE_FIRST`). See `docs/crowdstrike.md`. |
-| Encore EQL | `ENCORE_EQL_TOKEN` | Single personal **refresh token** spanning all Encore clients (not per-client). Used by `scripts/eql_direct.py` and the `eql-hosted` MCP server. Kept in `~/.bashrc`, never committed. See `docs/encore-eql.md`. |
+| Encore EQL | `ENCORE_EQL_TOKEN` | Single personal **refresh token** spanning all Encore clients (not per-client). Used by `scripts/eql_direct.py` and the `eql-hosted` MCP server. Kept in the repo-root `.env` (gitignored), loaded via `load_dotenv`; never committed. (The Claude Desktop GUI `mcp-remote` wrapper is the one exception — it can't see the repo `.env`, so it sources the token from the shell env; see `docs/encore-eql.md`.) |
 
 ## Sentinel Workspace IDs
 

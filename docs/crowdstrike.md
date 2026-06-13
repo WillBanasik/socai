@@ -56,6 +56,8 @@ In Falcon NG-SIEM → **Search**, open any saved query → repo ID is in the URL
 }
 ```
 
+> `api_enabled` reflects whether **socai** holds API creds for live querying — distinct from whether an analyst has manual console access. For containment/remediation authority (who actions an identity/endpoint step), the client's `platforms.identity_response` field is what matters — see `docs/containment-authority.md` / `socai://containment-authority`. CrowdStrike/Falcon-only clients are typically `client_actioned` (no Microsoft identity plane).
+
 ### 4. Configure `.env`
 
 Env var names are derived from the client code (uppercase + non-alphanumerics → underscore):

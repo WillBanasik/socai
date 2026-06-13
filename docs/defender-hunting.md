@@ -73,6 +73,8 @@ For each client tenant you want to query:
    }
    ```
 
+   > `api_enabled` = whether **socai** holds Defender XDR API creds for live `run_defender_kql`. This is separate from analyst manual console access and from **containment authority**: whether the SOC can action identity (reset password / revoke sessions) is governed by the client's `platforms.identity_response` (`performanta_delegated` when we hold Entra/Defender delegation + SOP cover). See `docs/containment-authority.md` / `socai://containment-authority`.
+
 3. Confirm with `python3 -c "from tools.defender_hunting import is_defender_configured; print(is_defender_configured('<client>'))"` → should print `True`.
 
 ## Usage

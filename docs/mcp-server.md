@@ -48,7 +48,7 @@ Client (Claude Desktop / LLM agent)
 │  mcp_server/ (port 8001)│
 │  FastMCP + SSE transport│
 │  SocaiTokenVerifier     │
-│  125 tools, 47 resources│
+│  125 tools, 49 resources│
 │  24 prompts, JSONL logs │
 │  Background scheduler   │
 └─────────────────────────┘
@@ -280,7 +280,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 |---|---|---|
 | `run_kql` | `sentinel:query` | Execute KQL query against Sentinel |
 | `load_kql_playbook` | `sentinel:query` | Load KQL playbook stages |
-| `load_cql_playbook` | `sentinel:query` | Load CQL (LogScale) playbook stages |
+| `load_cql_playbook` | `investigations:read` | Load CQL (LogScale) playbook stages |
 | `generate_sentinel_query` | `sentinel:query` | Generate composite Sentinel queries |
 | `run_kql_batch` | `sentinel:query` | Execute multiple KQL queries concurrently (max 8 workers) |
 | `run_defender_kql` | `defender_xdr:query` | Execute KQL against client's Defender XDR Advanced Hunting endpoint (Device*/Email*/Identity*/CloudApp*/Url*/Alert* tables) |
@@ -324,7 +324,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `analyse_memory_dump` | `investigations:submit` | Process memory dump analysis (strings, IOCs, risk scoring) |
 | `analyse_memory_volatility` | `investigations:submit` | Volatility3 deep analysis — pslist/netscan/malfind/cmdline; auto OS-detect |
 
-## Resources (48)
+## Resources (49)
 
 | URI | Description |
 |---|---|
@@ -372,6 +372,7 @@ When Entra ID SSO is added, map Entra security groups (e.g. `sg-soc-junior`, `sg
 | `socai://landscape` | Threat landscape summary |
 | `socai://role` | Current analyst role, permissions, and behavioural instructions |
 | `socai://analytical-standards` | Canonical analytical standards — evidence-first reasoning, causation discipline, Confirmed/Assessed/Unknown language, rule-9 logging requirement, TP/BP/FP guide (full text of `config/analytical_guidelines.md`) |
+| `socai://containment-authority` | Who actions containment/remediation — SOC analyst vs client: capability rule of thumb (identity split by `platforms.identity_response`, symmetric endpoint), gated by the per-client GitHub response process (authority of record) |
 | `socai://incident-handling` | SOC process: role priorities, SOAR queue workflow, escalation rules |
 | `socai://service-requests` | SOC process: SD queue monitoring, ticket lifecycle, Teams channels |
 | `socai://time-tracking` | SOC process: Kantata categories, overtime logging, on-call hours |
@@ -456,7 +457,7 @@ mcp_server/
     auth.py            # SocaiTokenVerifier, _require_scope
     config.py          # Env var configuration
     tools.py           # 125 MCP tool wrappers
-    resources.py       # 47 MCP resource implementations
+    resources.py       # 49 MCP resource implementations
     prompts.py         # 24 MCP prompt implementations
     health.py          # /healthz liveness probe (scheduler, filesystem, uptime)
     watchdog.py        # systemd watchdog integration (sd_notify, WATCHDOG=1 loop)
@@ -547,7 +548,7 @@ Analyst's Claude Desktop (VPN / corporate network)
     ▼
 ┌──────────────────────────┐
 │  mcp_server (port 8001)  │  ← SOCAI_MCP_HOST=127.0.0.1
-│  125 tools, 47 resources │
+│  125 tools, 49 resources │
 │  JWT RBAC, role system   │
 │  Background scheduler    │
 └──────────────────────────┘

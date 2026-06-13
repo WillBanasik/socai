@@ -30,6 +30,13 @@ identity-action delegation **and** SOP cover — a policy fact, set explicitly p
 client in `platforms.identity_response`, never inferred from integration
 presence (SIEM/log-read access ≠ identity-action delegation).
 
+Concretely: **a Sentinel workspace does not by itself confer the delegation
+plane.** A client can use Sentinel as SIEM while its identity/endpoint plane is
+Falcon (not Defender/Entra) — log ingestion gives us no identity-action
+delegation, so it is `client_actioned` despite having a Sentinel workspace
+(e.g. `glumutual`: Sentinel SIEM + Falcon EDR → `client_actioned`). Delegation
+comes from a Microsoft identity/endpoint plane we hold, not from where logs land.
+
 ### `performanta_delegated` — we hold the delegation + SOP cover
 
 | Identity action | Who actions it |
