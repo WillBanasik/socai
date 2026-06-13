@@ -16,8 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import CASES_DIR, CLIENT_PLAYBOOKS_DIR
-from tools.common import eprint, load_json, log_error, utcnow
+from config.settings import CASES_DIR
+from tools.common import eprint, get_client_config, load_json, log_error, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -53,34 +53,72 @@ def _safe_load(path: Path) -> dict | None:
         return None
 
 
-def _load_playbook(client: str) -> dict | None:
-    """Load client playbook from config/clients/<client>/playbook.json, legacy flat layout,
-    or live from PerformantaLab/mdr_soar on GitHub (last resort, requires gh CLI)."""
-    import base64, json, subprocess  # noqa: PLC0415
+_GH_PLAYBOOK_REPO = "PerformantaLab/mdr_soar"
 
-    slug = client.lower().replace(" ", "_")
-    candidates = [
-        CLIENT_PLAYBOOKS_DIR / slug / "playbook.json",
-        CLIENT_PLAYBOOKS_DIR / f"{slug}.json",
-    ]
-    for path in candidates:
-        data = _safe_load(path)
-        if data is not None:
-            return data
 
-    # No local file — try GitHub live source.
-    gh_path = f"client_response_templates/{slug}.json"
+def _resolve_template_slug(client: str) -> str:
+    """Map a socai client name to its GitHub response-template slug.
+
+    Defaults to the client-name slug. An explicit ``response_template`` field in
+    client_entities.json overrides it — used where the GitHub filename differs
+    from the socai client name (e.g. ``aztec_group`` → ``aztec``,
+    ``southern_sun`` → ``tsogo``).
+    """
+    cfg = get_client_config(client)
+    if cfg and cfg.get("response_template"):
+        return str(cfg["response_template"]).strip()
+    return client.lower().replace(" ", "_")
+
+
+def _fetch_github_playbook(template_slug: str) -> dict | None:
+    """Fetch a client response template live from PerformantaLab/mdr_soar via ``gh``.
+
+    GitHub is the single source of truth for client response playbooks — no local
+    copies are kept. Returns the parsed playbook dict, or None if the template does
+    not exist, ``gh`` is unavailable, or the fetch/parse fails (all degrade to None
+    so callers fall back to a generic response plan).
+    """
+    import base64, json, re, subprocess  # noqa: PLC0415
+
+    gh_path = f"client_response_templates/{template_slug}.json"
     try:
         result = subprocess.run(
-            ["gh", "api", f"repos/PerformantaLab/mdr_soar/contents/{gh_path}", "--jq", ".content"],
+            ["gh", "api", f"repos/{_GH_PLAYBOOK_REPO}/contents/{gh_path}", "--jq", ".content"],
             capture_output=True, text=True, timeout=10,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            return json.loads(base64.b64decode(result.stdout.strip()).decode())
+        if result.returncode != 0:
+            # 404 (template absent) is normal; anything else (auth, gh missing) is worth a note.
+            stderr = (result.stderr or "").strip()
+            if "404" not in stderr and "Not Found" not in stderr:
+                log_error("", "response_actions.fetch_github_playbook",
+                          f"gh exited {result.returncode}: {stderr[:300]}",
+                          severity="warning",
+                          context={"template_slug": template_slug, "gh_path": gh_path})
+            return None
+        if not result.stdout.strip():
+            return None
+        raw = base64.b64decode(result.stdout.strip()).decode()
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            # GitHub templates sometimes carry trailing commas (valid JS, invalid
+            # JSON) — strip ``,`` before a closing ``}``/``]`` and retry. Only
+            # reached for already-malformed files; valid JSON is never rewritten.
+            return json.loads(re.sub(r",(\s*[}\]])", r"\1", raw))
     except Exception as exc:
-        log_error("", "response_actions.load_playbook_github", str(exc),
-                  severity="warning", context={"slug": slug, "gh_path": gh_path})
+        log_error("", "response_actions.fetch_github_playbook", str(exc),
+                  severity="warning", context={"template_slug": template_slug, "gh_path": gh_path})
     return None
+
+
+def _load_playbook(client: str) -> dict | None:
+    """Load a client's response playbook live from GitHub (PerformantaLab/mdr_soar).
+
+    GitHub is authoritative — no local copies. The client name maps to a template
+    slug (overridable via ``response_template`` in client_entities.json). Returns
+    None when no template exists for the client.
+    """
+    return _fetch_github_playbook(_resolve_template_slug(client))
 
 
 def _match_alert_override(playbook: dict, title: str) -> dict | None:

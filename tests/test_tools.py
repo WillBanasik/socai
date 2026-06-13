@@ -564,12 +564,17 @@ def test_detect_anomalies_lateral_movement():
 # response_actions
 # ---------------------------------------------------------------------------
 
-def test_response_actions_with_playbook():
-    """Generate response actions with a client playbook and malicious IOCs."""
+def test_response_actions_with_playbook(monkeypatch):
+    """Generate response actions with a client playbook and malicious IOCs.
+
+    The playbook is fetched live from GitHub in production; here we monkeypatch
+    the GitHub fetch seam so the test is hermetic (no network, no local files).
+    """
     from tools.case_create import case_create
+    from tools import response_actions
     from tools.response_actions import generate_response_actions
     from tools.common import save_json
-    from config.settings import CASES_DIR, CLIENT_PLAYBOOKS_DIR
+    from config.settings import CASES_DIR
 
     case_create(TEST_CASE, title="Test alert", severity="high", client="test_client")
 
@@ -583,76 +588,71 @@ def test_response_actions_with_playbook():
         "ioc_count": 4,
     })
 
-    # Write a test playbook
-    CLIENT_PLAYBOOKS_DIR.mkdir(parents=True, exist_ok=True)
-    playbook_path = CLIENT_PLAYBOOKS_DIR / "test_client.json"
-    try:
-        save_json(playbook_path, {
-            "client_name": "test_client",
-            "response": [
-                {
-                    "priority": "none",
-                    "alert_name": "none",
-                    "action_to_be_taken": "Default process.",
-                    "contact_process": "Email security@test.com"
-                }
-            ],
-            "crown_jewels": {"hosts": [], "default_action": "Escalate"},
-            "contacts": [{"name": "Test Contact", "role": "CISO"}],
-            "escalation_matrix": [
-                {
-                    "priority": "p2",
-                    "activity_blocked": False,
-                    "asset_type": "workstation",
-                    "sd_ticket": "immediate",
-                    "phone_call": True,
-                    "response_action": "asset_containment",
-                    "actions": [
-                        "Raise immediate SD ticket.",
-                        "Asset containment — isolate endpoint via EDR."
-                    ]
-                },
-                {
-                    "priority": "p2",
-                    "activity_blocked": False,
-                    "asset_type": "server/privileged",
-                    "sd_ticket": "immediate",
-                    "phone_call": True,
-                    "response_action": "confirm_asset_containment",
-                    "actions": [
-                        "Raise immediate SD ticket.",
-                        "Confirm asset containment — obtain client approval."
-                    ]
-                }
-            ],
-            "containment_capabilities": [
-                {"technology": "Defender XDR", "actions": ["MDE Isolate Hosts"]}
-            ],
-            "remediation_actions": [
-                {"technology": "Defender XDR", "owner": "client", "actions": ["Entra Disable User"]}
-            ]
-        })
+    test_playbook = {
+        "client_name": "test_client",
+        "response": [
+            {
+                "priority": "none",
+                "alert_name": "none",
+                "action_to_be_taken": "Default process.",
+                "contact_process": "Email security@test.com"
+            }
+        ],
+        "crown_jewels": {"hosts": [], "default_action": "Escalate"},
+        "contacts": [{"name": "Test Contact", "role": "CISO"}],
+        "escalation_matrix": [
+            {
+                "priority": "p2",
+                "activity_blocked": False,
+                "asset_type": "workstation",
+                "sd_ticket": "immediate",
+                "phone_call": True,
+                "response_action": "asset_containment",
+                "actions": [
+                    "Raise immediate SD ticket.",
+                    "Asset containment — isolate endpoint via EDR."
+                ]
+            },
+            {
+                "priority": "p2",
+                "activity_blocked": False,
+                "asset_type": "server/privileged",
+                "sd_ticket": "immediate",
+                "phone_call": True,
+                "response_action": "confirm_asset_containment",
+                "actions": [
+                    "Raise immediate SD ticket.",
+                    "Confirm asset containment — obtain client approval."
+                ]
+            }
+        ],
+        "containment_capabilities": [
+            {"technology": "Defender XDR", "actions": ["MDE Isolate Hosts"]}
+        ],
+        "remediation_actions": [
+            {"technology": "Defender XDR", "owner": "client", "actions": ["Entra Disable User"]}
+        ]
+    }
+    monkeypatch.setattr(response_actions, "_fetch_github_playbook", lambda slug: test_playbook)
 
-        result = generate_response_actions(TEST_CASE)
+    result = generate_response_actions(TEST_CASE)
 
-        assert result["status"] == "ok"
-        assert result["priority"] == "p2"  # high severity maps to p2
-        assert result["client"] == "test_client"
-        assert len(result["malicious_iocs"]) == 2
-        assert len(result["suspicious_iocs"]) == 1
-        assert result["escalation"]["contact_process"] == "Email security@test.com"
-        assert len(result["escalation"]["permitted_actions"]) >= 1
-    finally:
-        if playbook_path.exists():
-            playbook_path.unlink()
+    assert result["status"] == "ok"
+    assert result["priority"] == "p2"  # high severity maps to p2
+    assert result["client"] == "test_client"
+    assert len(result["malicious_iocs"]) == 2
+    assert len(result["suspicious_iocs"]) == 1
+    assert result["escalation"]["contact_process"] == "Email security@test.com"
+    assert len(result["escalation"]["permitted_actions"]) >= 1
 
 
-def test_response_actions_skip_clean():
+def test_response_actions_skip_clean(monkeypatch):
     """Clean verdict (0 malicious, 0 suspicious) should skip."""
     from tools.case_create import case_create
+    from tools import response_actions
     from tools.response_actions import generate_response_actions
     from tools.common import save_json
-    from config.settings import CASES_DIR, CLIENT_PLAYBOOKS_DIR
+    from config.settings import CASES_DIR
 
     case_create(TEST_CASE, severity="medium", client="test_client")
 
@@ -666,30 +666,27 @@ def test_response_actions_skip_clean():
         "ioc_count": 1,
     })
 
-    # Write a minimal playbook
-    CLIENT_PLAYBOOKS_DIR.mkdir(parents=True, exist_ok=True)
-    playbook_path = CLIENT_PLAYBOOKS_DIR / "test_client.json"
-    try:
-        save_json(playbook_path, {
-            "client_name": "test_client",
-            "response": [],
-            "crown_jewels": {"hosts": [], "default_action": ""},
-            "contacts": [],
-            "escalation_matrix": []
-        })
+    monkeypatch.setattr(response_actions, "_fetch_github_playbook", lambda slug: {
+        "client_name": "test_client",
+        "response": [],
+        "crown_jewels": {"hosts": [], "default_action": ""},
+        "contacts": [],
+        "escalation_matrix": []
+    })
 
-        result = generate_response_actions(TEST_CASE)
-        assert result["status"] == "skipped"
-        assert "No malicious/suspicious IOCs" in result["reason"]
-    finally:
-        if playbook_path.exists():
-            playbook_path.unlink()
+    result = generate_response_actions(TEST_CASE)
+    assert result["status"] == "skipped"
+    assert "No malicious/suspicious IOCs" in result["reason"]
 
 
-def test_response_actions_no_playbook():
+def test_response_actions_no_playbook(monkeypatch):
     """No matching playbook for the case client should skip with appropriate reason."""
     from tools.case_create import case_create
+    from tools import response_actions
     from tools.response_actions import generate_response_actions
+
+    # No GitHub template for this client → fetch returns None.
+    monkeypatch.setattr(response_actions, "_fetch_github_playbook", lambda slug: None)
 
     case_create(TEST_CASE, severity="medium")
 

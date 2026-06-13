@@ -32,34 +32,6 @@ def _validated_case_id(case_id: str) -> str | None:
     return case_id
 
 
-def _resolve_client_playbook(client_name: str) -> Path | None:
-    """Find the playbook JSON for a client (directory or flat layout)."""
-    from config.settings import CLIENT_PLAYBOOKS_DIR as CLIENTS_DIR
-    from tools.common import load_json
-
-    # New layout: config/clients/<name>/playbook.json
-    candidates = [
-        CLIENTS_DIR / client_name / "playbook.json",
-        CLIENTS_DIR / client_name.lower().replace(" ", "_") / "playbook.json",
-        # Legacy flat layout: config/clients/<name>.json
-        CLIENTS_DIR / f"{client_name}.json",
-        CLIENTS_DIR / f"{client_name.lower().replace(' ', '_')}.json",
-    ]
-    for p in candidates:
-        if p.exists():
-            return p
-
-    # Search by client_name field inside JSON files
-    for p in CLIENTS_DIR.rglob("*.json"):
-        try:
-            data = load_json(p)
-            if data.get("client_name", "").lower() == client_name.lower():
-                return p
-        except Exception:
-            continue
-    return None
-
-
 def _resolve_client_knowledge(client_name: str) -> Path | None:
     """Find the knowledge base markdown for a client."""
     from config.settings import CLIENT_PLAYBOOKS_DIR as CLIENTS_DIR
@@ -876,12 +848,11 @@ def register_resources(mcp: FastMCP) -> None:
         """
         _require_scope("investigations:read")
 
-        path = _resolve_client_playbook(client_name)
-        if not path:
+        from tools.response_actions import _load_playbook
+        data = _load_playbook(client_name)
+        if not data:
             return _json({"error": f"No response playbook found for client {client_name!r}."})
 
-        from tools.common import load_json
-        data = load_json(path)
         playbook = {
             "client_name": data.get("client_name", client_name),
             "escalation_matrix": data.get("escalation_matrix", []),

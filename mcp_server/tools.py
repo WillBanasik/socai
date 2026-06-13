@@ -562,9 +562,9 @@ def _register_tier1(mcp: FastMCP) -> None:
             "platform_list": list(platforms.keys()),
         }
 
-        from mcp_server.resources import _resolve_client_playbook, _resolve_client_knowledge
+        from mcp_server.resources import _resolve_client_knowledge
+        from tools.response_actions import _load_playbook
         from config.settings import CLIENT_PLAYBOOKS_DIR as CLIENTS_DIR
-        import json as _json_mod
 
         kb_path = _resolve_client_knowledge(cfg["name"])
         if kb_path:
@@ -572,14 +572,8 @@ def _register_tier1(mcp: FastMCP) -> None:
         else:
             result["knowledge_base"] = None
 
-        pb_path = _resolve_client_playbook(cfg["name"])
-        if pb_path:
-            try:
-                result["response_playbook"] = _json_mod.loads(pb_path.read_text(encoding="utf-8"))
-            except Exception:
-                result["response_playbook"] = pb_path.read_text(encoding="utf-8")
-        else:
-            result["response_playbook"] = None
+        # Response playbook is fetched live from GitHub (no local copy).
+        result["response_playbook"] = _load_playbook(cfg["name"])
 
         sentinel_path = CLIENTS_DIR / cfg["name"] / "sentinel.md"
         if sentinel_path.exists():
