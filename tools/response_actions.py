@@ -54,7 +54,10 @@ def _safe_load(path: Path) -> dict | None:
 
 
 def _load_playbook(client: str) -> dict | None:
-    """Load client playbook from config/clients/<client>/playbook.json or legacy flat layout."""
+    """Load client playbook from config/clients/<client>/playbook.json, legacy flat layout,
+    or live from PerformantaLab/mdr_soar on GitHub (last resort, requires gh CLI)."""
+    import base64, json, subprocess  # noqa: PLC0415
+
     slug = client.lower().replace(" ", "_")
     candidates = [
         CLIENT_PLAYBOOKS_DIR / slug / "playbook.json",
@@ -64,6 +67,19 @@ def _load_playbook(client: str) -> dict | None:
         data = _safe_load(path)
         if data is not None:
             return data
+
+    # No local file — try GitHub live source.
+    gh_path = f"client_response_templates/{slug}.json"
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/PerformantaLab/mdr_soar/contents/{gh_path}", "--jq", ".content"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(base64.b64decode(result.stdout.strip()).decode())
+    except Exception as exc:
+        log_error("", "response_actions.load_playbook_github", str(exc),
+                  severity="warning", context={"slug": slug, "gh_path": gh_path})
     return None
 
 
