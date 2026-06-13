@@ -51,13 +51,17 @@ works *by* invalidating refresh tokens — there is no separate analyst
 stops *renewal*, not the current access token — it is not an instant hard-kill.
 
 **Integration variant — `platforms.identity_integration`:** where a delegated
-client actions identity through an integration that fuses password reset and
-session revoke into a single non-separable action, set `identity_integration`
-to flag it. `netiq` (e.g. University of Portsmouth) collapses the analyst's two
-discrete actions into one combined "reset password + revoke sessions" action —
-the two cannot be performed independently. Absent / `entra` → the two discrete
-actions apply as above. The who-actions-it split is unchanged; only the
-granularity of the analyst's action differs.
+client actions identity through a different mechanism, set `identity_integration`
+to flag it. `netiq` (e.g. University of Portsmouth) does **not** reset+revoke —
+the SOC's single containment action **strips the account's security
+(authentication) information**, which hard-blocks the user (they can no longer
+authenticate); it is **not reversible by the SOC**. Recovery is **client-only**:
+the local service desk re-adds the security information and re-enables the
+account. So for NetIQ both sides are overridden — SOC = "block via NetIQ (strip
+sec info)", client = "re-add sec info + re-enable (local service desk only)".
+Absent / `entra` → the standard discrete reset-password + revoke-sessions
+analyst actions apply. The who-actions-it split is unchanged; only the
+mechanism differs.
 
 ### `client_actioned` — no identity-plane delegation (e.g. Falcon / NGSIEM)
 

@@ -87,9 +87,10 @@
   identity actions go to the client. A policy fact — never inferred from integration presence.
   See `socai://containment-authority`.
 - **Identity action integration:** `<entra (default) | netiq>` — [INTERNAL] confirm
-  (`platforms.identity_integration`). `netiq` fuses password reset + session revoke into one
-  non-separable combined action (the two cannot be actioned independently). Only relevant when
-  `identity_response = performanta_delegated`.
+  (`platforms.identity_integration`). `netiq` (e.g. UoP): the SOC's only containment action strips
+  the account's security/authentication info (hard-blocks the user; not SOC-reversible) — recovery
+  is client-only (local service desk re-adds sec info + re-enables), NOT a password-reset/revoke.
+  Only relevant when `identity_response = performanta_delegated`.
 
 ---
 

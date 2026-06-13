@@ -105,16 +105,24 @@ def _compute_containment_authority(client: str, playbook: dict) -> dict:
         identity_mode = "client_actioned"
     identity_cap = _IDENTITY_CAPABILITY[identity_mode]
 
-    # Some delegated clients action identity through an integration that fuses
-    # password reset + session revoke into a single, non-separable action
-    # (e.g. NetIQ at UoP) — collapse the two discrete analyst actions into one
-    # combined entry so the plan doesn't imply they can be done independently.
+    # Some delegated clients action identity through an integration whose only
+    # containment action differs from the standard reset/revoke split. NetIQ
+    # (e.g. UoP) does not reset+revoke — it STRIPS the account's security
+    # (authentication) information, which hard-blocks the user; recovery is
+    # client-only (local service desk re-adds the sec info + re-enables). Override
+    # both the SOC action and the client action to reflect that reality.
     identity_integration = str(platforms.get("identity_integration", "")).lower()
     analyst_identity = list(identity_cap["analyst"])
+    client_identity = list(identity_cap["client"])
     if identity_mode == "performanta_delegated" and identity_integration == "netiq":
         analyst_identity = [
-            "Reset password + revoke sessions (combined — actioned together via "
-            "NetIQ; the two cannot be performed separately)"
+            "Block user via NetIQ — removes the account's security (authentication) "
+            "information so the user cannot authenticate. Single action (no separate "
+            "password-reset / session-revoke); not reversible by the SOC."
+        ]
+        client_identity = [
+            "Re-add the account's security information and re-enable the account "
+            "— client's local service desk only (sole path to restore access)."
         ]
 
     # Endpoint capability — present wherever we hold an EDR/XDR action API.
@@ -139,7 +147,7 @@ def _compute_containment_authority(client: str, playbook: dict) -> dict:
         "identity_response_mode": identity_mode,
         "identity_integration": identity_integration or None,
         "identity_analyst_actions": analyst_identity,
-        "identity_client_actions": identity_cap["client"],
+        "identity_client_actions": client_identity,
         "endpoint_technologies": endpoint_tech,
         "endpoint_actions": endpoint_actions,
         "soc_executed_actions": soc_actions,

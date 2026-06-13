@@ -778,9 +778,10 @@ def test_containment_authority_github_prohibits(monkeypatch):
     assert "containment_policy=prohibited" in auth["suppression_reason"]
 
 
-def test_containment_authority_netiq_combined(monkeypatch):
-    """performanta_delegated + identity_integration=netiq fuses the analyst's
-    password reset + session revoke into one non-separable combined action."""
+def test_containment_authority_netiq_block(monkeypatch):
+    """performanta_delegated + identity_integration=netiq: SOC's single action
+    strips the account's security info (hard-block, not SOC-reversible); recovery
+    is client-only (local service desk re-adds sec info + re-enables)."""
     from tools import response_actions
 
     monkeypatch.setattr(response_actions, "get_client_config", lambda c: {
@@ -795,13 +796,15 @@ def test_containment_authority_netiq_combined(monkeypatch):
     auth = response_actions._compute_containment_authority("uop", {})
 
     assert auth["identity_integration"] == "netiq"
-    # Two discrete actions collapse to a single combined entry.
+    # Single SOC action — strip sec info / block, not reset+revoke.
     assert len(auth["identity_analyst_actions"]) == 1
-    combined = auth["identity_analyst_actions"][0]
-    assert "Reset password" in combined and "revoke sessions" in combined.lower()
-    assert "combined" in combined.lower()
-    # Authority split is unchanged — client still owns standing changes.
-    assert "Disable account" in auth["identity_client_actions"]
+    soc = auth["identity_analyst_actions"][0]
+    assert "NetIQ" in soc and "security" in soc.lower()
+    assert "not reversible" in soc.lower()
+    # Client recovery is overridden to the NetIQ-specific path, not Entra generics.
+    assert len(auth["identity_client_actions"]) == 1
+    client = auth["identity_client_actions"][0]
+    assert "service desk" in client.lower() and "re-add" in client.lower()
 
 
 def test_containment_authority_default_and_unknown_mode(monkeypatch):
