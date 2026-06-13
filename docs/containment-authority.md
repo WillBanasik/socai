@@ -50,6 +50,15 @@ works *by* invalidating refresh tokens — there is no separate analyst
 **access tokens** (short-lived, ~1 h) keep working until they expire, so revoke
 stops *renewal*, not the current access token — it is not an instant hard-kill.
 
+**Integration variant — `platforms.identity_integration`:** where a delegated
+client actions identity through an integration that fuses password reset and
+session revoke into a single non-separable action, set `identity_integration`
+to flag it. `netiq` (e.g. University of Portsmouth) collapses the analyst's two
+discrete actions into one combined "reset password + revoke sessions" action —
+the two cannot be performed independently. Absent / `entra` → the two discrete
+actions apply as above. The who-actions-it split is unchanged; only the
+granularity of the analyst's action differs.
+
 ### `client_actioned` — no identity-plane delegation (e.g. Falcon / NGSIEM)
 
 All identity actions — including password reset and session revoke — are the

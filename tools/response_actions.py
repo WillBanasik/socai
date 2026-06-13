@@ -105,6 +105,18 @@ def _compute_containment_authority(client: str, playbook: dict) -> dict:
         identity_mode = "client_actioned"
     identity_cap = _IDENTITY_CAPABILITY[identity_mode]
 
+    # Some delegated clients action identity through an integration that fuses
+    # password reset + session revoke into a single, non-separable action
+    # (e.g. NetIQ at UoP) — collapse the two discrete analyst actions into one
+    # combined entry so the plan doesn't imply they can be done independently.
+    identity_integration = str(platforms.get("identity_integration", "")).lower()
+    analyst_identity = list(identity_cap["analyst"])
+    if identity_mode == "performanta_delegated" and identity_integration == "netiq":
+        analyst_identity = [
+            "Reset password + revoke sessions (combined — actioned together via "
+            "NetIQ; the two cannot be performed separately)"
+        ]
+
     # Endpoint capability — present wherever we hold an EDR/XDR action API.
     endpoint_tech = []
     if (platforms.get("defender_xdr") or {}).get("api_enabled"):
@@ -120,12 +132,13 @@ def _compute_containment_authority(client: str, playbook: dict) -> dict:
 
     # SOC-executed actions = analyst identity actions + endpoint actions,
     # suppressed when the client response process prohibits containment.
-    soc_actions = list(identity_cap["analyst"]) + endpoint_actions
+    soc_actions = list(analyst_identity) + endpoint_actions
     suppressed = (not soc_may_execute) and bool(soc_actions)
 
     return {
         "identity_response_mode": identity_mode,
-        "identity_analyst_actions": identity_cap["analyst"],
+        "identity_integration": identity_integration or None,
+        "identity_analyst_actions": analyst_identity,
         "identity_client_actions": identity_cap["client"],
         "endpoint_technologies": endpoint_tech,
         "endpoint_actions": endpoint_actions,

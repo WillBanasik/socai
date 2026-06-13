@@ -778,6 +778,32 @@ def test_containment_authority_github_prohibits(monkeypatch):
     assert "containment_policy=prohibited" in auth["suppression_reason"]
 
 
+def test_containment_authority_netiq_combined(monkeypatch):
+    """performanta_delegated + identity_integration=netiq fuses the analyst's
+    password reset + session revoke into one non-separable combined action."""
+    from tools import response_actions
+
+    monkeypatch.setattr(response_actions, "get_client_config", lambda c: {
+        "name": c,
+        "platforms": {
+            "identity_response": "performanta_delegated",
+            "identity_integration": "netiq",
+            "defender_xdr": {"api_enabled": False},
+        },
+    })
+
+    auth = response_actions._compute_containment_authority("uop", {})
+
+    assert auth["identity_integration"] == "netiq"
+    # Two discrete actions collapse to a single combined entry.
+    assert len(auth["identity_analyst_actions"]) == 1
+    combined = auth["identity_analyst_actions"][0]
+    assert "Reset password" in combined and "revoke sessions" in combined.lower()
+    assert "combined" in combined.lower()
+    # Authority split is unchanged — client still owns standing changes.
+    assert "Disable account" in auth["identity_client_actions"]
+
+
 def test_containment_authority_default_and_unknown_mode(monkeypatch):
     """Absent identity_response defaults to client_actioned; absent
     containment_policy defaults to pre_approved (no restriction)."""

@@ -86,6 +86,10 @@
   revoke sessions (client does MFA reset / disable / OAuth-grant revoke). `client_actioned` = all
   identity actions go to the client. A policy fact — never inferred from integration presence.
   See `socai://containment-authority`.
+- **Identity action integration:** `<entra (default) | netiq>` — [INTERNAL] confirm
+  (`platforms.identity_integration`). `netiq` fuses password reset + session revoke into one
+  non-separable combined action (the two cannot be actioned independently). Only relevant when
+  `identity_response = performanta_delegated`.
 
 ---
 
